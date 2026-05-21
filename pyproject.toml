@@ -48,7 +48,7 @@ Issues = "https://github.com/anarkiwi/preframr-tokens/issues"
 packages = ["preframr_tokens", "preframr_tokens.macros"]
 
 [tool.setuptools_scm]
-fallback_version = "0.3.0"
+fallback_version = "0.4.0"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -62,6 +62,7 @@ omit = [
     "preframr_tokens/__init__.py",
     "preframr_tokens/macros/__init__.py",
     "preframr_tokens/constrained_decode.py",
+    "preframr_tokens/blocks.py",
 ]
 
 [tool.coverage.report]

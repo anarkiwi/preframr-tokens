@@ -43,6 +43,11 @@ pip install preframr-tokens
   mask for sampling-time logit guarding. Pure numpy state machine;
   consumers (torch users) apply the returned bool mask with a single
   `masked_fill` at the boundary.
+- `preframr_tokens.blocks` -- block iteration + materialization
+  helpers: `iter_voiced_blocks`, `materialize_block_array`,
+  `parser_worker`, `glob_dumps`, `reg_widths_path`,
+  `self_contained_prompt_df`. Torch-free; main repo's RegDataset
+  wraps the outputs in DataLoaders.
 
 ## Library-only
 
