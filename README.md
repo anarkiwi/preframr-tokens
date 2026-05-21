@@ -55,6 +55,9 @@ pip install preframr-tokens
   structural ratio), `detect_tail_cycle` (loop-collapse detector),
   `distinct_n` (n-gram diversity). Used by the generalization-gate
   callback in main repo and by post-hoc audit scripts.
+- `preframr_tokens.parse_runner` -- `write_df(args, logger, dump_file)`
+  + `parse_corpus(args, logger)` parallel dump-parsing orchestrator.
+  Main-repo `preframr/parse.py` is a thin argparse shim around this.
 - `preframr_tokens.corpus` -- `Corpus` class: torch-free corpus
   orchestration owning the RegTokenizer + reg_widths +
   tokenize-stage metadata. Methods `load_dfs`, `make_tokens`,
