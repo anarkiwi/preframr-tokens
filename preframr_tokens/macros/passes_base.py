@@ -1,0 +1,90 @@
+"""``MacroPass`` base class and the helpers (``_frame_index`` /
+``_ensure_subreg`` / ``_splice_rows``) every pass uses to manipulate
+its row DataFrame.
+"""
+
+import functools
+
+import pandas as pd
+
+from preframr_tokens.macros.state import _build_decode_state
+from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG
+
+
+class MacroPass:
+    """Base class for encode-side passes operating on a token DataFrame."""
+
+    def apply(self, df, args=None):
+        raise NotImplementedError
+
+
+def requires_state(method):
+    """Decorator for ``MacroPass.apply`` implementations that need a
+    built ``DecodeState``.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, df, args=None):
+        df = df.reset_index(drop=True).copy()
+        df = _ensure_subreg(df)
+        if "description" not in df.columns:
+            df["description"] = 0
+        state = _build_decode_state(df)
+        if state is None:
+            return df
+        return method(self, df, state, args)
+
+    return wrapper
+
+
+def _frame_index(df):
+    """Cumulative frame index for each row (boundary at FRAME_REG/DELAY_REG)."""
+    return df["reg"].isin({FRAME_REG, DELAY_REG}).astype(int).cumsum()
+
+
+def _ensure_subreg(df):
+    if "subreg" not in df.columns:
+        df = df.copy()
+        df["subreg"] = -1
+    return df
+
+
+def _splice_rows(df, drop_idx, new_rows):
+    """Drop rows by index and splice ``new_rows`` (each carrying ``__pos``)
+    into their original positions, preserving the rest of the row order.
+    """
+    if not new_rows:
+        return df
+    orig_attrs = dict(df.attrs)
+    df = _ensure_subreg(df)
+    irq_value = (
+        int(df["irq"].iloc[0])
+        if "irq" in df.columns and len(df) and df["irq"].notna().any()
+        else -1
+    )
+    orig_dtypes = df.dtypes.to_dict()
+    df = df.drop(index=drop_idx)
+    df["__pos"] = df.index.astype("int64")
+    new_df = pd.DataFrame(new_rows)
+    for col in df.columns:
+        if col not in new_df.columns:
+            if col == "description":
+                new_df[col] = 0
+            elif col == "irq":
+                new_df[col] = irq_value
+            else:
+                new_df[col] = -1
+    new_df = new_df[df.columns]
+    combined = pd.concat([df, new_df], ignore_index=True)
+    combined = combined.sort_values("__pos", kind="stable").reset_index(drop=True)
+    combined = combined.drop(columns=["__pos"])
+    for col, dt in orig_dtypes.items():
+        if col == "__pos":
+            continue
+        try:
+            combined[col] = combined[col].astype(dt)
+        except (TypeError, ValueError):
+            pass
+    if orig_attrs:
+        combined.attrs.update(orig_attrs)
+    return combined
