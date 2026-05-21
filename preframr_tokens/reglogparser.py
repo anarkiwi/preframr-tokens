@@ -8,7 +8,7 @@ from pyarrow.parquet import ParquetFile
 import pyarrow as pa
 from preframr_tokens import macros
 from preframr_tokens.engine_fingerprint import (
-    cluster_for_path,
+    UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
 from preframr_tokens.macros.decode import expand_ops
@@ -243,13 +243,14 @@ def prepare_df_for_audio(orig_df, reg_widths, irq, sidq, strict=False, prompt_le
 
 
 class RegLogParser:
-    def __init__(self, args=None, logger=logging):
+    def __init__(self, args=None, logger=logging, cluster_table=None):
         self.args = args
         self.logger = logger
         self.freq_mapper = None
         if self.args:
             self.freq_mapper = FreqMapper(cents=self.args.cents)
         self.exclude_set = self._load_exclude_list()
+        self.cluster_table = cluster_table
 
     def _load_exclude_list(self):
         path = getattr(self.args, "exclude_list", None) if self.args else None
@@ -748,7 +749,11 @@ class RegLogParser:
             pass
         engine_fp_vec = compute_fingerprint(Path(name))
         engine_fp_list = engine_fp_vec.tolist() if engine_fp_vec is not None else None
-        engine_fp_cluster = cluster_for_path(name)
+        engine_fp_cluster = (
+            self.cluster_table.cluster_for_path(name)
+            if self.cluster_table is not None
+            else UNKNOWN_CLUSTER
+        )
         df = self._squeeze_changes(df)
         df = self._combine_regs(df)
         df = self._quantize_freq_to_cents(df)

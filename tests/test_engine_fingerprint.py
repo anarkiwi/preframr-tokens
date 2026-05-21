@@ -1,19 +1,23 @@
-"""Engine-fingerprint plumbing: probe determinism + parser-side
-attachment. The probe's structural correctness is exercised by the
-audit scripts in ``integration_tests/profile/``; this module guards
-the pieces that wire the fingerprint into the parse pipeline so
-downstream macro passes can key palettes on it.
+"""Engine fingerprint: computation determinism + ClusterTable contract.
+
+ClusterTable is library glue around a caller-provided JSON; the
+specific corpus-snapshot assignments (Hubbard_Rob -> 7, etc.) are
+test-data concerns that live in the consumer repo. Here we only
+test the table's shape + the empty-table / unknown-composer paths
++ the table built from a tiny fixture JSON.
 """
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from preframr_tokens.engine_fingerprint import (
     DEFAULT_FINGERPRINT_WRITES,
+    ENGINE_FP_K,
     FEATURE_DIM,
     UNKNOWN_CLUSTER,
-    cluster_for_composer,
-    cluster_for_path,
+    ClusterTable,
     composer_from_dump_path,
     compute_fingerprint,
 )
@@ -50,30 +54,97 @@ class TestEngineFingerprint(unittest.TestCase):
         self.assertNotEqual(v_full.tobytes(), v_small.tobytes())
 
 
-class TestClusterLookup(unittest.TestCase):
-    """Composer -> cluster lookup against the committed
-    ``engine_families.json`` (k=7). The audit fixed these assignments;
-    if they shift, this test surfaces the change rather than letting
-    the parse pipeline silently re-bucket dumps.
-    """
-
-    def test_known_composers(self):
-        self.assertEqual(cluster_for_composer("Hubbard_Rob"), 7)
-        self.assertEqual(cluster_for_composer("Galway_Martin"), 6)
-        self.assertEqual(cluster_for_composer("Daglish_Ben"), 4)
-
-    def test_unknown_composer(self):
-        self.assertEqual(cluster_for_composer("not_a_real_composer"), UNKNOWN_CLUSTER)
-        self.assertEqual(cluster_for_composer(""), UNKNOWN_CLUSTER)
-        self.assertEqual(cluster_for_composer(None), UNKNOWN_CLUSTER)
-
-    def test_path_extraction(self):
+class TestComposerExtraction(unittest.TestCase):
+    def test_composer_from_dump_path(self):
         p = "/scratch/preframr/training-dumps/Hubbard_Rob/Commando.1.dump.parquet"
         self.assertEqual(composer_from_dump_path(p), "Hubbard_Rob")
-        self.assertEqual(cluster_for_path(p), 7)
 
-    def test_fixture_path_falls_to_unknown(self):
-        self.assertEqual(cluster_for_path(_FIXTURE), UNKNOWN_CLUSTER)
+    def test_composer_from_dump_path_no_parent(self):
+        self.assertIsNone(composer_from_dump_path("/foo"))
+
+
+class TestClusterTableEmpty(unittest.TestCase):
+    def test_no_path_means_empty(self):
+        table = ClusterTable()
+        self.assertEqual(len(table), 0)
+        self.assertFalse(bool(table))
+
+    def test_empty_returns_unknown(self):
+        table = ClusterTable()
+        self.assertEqual(table.cluster_for_composer("Hubbard_Rob"), UNKNOWN_CLUSTER)
+        self.assertEqual(table.cluster_for_composer(""), UNKNOWN_CLUSTER)
+        self.assertEqual(table.cluster_for_composer(None), UNKNOWN_CLUSTER)
+
+    def test_empty_path_lookup_returns_unknown(self):
+        table = ClusterTable()
+        p = "/scratch/preframr/training-dumps/Hubbard_Rob/Commando.1.dump.parquet"
+        self.assertEqual(table.cluster_for_path(p), UNKNOWN_CLUSTER)
+
+
+class TestClusterTableFromFixture(unittest.TestCase):
+    def _write_fixture(self, data):
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(data, tmp)
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return Path(tmp.name)
+
+    def test_loads_from_fixture(self):
+        path = self._write_fixture(
+            {
+                "composer_stats": [
+                    {"name": "Alice"},
+                    {"name": "Bob"},
+                ],
+                "cluster_assignments": {
+                    str(ENGINE_FP_K): [3, 5],
+                },
+            }
+        )
+        table = ClusterTable(path)
+        self.assertEqual(len(table), 2)
+        self.assertTrue(bool(table))
+        self.assertEqual(table.cluster_for_composer("Alice"), 3)
+        self.assertEqual(table.cluster_for_composer("Bob"), 5)
+        self.assertEqual(table.cluster_for_composer("Carol"), UNKNOWN_CLUSTER)
+
+    def test_path_lookup_via_fixture(self):
+        path = self._write_fixture(
+            {
+                "composer_stats": [{"name": "Hubbard_Rob"}],
+                "cluster_assignments": {str(ENGINE_FP_K): [7]},
+            }
+        )
+        table = ClusterTable(path)
+        dump = "/scratch/preframr/training-dumps/Hubbard_Rob/Commando.1.dump.parquet"
+        self.assertEqual(table.cluster_for_path(dump), 7)
+
+    def test_missing_key_returns_empty(self):
+        path = self._write_fixture({"composer_stats": []})
+        table = ClusterTable(path)
+        self.assertEqual(len(table), 0)
+
+    def test_size_mismatch_returns_empty(self):
+        path = self._write_fixture(
+            {
+                "composer_stats": [{"name": "Alice"}, {"name": "Bob"}],
+                "cluster_assignments": {str(ENGINE_FP_K): [1]},
+            }
+        )
+        table = ClusterTable(path)
+        self.assertEqual(len(table), 0)
+
+    def test_corrupt_json_returns_empty(self):
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        tmp.write("{not json")
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        table = ClusterTable(Path(tmp.name))
+        self.assertEqual(len(table), 0)
+
+    def test_missing_file_returns_empty(self):
+        table = ClusterTable("/nonexistent/path.json")
+        self.assertEqual(len(table), 0)
 
 
 if __name__ == "__main__":

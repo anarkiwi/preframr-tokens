@@ -1,8 +1,7 @@
-"""Engine fingerprint vector for a single .dump.parquet."""
+"""Engine fingerprint vector + caller-provided cluster lookup."""
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import logging
@@ -50,14 +49,12 @@ assert len(DELTA_EDGES) == DELTA_BUCKETS - 1
 CTRL_REGS = frozenset(VOICE_CTRL_REG.values())
 FILTER_REGS_3 = frozenset({FC_LO_REG, FC_LO_REG + 1, FILTER_REG})
 
+ENGINE_FP_K = 7
+UNKNOWN_CLUSTER = 0
+
 
 def _ctrl_state(val: int) -> int:
-    """Collapse a CTRL byte into an 8-state code: waveform-bit-index
-    (0..3 for TRI/SAW/PULSE/NOISE -- highest set bit in upper nibble)
-    times 2 plus the gate bit. Mute / multi-waveform configs collapse
-    to the lowest-set-bit waveform (matches how the engine cycles
-    waveforms; the dominant musical waveform is captured by the
-    """
+    """Collapse a CTRL byte into an 8-state code: waveform-bit-index times 2 plus the gate bit."""
     waveform_nibble = (val >> 4) & 0xF
     if waveform_nibble == 0:
         wave_idx = 0
@@ -69,10 +66,7 @@ def _ctrl_state(val: int) -> int:
 
 
 def _read_writes(parquet_path: Path, n_writes: int) -> np.ndarray | None:
-    """Return the first ``n_writes`` rows as ``(N, 4)`` int64 array,
-    columns (clock, irq, reg, val). Returns None on read failure or
-    empty parquet (caller decides how to handle).
-    """
+    """Return the first n_writes rows as (N, 4) int64 array."""
     try:
         pf = pq.ParquetFile(parquet_path)
     except (OSError, FileNotFoundError) as e:
@@ -96,10 +90,7 @@ def _read_writes(parquet_path: Path, n_writes: int) -> np.ndarray | None:
 
 
 def _reg_density(regs: np.ndarray) -> np.ndarray:
-    """L1-normalised histogram of writes per register address.
-    Dropping reg < 0 / reg > MAX_REG defends against sentinel rows
-    leaking into the dump (raw .dump.parquet shouldn't carry them).
-    """
+    """L1-normalised histogram of writes per register address."""
     valid = (regs >= 0) & (regs <= MAX_REG)
     counts = np.bincount(regs[valid], minlength=REG_DENSITY_DIM).astype(np.float64)
     total = counts.sum()
@@ -123,12 +114,7 @@ def _delta_histogram(clocks: np.ndarray) -> np.ndarray:
 
 
 def _ctrl_ngrams(regs: np.ndarray, vals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """CTRL 2-gram (64 buckets) and 3-gram (feature-hashed into 32
-    buckets) over the per-voice CTRL streams. Each voice's CTRL
-    write sequence is collapsed via ``_ctrl_state`` and n-grammed
-    independently; the counts are summed across voices before
-    L1 normalisation so a voice that's silent on this dump doesn't
-    """
+    """CTRL 2-gram (64 buckets) + 3-gram (feature-hashed into 32 buckets) per voice, summed across voices, L1-normalised."""
     bigram = np.zeros(CTRL_2GRAM_DIM, dtype=np.float64)
     trigram = np.zeros(CTRL_3GRAM_DIM, dtype=np.float64)
     for voice_ctrl_reg in CTRL_REGS:
@@ -157,11 +143,7 @@ def _ctrl_ngrams(regs: np.ndarray, vals: np.ndarray) -> tuple[np.ndarray, np.nda
 
 
 def _filter_touch_ratio(regs: np.ndarray) -> float:
-    """Fraction of writes targeting any filter register (21/22/23).
-    Engines without a filter routine emit ~0; engines that animate
-    the filter (Galway sweeps, Hubbard timbral) emit measurably
-    higher values.
-    """
+    """Fraction of writes targeting any filter register (21/22/23)."""
     if regs.size == 0:
         return 0.0
     valid = (regs >= 0) & (regs <= MAX_REG)
@@ -176,10 +158,7 @@ def compute_fingerprint(
     parquet_path: Path,
     n_writes: int = DEFAULT_FINGERPRINT_WRITES,
 ) -> np.ndarray | None:
-    """Compute the engine fingerprint vector for one dump. Returns
-    a length-``FEATURE_DIM`` float64 array, or None if the parquet
-    couldn't be read / had fewer than 2 writes.
-    """
+    """Engine fingerprint vector for one dump. Returns length-FEATURE_DIM float64 array, or None on read failure / <2 writes."""
     writes = _read_writes(parquet_path, n_writes)
     if writes is None or writes.shape[0] < 2:
         return None
@@ -196,160 +175,58 @@ def compute_fingerprint(
     return vec
 
 
-ENGINE_FP_K = 7
-UNKNOWN_CLUSTER = 0
-
-
-def _candidate_engine_families_paths():
-    """Return the search paths for ``engine_families.json``. Wrapped to handle library installs at varying directory depths."""
-    here = Path(__file__).resolve()
-    candidates = [Path("/integration_tests/data/prodlike/engine_families.json")]
-    for n in range(2, min(len(here.parents), 6)):
-        candidates.append(
-            here.parents[n]
-            / "integration_tests"
-            / "data"
-            / "prodlike"
-            / "engine_families.json"
-        )
-    return tuple(candidates)
-
-
-_ENGINE_FAMILIES_CANDIDATES = _candidate_engine_families_paths()
-
-
-@functools.lru_cache(maxsize=1)
-def _load_composer_to_cluster() -> dict[str, int]:
-    """Composer name -> cluster id (1..K) at ``ENGINE_FP_K=7``. Empty
-    dict if ``engine_families.json`` isn't reachable (e.g. running
-    outside any expected layout) -- callers fall back to ``UNKNOWN_CLUSTER``.
-    """
-    for path in _ENGINE_FAMILIES_CANDIDATES:
-        if path.exists():
-            try:
-                with open(path) as f:
-                    data = json.load(f)
-            except (OSError, json.JSONDecodeError) as e:
-                logging.warning("%s: engine_families read failed: %s", path, e)
-                return {}
-            try:
-                stats = data["composer_stats"]
-                labels = data["cluster_assignments"][str(ENGINE_FP_K)]
-            except KeyError as e:
-                logging.warning("%s: engine_families missing key %s", path, e)
-                return {}
-            if len(stats) != len(labels):
-                logging.warning(
-                    "%s: composer_stats/labels mismatch (%d vs %d)",
-                    path,
-                    len(stats),
-                    len(labels),
-                )
-                return {}
-            return {s["name"]: int(c) for s, c in zip(stats, labels)}
-    return {}
-
-
-def cluster_for_composer(name: str | None) -> int:
-    """Map composer name -> cluster id (1..K), or ``UNKNOWN_CLUSTER``
-    if the composer isn't in the audit's top-N list. Composer names
-    are case-sensitive and match the audit's ``composer_stats`` ``name``
-    field (HVSC ``MUSICIANS/<L>/<composer>`` directory names with
-    spaces underscored).
-    """
-    if not name:
-        return UNKNOWN_CLUSTER
-    return _load_composer_to_cluster().get(name, UNKNOWN_CLUSTER)
-
-
 def composer_from_dump_path(path: Path | str) -> str | None:
-    """Heuristic composer name extraction for typical HVSC + training-
-    dump layouts: ``.../<composer>/<song>.dump.parquet``. Returns the
-    parent directory's basename; ``None`` if the path has no parent.
-    Test fixtures and ad-hoc paths whose parent dir isn't a real
-    composer name resolve to ``UNKNOWN_CLUSTER`` via the lookup miss
-    """
+    """Heuristic composer-name extraction for HVSC / training-dump layouts."""
     parent = Path(path).resolve().parent
     name = parent.name
     return name or None
 
 
-def cluster_for_path(path: Path | str) -> int:
-    """Convenience: composer-name extract + cluster lookup in one call."""
-    return cluster_for_composer(composer_from_dump_path(path))
+class ClusterTable:
+    """Composer-name -> engine-cluster-id (1..K) lookup. Caller provides the data file; library carries no opinions about which clustering snapshot to use."""
 
-
-def _candidate_palette_paths():
-    """Return search paths for `engine_fp_palettes.json` (mini/canonical/prodlike tiers)."""
-    here = Path(__file__).resolve()
-    candidates = []
-    for tier in ("mini", "canonical", "prodlike"):
-        candidates.append(
-            Path(f"/integration_tests/data/{tier}/engine_fp_palettes.json")
-        )
-        for n in range(2, min(len(here.parents), 6)):
-            candidates.append(
-                here.parents[n]
-                / "integration_tests"
-                / "data"
-                / tier
-                / "engine_fp_palettes.json"
-            )
-    return tuple(candidates)
-
-
-_CANONICAL_PALETTES_CANDIDATES = _candidate_palette_paths()
-
-
-def _resolve_palettes_path(explicit: Path | str | None) -> Path | None:
-    """Pick the canonical-palette JSON to read: explicit path wins, else
-    first candidate that exists. Returns None if nothing reachable.
-    """
-    if explicit is not None:
-        p = Path(explicit)
-        return p if p.exists() else None
-    for cand in _CANONICAL_PALETTES_CANDIDATES:
-        if cand.exists():
-            return cand
-    return None
-
-
-@functools.lru_cache(maxsize=4)
-def _load_palettes_cached(path_str: str | None) -> dict[int, tuple]:
-    """Inner cache keyed by stringified path (Path isn't hashable
-    across lru_cache keys in older Pythons; stringify defensively).
-    """
-    path = _resolve_palettes_path(path_str)
-    if path is None:
-        return {}
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logging.warning("%s: canonical palette read failed: %s", path, e)
-        return {}
-    try:
-        clusters_raw = data["clusters"]
-    except KeyError:
-        logging.warning("%s: missing 'clusters' key", path)
-        return {}
-    out: dict[int, tuple] = {}
-    for cid_str, progs in clusters_raw.items():
+    def __init__(
+        self,
+        families_json: Path | str | None = None,
+        k: int = ENGINE_FP_K,
+    ):
+        self.k = k
+        self._table: dict[str, int] = {}
+        if families_json is None:
+            return
+        path = Path(families_json)
         try:
-            cid = int(cid_str)
-        except ValueError:
-            logging.warning("%s: non-int cluster key %r", path, cid_str)
-            continue
-        out[cid] = tuple(
-            tuple(tuple(int(x) for x in triple) for triple in prog) for prog in progs
-        )
-    return out
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning("%s: engine_families read failed: %s", path, e)
+            return
+        try:
+            stats = data["composer_stats"]
+            labels = data["cluster_assignments"][str(k)]
+        except KeyError as e:
+            logging.warning("%s: engine_families missing key %s", path, e)
+            return
+        if len(stats) != len(labels):
+            logging.warning(
+                "%s: composer_stats/labels mismatch (%d vs %d)",
+                path,
+                len(stats),
+                len(labels),
+            )
+            return
+        self._table = {s["name"]: int(c) for s, c in zip(stats, labels)}
 
+    def cluster_for_composer(self, name: str | None) -> int:
+        if not name:
+            return UNKNOWN_CLUSTER
+        return self._table.get(name, UNKNOWN_CLUSTER)
 
-def load_canonical_cluster_palettes(
-    path: Path | str | None = None,
-) -> dict[int, tuple]:
-    """Return ``{cluster_id: (program_tuple, ...)}`` from the canonical
-    JSON artifact. Empty dict when the artifact isn't reachable.
-    """
-    return _load_palettes_cached(str(path) if path is not None else None)
+    def cluster_for_path(self, path: Path | str) -> int:
+        return self.cluster_for_composer(composer_from_dump_path(path))
+
+    def __len__(self) -> int:
+        return len(self._table)
+
+    def __bool__(self) -> bool:
+        return bool(self._table)
