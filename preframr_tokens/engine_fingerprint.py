@@ -199,14 +199,22 @@ def compute_fingerprint(
 ENGINE_FP_K = 7
 UNKNOWN_CLUSTER = 0
 
-_ENGINE_FAMILIES_CANDIDATES = (
-    Path("/integration_tests/data/prodlike/engine_families.json"),
-    Path(__file__).resolve().parents[2]
-    / "integration_tests"
-    / "data"
-    / "prodlike"
-    / "engine_families.json",
-)
+def _candidate_engine_families_paths():
+    """Return the search paths for ``engine_families.json``. Wrapped to handle library installs at varying directory depths."""
+    here = Path(__file__).resolve()
+    candidates = [Path("/integration_tests/data/prodlike/engine_families.json")]
+    for n in range(2, min(len(here.parents), 6)):
+        candidates.append(
+            here.parents[n]
+            / "integration_tests"
+            / "data"
+            / "prodlike"
+            / "engine_families.json"
+        )
+    return tuple(candidates)
+
+
+_ENGINE_FAMILIES_CANDIDATES = _candidate_engine_families_paths()
 
 
 @functools.lru_cache(maxsize=1)
@@ -270,26 +278,26 @@ def cluster_for_path(path: Path | str) -> int:
     return cluster_for_composer(composer_from_dump_path(path))
 
 
-_CANONICAL_PALETTES_CANDIDATES = (
-    Path("/integration_tests/data/mini/engine_fp_palettes.json"),
-    Path("/integration_tests/data/canonical/engine_fp_palettes.json"),
-    Path("/integration_tests/data/prodlike/engine_fp_palettes.json"),
-    Path(__file__).resolve().parents[2]
-    / "integration_tests"
-    / "data"
-    / "mini"
-    / "engine_fp_palettes.json",
-    Path(__file__).resolve().parents[2]
-    / "integration_tests"
-    / "data"
-    / "canonical"
-    / "engine_fp_palettes.json",
-    Path(__file__).resolve().parents[2]
-    / "integration_tests"
-    / "data"
-    / "prodlike"
-    / "engine_fp_palettes.json",
-)
+def _candidate_palette_paths():
+    """Return search paths for `engine_fp_palettes.json` (mini/canonical/prodlike tiers)."""
+    here = Path(__file__).resolve()
+    candidates = []
+    for tier in ("mini", "canonical", "prodlike"):
+        candidates.append(
+            Path(f"/integration_tests/data/{tier}/engine_fp_palettes.json")
+        )
+        for n in range(2, min(len(here.parents), 6)):
+            candidates.append(
+                here.parents[n]
+                / "integration_tests"
+                / "data"
+                / tier
+                / "engine_fp_palettes.json"
+            )
+    return tuple(candidates)
+
+
+_CANONICAL_PALETTES_CANDIDATES = _candidate_palette_paths()
 
 
 def _resolve_palettes_path(explicit: Path | str | None) -> Path | None:
