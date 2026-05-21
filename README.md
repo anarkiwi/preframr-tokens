@@ -46,8 +46,18 @@ pip install preframr-tokens
 - `preframr_tokens.blocks` -- block iteration + materialization
   helpers: `iter_voiced_blocks`, `materialize_block_array`,
   `parser_worker`, `glob_dumps`, `reg_widths_path`,
-  `self_contained_prompt_df`. Torch-free; main repo's RegDataset
-  wraps the outputs in DataLoaders.
+  `self_contained_prompt_df`, plus the `SeqMeta` dataclass and
+  `parse_eval_reglogs` / `LEGACY_EVAL_SUBSET_NAME` for eval-subset
+  routing. Torch-free; main repo's RegDataset wraps the outputs in
+  DataLoaders.
+- `preframr_tokens.corpus` -- `Corpus` class: torch-free corpus
+  orchestration owning the RegTokenizer + reg_widths +
+  tokenize-stage metadata. Methods `load_dfs`, `make_tokens`,
+  `encode_and_save_cached_blocks`, `try_preload_from_disk`,
+  `preload`, `iter_block_seqs`, `iter_predict_block_seqs` cover
+  the full parse → tokenize → load pipeline up to the point where
+  blocks need to be routed into a torch `BlockMapper` (main repo's
+  RegDataset is a thin adapter that does that routing).
 
 ## Library-only
 

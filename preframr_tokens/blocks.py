@@ -3,6 +3,8 @@
 import glob as _glob
 import os
 import random as _random
+from collections import OrderedDict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -15,6 +17,53 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     PARSED_SUFFIX,
 )
+
+LEGACY_EVAL_SUBSET_NAME = "val"
+
+
+@dataclass
+class SeqMeta:
+    """Per-rotation metadata carried alongside a .blocks.npy file. Pure data; consumers (BlockMapper in main repo) keep their own torch buffers."""
+
+    irq: int
+    df_file: str
+    i: int
+    l: int = None
+    npy_path: int = None
+
+
+def parse_eval_reglogs(value):
+    """Parse the --eval-reglogs string into an OrderedDict of {subset_name: glob}. Legacy single-subset form (no `name=` prefix) maps to the LEGACY_EVAL_SUBSET_NAME bucket; multi-subset form is `name1=glob1;name2=glob2`."""
+    value = (value or "").strip()
+    if not value:
+        return OrderedDict()
+    if "=" not in value:
+        return OrderedDict([(LEGACY_EVAL_SUBSET_NAME, value)])
+    out = OrderedDict()
+    for entry in value.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise ValueError(
+                f"--eval-reglogs entry {entry!r} is missing name=glob form "
+                f"(multi-subset mode is name1=glob1;name2=glob2)"
+            )
+        name, glob = entry.split("=", 1)
+        name = name.strip()
+        glob = glob.strip()
+        if not name or not glob:
+            raise ValueError(f"--eval-reglogs entry {entry!r} has empty name or glob")
+        if any(c in name for c in "/ \t"):
+            raise ValueError(
+                f"--eval-reglogs subset name {name!r} contains forbidden char"
+            )
+        if name in out:
+            raise ValueError(
+                f"--eval-reglogs subset name {name!r} appears more than once"
+            )
+        out[name] = glob
+    return out
 
 
 def reg_widths_path(df_map_csv_path):
