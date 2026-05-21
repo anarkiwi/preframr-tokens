@@ -50,6 +50,11 @@ pip install preframr-tokens
   `parse_eval_reglogs` / `LEGACY_EVAL_SUBSET_NAME` for eval-subset
   routing. Torch-free; main repo's RegDataset wraps the outputs in
   DataLoaders.
+- `preframr_tokens.audit_primitives` -- pure-Python token-level
+  audit functions: `tier_accuracy` (per-tier hit-rate + content/
+  structural ratio), `detect_tail_cycle` (loop-collapse detector),
+  `distinct_n` (n-gram diversity). Used by the generalization-gate
+  callback in main repo and by post-hoc audit scripts.
 - `preframr_tokens.corpus` -- `Corpus` class: torch-free corpus
   orchestration owning the RegTokenizer + reg_widths +
   tokenize-stage metadata. Methods `load_dfs`, `make_tokens`,
