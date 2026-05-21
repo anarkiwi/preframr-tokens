@@ -39,6 +39,10 @@ pip install preframr-tokens
   table.
 - `preframr_tokens.reg_mappers` -- `FreqMapper` (PAL clock + cents
   quantization).
+- `preframr_tokens.constrained_decode` -- per-step structural-validity
+  mask for sampling-time logit guarding. Pure numpy state machine;
+  consumers (torch users) apply the returned bool mask with a single
+  `masked_fill` at the boundary.
 
 ## Library-only
 
