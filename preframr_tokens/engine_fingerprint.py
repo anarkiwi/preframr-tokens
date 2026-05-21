@@ -199,6 +199,7 @@ def compute_fingerprint(
 ENGINE_FP_K = 7
 UNKNOWN_CLUSTER = 0
 
+
 def _candidate_engine_families_paths():
     """Return the search paths for ``engine_families.json``. Wrapped to handle library installs at varying directory depths."""
     here = Path(__file__).resolve()
