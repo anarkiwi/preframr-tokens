@@ -50,6 +50,9 @@ Issues = "https://github.com/anarkiwi/preframr-tokens/issues"
 [tool.setuptools]
 packages = ["preframr_tokens", "preframr_tokens.macros"]
 
+[tool.setuptools.package-data]
+preframr_tokens = ["py.typed"]
+
 [tool.setuptools_scm]
 fallback_version = "0.9.0"
 
@@ -64,14 +67,13 @@ source = ["preframr_tokens"]
 omit = [
     "preframr_tokens/__init__.py",
     "preframr_tokens/macros/__init__.py",
-    "preframr_tokens/constrained_decode.py",
     "preframr_tokens/blocks.py",
     "preframr_tokens/corpus.py",
     "preframr_tokens/parse_runner.py",
 ]
 
 [tool.coverage.report]
-fail_under = 75
+fail_under = 80
 show_missing = true
 exclude_also = [
     "pragma: no cover",
