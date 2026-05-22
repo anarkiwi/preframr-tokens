@@ -13,6 +13,7 @@ __all__ = [
     "Transform",
     "TransformPipeline",
     "PipelineEntry",
+    "PipelineConfigError",
     "PassBackedTransform",
     "RowExpandingTransform",
     "register",
@@ -24,6 +25,14 @@ __all__ = [
     "collect_op_loss_tiers",
     "LOSS_TIER_NAMES",
 ]
+
+
+class PipelineConfigError(ValueError):
+    """Raised by ``TransformPipeline.from_spec`` when ``validate_pipeline_spec`` returns non-empty errors. Carries the error list under ``.errors``."""
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        super().__init__("pipeline config errors:\n  - " + "\n  - ".join(errors))
 
 _REGISTRY: dict[str, type["Transform"]] = {}
 _DEFAULTS_REGISTERED = False
@@ -159,10 +168,8 @@ class TransformPipeline:
         cls, spec: Any, args=None, validate: bool = True
     ) -> "TransformPipeline":
         if validate:
-            from preframr_tokens.macros.pipeline_check import (
-                PipelineConfigError,
-                validate_pipeline_spec,
-            )
+            # Lazy: pipeline_check imports _REGISTRY/_normalize_spec from this module.
+            from preframr_tokens.macros.pipeline_check import validate_pipeline_spec
 
             errors = validate_pipeline_spec(spec, args=args)
             if errors:

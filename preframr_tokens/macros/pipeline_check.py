@@ -5,8 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from preframr_tokens.macros import transforms_parser_stubs  # noqa: F401 register stubs
-from preframr_tokens.macros.transform import _REGISTRY, _normalize_spec
+from preframr_tokens.macros.transform import (
+    PipelineConfigError,
+    _REGISTRY,
+    _normalize_spec,
+)
 from preframr_tokens.stfconstants import DIFF_OP, FLIP_OP, SET_OP
+
+__all__ = ["PipelineConfigError", "validate_pipeline_spec"]
 
 _PRIMITIVE_OPS_ALWAYS_AVAILABLE = frozenset({int(SET_OP), int(DIFF_OP), int(FLIP_OP)})
 
@@ -56,16 +62,6 @@ def _hardcoded_emits_non_set_regs() -> set[int]:
             continue
         out |= set(int(r) for r in cls.EMITS_NON_SET_REGS)
     return out
-
-
-class PipelineConfigError(ValueError):
-    def __init__(self, errors):
-        self.errors = list(errors)
-        super().__init__(_format(errors))
-
-
-def _format(errors):
-    return "pipeline config errors:\n  - " + "\n  - ".join(errors)
 
 
 def validate_pipeline_spec(spec: Any, args=None) -> list[str]:

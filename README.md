@@ -136,6 +136,19 @@ plus the narrowing opportunities still on the table is in
 - `preframr_tokens.corpus.TokenizeMeta` — typed snapshot of the
   tokenize-stage metadata previously carried as an untyped dict on
   `Corpus._tokenize_meta`.
+- `preframr_tokens.constrained_decode.VocabArrays` — `dict` subclass
+  with attribute access (`a.is_real_reg` alongside `a["is_real_reg"]`).
+  Return type of `precompute_vocab_arrays` /
+  `precompute_subtoken_arrays`; external dict consumers see no change.
+- `preframr_tokens.macros.transform.PassBackedTransform`,
+  `RowExpandingTransform` — public bases for `Transform` subclasses
+  that wrap a `MacroPass` for `forward()` and (optionally) a decoder
+  for `expand_atom()`. Hoisted from `transforms_bit_exact.py` so other
+  transform files can reuse the pattern.
+- `preframr_tokens.utils.to_int64_arrays(df, *names, fillna={col: val})`
+  — extract named columns as int64 numpy arrays with explicit per-column
+  NaN fill values. Replaces 10+ ad-hoc
+  `df[col].fillna(...).astype(np.int64).to_numpy()` triples.
 
 ## Stability
 
@@ -146,8 +159,9 @@ major version since they invalidate downstream checkpoints.
 Public surface (semver-promised once v1.0):
 
 - **Classes**: `RegLogParser`, `RegTokenizer`, `Corpus`, `TokenizeMeta`,
-  `StreamState`, `PendingSlot`, `VocabSignature`, `Transform`
-  (+ `register` decorator, `PipelineEntry`, `TransformPipeline`),
+  `StreamState`, `PendingSlot`, `VocabArrays`, `VocabSignature`,
+  `Transform` (+ `register` decorator, `PipelineEntry`,
+  `TransformPipeline`, `PassBackedTransform`, `RowExpandingTransform`),
   `DistancePairSpec`.
 - **Decision helpers**: see `API_SURFACE.md` "Decision helpers"
   section.
@@ -155,8 +169,9 @@ Public surface (semver-promised once v1.0):
   `precompute_subtoken_arrays`, `prepare_df_for_audio`,
   `remove_voice_reg`, `validate_back_refs`,
   `validate_pattern_overlays`, `frame_marker_count`,
+  `tail_charge_for_prompt`, `read_initial_irq`,
   `ensure_default_transforms_registered`, `distance_pair_role`,
-  `slope_subreg_role`, `frame_weight_role`.
+  `slope_subreg_role`, `frame_weight_role`, `to_int64_arrays`.
 - **Boundary constants**: `PAD_ID`, `MODEL_PDTYPE`, `DUMP_SUFFIX`,
   `LEGACY_EVAL_SUBSET_NAME`, `DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`,
   `DISTANCE_PAIR_OPS`, `CONTENT_TIER`.

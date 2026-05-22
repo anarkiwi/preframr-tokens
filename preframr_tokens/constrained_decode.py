@@ -100,6 +100,175 @@ _SHAPES_WITH_DIST_LO_SECOND = frozenset({
 })
 
 
+def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
+    """Classify a multi-atom sub-token's macro structure. Returns ``(MacroShape, *extras)``; ``extras`` carry first_val and (for ``PR_COMPLETE``) fourth_val.
+
+    Module-level (lifted from ``precompute_subtoken_arrays`` closure) so it can be exercised by direct unit tests and so the eventual table-driven rewrite can be designed in isolation.
+    """
+    n = atomic_ids.size
+    if n == 0:
+        return (MacroShape.NONE,)
+    first_macro_idx = -1
+    for k in range(n):
+        if is_macro_a[int(atomic_ids[k])]:
+            first_macro_idx = k
+            break
+    if first_macro_idx == -1:
+        return (MacroShape.NONE,)
+    if first_macro_idx > 0:
+        return (MacroShape.MALFORMED,)
+    first = int(atomic_ids[0])
+    first_op = int(op_a[first])
+    first_sr = int(subreg_a[first])
+    first_val = int(val_a[first])
+    if n == 1:
+        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
+            return (MacroShape.SINGLETON_BACK_REF_DIST_HI, first_val)
+        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
+            return (MacroShape.SINGLETON_BACK_REF_DIST_LO, first_val)
+        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
+            return (MacroShape.SINGLETON_BACK_REF_LEN, first_val)
+        if first_op == PATTERN_REPLAY_OP:
+            if first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
+                return (MacroShape.SINGLETON_PR_DIST_HI, first_val)
+            if first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
+                return (MacroShape.SINGLETON_PR_DIST_LO, first_val)
+            if first_sr == PATTERN_REPLAY_SUBREG_LEN:
+                return (MacroShape.SINGLETON_PR_LEN, first_val)
+            if first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT:
+                return (MacroShape.SINGLETON_PR_OV_COUNT, first_val)
+        if first_op == PATTERN_OVERLAY_OP:
+            if first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
+                return (MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET, first_val)
+            if first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG:
+                return (MacroShape.SINGLETON_OVERLAY_TARGET_REG, first_val)
+            if first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL:
+                return (MacroShape.SINGLETON_OVERLAY_NEW_VAL, first_val)
+        return (MacroShape.MALFORMED,)
+    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
+        if n == 2:
+            second = int(atomic_ids[1])
+            if (
+                int(op_a[second]) == BACK_REF_OP
+                and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
+            ):
+                return (MacroShape.BR_HI_THEN_LO, first_val)
+        if n == 3:
+            second = int(atomic_ids[1])
+            third = int(atomic_ids[2])
+            if (
+                int(op_a[second]) == BACK_REF_OP
+                and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
+                and int(op_a[third]) == BACK_REF_OP
+                and int(subreg_a[third]) == BACK_REF_SUBREG_LEN
+            ):
+                return (MacroShape.BR_COMPLETE, first_val)
+        return (MacroShape.MALFORMED,)
+    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
+        if n == 2:
+            second = int(atomic_ids[1])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
+            ):
+                return (MacroShape.PR_HI_THEN_LO, first_val)
+        if n == 3:
+            second = int(atomic_ids[1])
+            third = int(atomic_ids[2])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
+                and int(op_a[third]) == PATTERN_REPLAY_OP
+                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
+            ):
+                return (MacroShape.PR_HI_THROUGH_LEN, first_val)
+        if n == 4:
+            second = int(atomic_ids[1])
+            third = int(atomic_ids[2])
+            fourth = int(atomic_ids[3])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
+                and int(op_a[third]) == PATTERN_REPLAY_OP
+                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
+                and int(op_a[fourth]) == PATTERN_REPLAY_OP
+                and int(subreg_a[fourth]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+            ):
+                return (MacroShape.PR_COMPLETE, first_val, int(val_a[fourth]))
+        return (MacroShape.MALFORMED,)
+    if (
+        first_op == PATTERN_OVERLAY_OP
+        and first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+    ):
+        return (MacroShape.MALFORMED,)
+    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
+        if n == 2:
+            second = int(atomic_ids[1])
+            if (
+                int(op_a[second]) == BACK_REF_OP
+                and int(subreg_a[second]) == BACK_REF_SUBREG_LEN
+            ):
+                return (MacroShape.BR_LO_THEN_LEN,)
+        return (MacroShape.MALFORMED,)
+    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
+        if n == 2:
+            second = int(atomic_ids[1])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
+            ):
+                return (MacroShape.PR_LO_THEN_LEN,)
+        if n == 3:
+            second = int(atomic_ids[1])
+            third = int(atomic_ids[2])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
+                and int(op_a[third]) == PATTERN_REPLAY_OP
+                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+            ):
+                return (MacroShape.PR_LO_THROUGH_OV_COUNT, int(val_a[third]))
+        return (MacroShape.MALFORMED,)
+    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
+        for k in range(1, n):
+            if is_macro_a[int(atomic_ids[k])]:
+                return (MacroShape.MALFORMED,)
+        return (MacroShape.BR_LEN_WITH_TAIL, first_val)
+    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_LEN:
+        if n == 2:
+            second = int(atomic_ids[1])
+            if (
+                int(op_a[second]) == PATTERN_REPLAY_OP
+                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+            ):
+                return (MacroShape.PR_LEN_THEN_OV_COUNT, int(val_a[second]))
+        return (MacroShape.MALFORMED,)
+    if (
+        first_op == PATTERN_REPLAY_OP
+        and first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+    ):
+        return (MacroShape.MALFORMED,)
+    if (
+        first_op == PATTERN_OVERLAY_OP
+        and first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG
+    ):
+        if n != 2:
+            return (MacroShape.MALFORMED,)
+        second = int(atomic_ids[1])
+        if (
+            int(op_a[second]) == PATTERN_OVERLAY_OP
+            and int(subreg_a[second]) == PATTERN_OVERLAY_SUBREG_NEW_VAL
+        ):
+            return (MacroShape.OV_TARGET_THEN_NEW_VAL,)
+        return (MacroShape.MALFORMED,)
+    if (
+        first_op == PATTERN_OVERLAY_OP
+        and first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL
+    ):
+        return (MacroShape.MALFORMED,)
+    return (MacroShape.MALFORMED,)
+
+
 class VocabArrays(dict):
     """Per-vocab-id arrays bundle returned by ``precompute_vocab_arrays`` and ``precompute_subtoken_arrays``. Subclasses ``dict`` so external consumers can keep indexing by string key (``a["is_real_reg"]``); also supports attribute access (``a.is_real_reg``) for in-module readability. Shape is documented in the precompute functions."""
 
@@ -302,171 +471,6 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     fn_after_last_strict = np.zeros(n_sub, dtype=np.int64)
     pending_overlays_delta = np.zeros(n_sub, dtype=np.int64)
 
-    def _classify_macro_shape(atomic_ids):
-        """Classify a multi-atom sub-token's macro structure. Returns ``(MacroShape, *extras)``; ``extras`` carry first_val and (for ``PR_COMPLETE``) fourth_val."""
-        n = atomic_ids.size
-        if n == 0:
-            return (MacroShape.NONE,)
-        first_macro_idx = -1
-        for k in range(n):
-            if is_macro_a[int(atomic_ids[k])]:
-                first_macro_idx = k
-                break
-        if first_macro_idx == -1:
-            return (MacroShape.NONE,)
-        if first_macro_idx > 0:
-            return (MacroShape.MALFORMED,)
-        first = int(atomic_ids[0])
-        first_op = int(op_a[first])
-        first_sr = int(subreg_a[first])
-        first_val = int(val_a[first])
-        if n == 1:
-            if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
-                return (MacroShape.SINGLETON_BACK_REF_DIST_HI, first_val)
-            if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
-                return (MacroShape.SINGLETON_BACK_REF_DIST_LO, first_val)
-            if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
-                return (MacroShape.SINGLETON_BACK_REF_LEN, first_val)
-            if first_op == PATTERN_REPLAY_OP:
-                if first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-                    return (MacroShape.SINGLETON_PR_DIST_HI, first_val)
-                if first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-                    return (MacroShape.SINGLETON_PR_DIST_LO, first_val)
-                if first_sr == PATTERN_REPLAY_SUBREG_LEN:
-                    return (MacroShape.SINGLETON_PR_LEN, first_val)
-                if first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT:
-                    return (MacroShape.SINGLETON_PR_OV_COUNT, first_val)
-            if first_op == PATTERN_OVERLAY_OP:
-                if first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                    return (MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET, first_val)
-                if first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                    return (MacroShape.SINGLETON_OVERLAY_TARGET_REG, first_val)
-                if first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL:
-                    return (MacroShape.SINGLETON_OVERLAY_NEW_VAL, first_val)
-            return (MacroShape.MALFORMED,)
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
-            if n == 2:
-                second = int(atomic_ids[1])
-                if (
-                    int(op_a[second]) == BACK_REF_OP
-                    and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
-                ):
-                    return (MacroShape.BR_HI_THEN_LO, first_val)
-            if n == 3:
-                second = int(atomic_ids[1])
-                third = int(atomic_ids[2])
-                if (
-                    int(op_a[second]) == BACK_REF_OP
-                    and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
-                    and int(op_a[third]) == BACK_REF_OP
-                    and int(subreg_a[third]) == BACK_REF_SUBREG_LEN
-                ):
-                    return (MacroShape.BR_COMPLETE, first_val)
-            return (MacroShape.MALFORMED,)
-        if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-            if n == 2:
-                second = int(atomic_ids[1])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-                ):
-                    return (MacroShape.PR_HI_THEN_LO, first_val)
-            if n == 3:
-                second = int(atomic_ids[1])
-                third = int(atomic_ids[2])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-                    and int(op_a[third]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
-                ):
-                    return (MacroShape.PR_HI_THROUGH_LEN, first_val)
-            if n == 4:
-                second = int(atomic_ids[1])
-                third = int(atomic_ids[2])
-                fourth = int(atomic_ids[3])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-                    and int(op_a[third]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
-                    and int(op_a[fourth]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[fourth]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-                ):
-                    return (MacroShape.PR_COMPLETE, first_val, int(val_a[fourth]))
-            return (MacroShape.MALFORMED,)
-        if (
-            first_op == PATTERN_OVERLAY_OP
-            and first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-        ):
-            return (MacroShape.MALFORMED,)
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
-            if n == 2:
-                second = int(atomic_ids[1])
-                if (
-                    int(op_a[second]) == BACK_REF_OP
-                    and int(subreg_a[second]) == BACK_REF_SUBREG_LEN
-                ):
-                    return (MacroShape.BR_LO_THEN_LEN,)
-            return (MacroShape.MALFORMED,)
-        if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-            if n == 2:
-                second = int(atomic_ids[1])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
-                ):
-                    return (MacroShape.PR_LO_THEN_LEN,)
-            if n == 3:
-                second = int(atomic_ids[1])
-                third = int(atomic_ids[2])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
-                    and int(op_a[third]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-                ):
-                    return (MacroShape.PR_LO_THROUGH_OV_COUNT, int(val_a[third]))
-            return (MacroShape.MALFORMED,)
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
-            for k in range(1, n):
-                if is_macro_a[int(atomic_ids[k])]:
-                    return (MacroShape.MALFORMED,)
-            return (MacroShape.BR_LEN_WITH_TAIL, first_val)
-        if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_LEN:
-            if n == 2:
-                second = int(atomic_ids[1])
-                if (
-                    int(op_a[second]) == PATTERN_REPLAY_OP
-                    and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-                ):
-                    return (MacroShape.PR_LEN_THEN_OV_COUNT, int(val_a[second]))
-            return (MacroShape.MALFORMED,)
-        if (
-            first_op == PATTERN_REPLAY_OP
-            and first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-        ):
-            return (MacroShape.MALFORMED,)
-        if (
-            first_op == PATTERN_OVERLAY_OP
-            and first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG
-        ):
-            if n != 2:
-                return (MacroShape.MALFORMED,)
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == PATTERN_OVERLAY_OP
-                and int(subreg_a[second]) == PATTERN_OVERLAY_SUBREG_NEW_VAL
-            ):
-                return (MacroShape.OV_TARGET_THEN_NEW_VAL,)
-            return (MacroShape.MALFORMED,)
-        if (
-            first_op == PATTERN_OVERLAY_OP
-            and first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL
-        ):
-            return (MacroShape.MALFORMED,)
-        return (MacroShape.MALFORMED,)
-
     for sub_id in range(n_sub):
         s = tkmodel.id_to_token(sub_id)
         if s is None:
@@ -481,7 +485,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         atomic_ids = atomic_ids[(atomic_ids >= 0) & (atomic_ids < n_atomic)]
         if atomic_ids.size == 0:
             continue
-        shape = _classify_macro_shape(atomic_ids)
+        shape = _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a)
         tag = shape[0]
         if tag == MacroShape.MALFORMED:
             is_malformed_macro[sub_id] = True

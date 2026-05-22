@@ -17,6 +17,16 @@ from preframr_tokens.stfconstants import (
     VOICE_CTRL_REG,
 )
 
+__all__ = [
+    "compute_fingerprint",
+    "composer_from_dump_path",
+    "ClusterTable",
+    "UNKNOWN_CLUSTER",
+    "ENGINE_FP_K",
+    "FEATURE_DIM",
+    "DEFAULT_FINGERPRINT_WRITES",
+]
+
 DEFAULT_FINGERPRINT_WRITES = 4000
 
 REG_DENSITY_DIM = MAX_REG + 1

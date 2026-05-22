@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.constrained_decode import (
+    MacroShape,
     StreamState,
+    _classify_macro_shape,
     frame_marker_count,
     precompute_subtoken_arrays,
     precompute_vocab_arrays,
@@ -568,6 +570,83 @@ class TestTailChargeForPrompt(unittest.TestCase):
     def test_empty_prompt_returns_zero(self):
         arrays = self._arrays()
         self.assertEqual(tail_charge_for_prompt([], arrays), 0)
+
+
+class TestClassifyMacroShape(unittest.TestCase):
+    """Direct unit tests for the lifted classifier. Builds tiny atomic-row arrays inline so the test doesn't need a tokenizer / vocab df."""
+
+    def _arrs(self, rows):
+        op_a = np.array([r["op"] for r in rows], dtype=np.int64)
+        subreg_a = np.array([r["subreg"] for r in rows], dtype=np.int64)
+        val_a = np.array([r["val"] for r in rows], dtype=np.int64)
+        is_macro_a = np.isin(
+            op_a, np.asarray([BACK_REF_OP, PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP], dtype=np.int64)
+        )
+        return op_a, subreg_a, val_a, is_macro_a
+
+    def _classify(self, rows, atomic_ids=None):
+        op_a, subreg_a, val_a, is_macro_a = self._arrs(rows)
+        if atomic_ids is None:
+            atomic_ids = np.arange(len(rows), dtype=np.int64)
+        return _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a)
+
+    def test_empty_atomic_ids_returns_none_tag(self):
+        op_a = np.array([], dtype=np.int64)
+        is_macro_a = np.array([], dtype=np.bool_)
+        result = _classify_macro_shape(
+            np.array([], dtype=np.int64), op_a, op_a, op_a, is_macro_a
+        )
+        self.assertEqual(result, (MacroShape.NONE,))
+
+    def test_no_macro_op_returns_none_tag(self):
+        result = self._classify([{"op": SET_OP, "subreg": -1, "val": 7}])
+        self.assertEqual(result, (MacroShape.NONE,))
+
+    def test_first_macro_after_non_macro_is_malformed(self):
+        rows = [
+            {"op": SET_OP, "subreg": -1, "val": 0},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 3},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
+
+    def test_singleton_back_ref_dist_hi(self):
+        rows = [{"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 5}]
+        self.assertEqual(
+            self._classify(rows), (MacroShape.SINGLETON_BACK_REF_DIST_HI, 5)
+        )
+
+    def test_br_complete(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 7},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 3},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 2},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.BR_COMPLETE, 7))
+
+    def test_pr_complete_carries_overlay_count(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_HI, "val": 4},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_LO, "val": 8},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 6},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, "val": 2},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_COMPLETE, 4, 2))
+
+    def test_br_len_with_tail_allows_non_macro_atoms(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 9},
+            {"op": SET_OP, "subreg": -1, "val": 0},
+            {"op": SET_OP, "subreg": -1, "val": 1},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.BR_LEN_WITH_TAIL, 9))
+
+    def test_br_len_with_tail_rejected_if_tail_has_macro(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 9},
+            {"op": SET_OP, "subreg": -1, "val": 0},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 1},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 
 
 class TestModuleTorchFree(unittest.TestCase):
