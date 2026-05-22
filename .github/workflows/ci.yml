@@ -29,5 +29,5 @@ jobs:
         run: pylint preframr_tokens tests
       - name: pyright
         run: pyright preframr_tokens
-      - name: pytest + coverage (>= 75%)
-        run: pytest --cov=preframr_tokens --cov-report=term-missing --cov-fail-under=75 --deselect tests/test_reglogparser.py::TestRegLogParser::test_remove_voice_reg
+      - name: pytest + coverage (>= 80%)
+        run: pytest --cov=preframr_tokens --cov-report=term-missing --cov-fail-under=80 --deselect tests/test_reglogparser.py::TestRegLogParser::test_remove_voice_reg
