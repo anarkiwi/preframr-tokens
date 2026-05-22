@@ -193,17 +193,30 @@ consumer-side coordination required.
   **next:** mechanical preframr-side change — drops the
   `reglog_helpers` re-exports without breaking anything.
 - Document each module's `__all__` (currently most modules don't
-  declare one). **done for the public modules** (`audit_primitives`,
-  `palette_io`, `tier_classify`, `token_weighting`, `vocab_signature`,
-  `alphabet_projection`, `reg_mappers`, `utils`, `parse_runner`,
-  `macros/roles`, `macros/transform`, `constrained_decode`, `corpus`,
-  `blocks`, `regtokenizer`, `reglogparser`, `reglog_helpers`).
-  Helper-only / re-export modules (`engine_fingerprint`, `dump_meta`,
-  `coarsen_pass`, `macros/__init__.py`) intentionally omitted.
+  declare one). **done** for every public top-level module and every
+  `macros/*.py` (passes, decoders, loops, loop_pass, state, validators,
+  walker, passes_base, slope_pass, preset_pass, local_macros,
+  gate_slope_shift_pass, per_reg_burst, blocks, decode, transform,
+  transform_registry, transforms_superframe, transforms_audio_bit_exact,
+  transforms_bit_exact, transforms_set_to_diff, transforms_voice_trajectory,
+  transforms_voice_trajectory_distributed, transforms_parser_stubs, roles).
+  `macros/__init__.py` intentionally omitted (its imports are the
+  package-level re-export surface; documented inline).
+- Lazy imports in `transform.py`. **done** — both halves now resolve
+  to top-level imports thanks to the `transform_registry.py` split
+  and the move of `register` / `ensure_default_transforms_registered`
+  into the registry module.
+- Auto-eager-load of parser stubs at `pipeline_check` import time.
+  **done** — replaced by an `ensure_default_transforms_registered()`
+  call at the top of `validate_pipeline_spec`.
+- Lazy `_maybe_append_coarsen_pass` in `macros/__init__.py`. **done**
+  — `coarsen_pass.py` now imports `OVERLAY_BODY_FREQ_DELTA` from
+  `macros.loops` directly, so `CoarsenPass()` is a normal eager entry
+  in `POST_NORM_PRE_VOICE_PASSES`.
 
 ## Next round (mechanical, no consumer coordination)
 
-Suggested commit shape for the next preframr-tokens minor bump:
+Suggested commit shape for the release after v0.9.0:
 
 1. Cut over main repo's `render_play.py` to import
    `load_palettes_attrs` from `preframr_tokens.palette_io` directly
@@ -213,6 +226,44 @@ Suggested commit shape for the next preframr-tokens minor bump:
    re-exports once step 1 is in place. Update the `__all__` in
    `reglog_helpers.py` accordingly.
 3. Bump version, update CHANGELOG.
+
+## Outstanding work (not blocking v0.9.0)
+
+Local refactors that have diminishing returns and would benefit from
+a paired motivating change rather than speculative cleanup.
+
+### Pending design conversation
+
+- **Merge `_HEAD_RULES` + `_SHAPE_HANDLERS`** in `constrained_decode.py`
+  into one declarative `_SHAPE_SPEC` per shape. Both tables describe
+  the same 23 macro shapes from different angles (classify vs. dispatch).
+  Merging would couple the two; worth it only if a future change needs
+  to touch both at once (e.g., adding a new shape).
+- **`Transform.register` via `__init_subclass__`**. Drops the
+  `@register("...")` decorator at ~15 call sites; trade-off is
+  findability (the decorator is greppable, `__init_subclass__` is not).
+  Discuss before doing.
+- **`Corpus` full split** into `CorpusParser` / `AlphabetBuilder` /
+  `CorpusArtifactIO` / `BlockEncoder`. The mild restructure that
+  landed (closures → methods) reads cleanly enough that a full split
+  isn't urgent. Defer until there's a concrete reason — e.g., needing
+  to reuse `CorpusParser` standalone, or testing alphabet building
+  in isolation.
+
+### Further trimming
+
+- **`precompute_subtoken_arrays`** is ~600 LoC. The remaining bulk is
+  per-atom mask precomputes, allocation of ~25 per-sub-token arrays,
+  and the per-sub-token loop. Flattening the return shape into a
+  dataclass-of-arrays might shave ~30 LoC but adds an abstraction
+  layer. Probably not worth it without a paired motivating change.
+
+### Cross-repo audit (out-of-tree)
+
+Before the next minor bump, run the grep patterns in the "Audit pending"
+section against the main `preframr` and `preframr-audio` repos to
+confirm the local cleanups (alias drops, `MIN_DIFF` privatisation,
+`__all__` additions) didn't surface a stale import.
 
 ## How to verify "narrowed enough" before release
 
