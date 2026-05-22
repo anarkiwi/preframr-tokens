@@ -25,7 +25,7 @@ _FRAME_SVT_MASK = 0x3F
 
 @register("voice_trajectory_distributed")
 class VoiceTrajectoryDistributedTransform(Transform):
-    """Pack 4 per-voice trajectory bits (gate_on / pitch_dir / arp) into VOICE_REG.val (currently zeroed) and 2 frame-level trajectory bits (any-gate-transition this frame / filter section active) into FRAME_REG.val bits 6-7 (svt occupies bits 0-5; remove_voice_reg already masks & 63). Adds no new rows; alphabet inflation bounded to ~+76 atoms vs ~+4200 for full-byte replacement. Audio-bit-exact: renderer ignores both fields. See integration_tests/design/voice_trajectory_design.md."""
+    """Pack 4 per-voice trajectory bits (gate_on / pitch_dir / arp) into VOICE_REG.val (currently zeroed) and 2 frame-level trajectory bits (any-gate-transition this frame / filter section active) into FRAME_REG.val bits 6-7 (svt occupies bits 0-5; remove_voice_reg already masks & 63). Adds no new rows; alphabet inflation bounded to ~+76 atoms vs ~+4200 for full-byte replacement. Audio-bit-exact: renderer ignores both fields. See `voice_trajectory_distributed` refuted entry in preframr-experiments for the A/B verdict."""
 
     TIER = "audio_bit_exact"
     OP_CODES = frozenset()

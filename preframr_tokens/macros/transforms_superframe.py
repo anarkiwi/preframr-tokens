@@ -12,7 +12,7 @@ from preframr_tokens.stfconstants import FRAME_REG, SUPER_FRAME_REG
 
 @register("super_frame")
 class SuperFrameTransform(Transform):
-    """Pack N consecutive PAL frames into one super-frame block. N=1 is a no-op; N>=2 is open implementation per design/superframe_mini_design.md."""
+    """Pack N consecutive PAL frames into one super-frame block. N=1 is a no-op; N>=2 is intentionally unimplemented (raise on use)."""
 
     TIER = "bit_exact"
     OP_CODES = frozenset()
@@ -44,14 +44,14 @@ class SuperFrameTransform(Transform):
 def _pack_super_frames(df: pd.DataFrame, n: int) -> pd.DataFrame:
     raise NotImplementedError(
         "super_frame N>=2 pack not yet implemented; "
-        "see integration_tests/design/superframe_mini_design.md for the design"
+        "design doc never landed; the N>=2 path is intentionally unimplemented"
     )
 
 
 def _unpack_super_frames(df: pd.DataFrame) -> pd.DataFrame:
     raise NotImplementedError(
         "super_frame unpack not yet implemented; "
-        "see integration_tests/design/superframe_mini_design.md for the design"
+        "design doc never landed; the N>=2 path is intentionally unimplemented"
     )
 
 
