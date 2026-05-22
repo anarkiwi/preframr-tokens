@@ -1,11 +1,4 @@
-"""Engine fingerprint: computation determinism + ClusterTable contract.
-
-ClusterTable is library glue around a caller-provided JSON; the
-specific corpus-snapshot assignments (Hubbard_Rob -> 7, etc.) are
-test-data concerns that live in the consumer repo. Here we only
-test the table's shape + the empty-table / unknown-composer paths
-+ the table built from a tiny fixture JSON.
-"""
+"""Engine fingerprint: computation determinism + ClusterTable shape (empty-table, unknown-composer, tiny-fixture-JSON paths). Corpus-specific cluster assignments live in the consumer repo."""
 
 import json
 import tempfile

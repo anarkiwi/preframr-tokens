@@ -68,11 +68,7 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
         self.assertNotIn(SET_OP, ops)
 
     def test_collects_op_loss_tiers(self):
-        # collect_op_loss_tiers has no callers inside preframr_tokens but
-        # is imported by preframr/train/model/tier_map.py to build the
-        # tier-weighted loss; the ValueError branch defends against
-        # subclasses declaring an unknown LOSS_TIER. Pin the happy path
-        # so the function isn't removed as "dead".
+        """collect_op_loss_tiers is consumed by preframr/train/model/tier_map.py."""
         tiers = collect_op_loss_tiers()
         self.assertIsInstance(tiers, dict)
         self.assertTrue(tiers, "expected at least one op->tier mapping")

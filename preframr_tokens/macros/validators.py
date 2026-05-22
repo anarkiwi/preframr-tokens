@@ -58,9 +58,6 @@ def _step_distance_pair(idx, row, sr, op, spec: DistancePairSpec, state):
         )
         distance = (state.pending_dist_hi << BACK_REF_DIST_HI_SHIFT) | int(row["val"])
         target = state.output_frame_count - distance
-        # The original wording for PATTERN_REPLAY uses the full op name in
-        # the bounds-check assertion (rather than the "PR" short label used
-        # for DIST/LEN). Preserve that asymmetry.
         long_label = "PATTERN_REPLAY" if op == PATTERN_REPLAY_OP else label
         assert target >= 0, (
             f"row {idx}: {long_label} distance={distance} reaches "

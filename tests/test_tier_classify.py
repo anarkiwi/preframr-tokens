@@ -64,7 +64,7 @@ class TestVocabIdTier(unittest.TestCase):
         self.assertEqual(vocab_id_tier(0, _rt(tokens), tokens), "mid")
 
     def test_unmapped_reg_falls_through_to_content(self):
-        tokens = _tokens([self._row(reg=0, val=5)])  # freq-lo for voice 0
+        tokens = _tokens([self._row(reg=0, val=5)])
         self.assertEqual(vocab_id_tier(0, _rt(tokens), tokens), CONTENT_TIER)
 
 
@@ -89,7 +89,7 @@ class TestBuildVocabTierIds(unittest.TestCase):
         self.assertEqual(int(arr[3]), order["content"])
 
     def test_empty_tokens_defaults_to_content(self):
-        order_content = 2  # ('structural','mid','content','zero')
+        order_content = 2
         arr = build_vocab_tier_ids(None, None, n_vocab=5)
         self.assertTrue((arr == order_content).all())
 

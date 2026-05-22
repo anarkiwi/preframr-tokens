@@ -13,9 +13,6 @@ __all__ = [
     "ensure_default_transforms_registered",
 ]
 
-# Populated at ``Transform`` subclass-registration time. Module-private to
-# transform_registry; consumers should use ``get_transform_class`` /
-# ``collect_op_loss_tiers`` / etc. from ``transform.py``.
 _REGISTRY: dict[str, type] = {}
 
 _DEFAULTS_REGISTERED = False
@@ -87,9 +84,7 @@ def _normalize_spec(spec: Any) -> list[PipelineEntry]:
             name = item.get("name")
             if not name:
                 raise ValueError(f"pipeline spec entry missing 'name': {item}")
-            out.append(
-                PipelineEntry(name=name, params=dict(item.get("params", {})))
-            )
+            out.append(PipelineEntry(name=name, params=dict(item.get("params", {}))))
         elif isinstance(item, PipelineEntry):
             out.append(item)
         else:

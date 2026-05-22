@@ -17,7 +17,6 @@ from preframr_tokens.stfconstants import (
 from preframr_tokens.utils import wrapbits
 
 __all__ = [
-    # Voice-relative reg matchers.
     "vreg_match",
     "freq_match",
     "pcm_match",
@@ -27,10 +26,8 @@ __all__ = [
     "sr_match",
     "filter_match",
     "frame_match",
-    # Decision helpers + dtype tightening.
     "read_initial_irq",
     "tighten_persist_dtypes",
-    # Re-exports.
     "dump_palettes_attrs",
     "load_palettes_attrs",
     "wrapbits",

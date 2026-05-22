@@ -16,8 +16,6 @@ from preframr_tokens.palette_io import (
 
 class TestPaletteIo(unittest.TestCase):
     def _parquet_path(self, tmpdir: str) -> str:
-        # Sidecar path is derived purely from this string; the file
-        # itself need not exist.
         return os.path.join(tmpdir, "song.0.parquet")
 
     def test_sidecar_path_suffix(self):
@@ -74,14 +72,12 @@ class TestPaletteIo(unittest.TestCase):
     def test_attrs_without_known_keys_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             pq = self._parquet_path(tmpdir)
-            # Random unrelated key — should not produce a sidecar.
             dump_palettes_attrs({"something_else": 42}, pq)
             self.assertFalse(os.path.exists(_palettes_sidecar_path(pq)))
 
     def test_fingerprint_serialised_as_floats(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             pq = self._parquet_path(tmpdir)
-            # Pass ints; load_palettes_attrs should still return floats.
             dump_palettes_attrs({"engine_fingerprint": [1, 2, 3]}, pq)
             with open(_palettes_sidecar_path(pq)) as f:
                 raw = json.load(f)
