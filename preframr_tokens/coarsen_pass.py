@@ -6,6 +6,7 @@ from collections import defaultdict
 
 import pandas as pd
 
+from preframr_tokens.macros.loops import OVERLAY_BODY_FREQ_DELTA
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
     BACK_REF_OP,
@@ -51,8 +52,6 @@ def _materialise_back_ref(out, output_frame_starts, val_arr, i, append_row):
 
 def _materialise_pattern_replay(out, output_frame_starts, val_arr, i, append_row):
     """Materialise the PR (HI, LO, LEN, OV_COUNT, [overlays]) block at row ``i``."""
-    from preframr_tokens.macros import OVERLAY_BODY_FREQ_DELTA
-
     dist_hi = int(val_arr[i])
     dist_lo = int(val_arr[i + 1])
     distance = (dist_hi << BACK_REF_DIST_HI_SHIFT) | dist_lo

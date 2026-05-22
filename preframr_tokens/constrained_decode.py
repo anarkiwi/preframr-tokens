@@ -102,6 +102,80 @@ _SHAPES_WITH_DIST_LO_SECOND = frozenset({
 
 
 @dataclass(frozen=True)
+class _FrameAggregates:
+    """Per-sub-token aggregates over the atomic decomposition. Computed once per sub-token by ``_walk_frame_aggregates``."""
+
+    frame_advance: int
+    charge_first_segment: int
+    charge_last_segment: int
+    sets_sval: bool
+    final_sval: int
+    fn_delta: int
+    fn_after_last_strict: int
+    contains_delay: bool
+
+
+def _walk_frame_aggregates(
+    atomic_ids,
+    *,
+    val_a,
+    is_macro_a,
+    is_frame_marker_a,
+    is_delay_a,
+    is_frame_strict_a,
+    is_voice_reg_a,
+    is_real_reg_a,
+):
+    """Walk ``atomic_ids`` and aggregate per-sub-token frame-time state. Pure function over the per-atom bool/int arrays. Used by ``precompute_subtoken_arrays``; exposed for direct unit tests."""
+    local_frame = 0
+    first_seg_charge = 0
+    last_seg_charge = 0
+    first_seg_done = False
+    local_sets_sval = False
+    local_final_sval = 0
+    local_fn_delta = 0
+    local_fn_after_strict = 0
+    local_contains_delay = False
+    for aid in atomic_ids:
+        aid = int(aid)
+        if is_macro_a[aid]:
+            continue
+        if is_frame_marker_a[aid]:
+            if not first_seg_done:
+                first_seg_charge = last_seg_charge
+                first_seg_done = True
+            local_frame += 1
+            last_seg_charge = 0
+            if is_delay_a[aid]:
+                local_contains_delay = True
+            if is_frame_strict_a[aid]:
+                local_sets_sval = True
+                local_final_sval = int(val_a[aid]) & 0x3F
+                local_fn_after_strict = 0
+            continue
+        if is_voice_reg_a[aid]:
+            if local_sets_sval:
+                local_fn_after_strict += 1
+            else:
+                local_fn_delta += 1
+            continue
+        if is_real_reg_a[aid]:
+            last_seg_charge += _MIN_DIFF
+    if not first_seg_done:
+        first_seg_charge = last_seg_charge
+    return _FrameAggregates(
+        frame_advance=local_frame,
+        charge_first_segment=first_seg_charge,
+        charge_last_segment=last_seg_charge,
+        sets_sval=local_sets_sval,
+        final_sval=local_final_sval,
+        fn_delta=local_fn_delta,
+        fn_after_last_strict=local_fn_after_strict,
+        contains_delay=local_contains_delay,
+    )
+
+
+@dataclass(frozen=True)
 class _ShapeRule:
     """One match-rule for ``_classify_macro_shape``. Matched when the head atom's ``(op, subreg)`` keys into ``_HEAD_RULES`` and the trailing atoms (atoms 1..n-1) have ``(op, subreg)`` equal to ``trailing[k]``. ``val_indices`` lists which ``atomic_ids`` positions contribute their ``val_a`` value to the result tuple as extras (after the shape tag)."""
 
@@ -596,48 +670,25 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                 int(distance_hi[sub_id]) << BACK_REF_DIST_HI_SHIFT
             ) | lo_byte
 
-        local_frame = 0
-        first_seg_charge = 0
-        last_seg_charge = 0
-        first_seg_done = False
-        local_sets_sval = False
-        local_final_sval = 0
-        local_fn_delta = 0
-        local_fn_after_strict = 0
-        for aid in atomic_ids:
-            aid = int(aid)
-            if is_macro_a[aid]:
-                continue
-            if is_frame_marker_a[aid]:
-                if not first_seg_done:
-                    first_seg_charge = last_seg_charge
-                    first_seg_done = True
-                local_frame += 1
-                last_seg_charge = 0
-                if is_delay_a[aid]:
-                    contains_delay[sub_id] = True
-                if is_frame_strict_a[aid]:
-                    local_sets_sval = True
-                    local_final_sval = int(val_a[aid]) & 0x3F
-                    local_fn_after_strict = 0
-                continue
-            if is_voice_reg_a[aid]:
-                if local_sets_sval:
-                    local_fn_after_strict += 1
-                else:
-                    local_fn_delta += 1
-                continue
-            if is_real_reg_a[aid]:
-                last_seg_charge += _MIN_DIFF
-        if not first_seg_done:
-            first_seg_charge = last_seg_charge
-        frame_advance[sub_id] = local_frame
-        charge_first_segment[sub_id] = first_seg_charge
-        charge_last_segment[sub_id] = last_seg_charge
-        sets_sval[sub_id] = local_sets_sval
-        final_sval[sub_id] = local_final_sval
-        fn_delta[sub_id] = local_fn_delta
-        fn_after_last_strict[sub_id] = local_fn_after_strict
+        agg = _walk_frame_aggregates(
+            atomic_ids,
+            val_a=val_a,
+            is_macro_a=is_macro_a,
+            is_frame_marker_a=is_frame_marker_a,
+            is_delay_a=is_delay_a,
+            is_frame_strict_a=is_frame_strict_a,
+            is_voice_reg_a=is_voice_reg_a,
+            is_real_reg_a=is_real_reg_a,
+        )
+        frame_advance[sub_id] = agg.frame_advance
+        charge_first_segment[sub_id] = agg.charge_first_segment
+        charge_last_segment[sub_id] = agg.charge_last_segment
+        sets_sval[sub_id] = agg.sets_sval
+        final_sval[sub_id] = agg.final_sval
+        fn_delta[sub_id] = agg.fn_delta
+        fn_after_last_strict[sub_id] = agg.fn_after_last_strict
+        if agg.contains_delay:
+            contains_delay[sub_id] = True
 
     is_singleton_dist_hi = is_singleton_back_ref_dist_hi | is_singleton_pr_dist_hi
     is_singleton_pair_intermediate = (

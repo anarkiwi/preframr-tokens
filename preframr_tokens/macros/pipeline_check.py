@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from preframr_tokens.macros import transforms_parser_stubs  # noqa: F401 register stubs
-from preframr_tokens.macros.transform import (
+from preframr_tokens.macros.transform_registry import (
     PipelineConfigError,
     _REGISTRY,
     _normalize_spec,

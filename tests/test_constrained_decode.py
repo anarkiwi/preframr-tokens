@@ -9,11 +9,13 @@ from preframr_tokens.constrained_decode import (
     MacroShape,
     StreamState,
     _classify_macro_shape,
+    _walk_frame_aggregates,
     frame_marker_count,
     precompute_subtoken_arrays,
     precompute_vocab_arrays,
     tail_charge_for_prompt,
 )
+from preframr_tokens.stfconstants import _MIN_DIFF
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
     BACK_REF_OP,
@@ -745,6 +747,104 @@ class TestClassifyMacroShape(unittest.TestCase):
             {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 3},
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
+
+
+class TestWalkFrameAggregates(unittest.TestCase):
+    """Direct unit tests for the per-sub-token frame walker."""
+
+    def _walk(self, atoms):
+        """Build inline per-atom masks from ``atoms`` (list of dicts with
+        keys: kind ∈ {'macro','frame_strict','delay','voice','real',
+        'other'}, val) and aggregate over the whole list."""
+        n = len(atoms)
+        val_a = np.array([a.get("val", 0) for a in atoms], dtype=np.int64)
+        is_macro = np.array([a["kind"] == "macro" for a in atoms], dtype=np.bool_)
+        is_frame_strict = np.array(
+            [a["kind"] == "frame_strict" for a in atoms], dtype=np.bool_
+        )
+        is_delay = np.array([a["kind"] == "delay" for a in atoms], dtype=np.bool_)
+        is_frame_marker = is_frame_strict | is_delay
+        is_voice = np.array([a["kind"] == "voice" for a in atoms], dtype=np.bool_)
+        is_real = np.array(
+            [a["kind"] in ("real", "frame_strict", "delay", "voice") for a in atoms],
+            dtype=np.bool_,
+        )
+        return _walk_frame_aggregates(
+            np.arange(n, dtype=np.int64),
+            val_a=val_a,
+            is_macro_a=is_macro,
+            is_frame_marker_a=is_frame_marker,
+            is_delay_a=is_delay,
+            is_frame_strict_a=is_frame_strict,
+            is_voice_reg_a=is_voice,
+            is_real_reg_a=is_real,
+        )
+
+    def test_empty_atoms_zero_aggregates(self):
+        agg = self._walk([])
+        self.assertEqual(agg.frame_advance, 0)
+        self.assertEqual(agg.charge_first_segment, 0)
+        self.assertEqual(agg.charge_last_segment, 0)
+        self.assertFalse(agg.sets_sval)
+        self.assertFalse(agg.contains_delay)
+
+    def test_real_atoms_charge_last_segment(self):
+        agg = self._walk([{"kind": "real"}, {"kind": "real"}])
+        self.assertEqual(agg.frame_advance, 0)
+        self.assertEqual(agg.charge_last_segment, 2 * _MIN_DIFF)
+        self.assertEqual(agg.charge_first_segment, 2 * _MIN_DIFF)
+
+    def test_first_segment_finalises_at_first_frame_marker(self):
+        agg = self._walk(
+            [
+                {"kind": "real"},
+                {"kind": "real"},
+                {"kind": "frame_strict", "val": 0x10},
+                {"kind": "real"},
+            ]
+        )
+        self.assertEqual(agg.frame_advance, 1)
+        self.assertEqual(agg.charge_first_segment, 2 * _MIN_DIFF)
+        self.assertEqual(agg.charge_last_segment, _MIN_DIFF)
+        self.assertTrue(agg.sets_sval)
+        self.assertEqual(agg.final_sval, 0x10)
+
+    def test_delay_marker_sets_contains_delay(self):
+        agg = self._walk([{"kind": "delay"}])
+        self.assertTrue(agg.contains_delay)
+        self.assertEqual(agg.frame_advance, 1)
+        self.assertFalse(agg.sets_sval)
+
+    def test_macros_skipped(self):
+        """Macro atoms don't contribute to frame_advance or charges."""
+        agg = self._walk([{"kind": "macro"}, {"kind": "real"}])
+        self.assertEqual(agg.frame_advance, 0)
+        self.assertEqual(agg.charge_last_segment, _MIN_DIFF)
+
+    def test_voice_atoms_partition_around_sval_reset(self):
+        agg = self._walk(
+            [
+                {"kind": "voice"},
+                {"kind": "voice"},
+                {"kind": "frame_strict", "val": 0x05},
+                {"kind": "voice"},
+            ]
+        )
+        self.assertEqual(agg.fn_delta, 2)
+        self.assertEqual(agg.fn_after_last_strict, 1)
+
+    def test_final_sval_takes_last_strict(self):
+        agg = self._walk(
+            [
+                {"kind": "frame_strict", "val": 0x01},
+                {"kind": "voice"},
+                {"kind": "frame_strict", "val": 0x02},
+                {"kind": "voice"},
+            ]
+        )
+        self.assertEqual(agg.frame_advance, 2)
+        self.assertEqual(agg.final_sval, 0x02)
+        self.assertEqual(agg.fn_after_last_strict, 1)
 
 
 class TestModuleTorchFree(unittest.TestCase):
