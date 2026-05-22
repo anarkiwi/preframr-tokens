@@ -1,5 +1,6 @@
 """Sampling-time logit guard for predict.py."""
 
+from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
@@ -100,10 +101,191 @@ _SHAPES_WITH_DIST_LO_SECOND = frozenset({
 })
 
 
-def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
-    """Classify a multi-atom sub-token's macro structure. Returns ``(MacroShape, *extras)``; ``extras`` carry first_val and (for ``PR_COMPLETE``) fourth_val.
+@dataclass(frozen=True)
+class _ShapeRule:
+    """One match-rule for ``_classify_macro_shape``. Matched when the head atom's ``(op, subreg)`` keys into ``_HEAD_RULES`` and the trailing atoms (atoms 1..n-1) have ``(op, subreg)`` equal to ``trailing[k]``. ``val_indices`` lists which ``atomic_ids`` positions contribute their ``val_a`` value to the result tuple as extras (after the shape tag)."""
 
-    Module-level (lifted from ``precompute_subtoken_arrays`` closure) so it can be exercised by direct unit tests and so the eventual table-driven rewrite can be designed in isolation.
+    trailing: tuple[tuple[int, int], ...]
+    shape: "MacroShape"
+    val_indices: tuple[int, ...] = ()
+
+
+_BR_LO = (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO)
+_BR_LEN = (BACK_REF_OP, BACK_REF_SUBREG_LEN)
+_PR_LO = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_LO)
+_PR_LEN = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN)
+_PR_OVC = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_OVERLAY_COUNT)
+_OV_NEW = (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_NEW_VAL)
+
+
+_HEAD_RULES: dict[tuple[int, int], tuple[_ShapeRule, ...]] = {
+    (BACK_REF_OP, BACK_REF_SUBREG_DIST_HI): (
+        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_DIST_HI, (0,)),
+        _ShapeRule((_BR_LO,), MacroShape.BR_HI_THEN_LO, (0,)),
+        _ShapeRule((_BR_LO, _BR_LEN), MacroShape.BR_COMPLETE, (0,)),
+    ),
+    (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO): (
+        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_DIST_LO, (0,)),
+        _ShapeRule((_BR_LEN,), MacroShape.BR_LO_THEN_LEN),
+    ),
+    (BACK_REF_OP, BACK_REF_SUBREG_LEN): (
+        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_LEN, (0,)),
+        # BR_LEN_WITH_TAIL (n >= 2 with non-macro tail) handled out-of-table
+        # because the trailing-length is unbounded.
+    ),
+    (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI): (
+        _ShapeRule((), MacroShape.SINGLETON_PR_DIST_HI, (0,)),
+        _ShapeRule((_PR_LO,), MacroShape.PR_HI_THEN_LO, (0,)),
+        _ShapeRule((_PR_LO, _PR_LEN), MacroShape.PR_HI_THROUGH_LEN, (0,)),
+        _ShapeRule((_PR_LO, _PR_LEN, _PR_OVC), MacroShape.PR_COMPLETE, (0, 3)),
+    ),
+    (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_LO): (
+        _ShapeRule((), MacroShape.SINGLETON_PR_DIST_LO, (0,)),
+        _ShapeRule((_PR_LEN,), MacroShape.PR_LO_THEN_LEN),
+        _ShapeRule((_PR_LEN, _PR_OVC), MacroShape.PR_LO_THROUGH_OV_COUNT, (2,)),
+    ),
+    (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN): (
+        _ShapeRule((), MacroShape.SINGLETON_PR_LEN, (0,)),
+        _ShapeRule((_PR_OVC,), MacroShape.PR_LEN_THEN_OV_COUNT, (1,)),
+    ),
+    (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_OVERLAY_COUNT): (
+        _ShapeRule((), MacroShape.SINGLETON_PR_OV_COUNT, (0,)),
+    ),
+    (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_FRAME_OFFSET): (
+        _ShapeRule((), MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET, (0,)),
+    ),
+    (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_TARGET_REG): (
+        _ShapeRule((), MacroShape.SINGLETON_OVERLAY_TARGET_REG, (0,)),
+        _ShapeRule((_OV_NEW,), MacroShape.OV_TARGET_THEN_NEW_VAL),
+    ),
+    (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_NEW_VAL): (
+        _ShapeRule((), MacroShape.SINGLETON_OVERLAY_NEW_VAL, (0,)),
+    ),
+}
+
+
+_SHAPE_HANDLERS: dict[
+    "MacroShape", tuple[tuple[str, ...], tuple[tuple[str, int], ...]]
+] = {
+    # shape: (bool_flags_to_set, int_assigns=[(array_name, shape_tuple_index)])
+    MacroShape.MALFORMED: (("is_malformed_macro",), ()),
+    MacroShape.SINGLETON_BACK_REF_DIST_HI: (
+        ("is_singleton_back_ref_dist_hi",),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.SINGLETON_BACK_REF_DIST_LO: (
+        ("is_singleton_back_ref_dist_lo", "consumes_back_ref_dist_lo_gate"),
+        (),
+    ),
+    MacroShape.SINGLETON_BACK_REF_LEN: (
+        ("is_singleton_back_ref_len", "consumes_back_ref_len_gate"),
+        (),
+    ),
+    MacroShape.SINGLETON_PR_DIST_HI: (
+        ("is_singleton_pr_dist_hi",),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.SINGLETON_PR_DIST_LO: (
+        ("is_singleton_pr_dist_lo", "consumes_pr_dist_lo_gate"),
+        (),
+    ),
+    MacroShape.SINGLETON_PR_LEN: (
+        ("is_singleton_pr_len", "consumes_pr_len_gate"),
+        (),
+    ),
+    MacroShape.SINGLETON_PR_OV_COUNT: (
+        ("is_singleton_pr_ov_count", "consumes_pr_ov_count_gate"),
+        (("overlay_count", 1), ("pending_overlays_delta", 1)),
+    ),
+    MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET: (
+        (
+            "is_singleton_pattern_overlay",
+            "is_singleton_pattern_overlay_frame_offset",
+            "consumes_overlay_slot_0_gate",
+        ),
+        (),
+    ),
+    MacroShape.SINGLETON_OVERLAY_TARGET_REG: (
+        (
+            "is_singleton_pattern_overlay",
+            "is_singleton_pattern_overlay_target_reg",
+            "consumes_overlay_slot_1_gate",
+        ),
+        (),
+    ),
+    MacroShape.SINGLETON_OVERLAY_NEW_VAL: (
+        (
+            "is_singleton_pattern_overlay",
+            "is_singleton_pattern_overlay_new_val",
+            "consumes_overlay_slot_2_gate",
+        ),
+        (),
+    ),
+    MacroShape.BR_HI_THEN_LO: (
+        ("is_singleton_back_ref_dist_hi", "extends_to_back_ref_lo_consumed"),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.BR_COMPLETE: (
+        (
+            "is_singleton_back_ref_dist_hi",
+            "extends_to_back_ref_lo_consumed",
+            "extends_to_back_ref_len_consumed",
+        ),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.BR_LO_THEN_LEN: (
+        ("consumes_back_ref_dist_lo_gate", "extends_to_back_ref_len_consumed"),
+        (),
+    ),
+    MacroShape.PR_HI_THEN_LO: (
+        ("is_singleton_pr_dist_hi", "extends_to_pr_lo_consumed"),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.PR_HI_THROUGH_LEN: (
+        (
+            "is_singleton_pr_dist_hi",
+            "extends_to_pr_lo_consumed",
+            "extends_to_pr_len_consumed",
+        ),
+        (("distance_hi", 1),),
+    ),
+    MacroShape.PR_COMPLETE: (
+        (
+            "is_singleton_pr_dist_hi",
+            "extends_to_pr_lo_consumed",
+            "extends_to_pr_len_consumed",
+            "extends_to_pr_ov_count_consumed",
+        ),
+        (("distance_hi", 1), ("overlay_count", 2), ("pending_overlays_delta", 2)),
+    ),
+    MacroShape.PR_LO_THEN_LEN: (
+        ("consumes_pr_dist_lo_gate", "extends_to_pr_len_consumed"),
+        (),
+    ),
+    MacroShape.PR_LO_THROUGH_OV_COUNT: (
+        (
+            "consumes_pr_dist_lo_gate",
+            "extends_to_pr_len_consumed",
+            "extends_to_pr_ov_count_consumed",
+        ),
+        (("overlay_count", 1), ("pending_overlays_delta", 1)),
+    ),
+    MacroShape.BR_LEN_WITH_TAIL: (("consumes_back_ref_len_gate",), ()),
+    MacroShape.PR_LEN_THEN_OV_COUNT: (
+        ("consumes_pr_len_gate", "extends_to_pr_ov_count_consumed"),
+        (("overlay_count", 1), ("pending_overlays_delta", 1)),
+    ),
+    MacroShape.OV_TARGET_THEN_NEW_VAL: (
+        ("consumes_overlay_slot_1_gate", "extends_to_overlay_completed"),
+        (),
+    ),
+}
+
+
+def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
+    """Classify a multi-atom sub-token's macro structure against ``_HEAD_RULES``. Returns ``(MacroShape, *extras)``; ``extras`` come from ``rule.val_indices`` lookups into ``val_a``.
+
+    ``BR_LEN_WITH_TAIL`` (head ``(BACK_REF_OP, LEN)`` with non-macro trailing atoms of any length) is the lone irregular shape and is handled out-of-table.
     """
     n = atomic_ids.size
     if n == 0:
@@ -118,154 +300,30 @@ def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
     if first_macro_idx > 0:
         return (MacroShape.MALFORMED,)
     first = int(atomic_ids[0])
-    first_op = int(op_a[first])
-    first_sr = int(subreg_a[first])
-    first_val = int(val_a[first])
-    if n == 1:
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
-            return (MacroShape.SINGLETON_BACK_REF_DIST_HI, first_val)
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
-            return (MacroShape.SINGLETON_BACK_REF_DIST_LO, first_val)
-        if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
-            return (MacroShape.SINGLETON_BACK_REF_LEN, first_val)
-        if first_op == PATTERN_REPLAY_OP:
-            if first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-                return (MacroShape.SINGLETON_PR_DIST_HI, first_val)
-            if first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-                return (MacroShape.SINGLETON_PR_DIST_LO, first_val)
-            if first_sr == PATTERN_REPLAY_SUBREG_LEN:
-                return (MacroShape.SINGLETON_PR_LEN, first_val)
-            if first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT:
-                return (MacroShape.SINGLETON_PR_OV_COUNT, first_val)
-        if first_op == PATTERN_OVERLAY_OP:
-            if first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                return (MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET, first_val)
-            if first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                return (MacroShape.SINGLETON_OVERLAY_TARGET_REG, first_val)
-            if first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL:
-                return (MacroShape.SINGLETON_OVERLAY_NEW_VAL, first_val)
-        return (MacroShape.MALFORMED,)
-    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
-        if n == 2:
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == BACK_REF_OP
-                and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
-            ):
-                return (MacroShape.BR_HI_THEN_LO, first_val)
-        if n == 3:
-            second = int(atomic_ids[1])
-            third = int(atomic_ids[2])
-            if (
-                int(op_a[second]) == BACK_REF_OP
-                and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
-                and int(op_a[third]) == BACK_REF_OP
-                and int(subreg_a[third]) == BACK_REF_SUBREG_LEN
-            ):
-                return (MacroShape.BR_COMPLETE, first_val)
-        return (MacroShape.MALFORMED,)
-    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-        if n == 2:
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-            ):
-                return (MacroShape.PR_HI_THEN_LO, first_val)
-        if n == 3:
-            second = int(atomic_ids[1])
-            third = int(atomic_ids[2])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-                and int(op_a[third]) == PATTERN_REPLAY_OP
-                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
-            ):
-                return (MacroShape.PR_HI_THROUGH_LEN, first_val)
-        if n == 4:
-            second = int(atomic_ids[1])
-            third = int(atomic_ids[2])
-            fourth = int(atomic_ids[3])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
-                and int(op_a[third]) == PATTERN_REPLAY_OP
-                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
-                and int(op_a[fourth]) == PATTERN_REPLAY_OP
-                and int(subreg_a[fourth]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-            ):
-                return (MacroShape.PR_COMPLETE, first_val, int(val_a[fourth]))
-        return (MacroShape.MALFORMED,)
-    if (
-        first_op == PATTERN_OVERLAY_OP
-        and first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-    ):
-        return (MacroShape.MALFORMED,)
-    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
-        if n == 2:
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == BACK_REF_OP
-                and int(subreg_a[second]) == BACK_REF_SUBREG_LEN
-            ):
-                return (MacroShape.BR_LO_THEN_LEN,)
-        return (MacroShape.MALFORMED,)
-    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-        if n == 2:
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
-            ):
-                return (MacroShape.PR_LO_THEN_LEN,)
-        if n == 3:
-            second = int(atomic_ids[1])
-            third = int(atomic_ids[2])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
-                and int(op_a[third]) == PATTERN_REPLAY_OP
-                and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-            ):
-                return (MacroShape.PR_LO_THROUGH_OV_COUNT, int(val_a[third]))
-        return (MacroShape.MALFORMED,)
-    if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
+    head = (int(op_a[first]), int(subreg_a[first]))
+    if head == (BACK_REF_OP, BACK_REF_SUBREG_LEN) and n >= 2:
         for k in range(1, n):
             if is_macro_a[int(atomic_ids[k])]:
                 return (MacroShape.MALFORMED,)
-        return (MacroShape.BR_LEN_WITH_TAIL, first_val)
-    if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_LEN:
-        if n == 2:
-            second = int(atomic_ids[1])
-            if (
-                int(op_a[second]) == PATTERN_REPLAY_OP
-                and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-            ):
-                return (MacroShape.PR_LEN_THEN_OV_COUNT, int(val_a[second]))
+        return (MacroShape.BR_LEN_WITH_TAIL, int(val_a[first]))
+    rules = _HEAD_RULES.get(head)
+    if rules is None:
         return (MacroShape.MALFORMED,)
-    if (
-        first_op == PATTERN_REPLAY_OP
-        and first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-    ):
-        return (MacroShape.MALFORMED,)
-    if (
-        first_op == PATTERN_OVERLAY_OP
-        and first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG
-    ):
-        if n != 2:
-            return (MacroShape.MALFORMED,)
-        second = int(atomic_ids[1])
-        if (
-            int(op_a[second]) == PATTERN_OVERLAY_OP
-            and int(subreg_a[second]) == PATTERN_OVERLAY_SUBREG_NEW_VAL
-        ):
-            return (MacroShape.OV_TARGET_THEN_NEW_VAL,)
-        return (MacroShape.MALFORMED,)
-    if (
-        first_op == PATTERN_OVERLAY_OP
-        and first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL
-    ):
-        return (MacroShape.MALFORMED,)
+    target_trailing_len = n - 1
+    for rule in rules:
+        if len(rule.trailing) != target_trailing_len:
+            continue
+        matched = True
+        for k, (want_op, want_sr) in enumerate(rule.trailing):
+            atom = int(atomic_ids[k + 1])
+            if int(op_a[atom]) != want_op or int(subreg_a[atom]) != want_sr:
+                matched = False
+                break
+        if matched:
+            extras = tuple(
+                int(val_a[int(atomic_ids[i])]) for i in rule.val_indices
+            )
+            return (rule.shape, *extras)
     return (MacroShape.MALFORMED,)
 
 
@@ -471,6 +529,41 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     fn_after_last_strict = np.zeros(n_sub, dtype=np.int64)
     pending_overlays_delta = np.zeros(n_sub, dtype=np.int64)
 
+    # Each shape's effect on the per-sub-token arrays is encoded in
+    # _SHAPE_HANDLERS as ``(bool_flags_to_set, int_assigns)``; the dispatch
+    # loop below looks up the handler once per sub-token.
+    arrays_by_name = {
+        "is_malformed_macro": is_malformed_macro,
+        "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
+        "is_singleton_back_ref_dist_lo": is_singleton_back_ref_dist_lo,
+        "is_singleton_back_ref_len": is_singleton_back_ref_len,
+        "is_singleton_pr_dist_hi": is_singleton_pr_dist_hi,
+        "is_singleton_pr_dist_lo": is_singleton_pr_dist_lo,
+        "is_singleton_pr_len": is_singleton_pr_len,
+        "is_singleton_pr_ov_count": is_singleton_pr_ov_count,
+        "is_singleton_pattern_overlay": is_singleton_pattern_overlay,
+        "is_singleton_pattern_overlay_frame_offset": is_singleton_pattern_overlay_frame_offset,
+        "is_singleton_pattern_overlay_target_reg": is_singleton_pattern_overlay_target_reg,
+        "is_singleton_pattern_overlay_new_val": is_singleton_pattern_overlay_new_val,
+        "consumes_back_ref_dist_lo_gate": consumes_back_ref_dist_lo_gate,
+        "consumes_back_ref_len_gate": consumes_back_ref_len_gate,
+        "consumes_pr_dist_lo_gate": consumes_pr_dist_lo_gate,
+        "consumes_pr_len_gate": consumes_pr_len_gate,
+        "consumes_pr_ov_count_gate": consumes_pr_ov_count_gate,
+        "consumes_overlay_slot_0_gate": consumes_overlay_slot_0_gate,
+        "consumes_overlay_slot_1_gate": consumes_overlay_slot_1_gate,
+        "consumes_overlay_slot_2_gate": consumes_overlay_slot_2_gate,
+        "extends_to_back_ref_lo_consumed": extends_to_back_ref_lo_consumed,
+        "extends_to_back_ref_len_consumed": extends_to_back_ref_len_consumed,
+        "extends_to_pr_lo_consumed": extends_to_pr_lo_consumed,
+        "extends_to_pr_len_consumed": extends_to_pr_len_consumed,
+        "extends_to_pr_ov_count_consumed": extends_to_pr_ov_count_consumed,
+        "extends_to_overlay_completed": extends_to_overlay_completed,
+        "distance_hi": distance_hi,
+        "overlay_count": overlay_count,
+        "pending_overlays_delta": pending_overlays_delta,
+    }
+
     for sub_id in range(n_sub):
         s = tkmodel.id_to_token(sub_id)
         if s is None:
@@ -487,92 +580,13 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             continue
         shape = _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a)
         tag = shape[0]
-        if tag == MacroShape.MALFORMED:
-            is_malformed_macro[sub_id] = True
-        elif tag == MacroShape.SINGLETON_BACK_REF_DIST_HI:
-            is_singleton_back_ref_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-        elif tag == MacroShape.SINGLETON_BACK_REF_DIST_LO:
-            is_singleton_back_ref_dist_lo[sub_id] = True
-            consumes_back_ref_dist_lo_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_BACK_REF_LEN:
-            is_singleton_back_ref_len[sub_id] = True
-            consumes_back_ref_len_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_PR_DIST_HI:
-            is_singleton_pr_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-        elif tag == MacroShape.SINGLETON_PR_DIST_LO:
-            is_singleton_pr_dist_lo[sub_id] = True
-            consumes_pr_dist_lo_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_PR_LEN:
-            is_singleton_pr_len[sub_id] = True
-            consumes_pr_len_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_PR_OV_COUNT:
-            is_singleton_pr_ov_count[sub_id] = True
-            consumes_pr_ov_count_gate[sub_id] = True
-            overlay_count[sub_id] = shape[1]
-            pending_overlays_delta[sub_id] = shape[1]
-        elif tag == MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET:
-            is_singleton_pattern_overlay[sub_id] = True
-            is_singleton_pattern_overlay_frame_offset[sub_id] = True
-            consumes_overlay_slot_0_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_OVERLAY_TARGET_REG:
-            is_singleton_pattern_overlay[sub_id] = True
-            is_singleton_pattern_overlay_target_reg[sub_id] = True
-            consumes_overlay_slot_1_gate[sub_id] = True
-        elif tag == MacroShape.SINGLETON_OVERLAY_NEW_VAL:
-            is_singleton_pattern_overlay[sub_id] = True
-            is_singleton_pattern_overlay_new_val[sub_id] = True
-            consumes_overlay_slot_2_gate[sub_id] = True
-        elif tag == MacroShape.BR_HI_THEN_LO:
-            is_singleton_back_ref_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-            extends_to_back_ref_lo_consumed[sub_id] = True
-        elif tag == MacroShape.BR_COMPLETE:
-            is_singleton_back_ref_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-            extends_to_back_ref_lo_consumed[sub_id] = True
-            extends_to_back_ref_len_consumed[sub_id] = True
-        elif tag == MacroShape.BR_LO_THEN_LEN:
-            consumes_back_ref_dist_lo_gate[sub_id] = True
-            extends_to_back_ref_len_consumed[sub_id] = True
-        elif tag == MacroShape.PR_HI_THEN_LO:
-            is_singleton_pr_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-            extends_to_pr_lo_consumed[sub_id] = True
-        elif tag == MacroShape.PR_HI_THROUGH_LEN:
-            is_singleton_pr_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-            extends_to_pr_lo_consumed[sub_id] = True
-            extends_to_pr_len_consumed[sub_id] = True
-        elif tag == MacroShape.PR_COMPLETE:
-            is_singleton_pr_dist_hi[sub_id] = True
-            distance_hi[sub_id] = shape[1]
-            overlay_count[sub_id] = shape[2]
-            pending_overlays_delta[sub_id] = shape[2]
-            extends_to_pr_lo_consumed[sub_id] = True
-            extends_to_pr_len_consumed[sub_id] = True
-            extends_to_pr_ov_count_consumed[sub_id] = True
-        elif tag == MacroShape.PR_LO_THEN_LEN:
-            consumes_pr_dist_lo_gate[sub_id] = True
-            extends_to_pr_len_consumed[sub_id] = True
-        elif tag == MacroShape.PR_LO_THROUGH_OV_COUNT:
-            consumes_pr_dist_lo_gate[sub_id] = True
-            extends_to_pr_len_consumed[sub_id] = True
-            extends_to_pr_ov_count_consumed[sub_id] = True
-            overlay_count[sub_id] = shape[1]
-            pending_overlays_delta[sub_id] = shape[1]
-        elif tag == MacroShape.BR_LEN_WITH_TAIL:
-            consumes_back_ref_len_gate[sub_id] = True
-        elif tag == MacroShape.PR_LEN_THEN_OV_COUNT:
-            _, ov_count_val = shape
-            consumes_pr_len_gate[sub_id] = True
-            extends_to_pr_ov_count_consumed[sub_id] = True
-            overlay_count[sub_id] = ov_count_val
-            pending_overlays_delta[sub_id] = ov_count_val
-        elif tag == MacroShape.OV_TARGET_THEN_NEW_VAL:
-            consumes_overlay_slot_1_gate[sub_id] = True
-            extends_to_overlay_completed[sub_id] = True
+        handler = _SHAPE_HANDLERS.get(tag)
+        if handler is not None:
+            bool_flags, int_assigns = handler
+            for name in bool_flags:
+                arrays_by_name[name][sub_id] = True
+            for name, idx in int_assigns:
+                arrays_by_name[name][sub_id] = shape[idx]
 
         if tag in _SHAPES_WITH_DIST_LO_FIRST:
             dist_lo_val[sub_id] = int(val_a[int(atomic_ids[0])]) & BACK_REF_DIST_LO_MASK
