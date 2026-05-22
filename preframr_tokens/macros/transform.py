@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any, ClassVar, Iterable, Optional
 
 import pandas as pd
+
+from preframr_tokens.macros.transform_registry import (
+    PipelineConfigError,
+    PipelineEntry,
+    _REGISTRY,
+    _normalize_spec,
+)
 
 __all__ = [
     "Transform",
@@ -26,15 +31,6 @@ __all__ = [
     "LOSS_TIER_NAMES",
 ]
 
-
-class PipelineConfigError(ValueError):
-    """Raised by ``TransformPipeline.from_spec`` when ``validate_pipeline_spec`` returns non-empty errors. Carries the error list under ``.errors``."""
-
-    def __init__(self, errors):
-        self.errors = list(errors)
-        super().__init__("pipeline config errors:\n  - " + "\n  - ".join(errors))
-
-_REGISTRY: dict[str, type["Transform"]] = {}
 _DEFAULTS_REGISTERED = False
 
 
@@ -147,12 +143,6 @@ def _assert_frame_equal(a: pd.DataFrame, b: pd.DataFrame, label: str):
     return True
 
 
-@dataclass
-class PipelineEntry:
-    name: str
-    params: dict[str, Any] = field(default_factory=dict)
-
-
 class TransformPipeline:
     """Ordered list of Transforms; forward applies in order, inverse in reverse."""
 
@@ -168,8 +158,12 @@ class TransformPipeline:
         cls, spec: Any, args=None, validate: bool = True
     ) -> "TransformPipeline":
         if validate:
-            # Lazy: pipeline_check imports _REGISTRY/_normalize_spec from this module.
-            from preframr_tokens.macros.pipeline_check import validate_pipeline_spec
+            # Lazy: pipeline_check transitively imports Transform via
+            # transforms_parser_stubs, so a top-level import here cycles
+            # when pipeline_check is the entry point.
+            from preframr_tokens.macros.pipeline_check import (  # pylint: disable=import-outside-toplevel
+                validate_pipeline_spec,
+            )
 
             errors = validate_pipeline_spec(spec, args=args)
             if errors:
@@ -218,35 +212,6 @@ class TransformPipeline:
 
     def __len__(self):
         return len(self._transforms)
-
-
-def _normalize_spec(spec: Any) -> list[PipelineEntry]:
-    if isinstance(spec, str):
-        spec = json.loads(spec)
-    if isinstance(spec, dict):
-        if "transforms" not in spec:
-            raise ValueError(
-                "pipeline spec dict must have a 'transforms' key with a list"
-            )
-        raw = spec["transforms"]
-    elif isinstance(spec, list):
-        raw = spec
-    else:
-        raise TypeError(f"unsupported pipeline spec type {type(spec)}")
-    out: list[PipelineEntry] = []
-    for item in raw:
-        if isinstance(item, str):
-            out.append(PipelineEntry(name=item))
-        elif isinstance(item, dict):
-            name = item.get("name")
-            if not name:
-                raise ValueError(f"pipeline spec entry missing 'name': {item}")
-            out.append(PipelineEntry(name=name, params=dict(item.get("params", {}))))
-        elif isinstance(item, PipelineEntry):
-            out.append(item)
-        else:
-            raise TypeError(f"unsupported pipeline spec entry type {type(item)}")
-    return out
 
 
 def collect_substitutable_ops() -> frozenset[int]:

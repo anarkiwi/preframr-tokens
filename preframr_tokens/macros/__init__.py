@@ -1,5 +1,6 @@
 """Macro op infrastructure."""
 
+from preframr_tokens.coarsen_pass import CoarsenPass
 from preframr_tokens.macros.blocks import (
     iter_self_contained_row_blocks,
     self_contain_slice,
@@ -50,18 +51,8 @@ PASSES = [
 POST_NORM_PRE_VOICE_PASSES = [
     VoiceBlockOrderPass(),
     LoopPass(),
+    CoarsenPass(),
 ]
-
-
-def _maybe_append_coarsen_pass():
-    """Coarsen pass is wired in lazily to avoid the circular-import risk
-    if coarsen_pass.py ever needs anything from macros.py at module top
-    level. Called once on first import of this module via the bottom
-    of the file (after PASSES / POST_NORM_PRE_VOICE_PASSES are defined).
-    """
-    from preframr_tokens.coarsen_pass import CoarsenPass
-
-    POST_NORM_PRE_VOICE_PASSES.append(CoarsenPass())
 
 
 def run_post_norm_pre_voice_passes(df, args=None):
@@ -78,6 +69,3 @@ def run_passes(df, args=None):
     for macro_pass in PASSES:
         df = macro_pass.apply(df, args=args)
     return df
-
-
-_maybe_append_coarsen_pass()
