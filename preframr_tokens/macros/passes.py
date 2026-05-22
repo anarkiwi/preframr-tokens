@@ -3,6 +3,16 @@
 import numpy as np
 import pandas as pd
 
+__all__ = [
+    "TransposePass",
+    "Flip2Pass",
+    "HardRestartPass",
+    "LegatoPerClusterPass",
+    "SubregPass",
+    "VoiceBlockOrderPass",
+    "DedupSetPass",
+]
+
 from preframr_tokens.macros.passes_base import (
     MacroPass,
     _frame_index,

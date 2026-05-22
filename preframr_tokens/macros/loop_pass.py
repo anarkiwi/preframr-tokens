@@ -1,5 +1,7 @@
 """LoopPass and the LZ77 / state-walk machinery it drives."""
 
+__all__ = ["LoopPass"]
+
 from collections import defaultdict
 
 import numpy as np

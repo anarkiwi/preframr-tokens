@@ -1,5 +1,7 @@
 """Snap plain-SET val on wide-val regs to per-reg preset tables (aggressive)."""
 
+__all__ = ["PresetPass"]
+
 from preframr_tokens.macros.passes_base import (
     MacroPass,
     _ensure_subreg,

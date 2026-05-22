@@ -1,5 +1,7 @@
 """Canonical decoder walk."""
 
+__all__ = ["expand_ops"]
+
 import pandas as pd
 
 from preframr_tokens.macros.decoders import DECODERS

@@ -2,6 +2,8 @@
 register's value sequence.
 """
 
+__all__ = ["PerRegBurstPass"]
+
 import pandas as pd
 
 from preframr_tokens.macros.passes_base import MacroPass

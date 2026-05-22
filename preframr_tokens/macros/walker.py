@@ -3,6 +3,8 @@ encoder passes, validators, the canonical decode walk, and the
 redundancy reporter.
 """
 
+__all__ = ["FrameWalker"]
+
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.macros.state import _df_arrays_and_frames, _fastrow_from_arrs
 from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP

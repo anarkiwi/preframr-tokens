@@ -1,5 +1,7 @@
 """Detect per-register arithmetic-progression runs and emit per-reg SLOPE atoms."""
 
+__all__ = ["SlopePass", "quantise_slope_runtime"]
+
 from preframr_tokens.macros.passes_base import (
     MacroPass,
     _ensure_subreg,

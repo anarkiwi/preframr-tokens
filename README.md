@@ -145,6 +145,12 @@ plus the narrowing opportunities still on the table is in
   that wrap a `MacroPass` for `forward()` and (optionally) a decoder
   for `expand_atom()`. Hoisted from `transforms_bit_exact.py` so other
   transform files can reuse the pattern.
+- `preframr_tokens.macros.transform_registry` (internal) — holds
+  the shared pipeline-spec primitives (`_REGISTRY`, `PipelineEntry`,
+  `PipelineConfigError`, `_normalize_spec`) so `transform.py` and
+  `pipeline_check.py` can both depend on them without forming an
+  import cycle. Consumers should keep importing from
+  `preframr_tokens.macros.transform`, which re-exports.
 - `preframr_tokens.utils.to_int64_arrays(df, *names, fillna={col: val})`
   — extract named columns as int64 numpy arrays with explicit per-column
   NaN fill values. Replaces 10+ ad-hoc

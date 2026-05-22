@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__all__ = ["CtrlBigramPass"]
+
 import numpy as np
 
 from preframr_tokens.macros.passes_base import MacroPass

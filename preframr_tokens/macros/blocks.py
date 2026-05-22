@@ -1,5 +1,11 @@
 """Self-contained block extraction for training and inference paths."""
 
+__all__ = [
+    "expand_to_literal_form",
+    "self_contain_slice",
+    "iter_self_contained_row_blocks",
+]
+
 import logging
 
 from preframr_tokens.macros.decode import expand_ops

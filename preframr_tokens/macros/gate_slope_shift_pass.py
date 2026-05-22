@@ -5,6 +5,8 @@ BPE/Unigram observes the (gate-flip, shifted-op) bigram in one frame."""
 
 from __future__ import annotations
 
+__all__ = ["GateSlopeShiftPass"]
+
 import numpy as np
 
 from preframr_tokens.macros.passes_base import MacroPass

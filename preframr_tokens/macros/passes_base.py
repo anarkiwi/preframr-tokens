@@ -11,6 +11,8 @@ import pandas as pd
 from preframr_tokens.macros.state import _build_decode_state
 from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG
 
+__all__ = ["MacroPass", "requires_state"]
+
 
 class MacroPass:
     """Base class for encode-side passes operating on a token DataFrame."""

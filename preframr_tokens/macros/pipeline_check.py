@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from preframr_tokens.macros import transforms_parser_stubs  # noqa: F401 register stubs
 from preframr_tokens.macros.transform_registry import (
     PipelineConfigError,
     _REGISTRY,
     _normalize_spec,
+    ensure_default_transforms_registered,
 )
 from preframr_tokens.stfconstants import DIFF_OP, FLIP_OP, SET_OP
 
@@ -66,6 +66,7 @@ def _hardcoded_emits_non_set_regs() -> set[int]:
 
 def validate_pipeline_spec(spec: Any, args=None) -> list[str]:
     """Return a list of human-readable errors. Empty list = spec is valid."""
+    ensure_default_transforms_registered()
     entries = _normalize_spec(spec)
     errors: list[str] = []
     if not entries:
