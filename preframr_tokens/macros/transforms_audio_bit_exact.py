@@ -22,7 +22,11 @@ from preframr_tokens.macros.passes import (
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.slope_pass import SlopePass
-from preframr_tokens.macros.transform import Transform, register
+from preframr_tokens.macros.transform import (
+    PassBackedTransform,
+    Transform,
+    register,
+)
 from preframr_tokens.stfconstants import (
     BACK_REF_OP,
     BACK_REF_SUBREG_DIST_HI,
@@ -58,7 +62,7 @@ _PRESET_OPS = (PWM_PRESET_OP, FC_PRESET_OP, PWM_PRESET_SHIFTED_OP)
 
 
 @register("slope")
-class SlopeTransform(Transform):
+class SlopeTransform(PassBackedTransform):
     TIER = "audio_bit_exact"
     OP_CODES = frozenset(_SLOPE_OPS)
     SUBSTITUTABLE_OP_SUBREGS = frozenset(
@@ -69,15 +73,12 @@ class SlopeTransform(Transform):
     REQUIRES_ARGS = frozenset({"slope_pass"})
     PROVIDES_OPS = frozenset(_SLOPE_OPS)
     EMITS_NON_SET_REGS = frozenset({0, 2, 21})
+    PASS_CLASS = SlopePass
+    DECODER_CLASS = SlopeDecoder
 
     def __init__(self, **params):
         super().__init__(**params)
-        self._impl = SlopePass()
-        self._decoder = SlopeDecoder()
         self._shifted_decoder = ShiftedDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
 
     def expand_atom(self, row, state):
         op = int(getattr(row, "op"))
@@ -87,7 +88,7 @@ class SlopeTransform(Transform):
 
 
 @register("preset")
-class PresetTransform(Transform):
+class PresetTransform(PassBackedTransform):
     TIER = "audio_bit_exact"
     OP_CODES = frozenset(_PRESET_OPS)
     SUBSTITUTABLE_OP_SUBREGS = frozenset((int(op), -1) for op in _PRESET_OPS)
@@ -96,15 +97,12 @@ class PresetTransform(Transform):
     REQUIRES_ARGS = frozenset({"preset_pass"})
     PROVIDES_OPS = frozenset(_PRESET_OPS)
     EMITS_NON_SET_REGS = frozenset({2, 21})
+    PASS_CLASS = PresetPass
+    DECODER_CLASS = PresetDecoder
 
     def __init__(self, **params):
         super().__init__(**params)
-        self._impl = PresetPass()
-        self._decoder = PresetDecoder()
         self._shifted_decoder = ShiftedDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
 
     def expand_atom(self, row, state):
         op = int(getattr(row, "op"))
@@ -114,21 +112,15 @@ class PresetTransform(Transform):
 
 
 @register("per_reg_burst")
-class PerRegBurstTransform(Transform):
+class PerRegBurstTransform(PassBackedTransform):
     TIER = "audio_bit_exact"
     OP_CODES = frozenset()
     OPERATES_ON_VOICE_REGS = True
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = PerRegBurstPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
+    PASS_CLASS = PerRegBurstPass
 
 
 @register("transpose")
-class TransposeTransform(Transform):
+class TransposeTransform(PassBackedTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset({TRANSPOSE_OP})
     SUBSTITUTABLE_OPS = frozenset({TRANSPOSE_OP})
@@ -136,21 +128,12 @@ class TransposeTransform(Transform):
     LOSS_TIER = "content"
     PROVIDES_OPS = frozenset({TRANSPOSE_OP})
     EMITS_NON_SET_REGS = frozenset({0})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = TransposePass()
-        self._decoder = TransposeDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def expand_atom(self, row, state):
-        return self._decoder.expand(row, state)
+    PASS_CLASS = TransposePass
+    DECODER_CLASS = TransposeDecoder
 
 
 @register("flip2")
-class Flip2Transform(Transform):
+class Flip2Transform(PassBackedTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset({FLIP2_OP})
     SUBSTITUTABLE_OPS = frozenset({FLIP2_OP})
@@ -158,32 +141,17 @@ class Flip2Transform(Transform):
     LOSS_TIER = "content"
     PROVIDES_OPS = frozenset({FLIP2_OP})
     EMITS_NON_SET_REGS = frozenset({0, 2})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = Flip2Pass()
-        self._decoder = Flip2Decoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def expand_atom(self, row, state):
-        return self._decoder.expand(row, state)
+    PASS_CLASS = Flip2Pass
+    DECODER_CLASS = Flip2Decoder
 
 
 @register("dedup_set")
-class DedupSetTransform(Transform):
+class DedupSetTransform(PassBackedTransform):
     TIER = "audio_bit_exact"
     OP_CODES = frozenset()
     OPERATES_ON_VOICE_REGS = False
     IDEMPOTENT = True
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = DedupSetPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
+    PASS_CLASS = DedupSetPass
 
 
 @register("primitives")
@@ -218,7 +186,7 @@ class PrimitivesTransform(Transform):
 
 
 @register("loop")
-class LoopTransform(Transform):
+class LoopTransform(PassBackedTransform):
     TIER = "bit_exact"
     LOSS_TIER = "structural"
     REQUIRES_ARGS = frozenset({"loop_pass"})
@@ -252,13 +220,7 @@ class LoopTransform(Transform):
     DEFAULT_PARAMS = {"lookahead": 3}
     PARAM_VALIDATORS = {"lookahead": lambda v: isinstance(v, int) and v >= 1}
     DECODES_VIA_DF = True
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = LoopPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
+    PASS_CLASS = LoopPass
 
     def inverse(self, df, args=None):
         return expand_loops(df.copy())

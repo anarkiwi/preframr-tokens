@@ -20,6 +20,8 @@ from preframr_tokens.stfconstants import (
     VOICES,
 )
 
+__all__ = ["coarsen_pass", "CoarsenPass", "DEFAULT_MIN_COARSE_LEN"]
+
 DEFAULT_MIN_COARSE_LEN = 16
 
 _FRAME_MARKER_REGS = {FRAME_REG, DELAY_REG}

@@ -18,6 +18,16 @@ from preframr_tokens.stfconstants import (
     VOICE_REG_SIZE,
 )
 
+__all__ = [
+    "DumpMeta",
+    "meta_path_for",
+    "meta_code_hash",
+    "write_meta",
+    "read_meta",
+    "filter_dump_paths",
+    "META_SUFFIX",
+]
+
 LOGGER = logging.getLogger(__name__)
 
 META_SUFFIX = ".meta.parquet"

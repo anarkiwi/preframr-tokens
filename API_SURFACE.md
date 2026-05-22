@@ -64,6 +64,9 @@ Snapshot from `grep -rn 'from preframr_tokens'` in the main repo
 | `DEFAULT_IRQ_CYCLES` | `stfconstants` | preframr's hard-coded `19656` |
 | `TokenizeMeta` | `corpus` | typed dataclass replacing the untyped `Corpus._tokenize_meta` dict |
 | `PendingSlot` | `constrained_decode` | `IntEnum` consolidating the 7 mutually-exclusive `pending_*` booleans on `StreamState` (booleans remain as bidirectional `@property` shims for back-compat) |
+| `VocabArrays` | `constrained_decode` | `dict` subclass with `__getattr__` for attribute access (`a.is_real_reg` alongside `a["is_real_reg"]`). Return type of `precompute_vocab_arrays` and `precompute_subtoken_arrays`. External consumers retain dict semantics. |
+| `PassBackedTransform`, `RowExpandingTransform` | `macros.transform` | Public bases for `Transform` subclasses whose `forward()` is a single `MacroPass.apply` and (optionally) whose `inverse()` decomposes ``OP_CODES`` rows via a per-row `_expand_row` staticmethod. Hoisted from `transforms_bit_exact.py` so other transform files can reuse the pattern. |
+| `to_int64_arrays` | `utils` | Public version of the private `_int64_cols` helper. Extracts named columns from a df as int64 numpy arrays with explicit per-column ``fillna={col: value}`` map. Sweeps the 10+ ad-hoc `df[col].fillna(default).astype(np.int64).to_numpy()` triples that were scattered across the package. |
 
 ### Boundary constants (legitimate, no helper needed)
 
