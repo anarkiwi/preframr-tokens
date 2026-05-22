@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import ClassVar, Optional
 
 import pandas as pd
 
@@ -44,6 +44,10 @@ _LEGATO_DECODERS = {
 }
 
 
+def _row_to_dict(row, columns):
+    return {c: getattr(row, c) for c in columns}
+
+
 def _expand_op_rows(df: pd.DataFrame, op_codes, expand_fn) -> pd.DataFrame:
     if "op" not in df.columns or df.empty:
         return df
@@ -58,12 +62,47 @@ def _expand_op_rows(df: pd.DataFrame, op_codes, expand_fn) -> pd.DataFrame:
     return pd.DataFrame(out_rows, columns=df.columns).astype(df.dtypes.to_dict())
 
 
-def _row_to_dict(row, columns):
-    return {c: getattr(row, c) for c in columns}
+class _PassBackedTransform(Transform):
+    """Base for Transforms that wrap a single ``MacroPass`` for ``forward()``
+    and (optionally) a Decoder for ``expand_atom()``. Subclasses set
+    ``PASS_CLASS`` (required) and ``DECODER_CLASS`` (optional).
+    """
+
+    PASS_CLASS: ClassVar[Optional[type]] = None
+    DECODER_CLASS: ClassVar[Optional[type]] = None
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        assert (
+            self.PASS_CLASS is not None
+        ), f"{type(self).__name__}: PASS_CLASS must be set on subclass"
+        self._impl = self.PASS_CLASS()
+        if self.DECODER_CLASS is not None:
+            self._decoder = self.DECODER_CLASS()
+
+    def forward(self, df, args=None):
+        return self._impl.apply(df, args=args)
+
+    def expand_atom(self, row, state):
+        return self._decoder.expand(row, state)
+
+
+class _RowExpandingTransform(_PassBackedTransform):
+    """``_PassBackedTransform`` whose ``inverse()`` decomposes
+    ``OP_CODES`` rows back into SET atoms via the subclass's
+    ``_expand_row(row)`` staticmethod.
+    """
+
+    def inverse(self, df, args=None):
+        return _expand_op_rows(df, self.OP_CODES, self._expand_row)
+
+    @staticmethod
+    def _expand_row(row):
+        raise NotImplementedError
 
 
 @register("hard_restart")
-class HardRestartTransform(Transform):
+class HardRestartTransform(_RowExpandingTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset({HARD_RESTART_OP})
     OPERATES_ON_VOICE_REGS = True
@@ -72,27 +111,15 @@ class HardRestartTransform(Transform):
     REQUIRES_ARGS = frozenset({"hard_restart_pass"})
     PROVIDES_OPS = frozenset({HARD_RESTART_OP})
     EMITS_NON_SET_REGS = frozenset({4})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = HardRestartPass()
-        self._decoder = HardRestartDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def inverse(self, df, args=None):
-        return _expand_op_rows(df, self.OP_CODES, self._expand_row)
-
-    def expand_atom(self, row, state):
-        return self._decoder.expand(row, state)
+    PASS_CLASS = HardRestartPass
+    DECODER_CLASS = HardRestartDecoder
 
     @staticmethod
     def _expand_row(row):
         packed = int(getattr(row, "val")) & 0xFFFF
         a = (packed >> 8) & 0xFF
         b = packed & 0xFF
-        base = {c: getattr(row, c) for c in row._fields}
+        base = _row_to_dict(row, row._fields)
         base["op"] = int(SET_OP)
         first = dict(base)
         first["val"] = int(a)
@@ -102,7 +129,7 @@ class HardRestartTransform(Transform):
 
 
 @register("ctrl_bigram")
-class CtrlBigramTransform(Transform):
+class CtrlBigramTransform(_RowExpandingTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset({CTRL_BIGRAM_OP})
     OPERATES_ON_VOICE_REGS = True
@@ -111,26 +138,14 @@ class CtrlBigramTransform(Transform):
     REQUIRES_ARGS = frozenset({"ctrl_bigram_pass"})
     PROVIDES_OPS = frozenset({CTRL_BIGRAM_OP})
     EMITS_NON_SET_REGS = frozenset({4})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = CtrlBigramPass()
-        self._decoder = CtrlBigramDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def inverse(self, df, args=None):
-        return _expand_op_rows(df, self.OP_CODES, self._expand_row)
-
-    def expand_atom(self, row, state):
-        return self._decoder.expand(row, state)
+    PASS_CLASS = CtrlBigramPass
+    DECODER_CLASS = CtrlBigramDecoder
 
     @staticmethod
     def _expand_row(row):
         idx = int(getattr(row, "val"))
         prev_byte, cur_byte = CTRL_BIGRAM_TABLE[idx]
-        base = {c: getattr(row, c) for c in row._fields}
+        base = _row_to_dict(row, row._fields)
         base["op"] = int(SET_OP)
         first = dict(base)
         first["val"] = int(prev_byte)
@@ -140,37 +155,22 @@ class CtrlBigramTransform(Transform):
 
 
 @register("gate_slope_shift")
-class GateSlopeShiftTransform(Transform):
+class GateSlopeShiftTransform(_PassBackedTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset()
     OPERATES_ON_VOICE_REGS = True
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = GateSlopeShiftPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
+    PASS_CLASS = GateSlopeShiftPass
 
 
 @register("subreg_flush")
-class SubregFlushTransform(Transform):
+class SubregFlushTransform(_PassBackedTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset({SUBREG_FLUSH_OP})
     OPERATES_ON_VOICE_REGS = True
     LOSS_TIER = "structural"
     PROVIDES_OPS = frozenset({SUBREG_FLUSH_OP})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = SubregPass()
-        self._decoder = SubregFlushDecoder()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def expand_atom(self, row, state):
-        return self._decoder.expand(row, state)
+    PASS_CLASS = SubregPass
+    DECODER_CLASS = SubregFlushDecoder
 
 
 _LEGATO_OPS = frozenset(
@@ -184,7 +184,7 @@ _LEGATO_OPS = frozenset(
 
 
 @register("legato_per_cluster")
-class LegatoPerClusterTransform(Transform):
+class LegatoPerClusterTransform(_RowExpandingTransform):
     TIER = "bit_exact"
     OP_CODES = _LEGATO_OPS
     OPERATES_ON_VOICE_REGS = True
@@ -192,16 +192,8 @@ class LegatoPerClusterTransform(Transform):
     LOSS_TIER = "mid"
     PROVIDES_OPS = _LEGATO_OPS
     EMITS_NON_SET_REGS = frozenset({4})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = LegatoPerClusterPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
-
-    def inverse(self, df, args=None):
-        return _expand_op_rows(df, self.OP_CODES, self._expand_row)
+    PASS_CLASS = LegatoPerClusterPass
+    # Per-op decoder lookup via _LEGATO_DECODERS, not a single DECODER_CLASS.
 
     def expand_atom(self, row, state):
         decoder = _LEGATO_DECODERS[int(getattr(row, "op"))]
@@ -210,7 +202,7 @@ class LegatoPerClusterTransform(Transform):
     @staticmethod
     def _expand_row(row):
         op = int(getattr(row, "op"))
-        base = {c: getattr(row, c) for c in row._fields}
+        base = _row_to_dict(row, row._fields)
         base["op"] = int(SET_OP)
         if op == LEGATO_OP_CLUSTER_7:
             base["val"] = int(getattr(row, "val")) & 0xFF
@@ -220,16 +212,10 @@ class LegatoPerClusterTransform(Transform):
 
 
 @register("voice_block_order")
-class VoiceBlockOrderTransform(Transform):
+class VoiceBlockOrderTransform(_PassBackedTransform):
     TIER = "bit_exact"
     OP_CODES = frozenset()
     OPERATES_ON_VOICE_REGS = False
     IDEMPOTENT = True
     REQUIRES_ARGS = frozenset({"voice_canonical_block_order"})
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._impl = VoiceBlockOrderPass()
-
-    def forward(self, df, args=None):
-        return self._impl.apply(df, args=args)
+    PASS_CLASS = VoiceBlockOrderPass

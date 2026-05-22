@@ -1,10 +1,15 @@
 """Smoke tests for ``preframr_tokens.blocks``. Comprehensive coverage of the block-iteration helpers lives in the main `preframr` repo's RegDataset tests (where the full corpus + parser fixtures are available); here we verify the module imports cleanly and the trivial-input contracts."""
 
+import inspect
 import os
 import tempfile
 import unittest
 
-from preframr_tokens.blocks import glob_dumps, reg_widths_path
+from preframr_tokens.blocks import (
+    glob_dumps,
+    reg_widths_path,
+    self_contained_prompt_df,
+)
 
 
 class TestRegWidthsPath(unittest.TestCase):
@@ -32,6 +37,22 @@ class TestGlobDumps(unittest.TestCase):
             self.assertEqual(len(out), 2)
             for path in out:
                 self.assertTrue(path.endswith(".dump.parquet"))
+
+
+class TestSelfContainedPromptDfApi(unittest.TestCase):
+    """``self_contained_prompt_df`` has no callers inside
+    ``preframr_tokens`` but is imported by ``preframr/train/regdataset.py``.
+    Behavioural coverage lives in that repo's RegDataset tests (which
+    have the full loader / dataset / tokenizer fixtures). Here we only
+    pin the signature so an accidental rename or removal breaks loudly.
+    """
+
+    def test_signature(self):
+        sig = inspect.signature(self_contained_prompt_df)
+        self.assertEqual(
+            list(sig.parameters),
+            ["loader", "dataset", "seq", "seq_meta", "start", "prompt_seq_len", "irq"],
+        )
 
 
 if __name__ == "__main__":
