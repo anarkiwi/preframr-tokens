@@ -398,18 +398,6 @@ VOICES = 3
 VOICE_REG_SIZE = 7
 VOICE_CTRL_REG = {v: v * VOICE_REG_SIZE + 4 for v in range(VOICES)}
 
-
-def voice_of_reg(reg):
-    """Reg index -> voice (0..VOICES-1) or None for non-voice regs
-    (filter / mode_vol). Inverse of ``v * VOICE_REG_SIZE + offset``.
-    Negative carrier regs (FRAME_REG / DELAY_REG / VOICE_REG) also
-    map to None.
-    """
-    if reg < 0 or reg >= VOICES * VOICE_REG_SIZE:
-        return None
-    return reg // VOICE_REG_SIZE
-
-
 META_FREQ_BITS = 4
 FILTER_BITS = 5
 PCM_BITS = 5

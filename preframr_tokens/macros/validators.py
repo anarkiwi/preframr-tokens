@@ -1,5 +1,8 @@
 """Stream-level validators for encoded macro DataFrames."""
 
+from dataclasses import dataclass
+from typing import Optional
+
 import pandas as pd
 
 from preframr_tokens.macros.state import _FRAME_MARKER_REGS
@@ -21,6 +24,91 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
 )
+
+
+@dataclass
+class _DistancePairSpec:
+    label: str
+    dist_hi: int
+    dist_lo: int
+    length: int
+    extra_subregs: frozenset
+
+
+_DISTANCE_PAIR_OPS = {
+    BACK_REF_OP: _DistancePairSpec(
+        label="BACK_REF",
+        dist_hi=BACK_REF_SUBREG_DIST_HI,
+        dist_lo=BACK_REF_SUBREG_DIST_LO,
+        length=BACK_REF_SUBREG_LEN,
+        extra_subregs=frozenset(),
+    ),
+    PATTERN_REPLAY_OP: _DistancePairSpec(
+        # "PR" matches the original error-message abbreviation for
+        # PATTERN_REPLAY DIST/LEN assertions; tests grep for it.
+        label="PR",
+        dist_hi=PATTERN_REPLAY_SUBREG_DIST_HI,
+        dist_lo=PATTERN_REPLAY_SUBREG_DIST_LO,
+        length=PATTERN_REPLAY_SUBREG_LEN,
+        extra_subregs=frozenset({PATTERN_REPLAY_SUBREG_OVERLAY_COUNT}),
+    ),
+}
+
+
+@dataclass
+class _DistancePairState:
+    output_frame_count: int = 0
+    pending_dist_op: Optional[int] = None
+    pending_dist_idx: Optional[int] = None
+    pending_dist_hi: Optional[int] = None
+
+
+def _step_distance_pair(idx, row, sr, op, spec, state):
+    """Advance one row through the distance-pair state machine. Mutates state."""
+    label = spec.label
+    if sr == spec.dist_hi:
+        assert state.pending_dist_op is None, (
+            f"row {idx}: pending {state.pending_dist_op} at row "
+            f"{state.pending_dist_idx} not closed before new {label} DIST_HI"
+        )
+        state.pending_dist_op = op
+        state.pending_dist_idx = idx
+        state.pending_dist_hi = int(row["val"])
+        return
+    if sr == spec.dist_lo:
+        assert state.pending_dist_op == op and state.pending_dist_hi is not None, (
+            f"row {idx}: {label} DIST_LO without preceding DIST_HI "
+            f"(pending_dist_op={state.pending_dist_op})"
+        )
+        distance = (state.pending_dist_hi << BACK_REF_DIST_HI_SHIFT) | int(row["val"])
+        target = state.output_frame_count - distance
+        # The original wording for PATTERN_REPLAY uses the full op name in
+        # the bounds-check assertion (rather than the "PR" short label used
+        # for DIST/LEN). Preserve that asymmetry.
+        long_label = "PATTERN_REPLAY" if op == PATTERN_REPLAY_OP else label
+        assert target >= 0, (
+            f"row {idx}: {long_label} distance={distance} reaches "
+            f"before frame 0 (output_frame_count={state.output_frame_count})"
+        )
+        state.pending_dist_hi = None
+        return
+    if sr == spec.length:
+        assert state.pending_dist_op == op and state.pending_dist_hi is None, (
+            f"row {idx}: {label} length without a complete DIST pair "
+            f"(pending_dist_op={state.pending_dist_op}, "
+            f"hi={state.pending_dist_hi})"
+        )
+        state.output_frame_count += int(row["val"])
+        state.pending_dist_op = None
+        state.pending_dist_idx = None
+        return
+    if sr in spec.extra_subregs:
+        return
+    allowed = sorted({spec.dist_hi, spec.dist_lo, spec.length, *spec.extra_subregs})
+    raise AssertionError(
+        f"row {idx}: {label if op == BACK_REF_OP else 'PATTERN_REPLAY'} "
+        f"subreg={sr} not in {{{', '.join(str(s) for s in allowed)}}}"
+    )
 
 
 def validate_pattern_overlays(df):
@@ -117,112 +205,27 @@ def validate_back_refs(df, prompt_frame_count=0):
     """
     if "op" not in df.columns:
         return True
-    output_frame_count = prompt_frame_count
-    pending_dist_op = None
-    pending_dist_idx = None
-    pending_dist_hi = None
+    state = _DistancePairState(output_frame_count=prompt_frame_count)
     for idx, row in df.iterrows():
         op = int(row["op"]) if not pd.isna(row["op"]) else SET_OP
-        if op == BACK_REF_OP:
+        spec = _DISTANCE_PAIR_OPS.get(op)
+        if spec is not None:
             sr_raw = row.get("subreg", -1)
             sr = int(sr_raw) if not pd.isna(sr_raw) else -1
-            if sr == BACK_REF_SUBREG_DIST_HI:
-                assert pending_dist_op is None, (
-                    f"row {idx}: pending {pending_dist_op} at row "
-                    f"{pending_dist_idx} not closed before new BACK_REF DIST_HI"
-                )
-                pending_dist_op = BACK_REF_OP
-                pending_dist_idx = idx
-                pending_dist_hi = int(row["val"])
-                continue
-            if sr == BACK_REF_SUBREG_DIST_LO:
-                assert pending_dist_op == BACK_REF_OP and pending_dist_hi is not None, (
-                    f"row {idx}: BACK_REF DIST_LO without preceding DIST_HI "
-                    f"(pending_dist_op={pending_dist_op})"
-                )
-                distance = (pending_dist_hi << BACK_REF_DIST_HI_SHIFT) | int(row["val"])
-                target = output_frame_count - distance
-                assert target >= 0, (
-                    f"row {idx}: BACK_REF distance={distance} reaches before "
-                    f"frame 0 (output_frame_count={output_frame_count})"
-                )
-                pending_dist_hi = None
-                continue
-            if sr == BACK_REF_SUBREG_LEN:
-                assert pending_dist_op == BACK_REF_OP and pending_dist_hi is None, (
-                    f"row {idx}: BACK_REF length without a complete DIST pair "
-                    f"(pending_dist_op={pending_dist_op}, hi={pending_dist_hi})"
-                )
-                length = int(row["val"])
-                output_frame_count += length
-                pending_dist_op = None
-                pending_dist_idx = None
-                continue
-            raise AssertionError(
-                f"row {idx}: BACK_REF subreg={sr} not in "
-                f"{{{BACK_REF_SUBREG_DIST_HI}, {BACK_REF_SUBREG_DIST_LO}, "
-                f"{BACK_REF_SUBREG_LEN}}}"
-            )
-        if op == PATTERN_REPLAY_OP:
-            sr_raw = row.get("subreg", -1)
-            sr = int(sr_raw) if not pd.isna(sr_raw) else -1
-            if sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-                assert pending_dist_op is None, (
-                    f"row {idx}: pending {pending_dist_op} at row "
-                    f"{pending_dist_idx} not closed before new PR DIST_HI"
-                )
-                pending_dist_op = PATTERN_REPLAY_OP
-                pending_dist_idx = idx
-                pending_dist_hi = int(row["val"])
-                continue
-            if sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-                assert (
-                    pending_dist_op == PATTERN_REPLAY_OP and pending_dist_hi is not None
-                ), (
-                    f"row {idx}: PR DIST_LO without preceding DIST_HI "
-                    f"(pending_dist_op={pending_dist_op})"
-                )
-                distance = (pending_dist_hi << BACK_REF_DIST_HI_SHIFT) | int(row["val"])
-                target = output_frame_count - distance
-                assert target >= 0, (
-                    f"row {idx}: PATTERN_REPLAY distance={distance} reaches "
-                    f"before frame 0 (output_frame_count={output_frame_count})"
-                )
-                pending_dist_hi = None
-                continue
-            if sr == PATTERN_REPLAY_SUBREG_LEN:
-                assert (
-                    pending_dist_op == PATTERN_REPLAY_OP and pending_dist_hi is None
-                ), (
-                    f"row {idx}: PR length without a complete DIST pair "
-                    f"(pending_dist_op={pending_dist_op}, hi={pending_dist_hi})"
-                )
-                length = int(row["val"])
-                output_frame_count += length
-                pending_dist_op = None
-                pending_dist_idx = None
-                continue
-            if sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT:
-                continue
-            raise AssertionError(
-                f"row {idx}: PATTERN_REPLAY subreg={sr} not in "
-                f"{{{PATTERN_REPLAY_SUBREG_DIST_HI}, "
-                f"{PATTERN_REPLAY_SUBREG_DIST_LO}, "
-                f"{PATTERN_REPLAY_SUBREG_LEN}, "
-                f"{PATTERN_REPLAY_SUBREG_OVERLAY_COUNT}}}"
-            )
-        assert pending_dist_op is None, (
-            f"row {idx}: distance row at row {pending_dist_idx} "
-            f"(op={pending_dist_op}) interrupted with op={op}"
+            _step_distance_pair(idx, row, sr, op, spec, state)
+            continue
+        assert state.pending_dist_op is None, (
+            f"row {idx}: distance row at row {state.pending_dist_idx} "
+            f"(op={state.pending_dist_op}) interrupted with op={op}"
         )
         if op == PATTERN_OVERLAY_OP:
             continue
         if op == DO_LOOP_OP:
             continue
         if row["reg"] in _FRAME_MARKER_REGS:
-            output_frame_count += 1
-    assert pending_dist_op is None, (
-        f"distance row at row {pending_dist_idx} (op={pending_dist_op}) "
-        f"unfinished at end of df"
+            state.output_frame_count += 1
+    assert state.pending_dist_op is None, (
+        f"distance row at row {state.pending_dist_idx} "
+        f"(op={state.pending_dist_op}) unfinished at end of df"
     )
     return True

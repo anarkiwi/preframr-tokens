@@ -29,10 +29,6 @@ def get_transform_class(name: str) -> type["Transform"]:
     return _REGISTRY[name]
 
 
-def registered_names() -> list[str]:
-    return sorted(_REGISTRY)
-
-
 class Transform(ABC):
     """One step in the parse pipeline. Forward + inverse both operate on the entire df."""
 
@@ -213,12 +209,6 @@ def _normalize_spec(spec: Any) -> list[PipelineEntry]:
         else:
             raise TypeError(f"unsupported pipeline spec entry type {type(item)}")
     return out
-
-
-def spec_to_json(spec: Any) -> str:
-    if isinstance(spec, TransformPipeline):
-        spec = spec.to_spec()
-    return json.dumps(spec, sort_keys=False, separators=(",", ":"))
 
 
 def collect_substitutable_ops() -> frozenset[int]:

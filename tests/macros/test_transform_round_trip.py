@@ -12,6 +12,7 @@ from preframr_tokens.macros import (  # noqa: F401 register transforms
 from preframr_tokens.macros.transform import (
     _REGISTRY,
     collect_decomposing_op_codes,
+    collect_op_loss_tiers,
     collect_substitutable_op_subregs,
     collect_substitutable_ops,
 )
@@ -65,6 +66,21 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
         self.assertIn(HARD_RESTART_OP, ops)
         self.assertIn(CTRL_BIGRAM_OP, ops)
         self.assertNotIn(SET_OP, ops)
+
+    def test_collects_op_loss_tiers(self):
+        # collect_op_loss_tiers has no callers inside preframr_tokens but
+        # is imported by preframr/train/model/tier_map.py to build the
+        # tier-weighted loss; the ValueError branch defends against
+        # subclasses declaring an unknown LOSS_TIER. Pin the happy path
+        # so the function isn't removed as "dead".
+        tiers = collect_op_loss_tiers()
+        self.assertIsInstance(tiers, dict)
+        self.assertTrue(tiers, "expected at least one op->tier mapping")
+        self.assertEqual(tiers[int(HARD_RESTART_OP)], "structural")
+        self.assertEqual(tiers[int(CTRL_BIGRAM_OP)], "zero")
+        for op, tier in tiers.items():
+            self.assertIsInstance(op, int)
+            self.assertIn(tier, {"structural", "mid", "content", "zero"})
 
 
 class TestTransformRegistry(unittest.TestCase):
