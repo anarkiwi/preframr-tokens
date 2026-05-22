@@ -88,7 +88,7 @@ class Transform(ABC):
         recovered = self.inverse(forward, args=args)
         if self.TIER == "bit_exact":
             return _assert_frame_equal(df, recovered, label=self.NAME)
-        from integration_tests.audio_fidelity import assert_dfs_render_equivalent
+        from preframr_audio.fidelity import assert_dfs_render_equivalent
 
         return assert_dfs_render_equivalent(
             df,
