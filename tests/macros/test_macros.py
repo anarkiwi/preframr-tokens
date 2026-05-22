@@ -29,7 +29,7 @@ from preframr_tokens.stfconstants import (
     FLIP2_OP,
     FRAME_REG,
     HARD_RESTART_OP,
-    MIN_DIFF,
+    _MIN_DIFF,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
     LOOP_OP_REG,
@@ -682,7 +682,7 @@ class TestBuildDecodeState(unittest.TestCase):
 
 
 class TestBuildLastDiffFallback(unittest.TestCase):
-    """Documents `_build_last_diff`'s MIN_DIFF fallback for regs whose
+    """Documents `_build_last_diff`'s _MIN_DIFF fallback for regs whose
     only writes come from macro decoders (PLAY_INSTRUMENT body, INTERVAL
     mirror) rather than top-level SETs.
     """
@@ -707,11 +707,11 @@ class TestBuildLastDiffFallback(unittest.TestCase):
             ]
         )
         last_diff = _build_last_diff(df)
-        self.assertEqual(last_diff[0], MIN_DIFF)
+        self.assertEqual(last_diff[0], _MIN_DIFF)
 
     def test_diff_op_alone_does_not_seed(self):
         """DIFF rows on a reg without any SET also fall back to
-        MIN_DIFF -- only SET rows seed the lookup. This is by design
+        _MIN_DIFF -- only SET rows seed the lookup. This is by design
         (the seed represents the reg's initial-write cycle count, which
         only an explicit SET establishes)."""
         df = pd.DataFrame(
@@ -720,7 +720,7 @@ class TestBuildLastDiffFallback(unittest.TestCase):
             ]
         )
         last_diff = _build_last_diff(df)
-        self.assertEqual(last_diff[2], MIN_DIFF)
+        self.assertEqual(last_diff[2], _MIN_DIFF)
 
     def test_decode_state_diff_for_unseeded_reg_is_min_diff(self):
         from preframr_tokens.macros import _build_decode_state
@@ -733,7 +733,7 @@ class TestBuildLastDiffFallback(unittest.TestCase):
         )
         state = _build_decode_state(df)
         self.assertEqual(state.diff_for(4), 200)
-        self.assertEqual(state.diff_for(99), MIN_DIFF)
+        self.assertEqual(state.diff_for(99), _MIN_DIFF)
 
 
 class TestOverlayBodyFreqDeltaCents(unittest.TestCase):

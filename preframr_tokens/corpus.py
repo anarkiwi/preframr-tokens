@@ -34,6 +34,19 @@ from preframr_tokens.stfconstants import (
     SUBREG_PDTYPE,
 )
 
+__all__ = ["Corpus", "TokenizeMeta"]
+
+
+def _collect_atoms(df, sink):
+    """Accumulate ``(op, reg, subreg, val)`` tuples from ``df`` into ``sink``. No-op if df is empty or missing required columns."""
+    if df is None or len(df) == 0:
+        return
+    if not {"op", "reg", "subreg", "val"}.issubset(df.columns):
+        return
+    sub = df[["op", "reg", "subreg", "val"]].drop_duplicates()
+    for op, reg, subreg, val in sub.itertuples(index=False, name=None):
+        sink.add((int(op), int(reg), int(subreg), int(val)))
+
 
 @dataclass
 class TokenizeMeta:
@@ -146,15 +159,6 @@ class Corpus:
         train_atom_tuples = set()
         project_eval = bool(getattr(self.args, "project_eval_to_train", True))
 
-        def _collect_atoms(df, sink):
-            if df is None or len(df) == 0:
-                return
-            if not {"op", "reg", "subreg", "val"}.issubset(df.columns):
-                return
-            sub = df[["op", "reg", "subreg", "val"]].drop_duplicates()
-            for op, reg, subreg, val in sub.itertuples(index=False, name=None):
-                sink.add((int(op), int(reg), int(subreg), int(val)))
-
         def walk(reglogs_glob, kind, files_out, projection=None, atom_sink=None):
             for df_file, i, df, _seq, irq, blocks in self.load_dfs(
                 reglogs=reglogs_glob, max_perm=self.args.max_perm
@@ -223,6 +227,33 @@ class Corpus:
             val_subsets=list(eval_subsets.keys()),
         )
         return train_files, val_files, cached_blocks
+
+    def _build_df_map_frame(self, train_files, val_files):
+        """Build the dump_file → kind/irq/n_rotations dataframe written to ``args.df_map_csv``. Uses ``_tokenize_meta`` for kind / irq / n_rotations lookups; falls back to "train" / LEGACY_EVAL_SUBSET_NAME if meta is absent."""
+        meta = self._tokenize_meta
+        kind_lookup = meta.kind_by_file if meta else {}
+        rows = []
+        for p in train_files:
+            rows.append((p, kind_lookup.get(p, "train")))
+        for p in val_files:
+            rows.append((p, kind_lookup.get(p, LEGACY_EVAL_SUBSET_NAME)))
+        df = pd.DataFrame(rows, columns=["dump_file", "kind"])
+        if meta:
+            df["irq"] = df["dump_file"].map(meta.irq_by_file).astype("Int64")
+            df["n_rotations"] = (
+                df["dump_file"].map(meta.rotations_by_file).astype("Int64")
+            )
+        return df
+
+    def _write_reg_widths_sidecar(self, df_map_csv_path):
+        """Write the reg_widths JSON sidecar alongside ``df_map_csv_path``. No-op if no tokenize-stage meta or no df-map path."""
+        meta = self._tokenize_meta
+        if not meta or not df_map_csv_path:
+            return
+        sidecar = reg_widths_path(df_map_csv_path)
+        self.logger.info("writing reg_widths to %s", sidecar)
+        with open(sidecar, "w") as f:
+            json.dump({str(k): int(v) for k, v in meta.reg_widths.items()}, f)
 
     def encode_and_save_cached_blocks(self, cached_blocks):
         """Encode each cached voiced-block df via the now-finalised tokenizer and write .blocks.npy. Failures (alphabet doesn't cover a row's (op, reg, subreg, val)) propagate; this is the catch point for any bug in the alphabet-building pipeline."""
@@ -316,35 +347,12 @@ class Corpus:
         dataset_csv = self.args.dataset_csv
         df_map_csv = self.args.df_map_csv
 
-        meta = self._tokenize_meta
-
-        def _df_map_frame():
-            kind_lookup = meta.kind_by_file if meta else {}
-            rows = []
-            for p in train_files:
-                rows.append((p, kind_lookup.get(p, "train")))
-            for p in val_files:
-                rows.append((p, kind_lookup.get(p, LEGACY_EVAL_SUBSET_NAME)))
-            df = pd.DataFrame(rows, columns=["dump_file", "kind"])
-            if meta:
-                df["irq"] = df["dump_file"].map(meta.irq_by_file).astype("Int64")
-                df["n_rotations"] = (
-                    df["dump_file"].map(meta.rotations_by_file).astype("Int64")
-                )
-            return df
-
-        def _write_reg_widths(df_map_csv_path):
-            if not meta or not df_map_csv_path:
-                return
-            sidecar = reg_widths_path(df_map_csv_path)
-            self.logger.info("writing reg_widths to %s", sidecar)
-            with open(sidecar, "w") as f:
-                json.dump({str(k): int(v) for k, v in meta.reg_widths.items()}, f)
-
         if not self.args.tkvocab and not dataset_csv:
             if df_map_csv:
-                _df_map_frame().to_csv(df_map_csv, index=False)
-                _write_reg_widths(df_map_csv)
+                self._build_df_map_frame(train_files, val_files).to_csv(
+                    df_map_csv, index=False
+                )
+                self._write_reg_widths_sidecar(df_map_csv)
             return
 
         def worker():
@@ -373,8 +381,10 @@ class Corpus:
 
             if df_map_csv:
                 self.logger.info("writing dataset map to %s", df_map_csv)
-                _df_map_frame().to_csv(df_map_csv, index=False)
-                _write_reg_widths(df_map_csv)
+                self._build_df_map_frame(train_files, val_files).to_csv(
+                    df_map_csv, index=False
+                )
+                self._write_reg_widths_sidecar(df_map_csv)
 
         if self.args.tkvocab:
             self.tokenizer.train_tokenizer(worker())

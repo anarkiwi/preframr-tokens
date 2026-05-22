@@ -6,6 +6,8 @@ import numpy as np
 
 from preframr_tokens.vocab_signature import VocabSignature
 
+__all__ = ["vocab_frame_weights"]
+
 
 def vocab_frame_weights(rt, tokens, n_vocab: int) -> np.ndarray:
     """Per-vocab-id frame-time weight (float32). Default 1.0 for tokens with no explicit weight. Weight sources: BACK_REF_LEN (val), DO_LOOP (val), SLOPE_RUNTIME (val), DELAY (val), FRAME (+1.0)."""

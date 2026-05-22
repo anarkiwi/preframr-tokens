@@ -169,13 +169,10 @@ class HardRestartDecoder(MacroDecoder):
 
 
 class _LegatoClusterNibbleDecoder(MacroDecoder):
-    """Per-cluster nibble-form decoder. Subclasses bind a specific
-    ``op_code`` via the class attribute; semantics identical to
-    ``LegatoDecoder`` (val = waveform nibble; low nibble inherited
-    from prev CTRL byte). Used by clusters 2/3/4 in ``LegatoPerClusterPass``.
-    """
+    """Per-cluster nibble-form decoder. ``op_code`` is bound at construction so the same class serves every nibble-form cluster (2/3/4). Semantics: val = waveform nibble; low nibble inherited from prev CTRL byte. Used by ``LegatoPerClusterPass``."""
 
-    op_code = -1
+    def __init__(self, op_code):
+        self.op_code = op_code
 
     def expand(self, row, state):
         pre = state.maybe_flush_for(row.reg, -1)
@@ -189,12 +186,10 @@ class _LegatoClusterNibbleDecoder(MacroDecoder):
 
 
 class _LegatoClusterByteDecoder(MacroDecoder):
-    """Per-cluster byte-form decoder. ``val`` is the full CTRL byte
-    (handles Hubbard's gate-byte $FE / $FC sub-case where the low
-    nibble changes). Used by cluster 7 in ``LegatoPerClusterPass``.
-    """
+    """Per-cluster byte-form decoder. ``val`` is the full CTRL byte (handles Hubbard's gate-byte $FE / $FC sub-case where the low nibble changes). Used by cluster 7 in ``LegatoPerClusterPass``."""
 
-    op_code = -1
+    def __init__(self, op_code):
+        self.op_code = op_code
 
     def expand(self, row, state):
         pre = state.maybe_flush_for(row.reg, -1)
@@ -204,22 +199,6 @@ class _LegatoClusterByteDecoder(MacroDecoder):
         state.last_val[ctrl_reg] = new_byte
         writes.append((ctrl_reg, new_byte, row.diff, row.description))
         return writes
-
-
-class LegatoCluster2Decoder(_LegatoClusterNibbleDecoder):
-    op_code = LEGATO_OP_CLUSTER_2
-
-
-class LegatoCluster3Decoder(_LegatoClusterNibbleDecoder):
-    op_code = LEGATO_OP_CLUSTER_3
-
-
-class LegatoCluster4Decoder(_LegatoClusterNibbleDecoder):
-    op_code = LEGATO_OP_CLUSTER_4
-
-
-class LegatoCluster7Decoder(_LegatoClusterByteDecoder):
-    op_code = LEGATO_OP_CLUSTER_7
 
 
 class SlopeDecoder(MacroDecoder):
@@ -376,10 +355,10 @@ DECODERS = {
         Flip2Decoder(),
         SubregFlushDecoder(),
         HardRestartDecoder(),
-        LegatoCluster2Decoder(),
-        LegatoCluster3Decoder(),
-        LegatoCluster4Decoder(),
-        LegatoCluster7Decoder(),
+        _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_2),
+        _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_3),
+        _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
+        _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
         CtrlBigramDecoder(),
         PwmSustainDecoder(),
         WavetableSustainDecoder(),

@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 
+__all__ = ["build_projection_table", "project_df"]
+
 
 def build_projection_table(train_atoms):
     """Return dict mapping (op, reg, subreg) -> sorted ascending numpy int64 vals."""

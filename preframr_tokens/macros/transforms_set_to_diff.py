@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.macros.passes_base import _int64_cols
 from preframr_tokens.macros.transform import Transform, register
+from preframr_tokens.utils import to_int64_arrays
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_BIGRAM_TABLE,
@@ -187,7 +187,7 @@ def _convert_sets_to_diffs(
 ) -> pd.DataFrame:
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    reg, val, op = _int64_cols(out, "reg", "val", "op")
+    reg, val, op = to_int64_arrays(out, "reg", "val", "op", fillna={"val": 0})
     voice_per_row = _voice_per_row(reg, val, n, op=op)
     f_idx = np.cumsum((reg == int(FRAME_REG)).astype(np.int64))
     anchor_set = _gate_anchor_set(reg, val, op, voice_per_row, f_idx, n)
@@ -266,7 +266,7 @@ def _convert_sets_to_diffs(
 def _collapse_sustain_frames(df: pd.DataFrame) -> pd.DataFrame:
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    reg, val, op = _int64_cols(out, "reg", "val", "op")
+    reg, val, op = to_int64_arrays(out, "reg", "val", "op", fillna={"val": 0})
     voice_per_row = _voice_per_row(reg, val, n, op=op)
     f_idx = np.cumsum((reg == int(FRAME_REG)).astype(np.int64))
     anchor_set = _gate_anchor_set(reg, val, op, voice_per_row, f_idx, n)
@@ -344,7 +344,7 @@ def _expand_sustain_frames(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    op_col, val_col, reg_col = _int64_cols(out, "op", "val", "reg", fill0=())
+    op_col, val_col, reg_col = to_int64_arrays(out, "op", "val", "reg")
     records = out.to_dict(orient="records")
     new_rows: list[dict] = []
     template = {col: 0 for col in out.columns}
@@ -402,7 +402,7 @@ def _expand_sustain_frames(df: pd.DataFrame) -> pd.DataFrame:
 def _materialize_diffs(df: pd.DataFrame) -> pd.DataFrame:
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    reg, val, op = _int64_cols(out, "reg", "val", "op")
+    reg, val, op = to_int64_arrays(out, "reg", "val", "op", fillna={"val": 0})
     voice_per_row = _voice_per_row(reg, val, n, op=op)
 
     running: dict[tuple[int, int], int] = {}

@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.macros.passes_base import _int64_cols
 from preframr_tokens.macros.roles import slope_subreg_role
+from preframr_tokens.utils import to_int64_arrays
 from preframr_tokens.macros.transform import Transform, register
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -124,7 +124,7 @@ def compute_frame_stats(df: pd.DataFrame):
     """Walk df once and build (frame_stats, voice_at_marker, voice_per_row, f_idx). frame_stats is a dict keyed by (frame, voice) of per-voice activity summaries; voice_at_marker[i] is voice id at VOICE_REG rows (-1 elsewhere); voice_per_row[i] is the ffilled voice for any row. Shared between insertion-mode and distributed-mode trajectory transforms."""
     out = df.reset_index(drop=True)
     n = len(out)
-    reg, val, op = _int64_cols(out, "reg", "val", "op")
+    reg, val, op = to_int64_arrays(out, "reg", "val", "op", fillna={"val": 0})
     is_frame = reg == int(FRAME_REG)
     is_voice = reg == int(VOICE_REG)
     f_idx = np.cumsum(is_frame.astype(np.int64))
@@ -272,7 +272,7 @@ def _annotate_voice_trajectory(
         df = df[df["reg"] != VOICE_TRAJ_REG].reset_index(drop=True)
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    reg, val = _int64_cols(out, "reg", "val")
+    reg, val = to_int64_arrays(out, "reg", "val", fillna={"val": 0})
     is_voice = reg == int(VOICE_REG)
     frame_stats, voice_at_marker, _voice_per_row, f_idx = compute_frame_stats(out)
     if not np.any(voice_at_marker >= 0):

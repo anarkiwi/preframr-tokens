@@ -9,6 +9,22 @@ from typing import Any, ClassVar, Iterable, Optional
 
 import pandas as pd
 
+__all__ = [
+    "Transform",
+    "TransformPipeline",
+    "PipelineEntry",
+    "PassBackedTransform",
+    "RowExpandingTransform",
+    "register",
+    "get_transform_class",
+    "ensure_default_transforms_registered",
+    "collect_substitutable_ops",
+    "collect_substitutable_op_subregs",
+    "collect_decomposing_op_codes",
+    "collect_op_loss_tiers",
+    "LOSS_TIER_NAMES",
+]
+
 _REGISTRY: dict[str, type["Transform"]] = {}
 _DEFAULTS_REGISTERED = False
 
@@ -249,7 +265,58 @@ def collect_decomposing_op_codes() -> frozenset[int]:
 
 
 LOSS_TIER_NAMES = ("structural", "mid", "content", "zero")
-_LOSS_TIER_NAMES = LOSS_TIER_NAMES  # back-compat alias
+
+
+def _row_to_dict(row, columns):
+    return {c: getattr(row, c) for c in columns}
+
+
+def _expand_op_rows(df: pd.DataFrame, op_codes, expand_fn) -> pd.DataFrame:
+    """Decompose rows whose ``op`` is in ``op_codes`` via ``expand_fn(row)``; pass other rows through unchanged. Returns a new DataFrame with original dtypes preserved."""
+    if "op" not in df.columns or df.empty:
+        return df
+    out_rows = []
+    for row in df.itertuples(index=False):
+        if int(getattr(row, "op")) in op_codes:
+            out_rows.extend(expand_fn(row))
+        else:
+            out_rows.append(_row_to_dict(row, df.columns))
+    if not out_rows:
+        return df.iloc[0:0]
+    return pd.DataFrame(out_rows, columns=df.columns).astype(df.dtypes.to_dict())
+
+
+class PassBackedTransform(Transform):
+    """Base for Transforms whose ``forward()`` is a single ``MacroPass.apply`` and (optionally) whose ``expand_atom()`` delegates to a per-row ``Decoder.expand``. Subclasses set ``PASS_CLASS`` (required) and ``DECODER_CLASS`` (optional)."""
+
+    PASS_CLASS: ClassVar[Optional[type]] = None
+    DECODER_CLASS: ClassVar[Optional[type]] = None
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        assert (
+            self.PASS_CLASS is not None
+        ), f"{type(self).__name__}: PASS_CLASS must be set on subclass"
+        self._impl = self.PASS_CLASS()
+        if self.DECODER_CLASS is not None:
+            self._decoder = self.DECODER_CLASS()
+
+    def forward(self, df, args=None):
+        return self._impl.apply(df, args=args)
+
+    def expand_atom(self, row, state):
+        return self._decoder.expand(row, state)
+
+
+class RowExpandingTransform(PassBackedTransform):
+    """``PassBackedTransform`` whose ``inverse()`` decomposes ``OP_CODES`` rows back into SET atoms via the subclass's ``_expand_row(row)`` staticmethod."""
+
+    def inverse(self, df, args=None):
+        return _expand_op_rows(df, self.OP_CODES, self._expand_row)
+
+    @staticmethod
+    def _expand_row(row):
+        raise NotImplementedError
 
 
 def collect_op_loss_tiers() -> dict[int, str]:

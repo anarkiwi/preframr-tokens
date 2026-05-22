@@ -22,6 +22,14 @@ from preframr_tokens.stfconstants import (
     SLOPE_SUBREG_TERMINAL_LO,
 )
 
+__all__ = [
+    "DistancePairSpec",
+    "DISTANCE_PAIR_OPS",
+    "distance_pair_role",
+    "slope_subreg_role",
+    "frame_weight_role",
+]
+
 
 @dataclass(frozen=True)
 class DistancePairSpec:

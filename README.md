@@ -126,11 +126,9 @@ plus the narrowing opportunities still on the table is in
   Replaces the manual `is_real_reg[tail].sum() * MIN_DIFF`
   arithmetic + the matching `MIN_DIFF` import in consumers.
 - `preframr_tokens.constrained_decode.frame_marker_count` —
-  formerly `_frame_marker_count`; promoted (the underscore alias
-  remains for one release cycle).
+  formerly `_frame_marker_count`; promoted (underscore alias dropped).
 - `preframr_tokens.constrained_decode.StreamState.compute_invalid_mask`
-  — formerly `_compute_invalid`; promoted (the underscore alias
-  remains for one release cycle).
+  — formerly `_compute_invalid`; promoted (underscore alias dropped).
 - `preframr_tokens.macros.transform.ensure_default_transforms_registered`
   — call before any `_REGISTRY` lookup to populate
   `transforms_audio_bit_exact` / `transforms_bit_exact` side effects.
@@ -165,15 +163,14 @@ Public surface (semver-promised once v1.0):
 
 ### Back-compat aliases scheduled to drop
 
-The narrowing pass added or kept these aliases so the next main-repo
-release cycle can land without breaking. They will be removed in the
-release after.
+The internal aliases (`_frame_marker_count`, `_compute_invalid`,
+`_LOSS_TIER_NAMES`) and the public `MIN_DIFF` re-export have been
+removed this round; consumers have cut over to the public names.
+What remains is the `reglog_helpers` re-export set, which is blocked
+on a main-repo cutover of `render_play.py`.
 
 | alias | replacement | location |
 |---|---|---|
-| `constrained_decode._frame_marker_count` | `frame_marker_count` | `preframr_tokens/constrained_decode.py` |
-| `StreamState._compute_invalid` | `StreamState.compute_invalid_mask` | `preframr_tokens/constrained_decode.py` |
-| `transform._LOSS_TIER_NAMES` | `LOSS_TIER_NAMES` | `preframr_tokens/macros/transform.py` |
 | `reglog_helpers.dump_palettes_attrs` | `palette_io.dump_palettes_attrs` | `preframr_tokens/reglog_helpers.py` |
 | `reglog_helpers.load_palettes_attrs` | `palette_io.load_palettes_attrs` | `preframr_tokens/reglog_helpers.py` |
 | `reglog_helpers.wrapbits` | `utils.wrapbits` | `preframr_tokens/reglog_helpers.py` |

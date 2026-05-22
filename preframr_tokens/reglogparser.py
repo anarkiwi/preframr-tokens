@@ -36,7 +36,7 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     MAX_REG,
     META_FREQ_BITS,
-    MIN_DIFF,
+    _MIN_DIFF,
     MODE_VOL_REG,
     MODEL_PDTYPE,
     PAD_REG,
@@ -54,6 +54,12 @@ from preframr_tokens.stfconstants import (
     VOICE_TRAJ_REG,
     WAVETABLE_SUSTAIN_OP,
 )
+
+__all__ = [
+    "RegLogParser",
+    "remove_voice_reg",
+    "prepare_df_for_audio",
+]
 
 _SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP), int(WAVETABLE_SUSTAIN_OP)}
 _VOICE_TRAJ_REG_INT = int(VOICE_TRAJ_REG)
@@ -302,7 +308,7 @@ class RegLogParser:
 
     def _state_df(self, states, dataset, irq):
         tokens = dataset.tokenizer.tokens.copy()
-        tokens["diff"] = MIN_DIFF
+        tokens["diff"] = _MIN_DIFF
         tokens.loc[tokens["reg"] < -MAX_REG, "diff"] = 0
         tokens.loc[tokens["reg"] == PAD_REG, "diff"] = 0
         tokens.loc[tokens["reg"] == FRAME_REG, "diff"] = irq
@@ -374,7 +380,7 @@ class RegLogParser:
     def _add_frame_reg(self, orig_df, diffmax, min_irq_prop=0.95):
         df = orig_df.copy()
         df["irqdiff"] = df["irq"].diff().fillna(0).astype(MODEL_PDTYPE)
-        df["diff"] = MIN_DIFF
+        df["diff"] = _MIN_DIFF
         df["i"] = df.index * 10
         m = df["irqdiff"] > diffmax
         largest_irqs_sum = 0

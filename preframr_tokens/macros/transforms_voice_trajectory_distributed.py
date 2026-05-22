@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.macros.passes_base import _int64_cols
 from preframr_tokens.macros.transform import Transform, register
+from preframr_tokens.utils import to_int64_arrays
 from preframr_tokens.macros.transforms_voice_trajectory import (
     _compute_trajectory_byte,
     compute_frame_stats,
@@ -58,7 +58,7 @@ class VoiceTrajectoryDistributedTransform(Transform):
 def _distribute_voice_trajectory(df: pd.DataFrame, window: int) -> pd.DataFrame:
     out = df.reset_index(drop=True).copy()
     n = len(out)
-    reg, val, op = _int64_cols(out, "reg", "val", "op")
+    reg, val, op = to_int64_arrays(out, "reg", "val", "op", fillna={"val": 0})
     is_frame = reg == int(FRAME_REG)
     is_voice = reg == int(VOICE_REG)
     f_idx = np.cumsum(is_frame.astype(np.int64))
@@ -98,7 +98,7 @@ def _strip_distributed_trajectory(df: pd.DataFrame) -> pd.DataFrame:
     out = df.reset_index(drop=True).copy()
     if "val" not in out.columns or "reg" not in out.columns:
         return out
-    reg, val = _int64_cols(out, "reg", "val")
+    reg, val = to_int64_arrays(out, "reg", "val", fillna={"val": 0})
     new_vals = val.copy()
     is_frame = reg == int(FRAME_REG)
     is_voice = reg == int(VOICE_REG)

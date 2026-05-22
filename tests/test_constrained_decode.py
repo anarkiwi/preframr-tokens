@@ -20,7 +20,7 @@ from preframr_tokens.stfconstants import (
     BACK_REF_SUBREG_LEN,
     DELAY_REG,
     FRAME_REG,
-    MIN_DIFF,
+    _MIN_DIFF,
     PAD_REG,
     PATTERN_OVERLAY_OP,
     PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
@@ -291,7 +291,7 @@ class TestStreamStateMasking(unittest.TestCase):
         self.assertFalse(m[PO_NV])
 
     def test_diff_budget_exhaustion(self):
-        state = self._state(init_budget=MIN_DIFF - 1)
+        state = self._state(init_budget=_MIN_DIFF - 1)
         m = _mask_bool(state, self.n)
         self.assertTrue(m[SET_R0])
         self.assertFalse(m[FRAME11])
@@ -321,7 +321,7 @@ class TestStreamStateUpdate(unittest.TestCase):
     def test_real_reg_charges_budget(self):
         state = StreamState(self.arrs, init_frame_count=0, irq=100, init_budget=64)
         state.update(SET_R0)
-        self.assertEqual(state.frame_budget, 64 - MIN_DIFF)
+        self.assertEqual(state.frame_budget, 64 - _MIN_DIFF)
 
     def test_voice_rotation_tracking(self):
         state = StreamState(self.arrs, init_frame_count=0, irq=100)
@@ -554,12 +554,12 @@ class TestTailChargeForPrompt(unittest.TestCase):
     def test_charges_real_regs_after_last_marker(self):
         arrays = self._arrays()
         from preframr_tokens.stfconstants import (
-            MIN_DIFF,
+            _MIN_DIFF,
         )  # pylint: disable=import-outside-toplevel
 
-        self.assertEqual(tail_charge_for_prompt([1, 2, 3], arrays), 2 * MIN_DIFF)
-        self.assertEqual(tail_charge_for_prompt([1, 2, 3, 4], arrays), 2 * MIN_DIFF)
-        self.assertEqual(tail_charge_for_prompt([1, 0, 2], arrays), MIN_DIFF)
+        self.assertEqual(tail_charge_for_prompt([1, 2, 3], arrays), 2 * _MIN_DIFF)
+        self.assertEqual(tail_charge_for_prompt([1, 2, 3, 4], arrays), 2 * _MIN_DIFF)
+        self.assertEqual(tail_charge_for_prompt([1, 0, 2], arrays), _MIN_DIFF)
 
     def test_returns_zero_when_marker_is_last(self):
         arrays = self._arrays()

@@ -12,7 +12,7 @@ from preframr_tokens.stfconstants import (
     FILTER_REG,
     FRAME_REG,
     MAX_REG,
-    MIN_DIFF,
+    _MIN_DIFF,
     MODE_VOL_REG,
     SET_OP,
     VOICES,
@@ -160,7 +160,7 @@ class DecodeState:
         self.pending_deferred_post_marker = []
 
     def diff_for(self, reg):
-        return self.last_diff.get(reg, MIN_DIFF)
+        return self.last_diff.get(reg, _MIN_DIFF)
 
     def peek(self, reg):
         """Return the running byte value of ``reg`` without mutating
@@ -244,12 +244,12 @@ class DecodeState:
 
 def _build_last_diff(df):
     """Per-reg first-SET diff lookup. Returns ``{int(reg): int(diff)}``
-    with ``MIN_DIFF`` as the fallback when a reg has no SET row.
+    with ``_MIN_DIFF`` as the fallback when a reg has no SET row.
     """
     last_diff = {}
     for reg in df["reg"].unique():
         sub = df[(df["reg"] == reg) & (df["op"] == SET_OP)]["diff"]
-        last_diff[int(reg)] = int(sub.iloc[0]) if len(sub) else MIN_DIFF
+        last_diff[int(reg)] = int(sub.iloc[0]) if len(sub) else _MIN_DIFF
     return last_diff
 
 

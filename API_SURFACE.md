@@ -90,33 +90,31 @@ shipped in `preframr-audio==0.2.0`). The next pass is now about
 **dropping the back-compat aliases** that those cutovers made
 obsolete.
 
-### Status (after cutover round 3)
+### Status (after cutover round 4)
 
 | symbol | leak shape | resolution | status |
 |---|---|---|---|
-| `MIN_DIFF` (stfconstants) | Was re-exported and imported by `preframr/inference/predict.py:37` for inline tail-charge math. | Replaced by `tail_charge_for_prompt(prompt_ids, vocab_arrays)`; predict.py no longer imports `MIN_DIFF`. | **done** in main repo; **next:** rename to `_MIN_DIFF` in `stfconstants.py` and verify no other reach. |
+| `MIN_DIFF` (stfconstants) | Was re-exported and imported by `preframr/inference/predict.py:37` for inline tail-charge math. | Replaced by `tail_charge_for_prompt(prompt_ids, vocab_arrays)`; predict.py no longer imports `MIN_DIFF`. Renamed to `_MIN_DIFF` in `stfconstants.py`; internal callers + tests updated. The re-export in `macros/__init__.py` is also dropped. | **done** |
 | `FRAME_REG` in `preframr/inference/render_play.py` | `df[df["reg"] == FRAME_REG]` + diff lookup. | Replaced by `read_initial_irq(df)`. | **done** |
 | `FRAME_REG` in `preframr-audio/preframr_audio/fidelity.py:201` | `df[df["reg"] == FRAME_REG]` + diff lookup with explicit raise on empty. | Shipped in `preframr-audio==0.2.0` as `read_initial_irq(df, default=_IRQ_MISSING_SENTINEL)` with sentinel check preserving the raise contract. | **done** |
-| `_LOSS_TIER_NAMES` | Underscore-prefixed alias kept for back-compat against pre-cutover preframr. | Main repo cuts over to public `LOSS_TIER_NAMES` in `tier_map.py`. No consumer reaches `_LOSS_TIER_NAMES` anywhere now. | **done** in main repo; **next:** drop the alias in `macros/transform.py`. |
-| `_frame_marker_count` (constrained_decode) | Private-prefix imported by `preframr/inference/predict.py`. | Renamed + main repo imports public `frame_marker_count` directly. | **done** in main repo; **next:** drop the `_frame_marker_count = frame_marker_count` alias in `constrained_decode.py`. |
-| `StreamState._compute_invalid` | Protected method called from tests via `# pylint: disable=protected-access`. | Public `compute_invalid_mask` landed; tests use the public name. The `_compute_invalid` alias has no remaining consumer. | **done** in tests; **next:** drop the `_compute_invalid = compute_invalid_mask` class-level alias. |
+| `_LOSS_TIER_NAMES` | Underscore-prefixed alias kept for back-compat against pre-cutover preframr. | Main repo cuts over to public `LOSS_TIER_NAMES` in `tier_map.py`. The alias in `macros/transform.py` is now dropped. | **done** |
+| `_frame_marker_count` (constrained_decode) | Private-prefix imported by `preframr/inference/predict.py`. | Renamed + main repo imports public `frame_marker_count` directly. Alias in `constrained_decode.py` is dropped. | **done** |
+| `StreamState._compute_invalid` | Protected method called from tests via `# pylint: disable=protected-access`. | Public `compute_invalid_mask` landed; tests use the public name. The `_compute_invalid = compute_invalid_mask` class-level alias is dropped. | **done** |
 | `vocab_id_tier` re-implementation in `preframr/train/model/tier_map.py` | Main repo open-coded the `(reg, op) → tier` switch. | `tier_map.py` is now a thin torch adapter over `vocab_id_tier` / `build_vocab_tier_ids` / `build_vocab_tier_map`; dropped imports of `DELAY_REG`, `FRAME_REG`, `MODE_VOL_REG`, `VOICE_CTRL_REG`, `FILTER_REG`, `collect_op_loss_tiers`, and the two `transforms_*` side-effect modules. | **done** |
 | `vocab_frame_weights` re-implementation in `preframr/train/model/losses.py:140-185` | Main repo open-coded the frame-time weighting loop. | `_build_vocab_frame_weight` is now a 5-line `torch.from_numpy(vocab_frame_weights(...))` wrap; dropped imports of `BACK_REF_OP`, `BACK_REF_SUBREG_LEN`, `DELAY_REG`, `DO_LOOP_OP`, `FRAME_REG`, `SLOPE_OPS`, `SLOPE_SUBREG_RUNTIME`. | **done** |
 | `Transform.round_trip_check` lazy-imports `preframr_audio` | Optional dep; only triggers for lossy macros. | Documented in README via `[audio]` extra; `preframr-audio>=0.2.0` declared in main repo's pins so the lazy import resolves cleanly. | intentional |
 
 ### Back-compat aliases scheduled to drop next release
 
-No live consumer reaches any of these anywhere in the
-preframr / preframr-audio / preframr-experiments codebases. Drop on
-the next minor bump (subtractive surface change → minor per the
-versioning hint below).
+The three internal aliases below have been dropped this round
+(`_frame_marker_count`, `StreamState._compute_invalid`,
+`_LOSS_TIER_NAMES`). What remains is the `reglog_helpers` re-export
+set, which is **blocked on a main-repo cutover** of `render_play.py`
+(currently imports `load_palettes_attrs` and `wrapbits` from
+`reglog_helpers` rather than from their source modules).
 
-- `preframr_tokens.constrained_decode._frame_marker_count` (alias for
-  `frame_marker_count`).
-- `preframr_tokens.constrained_decode.StreamState._compute_invalid`
-  (class-level alias for `compute_invalid_mask`).
-- `preframr_tokens.macros.transform._LOSS_TIER_NAMES` (alias for
-  `LOSS_TIER_NAMES`).
+Drop on the release after the main-repo cutover:
+
 - `preframr_tokens.reglog_helpers.{dump_palettes_attrs,load_palettes_attrs}`
   re-exports from `preframr_tokens.palette_io` — verify no main-repo
   call site still imports these from the old path before dropping
@@ -165,17 +163,20 @@ are mechanical drops in `preframr_tokens` itself with no
 consumer-side coordination required.
 
 - `from preframr_tokens import *` shouldn't yield `_FOO` symbols at
-  module top-level. Promote or hide. **done for** `_frame_marker_count`
-  and `_compute_invalid` (consumers cut over); **next drop:**
-  `_LOSS_TIER_NAMES` alias (consumer cut over, alias unused).
+  module top-level. Promote or hide. **done for**
+  `_frame_marker_count`, `_compute_invalid`, `_LOSS_TIER_NAMES` (all
+  aliases now removed). No `_FOO` re-exports remain at module-public
+  level beyond the `reglog_helpers` back-compat set.
 - `MIN_DIFF` should be a `_MIN_DIFF` module-private once preframr
-  is on `tail_charge_for_prompt`. **consumer cutover done** —
-  `predict.py` no longer imports `MIN_DIFF`; ready to privatise.
+  is on `tail_charge_for_prompt`. **done** — renamed in
+  `stfconstants.py`; internal callers (`constrained_decode.py`,
+  `macros/state.py`, `reglogparser.py`) and tests updated; the
+  re-export in `macros/__init__.py` is dropped.
 - `_frame_marker_count` should be `frame_marker_count`. **done**
-  (rename + consumer cut over + alias scheduled to drop).
+  (rename + consumer cut over + alias removed).
 - `StreamState.compute_invalid_mask()` should be public so tests
   don't have to call `_compute_invalid`. **done** (rename + tests
-  cut over + alias scheduled to drop).
+  cut over + alias removed).
 - Cut over main-repo `losses.py` and `tier_map.py` to
   `vocab_frame_weights` / `vocab_id_tier` (or `VocabSignature`).
   **done** (`a7d8cf3`; `tier_map.py` is a 90-LoC torch adapter,
@@ -188,27 +189,26 @@ consumer-side coordination required.
   **next:** mechanical preframr-side change — drops the
   `reglog_helpers` re-exports without breaking anything.
 - Document each module's `__all__` (currently most modules don't
-  declare one). **partial:** `reglog_helpers.py` declares one;
-  others still don't.
+  declare one). **done for the public modules** (`audit_primitives`,
+  `palette_io`, `tier_classify`, `token_weighting`, `vocab_signature`,
+  `alphabet_projection`, `reg_mappers`, `utils`, `parse_runner`,
+  `macros/roles`, `macros/transform`, `constrained_decode`, `corpus`,
+  `blocks`, `regtokenizer`, `reglogparser`, `reglog_helpers`).
+  Helper-only / re-export modules (`engine_fingerprint`, `dump_meta`,
+  `coarsen_pass`, `macros/__init__.py`) intentionally omitted.
 
 ## Next round (mechanical, no consumer coordination)
 
-Suggested commit shape for the next preframr-tokens minor bump
-(e.g., v0.9.0):
+Suggested commit shape for the next preframr-tokens minor bump:
 
-1. Drop the four back-compat aliases enumerated in
-   "Back-compat aliases scheduled to drop". Pre-flight: re-grep
-   the three sibling repos to confirm zero callers.
-2. Privatise `MIN_DIFF` → `_MIN_DIFF` in `stfconstants.py`. Update
-   the internal callers in `constrained_decode.py`.
-3. Cut over main repo's `render_play.py` to import
+1. Cut over main repo's `render_play.py` to import
    `load_palettes_attrs` from `preframr_tokens.palette_io` directly
    (currently goes through `reglog_helpers` re-export). This is the
    prerequisite for dropping the `reglog_helpers` re-exports cleanly.
-4. Add `__all__` declarations to each module so the public surface
-   is explicit (currently only `reglog_helpers.py` has one). Mirror
-   the surface enumerated in this doc.
-5. Bump version, update CHANGELOG.
+2. Drop the `reglog_helpers.{dump_palettes_attrs,load_palettes_attrs,wrapbits}`
+   re-exports once step 1 is in place. Update the `__all__` in
+   `reglog_helpers.py` accordingly.
+3. Bump version, update CHANGELOG.
 
 ## How to verify "narrowed enough" before release
 
