@@ -67,7 +67,7 @@ class TestN2PlusNotImplementedSentinel(unittest.TestCase):
         df = _tiny_frame_df()
         with self.assertRaises(NotImplementedError) as cm:
             t.forward(df, args=argparse.Namespace(super_frame_pass=True))
-        self.assertIn("superframe_mini_design.md", str(cm.exception))
+        self.assertIn("design doc never landed", str(cm.exception))
 
 
 if __name__ == "__main__":
