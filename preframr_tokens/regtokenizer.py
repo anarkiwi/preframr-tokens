@@ -35,26 +35,6 @@ SPLITCHS = [ord(i) for i in string.punctuation]
 SPLITTERS = len(SPLITCHS)
 
 
-def _substitutable_ops():
-    from preframr_tokens.macros.transform import (
-        collect_substitutable_ops,
-        ensure_default_transforms_registered,
-    )
-
-    ensure_default_transforms_registered()
-    return collect_substitutable_ops()
-
-
-def _substitutable_op_subregs():
-    from preframr_tokens.macros.transform import (
-        collect_substitutable_op_subregs,
-        ensure_default_transforms_registered,
-    )
-
-    ensure_default_transforms_registered()
-    return collect_substitutable_op_subregs()
-
-
 class RegTokenizer:
     def __init__(self, args, tokens, logger=logging):
         self.args = args

@@ -29,5 +29,5 @@ jobs:
         run: pylint preframr_tokens tests
       - name: pyright
         run: pyright preframr_tokens
-      - name: pytest + coverage (>= 80%)
-        run: pytest --cov=preframr_tokens --cov-report=term-missing --cov-fail-under=80
+      - name: pytest + coverage (>= 85%)
+        run: pytest --cov=preframr_tokens --cov-report=term-missing --cov-fail-under=85
