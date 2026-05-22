@@ -3,6 +3,8 @@ walker -- decoder dispatch, encoder passes, validators, and the
 redundancy reporter all build on what's defined here.
 """
 
+__all__ = ["DecodeState"]
+
 from collections import defaultdict
 
 import numpy as np

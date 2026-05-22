@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__all__ = ["SuperFrameTransform"]
+
 from typing import Any
 
 import pandas as pd

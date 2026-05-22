@@ -7,11 +7,14 @@ from typing import Any, ClassVar, Iterable, Optional
 
 import pandas as pd
 
+from preframr_tokens.macros.pipeline_check import validate_pipeline_spec
 from preframr_tokens.macros.transform_registry import (
     PipelineConfigError,
     PipelineEntry,
     _REGISTRY,
     _normalize_spec,
+    ensure_default_transforms_registered,
+    register,
 )
 
 __all__ = [
@@ -30,33 +33,6 @@ __all__ = [
     "collect_op_loss_tiers",
     "LOSS_TIER_NAMES",
 ]
-
-_DEFAULTS_REGISTERED = False
-
-
-def ensure_default_transforms_registered() -> None:
-    """Import the ``transforms_bit_exact`` / ``transforms_audio_bit_exact`` modules once so their ``@register(...)`` side effects populate ``_REGISTRY``. Idempotent; safe to call anywhere ``collect_op_loss_tiers`` / ``collect_substitutable_ops`` / ``get_transform_class`` is reachable."""
-    global _DEFAULTS_REGISTERED  # pylint: disable=global-statement
-    if _DEFAULTS_REGISTERED:
-        return
-    # pylint: disable=import-outside-toplevel,unused-import
-    from preframr_tokens.macros import (
-        transforms_audio_bit_exact,  # noqa: F401
-        transforms_bit_exact,  # noqa: F401
-    )
-
-    _DEFAULTS_REGISTERED = True
-
-
-def register(name: str):
-    def deco(cls):
-        if name in _REGISTRY:
-            raise ValueError(f"transform name {name!r} already registered")
-        cls.NAME = name
-        _REGISTRY[name] = cls
-        return cls
-
-    return deco
 
 
 def get_transform_class(name: str) -> type["Transform"]:
@@ -158,13 +134,6 @@ class TransformPipeline:
         cls, spec: Any, args=None, validate: bool = True
     ) -> "TransformPipeline":
         if validate:
-            # Lazy: pipeline_check transitively imports Transform via
-            # transforms_parser_stubs, so a top-level import here cycles
-            # when pipeline_check is the entry point.
-            from preframr_tokens.macros.pipeline_check import (  # pylint: disable=import-outside-toplevel
-                validate_pipeline_spec,
-            )
-
             errors = validate_pipeline_spec(spec, args=args)
             if errors:
                 raise PipelineConfigError(errors)

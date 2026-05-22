@@ -5,6 +5,8 @@ from collections import defaultdict
 
 import pandas as pd
 
+__all__ = ["expand_loops", "OVERLAY_BODY_FREQ_DELTA", "OVERLAY_BODY_FREQ_DELTA_BIN"]
+
 _logger = logging.getLogger(__name__)
 
 from preframr_tokens.macros.state import _FRAME_MARKER_REGS, FREQ_REGS_BY_VOICE

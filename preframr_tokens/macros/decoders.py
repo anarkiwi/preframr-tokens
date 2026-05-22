@@ -1,5 +1,23 @@
 """Per-op decoder dispatch."""
 
+__all__ = [
+    "DECODERS",
+    "MacroDecoder",
+    "SetDecoder",
+    "DiffDecoder",
+    "FlipDecoder",
+    "Flip2Decoder",
+    "TransposeDecoder",
+    "HardRestartDecoder",
+    "SlopeDecoder",
+    "PresetDecoder",
+    "ShiftedDecoder",
+    "SubregFlushDecoder",
+    "PwmSustainDecoder",
+    "WavetableSustainDecoder",
+    "CtrlBigramDecoder",
+]
+
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,

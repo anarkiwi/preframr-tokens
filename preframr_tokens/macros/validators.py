@@ -1,5 +1,7 @@
 """Stream-level validators for encoded macro DataFrames."""
 
+__all__ = ["validate_pattern_overlays", "validate_back_refs"]
+
 from dataclasses import dataclass
 from typing import Optional
 

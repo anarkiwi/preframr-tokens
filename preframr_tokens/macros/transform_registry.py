@@ -9,12 +9,44 @@ from typing import Any
 __all__ = [
     "PipelineEntry",
     "PipelineConfigError",
+    "register",
+    "ensure_default_transforms_registered",
 ]
 
 # Populated at ``Transform`` subclass-registration time. Module-private to
 # transform_registry; consumers should use ``get_transform_class`` /
 # ``collect_op_loss_tiers`` / etc. from ``transform.py``.
 _REGISTRY: dict[str, type] = {}
+
+_DEFAULTS_REGISTERED = False
+
+
+def register(name: str):
+    """Decorator binding a ``Transform`` subclass into ``_REGISTRY`` under ``name``. Raises ``ValueError`` if ``name`` is already taken."""
+
+    def deco(cls):
+        if name in _REGISTRY:
+            raise ValueError(f"transform name {name!r} already registered")
+        cls.NAME = name
+        _REGISTRY[name] = cls
+        return cls
+
+    return deco
+
+
+def ensure_default_transforms_registered() -> None:
+    """Import the default-transform modules once so their ``@register(...)`` side effects populate ``_REGISTRY``. Idempotent; safe to call anywhere ``collect_op_loss_tiers`` / ``collect_substitutable_ops`` / ``get_transform_class`` / ``validate_pipeline_spec`` is reachable."""
+    global _DEFAULTS_REGISTERED  # pylint: disable=global-statement
+    if _DEFAULTS_REGISTERED:
+        return
+    # pylint: disable=import-outside-toplevel,unused-import
+    from preframr_tokens.macros import (
+        transforms_audio_bit_exact,  # noqa: F401
+        transforms_bit_exact,  # noqa: F401
+        transforms_parser_stubs,  # noqa: F401
+    )
+
+    _DEFAULTS_REGISTERED = True
 
 
 @dataclass
