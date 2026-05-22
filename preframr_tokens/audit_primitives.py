@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+__all__ = ["distinct_n", "detect_tail_cycle", "tier_accuracy"]
+
 
 def distinct_n(tokens, n: int = 4) -> int:
     """Number of distinct n-grams in ``tokens``."""

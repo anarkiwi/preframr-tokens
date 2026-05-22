@@ -14,7 +14,7 @@ from preframr_tokens.stfconstants import (
     DELAY_REG,
     FRAME_REG,
     MAX_REG,
-    MIN_DIFF,
+    _MIN_DIFF,
     PAD_REG,
     PATTERN_OVERLAY_OP,
     PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
@@ -32,6 +32,84 @@ from preframr_tokens.stfconstants import (
     SLOPE_SUBREG_TERMINAL_LO,
     VOICE_REG,
 )
+from preframr_tokens.utils import to_int64_arrays
+
+__all__ = [
+    "frame_marker_count",
+    "tail_charge_for_prompt",
+    "precompute_vocab_arrays",
+    "precompute_subtoken_arrays",
+    "PendingSlot",
+    "StreamState",
+    "VocabArrays",
+]
+
+
+class OverlaySlot(IntEnum):
+    """Which of the 3 atomic slots a pattern-overlay row fills, indexed in emission order. Values match the corresponding ``PATTERN_OVERLAY_SUBREG_*`` constants so comparisons against raw subreg ints remain valid."""
+
+    FRAME_OFFSET = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+    TARGET_REG = PATTERN_OVERLAY_SUBREG_TARGET_REG
+    NEW_VAL = PATTERN_OVERLAY_SUBREG_NEW_VAL
+
+
+class MacroShape(IntEnum):
+    """Identifies the structural shape of a Unigram sub-token's atomic-id decomposition. Used by ``precompute_subtoken_arrays`` to drive a downstream per-shape flag-setting switch. ``MALFORMED`` covers any sub-token whose macro structure doesn't match one of the known shapes."""
+
+    NONE = 0
+    MALFORMED = 1
+    SINGLETON_BACK_REF_DIST_HI = 2
+    SINGLETON_BACK_REF_DIST_LO = 3
+    SINGLETON_BACK_REF_LEN = 4
+    SINGLETON_PR_DIST_HI = 5
+    SINGLETON_PR_DIST_LO = 6
+    SINGLETON_PR_LEN = 7
+    SINGLETON_PR_OV_COUNT = 8
+    SINGLETON_OVERLAY_FRAME_OFFSET = 9
+    SINGLETON_OVERLAY_TARGET_REG = 10
+    SINGLETON_OVERLAY_NEW_VAL = 11
+    BR_HI_THEN_LO = 12
+    BR_COMPLETE = 13
+    BR_LO_THEN_LEN = 14
+    PR_HI_THEN_LO = 15
+    PR_HI_THROUGH_LEN = 16
+    PR_COMPLETE = 17
+    PR_LO_THEN_LEN = 18
+    PR_LO_THROUGH_OV_COUNT = 19
+    BR_LEN_WITH_TAIL = 20
+    PR_LEN_THEN_OV_COUNT = 21
+    OV_TARGET_THEN_NEW_VAL = 22
+
+
+# Shapes whose first atom is a DIST_LO row (val_a[0] feeds dist_lo_val).
+_SHAPES_WITH_DIST_LO_FIRST = frozenset({
+    MacroShape.SINGLETON_BACK_REF_DIST_LO,
+    MacroShape.SINGLETON_PR_DIST_LO,
+    MacroShape.BR_LO_THEN_LEN,
+    MacroShape.PR_LO_THEN_LEN,
+    MacroShape.PR_LO_THROUGH_OV_COUNT,
+})
+
+# Shapes whose second atom (atoms[1]) is a DIST_LO row that contributes the low byte of full_distance.
+_SHAPES_WITH_DIST_LO_SECOND = frozenset({
+    MacroShape.BR_HI_THEN_LO,
+    MacroShape.BR_COMPLETE,
+    MacroShape.PR_HI_THEN_LO,
+    MacroShape.PR_HI_THROUGH_LEN,
+    MacroShape.PR_COMPLETE,
+})
+
+
+class VocabArrays(dict):
+    """Per-vocab-id arrays bundle returned by ``precompute_vocab_arrays`` and ``precompute_subtoken_arrays``. Subclasses ``dict`` so external consumers can keep indexing by string key (``a["is_real_reg"]``); also supports attribute access (``a.is_real_reg``) for in-module readability. Shape is documented in the precompute functions."""
+
+    __slots__ = ()
+
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key) from None
 
 
 def frame_marker_count(token_ids, is_frame_marker):
@@ -41,9 +119,6 @@ def frame_marker_count(token_ids, is_frame_marker):
     if arr.size == 0:
         return 0
     return int(is_frame_marker[arr].sum().item())
-
-
-_frame_marker_count = frame_marker_count  # back-compat alias
 
 
 def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
@@ -57,16 +132,16 @@ def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
     if marker_positions.size == 0:
         return 0
     tail = arr[int(marker_positions[-1]) + 1 :]
-    return int(is_real_reg[tail].sum() * MIN_DIFF)
+    return int(is_real_reg[tail].sum() * _MIN_DIFF)
 
 
 def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)
-    op = tokens_df["op"].fillna(SET_OP).astype(np.int64).to_numpy()
-    reg = tokens_df["reg"].astype(np.int64).to_numpy()
-    subreg = tokens_df["subreg"].fillna(-1).astype(np.int64).to_numpy()
-    val = tokens_df["val"].astype(np.int64).to_numpy()
+    op, reg, subreg, val = to_int64_arrays(
+        tokens_df, "op", "reg", "subreg", "val",
+        fillna={"op": SET_OP, "subreg": -1},
+    )
 
     is_frame_marker = np.isin(reg, [FRAME_REG, DELAY_REG])
     is_frame_reg_strict = reg == FRAME_REG
@@ -129,7 +204,7 @@ def precompute_vocab_arrays(tokens_df):
     frame_sval = np.zeros(n, dtype=np.int64)
     frame_sval[is_frame_reg_strict] = val[is_frame_reg_strict] & 0x3F
 
-    return {
+    return VocabArrays({
         "n_vocab": n,
         "subtoken_mode": False,
         "is_frame_marker": is_frame_marker,
@@ -162,7 +237,7 @@ def precompute_vocab_arrays(tokens_df):
         "dist_lo_val": dist_lo_val,
         "length": length,
         "overlay_count": overlay_count,
-    }
+    })
 
 
 def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
@@ -172,10 +247,10 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         raise ValueError("precompute_subtoken_arrays requires a trained tkmodel")
     n_sub = tkmodel.get_vocab_size()
     n_atomic = len(tokens_df)
-    op_a = tokens_df["op"].fillna(SET_OP).astype(np.int64).to_numpy()
-    reg_a = tokens_df["reg"].astype(np.int64).to_numpy()
-    subreg_a = tokens_df["subreg"].fillna(-1).astype(np.int64).to_numpy()
-    val_a = tokens_df["val"].astype(np.int64).to_numpy()
+    op_a, reg_a, subreg_a, val_a = to_int64_arrays(
+        tokens_df, "op", "reg", "subreg", "val",
+        fillna={"op": SET_OP, "subreg": -1},
+    )
     is_frame_marker_a = np.isin(reg_a, [FRAME_REG, DELAY_REG])
     is_frame_strict_a = reg_a == FRAME_REG
     is_voice_reg_a = reg_a == VOICE_REG
@@ -228,47 +303,47 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     pending_overlays_delta = np.zeros(n_sub, dtype=np.int64)
 
     def _classify_macro_shape(atomic_ids):
-        """Classify a multi-atom sub-token's macro structure."""
+        """Classify a multi-atom sub-token's macro structure. Returns ``(MacroShape, *extras)``; ``extras`` carry first_val and (for ``PR_COMPLETE``) fourth_val."""
         n = atomic_ids.size
         if n == 0:
-            return (None,)
+            return (MacroShape.NONE,)
         first_macro_idx = -1
         for k in range(n):
             if is_macro_a[int(atomic_ids[k])]:
                 first_macro_idx = k
                 break
         if first_macro_idx == -1:
-            return (None,)
+            return (MacroShape.NONE,)
         if first_macro_idx > 0:
-            return ("malformed",)
+            return (MacroShape.MALFORMED,)
         first = int(atomic_ids[0])
         first_op = int(op_a[first])
         first_sr = int(subreg_a[first])
         first_val = int(val_a[first])
         if n == 1:
             if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
-                return ("singleton_back_ref_dist_hi", first_val)
+                return (MacroShape.SINGLETON_BACK_REF_DIST_HI, first_val)
             if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
-                return ("singleton_back_ref_dist_lo", first_val)
+                return (MacroShape.SINGLETON_BACK_REF_DIST_LO, first_val)
             if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
-                return ("singleton_back_ref_len", first_val)
+                return (MacroShape.SINGLETON_BACK_REF_LEN, first_val)
             if first_op == PATTERN_REPLAY_OP:
                 if first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
-                    return ("singleton_pr_dist_hi", first_val)
+                    return (MacroShape.SINGLETON_PR_DIST_HI, first_val)
                 if first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
-                    return ("singleton_pr_dist_lo", first_val)
+                    return (MacroShape.SINGLETON_PR_DIST_LO, first_val)
                 if first_sr == PATTERN_REPLAY_SUBREG_LEN:
-                    return ("singleton_pr_len", first_val)
+                    return (MacroShape.SINGLETON_PR_LEN, first_val)
                 if first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT:
-                    return ("singleton_pr_ov_count", first_val)
+                    return (MacroShape.SINGLETON_PR_OV_COUNT, first_val)
             if first_op == PATTERN_OVERLAY_OP:
                 if first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                    return ("singleton_overlay_frame_offset", first_val)
+                    return (MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET, first_val)
                 if first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                    return ("singleton_overlay_target_reg", first_val)
+                    return (MacroShape.SINGLETON_OVERLAY_TARGET_REG, first_val)
                 if first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL:
-                    return ("singleton_overlay_new_val", first_val)
-            return ("malformed",)
+                    return (MacroShape.SINGLETON_OVERLAY_NEW_VAL, first_val)
+            return (MacroShape.MALFORMED,)
         if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_HI:
             if n == 2:
                 second = int(atomic_ids[1])
@@ -276,7 +351,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     int(op_a[second]) == BACK_REF_OP
                     and int(subreg_a[second]) == BACK_REF_SUBREG_DIST_LO
                 ):
-                    return ("br_hi_then_lo", first_val)
+                    return (MacroShape.BR_HI_THEN_LO, first_val)
             if n == 3:
                 second = int(atomic_ids[1])
                 third = int(atomic_ids[2])
@@ -286,8 +361,8 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     and int(op_a[third]) == BACK_REF_OP
                     and int(subreg_a[third]) == BACK_REF_SUBREG_LEN
                 ):
-                    return ("br_complete", first_val)
-            return ("malformed",)
+                    return (MacroShape.BR_COMPLETE, first_val)
+            return (MacroShape.MALFORMED,)
         if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_HI:
             if n == 2:
                 second = int(atomic_ids[1])
@@ -295,7 +370,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     int(op_a[second]) == PATTERN_REPLAY_OP
                     and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_DIST_LO
                 ):
-                    return ("pr_hi_then_lo", first_val)
+                    return (MacroShape.PR_HI_THEN_LO, first_val)
             if n == 3:
                 second = int(atomic_ids[1])
                 third = int(atomic_ids[2])
@@ -305,7 +380,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     and int(op_a[third]) == PATTERN_REPLAY_OP
                     and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_LEN
                 ):
-                    return ("pr_hi_through_len", first_val)
+                    return (MacroShape.PR_HI_THROUGH_LEN, first_val)
             if n == 4:
                 second = int(atomic_ids[1])
                 third = int(atomic_ids[2])
@@ -318,13 +393,13 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     and int(op_a[fourth]) == PATTERN_REPLAY_OP
                     and int(subreg_a[fourth]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
                 ):
-                    return ("pr_complete", first_val, int(val_a[fourth]))
-            return ("malformed",)
+                    return (MacroShape.PR_COMPLETE, first_val, int(val_a[fourth]))
+            return (MacroShape.MALFORMED,)
         if (
             first_op == PATTERN_OVERLAY_OP
             and first_sr == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
         ):
-            return ("malformed",)
+            return (MacroShape.MALFORMED,)
         if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_DIST_LO:
             if n == 2:
                 second = int(atomic_ids[1])
@@ -332,8 +407,8 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     int(op_a[second]) == BACK_REF_OP
                     and int(subreg_a[second]) == BACK_REF_SUBREG_LEN
                 ):
-                    return ("br_lo_then_len",)
-            return ("malformed",)
+                    return (MacroShape.BR_LO_THEN_LEN,)
+            return (MacroShape.MALFORMED,)
         if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_DIST_LO:
             if n == 2:
                 second = int(atomic_ids[1])
@@ -341,7 +416,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     int(op_a[second]) == PATTERN_REPLAY_OP
                     and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_LEN
                 ):
-                    return ("pr_lo_then_len",)
+                    return (MacroShape.PR_LO_THEN_LEN,)
             if n == 3:
                 second = int(atomic_ids[1])
                 third = int(atomic_ids[2])
@@ -351,13 +426,13 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     and int(op_a[third]) == PATTERN_REPLAY_OP
                     and int(subreg_a[third]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
                 ):
-                    return ("pr_lo_through_ov_count", int(val_a[third]))
-            return ("malformed",)
+                    return (MacroShape.PR_LO_THROUGH_OV_COUNT, int(val_a[third]))
+            return (MacroShape.MALFORMED,)
         if first_op == BACK_REF_OP and first_sr == BACK_REF_SUBREG_LEN:
             for k in range(1, n):
                 if is_macro_a[int(atomic_ids[k])]:
-                    return ("malformed",)
-            return ("br_len_with_tail", first_val)
+                    return (MacroShape.MALFORMED,)
+            return (MacroShape.BR_LEN_WITH_TAIL, first_val)
         if first_op == PATTERN_REPLAY_OP and first_sr == PATTERN_REPLAY_SUBREG_LEN:
             if n == 2:
                 second = int(atomic_ids[1])
@@ -365,32 +440,32 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     int(op_a[second]) == PATTERN_REPLAY_OP
                     and int(subreg_a[second]) == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
                 ):
-                    return ("pr_len_then_ov_count", int(val_a[second]))
-            return ("malformed",)
+                    return (MacroShape.PR_LEN_THEN_OV_COUNT, int(val_a[second]))
+            return (MacroShape.MALFORMED,)
         if (
             first_op == PATTERN_REPLAY_OP
             and first_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
         ):
-            return ("malformed",)
+            return (MacroShape.MALFORMED,)
         if (
             first_op == PATTERN_OVERLAY_OP
             and first_sr == PATTERN_OVERLAY_SUBREG_TARGET_REG
         ):
             if n != 2:
-                return ("malformed",)
+                return (MacroShape.MALFORMED,)
             second = int(atomic_ids[1])
             if (
                 int(op_a[second]) == PATTERN_OVERLAY_OP
                 and int(subreg_a[second]) == PATTERN_OVERLAY_SUBREG_NEW_VAL
             ):
-                return ("ov_target_then_new_val",)
-            return ("malformed",)
+                return (MacroShape.OV_TARGET_THEN_NEW_VAL,)
+            return (MacroShape.MALFORMED,)
         if (
             first_op == PATTERN_OVERLAY_OP
             and first_sr == PATTERN_OVERLAY_SUBREG_NEW_VAL
         ):
-            return ("malformed",)
-        return ("malformed",)
+            return (MacroShape.MALFORMED,)
+        return (MacroShape.MALFORMED,)
 
     for sub_id in range(n_sub):
         s = tkmodel.id_to_token(sub_id)
@@ -408,65 +483,65 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             continue
         shape = _classify_macro_shape(atomic_ids)
         tag = shape[0]
-        if tag == "malformed":
+        if tag == MacroShape.MALFORMED:
             is_malformed_macro[sub_id] = True
-        elif tag == "singleton_back_ref_dist_hi":
+        elif tag == MacroShape.SINGLETON_BACK_REF_DIST_HI:
             is_singleton_back_ref_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
-        elif tag == "singleton_back_ref_dist_lo":
+        elif tag == MacroShape.SINGLETON_BACK_REF_DIST_LO:
             is_singleton_back_ref_dist_lo[sub_id] = True
             consumes_back_ref_dist_lo_gate[sub_id] = True
-        elif tag == "singleton_back_ref_len":
+        elif tag == MacroShape.SINGLETON_BACK_REF_LEN:
             is_singleton_back_ref_len[sub_id] = True
             consumes_back_ref_len_gate[sub_id] = True
-        elif tag == "singleton_pr_dist_hi":
+        elif tag == MacroShape.SINGLETON_PR_DIST_HI:
             is_singleton_pr_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
-        elif tag == "singleton_pr_dist_lo":
+        elif tag == MacroShape.SINGLETON_PR_DIST_LO:
             is_singleton_pr_dist_lo[sub_id] = True
             consumes_pr_dist_lo_gate[sub_id] = True
-        elif tag == "singleton_pr_len":
+        elif tag == MacroShape.SINGLETON_PR_LEN:
             is_singleton_pr_len[sub_id] = True
             consumes_pr_len_gate[sub_id] = True
-        elif tag == "singleton_pr_ov_count":
+        elif tag == MacroShape.SINGLETON_PR_OV_COUNT:
             is_singleton_pr_ov_count[sub_id] = True
             consumes_pr_ov_count_gate[sub_id] = True
             overlay_count[sub_id] = shape[1]
             pending_overlays_delta[sub_id] = shape[1]
-        elif tag == "singleton_overlay_frame_offset":
+        elif tag == MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET:
             is_singleton_pattern_overlay[sub_id] = True
             is_singleton_pattern_overlay_frame_offset[sub_id] = True
             consumes_overlay_slot_0_gate[sub_id] = True
-        elif tag == "singleton_overlay_target_reg":
+        elif tag == MacroShape.SINGLETON_OVERLAY_TARGET_REG:
             is_singleton_pattern_overlay[sub_id] = True
             is_singleton_pattern_overlay_target_reg[sub_id] = True
             consumes_overlay_slot_1_gate[sub_id] = True
-        elif tag == "singleton_overlay_new_val":
+        elif tag == MacroShape.SINGLETON_OVERLAY_NEW_VAL:
             is_singleton_pattern_overlay[sub_id] = True
             is_singleton_pattern_overlay_new_val[sub_id] = True
             consumes_overlay_slot_2_gate[sub_id] = True
-        elif tag == "br_hi_then_lo":
+        elif tag == MacroShape.BR_HI_THEN_LO:
             is_singleton_back_ref_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
             extends_to_back_ref_lo_consumed[sub_id] = True
-        elif tag == "br_complete":
+        elif tag == MacroShape.BR_COMPLETE:
             is_singleton_back_ref_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
             extends_to_back_ref_lo_consumed[sub_id] = True
             extends_to_back_ref_len_consumed[sub_id] = True
-        elif tag == "br_lo_then_len":
+        elif tag == MacroShape.BR_LO_THEN_LEN:
             consumes_back_ref_dist_lo_gate[sub_id] = True
             extends_to_back_ref_len_consumed[sub_id] = True
-        elif tag == "pr_hi_then_lo":
+        elif tag == MacroShape.PR_HI_THEN_LO:
             is_singleton_pr_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
             extends_to_pr_lo_consumed[sub_id] = True
-        elif tag == "pr_hi_through_len":
+        elif tag == MacroShape.PR_HI_THROUGH_LEN:
             is_singleton_pr_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
             extends_to_pr_lo_consumed[sub_id] = True
             extends_to_pr_len_consumed[sub_id] = True
-        elif tag == "pr_complete":
+        elif tag == MacroShape.PR_COMPLETE:
             is_singleton_pr_dist_hi[sub_id] = True
             distance_hi[sub_id] = shape[1]
             overlay_count[sub_id] = shape[2]
@@ -474,42 +549,30 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             extends_to_pr_lo_consumed[sub_id] = True
             extends_to_pr_len_consumed[sub_id] = True
             extends_to_pr_ov_count_consumed[sub_id] = True
-        elif tag == "pr_lo_then_len":
+        elif tag == MacroShape.PR_LO_THEN_LEN:
             consumes_pr_dist_lo_gate[sub_id] = True
             extends_to_pr_len_consumed[sub_id] = True
-        elif tag == "pr_lo_through_ov_count":
+        elif tag == MacroShape.PR_LO_THROUGH_OV_COUNT:
             consumes_pr_dist_lo_gate[sub_id] = True
             extends_to_pr_len_consumed[sub_id] = True
             extends_to_pr_ov_count_consumed[sub_id] = True
             overlay_count[sub_id] = shape[1]
             pending_overlays_delta[sub_id] = shape[1]
-        elif tag == "br_len_with_tail":
+        elif tag == MacroShape.BR_LEN_WITH_TAIL:
             consumes_back_ref_len_gate[sub_id] = True
-        elif tag == "pr_len_then_ov_count":
+        elif tag == MacroShape.PR_LEN_THEN_OV_COUNT:
             _, ov_count_val = shape
             consumes_pr_len_gate[sub_id] = True
             extends_to_pr_ov_count_consumed[sub_id] = True
             overlay_count[sub_id] = ov_count_val
             pending_overlays_delta[sub_id] = ov_count_val
-        elif tag == "ov_target_then_new_val":
+        elif tag == MacroShape.OV_TARGET_THEN_NEW_VAL:
             consumes_overlay_slot_1_gate[sub_id] = True
             extends_to_overlay_completed[sub_id] = True
 
-        if tag in (
-            "singleton_back_ref_dist_lo",
-            "singleton_pr_dist_lo",
-            "br_lo_then_len",
-            "pr_lo_then_len",
-            "pr_lo_through_ov_count",
-        ):
+        if tag in _SHAPES_WITH_DIST_LO_FIRST:
             dist_lo_val[sub_id] = int(val_a[int(atomic_ids[0])]) & BACK_REF_DIST_LO_MASK
-        if tag in (
-            "br_hi_then_lo",
-            "br_complete",
-            "pr_hi_then_lo",
-            "pr_hi_through_len",
-            "pr_complete",
-        ):
+        if tag in _SHAPES_WITH_DIST_LO_SECOND:
             lo_byte = int(val_a[int(atomic_ids[1])]) & BACK_REF_DIST_LO_MASK
             full_distance[sub_id] = (
                 int(distance_hi[sub_id]) << BACK_REF_DIST_HI_SHIFT
@@ -547,7 +610,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
                     local_fn_delta += 1
                 continue
             if is_real_reg_a[aid]:
-                last_seg_charge += MIN_DIFF
+                last_seg_charge += _MIN_DIFF
         if not first_seg_done:
             first_seg_charge = last_seg_charge
         frame_advance[sub_id] = local_frame
@@ -567,7 +630,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         | is_singleton_pr_ov_count
     )
 
-    return {
+    return VocabArrays({
         "n_vocab": n_sub,
         "subtoken_mode": True,
         "is_frame_marker": (frame_advance > 0),
@@ -617,7 +680,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         "fn_delta": fn_delta,
         "fn_after_last_strict": fn_after_last_strict,
         "pending_overlays_delta": pending_overlays_delta,
-    }
+    })
 
 
 class PendingSlot(IntEnum):
@@ -631,6 +694,65 @@ class PendingSlot(IntEnum):
     PR_OV_COUNT = 5
     SLOPE_TERM_LO = 6
     SLOPE_RUNTIME = 7
+
+
+_ATOMIC_SLOT_GATE = {
+    PendingSlot.BACK_REF_DIST_LO: ("is_back_ref_dist_lo", "distance"),
+    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", "distance"),
+    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", None),
+    PendingSlot.PR_LEN: ("is_pattern_replay_len", None),
+    PendingSlot.PR_OV_COUNT: ("is_pattern_replay_ov_count", "overlay_cap"),
+    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", None),
+    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", None),
+}
+
+_SUBTOKEN_SLOT_GATE = {
+    PendingSlot.BACK_REF_DIST_LO: ("consumes_back_ref_dist_lo_gate", "distance"),
+    PendingSlot.PR_DIST_LO: ("consumes_pr_dist_lo_gate", "distance"),
+    PendingSlot.BACK_REF_LEN: ("consumes_back_ref_len_gate", None),
+    PendingSlot.PR_LEN: ("consumes_pr_len_gate", None),
+    PendingSlot.PR_OV_COUNT: ("consumes_pr_ov_count_gate", "overlay_cap"),
+}
+
+_ATOMIC_OVERLAY_GATES = (
+    "is_pattern_overlay_frame_offset",
+    "is_pattern_overlay_target_reg",
+    "is_pattern_overlay_new_val",
+)
+
+_SUBTOKEN_OVERLAY_GATES = (
+    "consumes_overlay_slot_0_gate",
+    "consumes_overlay_slot_1_gate",
+    "consumes_overlay_slot_2_gate",
+)
+
+_OVERLAY_SLOT_INDEX = {
+    OverlaySlot.FRAME_OFFSET: 0,
+    OverlaySlot.TARGET_REG: 1,
+    OverlaySlot.NEW_VAL: 2,
+}
+
+_ATOMIC_SLOT_TRANSITION = {
+    # current_slot: (assert_key, next_slot, action)
+    PendingSlot.BACK_REF_DIST_LO: ("is_back_ref_dist_lo", PendingSlot.BACK_REF_LEN, None),
+    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", PendingSlot.PR_LEN, None),
+    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", PendingSlot.NONE, None),
+    PendingSlot.PR_LEN: ("is_pattern_replay_len", PendingSlot.PR_OV_COUNT, None),
+    PendingSlot.PR_OV_COUNT: (
+        "is_pattern_replay_ov_count",
+        PendingSlot.NONE,
+        "seed_overlays",
+    ),
+    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", PendingSlot.SLOPE_RUNTIME, None),
+    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", PendingSlot.NONE, None),
+}
+
+_ATOMIC_NEW_PENDING = (
+    # (gate_key, next_slot) — only the first matching gate fires.
+    ("is_back_ref_dist_hi", PendingSlot.BACK_REF_DIST_LO),
+    ("is_pattern_replay_dist_hi", PendingSlot.PR_DIST_LO),
+    ("is_slope_term_hi", PendingSlot.SLOPE_TERM_LO),
+)
 
 
 def _make_slot_property(slot: PendingSlot):
@@ -672,7 +794,7 @@ class StreamState:
         self.arrays = vocab_arrays
         self.frame_count = int(init_frame_count)
         self.pending_overlays = 0
-        self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+        self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
         self.pending_slot: PendingSlot = PendingSlot.NONE
         self.current_dist_hi = 0
         self.irq = int(irq)
@@ -685,6 +807,12 @@ class StreamState:
         self.disable_resource_masks = disable_resource_masks
         self.logger = logger
         self._stuck_warned = False
+        if self.subtoken_mode:
+            self._slot_gate = _SUBTOKEN_SLOT_GATE
+            self._overlay_gate = _SUBTOKEN_OVERLAY_GATES
+        else:
+            self._slot_gate = _ATOMIC_SLOT_GATE
+            self._overlay_gate = _ATOMIC_OVERLAY_GATES
 
     def mask_logits(self, logits):
         """Set logits of structurally-invalid tokens to -inf. Computes the invalid mask in numpy then applies it to ``logits`` via a single ``masked_fill`` (torch is imported lazily so the rest of this module stays torch-free)."""
@@ -696,13 +824,20 @@ class StreamState:
 
     def compute_invalid_mask(self):
         """Per-vocab-id bool numpy array; True for tokens that would violate structural invariants at the current state. Pure numpy; consumers in torch land call ``mask_logits`` instead."""
+        a = self.arrays
+        invalid = np.zeros(a["n_vocab"], dtype=np.bool_)
+        invalid |= a["is_pad"]
         if self.subtoken_mode:
-            invalid = self._compute_invalid_subtoken()
+            invalid |= a["is_malformed_macro"]
+        if self.pending_slot != PendingSlot.NONE:
+            self._apply_pending_slot_mask(invalid, a)
+        elif self.pending_overlays > 0:
+            self._apply_overlay_slot_mask(invalid, a)
+        elif self.subtoken_mode:
+            self._apply_subtoken_free_mask(invalid, a)
         else:
-            invalid = self._compute_invalid_atomic()
-        return self._unstick(invalid, self.arrays["is_frame_marker"])
-
-    _compute_invalid = compute_invalid_mask  # back-compat alias
+            self._apply_atomic_free_mask(invalid, a)
+        return self._unstick(invalid, a["is_frame_marker"])
 
     def update(self, token_id):
         """Advance state with the just-sampled token."""
@@ -711,141 +846,69 @@ class StreamState:
         else:
             self._update_atomic(int(token_id))
 
-    def _compute_invalid_atomic(self):
-        a = self.arrays
-        invalid = np.zeros(a["n_vocab"], dtype=np.bool_)
+    def _apply_pending_slot_mask(self, invalid, a):
+        gate_key, check = self._slot_gate[self.pending_slot]
+        gate = a[gate_key]
+        invalid |= ~gate
+        if check == "distance":
+            full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
+                "dist_lo_val"
+            ]
+            invalid |= gate & (full_dist > self.frame_count)
+        elif check == "overlay_cap" and self.remaining_steps is not None:
+            cap = max((self.remaining_steps - 1) // 3, 0)
+            invalid |= gate & (a["overlay_count"] > cap)
 
-        invalid |= a["is_pad"]
-        slot = self.pending_slot
-        if slot == PendingSlot.BACK_REF_DIST_LO:
-            invalid |= ~a["is_back_ref_dist_lo"]
-            full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
-                "dist_lo_val"
-            ]
-            too_far = full_dist > self.frame_count
-            invalid |= a["is_back_ref_dist_lo"] & too_far
-        elif slot == PendingSlot.PR_DIST_LO:
-            invalid |= ~a["is_pattern_replay_dist_lo"]
-            full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
-                "dist_lo_val"
-            ]
-            too_far = full_dist > self.frame_count
-            invalid |= a["is_pattern_replay_dist_lo"] & too_far
-        elif slot == PendingSlot.BACK_REF_LEN:
-            invalid |= ~a["is_back_ref_len"]
-        elif slot == PendingSlot.PR_LEN:
-            invalid |= ~a["is_pattern_replay_len"]
-        elif slot == PendingSlot.PR_OV_COUNT:
-            invalid |= ~a["is_pattern_replay_ov_count"]
-            if self.remaining_steps is not None:
-                cap = max((self.remaining_steps - 1) // 3, 0)
-                ov_too_long = a["is_pattern_replay_ov_count"] & (
-                    a["overlay_count"] > cap
-                )
-                invalid |= ov_too_long
-        elif slot == PendingSlot.SLOPE_TERM_LO:
-            invalid |= ~a["is_slope_term_lo"]
-        elif slot == PendingSlot.SLOPE_RUNTIME:
-            invalid |= ~a["is_slope_runtime"]
-        elif self.pending_overlays > 0:
-            if self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                invalid |= ~a["is_pattern_overlay_frame_offset"]
-            elif self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                invalid |= ~a["is_pattern_overlay_target_reg"]
-            else:
-                invalid |= ~a["is_pattern_overlay_new_val"]
-        else:
-            invalid |= a["is_pattern_overlay"]
-            invalid |= a["is_pair_intermediate"]
-            if self.frame_count <= 0:
-                invalid |= a["is_dist_hi_row"]
-            else:
-                hi_max = self.frame_count >> BACK_REF_DIST_HI_SHIFT
-                too_far_hi = a["dist_hi_val"] > hi_max
-                invalid |= a["is_dist_hi_row"] & too_far_hi
-            if self.remaining_steps is not None:
-                if self.remaining_steps < 3:
-                    invalid |= a["is_back_ref_dist_hi"]
-                if self.remaining_steps < 4:
-                    invalid |= a["is_pattern_replay_dist_hi"]
-            if not self.disable_resource_masks:
-                invalid |= a["is_delay_reg"]
-                if self.frame_budget < MIN_DIFF:
-                    invalid |= a["is_real_reg"]
-        return invalid
+    def _apply_overlay_slot_mask(self, invalid, a):
+        idx = _OVERLAY_SLOT_INDEX.get(self.pending_overlay_slot, 2)
+        invalid |= ~a[self._overlay_gate[idx]]
 
-    def _compute_invalid_subtoken(self):
-        """Sub-token-aware mask: each entry summarizes the aggregate effect of a Unigram sub-token's atomic-id decomposition. Voice-dependent masks (GATE_REPLAY palette / PLAY_INSTRUMENT palette) are skipped here -- the safety net catches palette violations post-decode."""
-        a = self.arrays
-        invalid = np.zeros(a["n_vocab"], dtype=np.bool_)
-        invalid |= a["is_pad"]
-        invalid |= a["is_malformed_macro"]
-        slot = self.pending_slot
-        if slot == PendingSlot.BACK_REF_DIST_LO:
-            invalid |= ~a["consumes_back_ref_dist_lo_gate"]
-            full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
-                "dist_lo_val"
-            ]
-            too_far = full_dist > self.frame_count
-            invalid |= a["consumes_back_ref_dist_lo_gate"] & too_far
-        elif slot == PendingSlot.PR_DIST_LO:
-            invalid |= ~a["consumes_pr_dist_lo_gate"]
-            full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
-                "dist_lo_val"
-            ]
-            too_far = full_dist > self.frame_count
-            invalid |= a["consumes_pr_dist_lo_gate"] & too_far
-        elif slot == PendingSlot.BACK_REF_LEN:
-            invalid |= ~a["consumes_back_ref_len_gate"]
-        elif slot == PendingSlot.PR_LEN:
-            invalid |= ~a["consumes_pr_len_gate"]
-        elif slot == PendingSlot.PR_OV_COUNT:
-            invalid |= ~a["consumes_pr_ov_count_gate"]
-            if self.remaining_steps is not None:
-                cap = max((self.remaining_steps - 1) // 3, 0)
-                ov_too_long = a["consumes_pr_ov_count_gate"] & (
-                    a["overlay_count"] > cap
-                )
-                invalid |= ov_too_long
-        elif self.pending_overlays > 0:
-            if self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                invalid |= ~a["consumes_overlay_slot_0_gate"]
-            elif self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                invalid |= ~a["consumes_overlay_slot_1_gate"]
-            else:
-                invalid |= ~a["consumes_overlay_slot_2_gate"]
+    def _apply_atomic_free_mask(self, invalid, a):
+        invalid |= a["is_pattern_overlay"]
+        invalid |= a["is_pair_intermediate"]
+        if self.frame_count <= 0:
+            invalid |= a["is_dist_hi_row"]
         else:
-            invalid |= a["is_singleton_pattern_overlay"]
-            invalid |= a["is_singleton_pair_intermediate"]
-            invalid |= (
-                a["consumes_back_ref_dist_lo_gate"]
-                & ~a["is_singleton_back_ref_dist_lo"]
+            hi_max = self.frame_count >> BACK_REF_DIST_HI_SHIFT
+            invalid |= a["is_dist_hi_row"] & (a["dist_hi_val"] > hi_max)
+        if self.remaining_steps is not None:
+            if self.remaining_steps < 3:
+                invalid |= a["is_back_ref_dist_hi"]
+            if self.remaining_steps < 4:
+                invalid |= a["is_pattern_replay_dist_hi"]
+        if not self.disable_resource_masks:
+            invalid |= a["is_delay_reg"]
+            if self.frame_budget < _MIN_DIFF:
+                invalid |= a["is_real_reg"]
+
+    def _apply_subtoken_free_mask(self, invalid, a):
+        """Sub-token-aware mask for the free-choice branch: each entry summarizes the aggregate effect of a Unigram sub-token's atomic-id decomposition. Voice-dependent masks (GATE_REPLAY / PLAY_INSTRUMENT palettes) are skipped here — the safety net catches palette violations post-decode."""
+        invalid |= a["is_singleton_pattern_overlay"]
+        invalid |= a["is_singleton_pair_intermediate"]
+        invalid |= a["consumes_back_ref_dist_lo_gate"] & ~a["is_singleton_back_ref_dist_lo"]
+        invalid |= a["consumes_pr_dist_lo_gate"] & ~a["is_singleton_pr_dist_lo"]
+        invalid |= a["consumes_back_ref_len_gate"] & ~a["is_singleton_back_ref_len"]
+        invalid |= a["consumes_pr_len_gate"] & ~a["is_singleton_pr_len"]
+        invalid |= (
+            a["consumes_overlay_slot_1_gate"]
+            & ~a["is_singleton_pattern_overlay_target_reg"]
+        )
+        if self.frame_count <= 0:
+            invalid |= a["is_singleton_dist_hi"]
+        else:
+            hi_max = self.frame_count >> BACK_REF_DIST_HI_SHIFT
+            invalid |= a["is_singleton_dist_hi"] & (a["distance_hi"] > hi_max)
+            invalid |= (a["full_distance"] > 0) & (
+                a["full_distance"] > self.frame_count
             )
-            invalid |= a["consumes_pr_dist_lo_gate"] & ~a["is_singleton_pr_dist_lo"]
-            invalid |= a["consumes_back_ref_len_gate"] & ~a["is_singleton_back_ref_len"]
-            invalid |= a["consumes_pr_len_gate"] & ~a["is_singleton_pr_len"]
-            invalid |= (
-                a["consumes_overlay_slot_1_gate"]
-                & ~a["is_singleton_pattern_overlay_target_reg"]
-            )
-            if self.frame_count <= 0:
-                invalid |= a["is_singleton_dist_hi"]
-            else:
-                hi_max = self.frame_count >> BACK_REF_DIST_HI_SHIFT
-                too_far_hi = a["distance_hi"] > hi_max
-                invalid |= a["is_singleton_dist_hi"] & too_far_hi
-                invalid |= (a["full_distance"] > 0) & (
-                    a["full_distance"] > self.frame_count
-                )
-            if self.remaining_steps is not None:
-                if self.remaining_steps < 3:
-                    invalid |= a["is_singleton_back_ref_dist_hi"]
-                if self.remaining_steps < 4:
-                    invalid |= a["is_singleton_pr_dist_hi"]
-            if not self.disable_resource_masks:
-                invalid |= a["contains_delay"]
-                invalid |= a["charge_first_segment"] > self.frame_budget
-        return invalid
+        if self.remaining_steps is not None:
+            if self.remaining_steps < 3:
+                invalid |= a["is_singleton_back_ref_dist_hi"]
+            if self.remaining_steps < 4:
+                invalid |= a["is_singleton_pr_dist_hi"]
+        if not self.disable_resource_masks:
+            invalid |= a["contains_delay"]
+            invalid |= a["charge_first_segment"] > self.frame_budget
 
     def _unstick(self, invalid, frame_marker):
         if invalid.all():
@@ -863,6 +926,13 @@ class StreamState:
                 invalid[int(frame_idxs[0])] = False
         return invalid
 
+    def _advance_overlay_slot(self):
+        if self.pending_overlay_slot == OverlaySlot.NEW_VAL:
+            self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+            self.pending_overlays -= 1
+        else:
+            self.pending_overlay_slot = OverlaySlot(self.pending_overlay_slot + 1)
+
     def _update_atomic(self, token_id):
         a = self.arrays
         if self.remaining_steps is not None:
@@ -871,70 +941,34 @@ class StreamState:
             self.frame_count += 1
             self.frame_budget = self.irq
         elif bool(a["is_real_reg"][token_id].item()):
-            self.frame_budget -= MIN_DIFF
+            self.frame_budget -= _MIN_DIFF
         if a["is_frame_reg_strict"][token_id]:
             self.current_sval = int(a["frame_sval"][token_id])
             self.current_fn = 0
         elif a["is_voice_reg"][token_id]:
             self.current_fn += 1
-        if self.pending_back_ref_dist_lo:
-            assert a["is_back_ref_dist_lo"][token_id], (
-                f"pending_back_ref_dist_lo but token {token_id} is not a "
-                f"BACK_REF DIST_LO row"
+        if self.pending_slot != PendingSlot.NONE:
+            assert_key, next_slot, action = _ATOMIC_SLOT_TRANSITION[self.pending_slot]
+            assert a[assert_key][token_id], (
+                f"pending {self.pending_slot.name} but token {token_id} does not "
+                f"match {assert_key}"
             )
-            self.pending_back_ref_dist_lo = False
-            self.pending_back_ref_len = True
-        elif self.pending_pr_dist_lo:
-            assert a["is_pattern_replay_dist_lo"][token_id], (
-                f"pending_pr_dist_lo but token {token_id} is not a "
-                f"PATTERN_REPLAY DIST_LO row"
-            )
-            self.pending_pr_dist_lo = False
-            self.pending_pr_len = True
-        elif self.pending_back_ref_len:
-            assert a["is_back_ref_len"][token_id], (
-                f"pending_back_ref_len but token {token_id} is not a "
-                f"BACK_REF length row"
-            )
-            self.pending_back_ref_len = False
-        elif self.pending_pr_len:
-            assert a["is_pattern_replay_len"][token_id], (
-                f"pending_pr_len but token {token_id} is not a "
-                f"PATTERN_REPLAY length row"
-            )
-            self.pending_pr_len = False
-            self.pending_pr_ov_count = True
-        elif self.pending_pr_ov_count:
-            assert a["is_pattern_replay_ov_count"][token_id], (
-                f"pending_pr_ov_count but token {token_id} is not a "
-                f"PATTERN_REPLAY overlay_count row"
-            )
-            self.pending_pr_ov_count = False
-            self.pending_overlays = int(a["overlay_count"][token_id])
-            self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+            self.pending_slot = next_slot
+            if action == "seed_overlays":
+                self.pending_overlays = int(a["overlay_count"][token_id])
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
         elif self.pending_overlays > 0:
-            if self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_TARGET_REG
-            elif self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_NEW_VAL
-            else:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-                self.pending_overlays -= 1
-        elif self.pending_slope_term_lo:
-            assert a["is_slope_term_lo"][token_id], token_id
-            self.pending_slope_term_lo = False
-            self.pending_slope_runtime = True
-        elif self.pending_slope_runtime:
-            assert a["is_slope_runtime"][token_id], token_id
-            self.pending_slope_runtime = False
-        elif a["is_back_ref_dist_hi"][token_id]:
-            self.pending_back_ref_dist_lo = True
-            self.current_dist_hi = int(a["dist_hi_val"][token_id])
-        elif a["is_pattern_replay_dist_hi"][token_id]:
-            self.pending_pr_dist_lo = True
-            self.current_dist_hi = int(a["dist_hi_val"][token_id])
-        elif a["is_slope_term_hi"][token_id]:
-            self.pending_slope_term_lo = True
+            self._advance_overlay_slot()
+        else:
+            for gate_key, next_slot in _ATOMIC_NEW_PENDING:
+                if a[gate_key][token_id]:
+                    self.pending_slot = next_slot
+                    if next_slot in (
+                        PendingSlot.BACK_REF_DIST_LO,
+                        PendingSlot.PR_DIST_LO,
+                    ):
+                        self.current_dist_hi = int(a["dist_hi_val"][token_id])
+                    break
 
     def _update_subtoken(self, sub_id):
         a = self.arrays
@@ -959,7 +993,7 @@ class StreamState:
             self.pending_pr_dist_lo = False
             if a["extends_to_pr_ov_count_consumed"][sub_id]:
                 self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
             elif bool(a["extends_to_pr_len_consumed"][sub_id]):
                 pass
             else:
@@ -970,24 +1004,19 @@ class StreamState:
             self.pending_pr_len = False
             if a["extends_to_pr_ov_count_consumed"][sub_id]:
                 self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
             else:
                 self.pending_pr_ov_count = True
         elif self.pending_pr_ov_count:
             self.pending_pr_ov_count = False
             self.pending_overlays += int(a["overlay_count"][sub_id])
-            self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+            self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
         elif self.pending_overlays > 0:
             if a["extends_to_overlay_completed"][sub_id]:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
                 self.pending_overlays -= 1
-            elif self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_TARGET_REG
-            elif self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_TARGET_REG:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_NEW_VAL
             else:
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-                self.pending_overlays -= 1
+                self._advance_overlay_slot()
         elif a["is_singleton_back_ref_dist_hi"][sub_id]:
             self.current_dist_hi = int(a["distance_hi"][sub_id])
             if bool(a["extends_to_back_ref_len_consumed"][sub_id]):
@@ -1000,7 +1029,7 @@ class StreamState:
             self.current_dist_hi = int(a["distance_hi"][sub_id])
             if bool(a["extends_to_pr_ov_count_consumed"][sub_id]):
                 self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
             elif bool(a["extends_to_pr_len_consumed"][sub_id]):
                 self.pending_pr_ov_count = True
             elif bool(a["extends_to_pr_lo_consumed"][sub_id]):

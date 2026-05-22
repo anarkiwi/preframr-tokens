@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 
+__all__ = ["dump_palettes_attrs", "load_palettes_attrs"]
+
 
 def _palettes_sidecar_path(parquet_path: str) -> str:
     return parquet_path + ".palettes.json"

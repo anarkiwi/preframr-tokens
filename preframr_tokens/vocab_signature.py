@@ -18,6 +18,8 @@ from preframr_tokens.stfconstants import (
     VOICE_CTRL_REG,
 )
 
+__all__ = ["VocabSignature", "CONTENT_TIER"]
+
 CONTENT_TIER = "content"
 
 _VOICE_CTRL_REGS = frozenset(VOICE_CTRL_REG.values())

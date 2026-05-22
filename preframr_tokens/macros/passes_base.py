@@ -43,21 +43,6 @@ def _frame_index(df):
     return df["reg"].isin({FRAME_REG, DELAY_REG}).astype(int).cumsum()
 
 
-def _int64_cols(df, *names, fill0=("val",)):
-    """Extract named columns as int64 numpy arrays. Columns in ``fill0``
-    get fillna(0) before casting. Centralises the
-    ``df[col].astype(np.int64).to_numpy()`` triple-extraction pattern that
-    every transform repeated.
-    """
-    fill0_set = frozenset(fill0)
-    return tuple(
-        (df[name].fillna(0) if name in fill0_set else df[name])
-        .astype(np.int64)
-        .to_numpy()
-        for name in names
-    )
-
-
 def _ensure_subreg(df):
     if "subreg" not in df.columns:
         df = df.copy()

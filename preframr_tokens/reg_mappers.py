@@ -3,6 +3,8 @@ from preframr_tokens.stfconstants import (
     PAL_CLOCK,
 )
 
+__all__ = ["FreqMapper"]
+
 
 class FreqMapper:
     def __init__(self, cents=10, clock=PAL_CLOCK):

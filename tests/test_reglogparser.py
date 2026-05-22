@@ -28,7 +28,7 @@ from preframr_tokens.stfconstants import (
     FILTER_REG,
     FRAME_REG,
     MAX_REG,
-    MIN_DIFF,
+    _MIN_DIFF,
     MODEL_PDTYPE,
     VOICE_REG_SIZE,
     VOICES,
@@ -1157,7 +1157,7 @@ class TestRegLogParser(unittest.TestCase):
         result = loader._state_df([0, 1, 2], dataset, irq)
 
         self.assertEqual(len(result), 3)
-        self.assertEqual(result.loc[result["reg"] == 7, "diff"].iloc[0], MIN_DIFF)
+        self.assertEqual(result.loc[result["reg"] == 7, "diff"].iloc[0], _MIN_DIFF)
         self.assertEqual(result.loc[result["reg"] == FRAME_REG, "diff"].iloc[0], irq)
         self.assertEqual(result.loc[result["reg"] == -MAX_REG - 1, "diff"].iloc[0], 0)
 

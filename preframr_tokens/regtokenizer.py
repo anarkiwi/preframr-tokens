@@ -27,6 +27,8 @@ from preframr_tokens.stfconstants import (
 )
 from preframr_tokens.train_worker import train_worker
 
+__all__ = ["RegTokenizer"]
+
 UNK_TOKEN = "<unk>"
 END_OF_WORD_SUFFIX = "</w>"
 SPLITCHS = [ord(i) for i in string.punctuation]

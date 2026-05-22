@@ -105,7 +105,6 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     HARD_RESTART_OP,
     LOOP_OP_REG,
-    MIN_DIFF,
     MODE_VOL_REG,
     SET_OP,
     SUBREG_FLUSH_OP,

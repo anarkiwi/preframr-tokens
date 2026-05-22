@@ -11,6 +11,8 @@ from preframr_tokens.blocks import glob_dumps
 from preframr_tokens.reglog_helpers import dump_palettes_attrs, tighten_persist_dtypes
 from preframr_tokens.reglogparser import RegLogParser
 
+__all__ = ["write_df", "parse_corpus"]
+
 
 def write_df(args, logger, name):
     """Parse one dump file via RegLogParser; for each rotation, dump the dataframe to a .{i}.parquet sidecar (with palette attrs + dtype tightening)."""
