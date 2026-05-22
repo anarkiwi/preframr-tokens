@@ -10,6 +10,7 @@ from preframr_tokens.constrained_decode import (
     _frame_marker_count,
     precompute_subtoken_arrays,
     precompute_vocab_arrays,
+    tail_charge_for_prompt,
 )
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
@@ -535,6 +536,38 @@ class TestStreamStateSubtokenMode(unittest.TestCase):
         self.assertEqual(int(arrs["dist_lo_val"][2]), 1)
         mask = _mask_bool(state, arrs["n_vocab"])
         self.assertFalse(mask[2])
+
+
+class TestTailChargeForPrompt(unittest.TestCase):
+    def _arrays(self):
+        return {
+            "is_frame_marker": np.array(
+                [False, True, False, False, False], dtype=np.bool_
+            ),
+            "is_real_reg": np.array([False, False, True, True, False], dtype=np.bool_),
+        }
+
+    def test_no_frame_markers_returns_zero(self):
+        arrays = self._arrays()
+        self.assertEqual(tail_charge_for_prompt([0, 2, 3, 4], arrays), 0)
+
+    def test_charges_real_regs_after_last_marker(self):
+        arrays = self._arrays()
+        from preframr_tokens.stfconstants import (
+            MIN_DIFF,
+        )  # pylint: disable=import-outside-toplevel
+
+        self.assertEqual(tail_charge_for_prompt([1, 2, 3], arrays), 2 * MIN_DIFF)
+        self.assertEqual(tail_charge_for_prompt([1, 2, 3, 4], arrays), 2 * MIN_DIFF)
+        self.assertEqual(tail_charge_for_prompt([1, 0, 2], arrays), MIN_DIFF)
+
+    def test_returns_zero_when_marker_is_last(self):
+        arrays = self._arrays()
+        self.assertEqual(tail_charge_for_prompt([0, 2, 1], arrays), 0)
+
+    def test_empty_prompt_returns_zero(self):
+        arrays = self._arrays()
+        self.assertEqual(tail_charge_for_prompt([], arrays), 0)
 
 
 class TestModuleTorchFree(unittest.TestCase):

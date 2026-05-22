@@ -233,16 +233,17 @@ def collect_decomposing_op_codes() -> frozenset[int]:
     return frozenset(out)
 
 
-_LOSS_TIER_NAMES = ("structural", "mid", "content", "zero")
+LOSS_TIER_NAMES = ("structural", "mid", "content", "zero")
+_LOSS_TIER_NAMES = LOSS_TIER_NAMES  # back-compat alias
 
 
 def collect_op_loss_tiers() -> dict[int, str]:
     out: dict[int, str] = {}
     for klass in _REGISTRY.values():
         tier = klass.LOSS_TIER
-        if tier not in _LOSS_TIER_NAMES:
+        if tier not in LOSS_TIER_NAMES:
             raise ValueError(
-                f"{klass.__name__}.LOSS_TIER={tier!r} not in {_LOSS_TIER_NAMES}"
+                f"{klass.__name__}.LOSS_TIER={tier!r} not in {LOSS_TIER_NAMES}"
             )
         for op in klass.OP_CODES:
             out[int(op)] = tier
