@@ -5,13 +5,15 @@ from typing import Optional
 
 import pandas as pd
 
+from preframr_tokens.macros.roles import (
+    DISTANCE_PAIR_OPS,
+    DistancePairSpec,
+    distance_pair_role,
+)
 from preframr_tokens.macros.state import _FRAME_MARKER_REGS
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
     BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DO_LOOP_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
@@ -27,35 +29,6 @@ from preframr_tokens.stfconstants import (
 
 
 @dataclass
-class _DistancePairSpec:
-    label: str
-    dist_hi: int
-    dist_lo: int
-    length: int
-    extra_subregs: frozenset
-
-
-_DISTANCE_PAIR_OPS = {
-    BACK_REF_OP: _DistancePairSpec(
-        label="BACK_REF",
-        dist_hi=BACK_REF_SUBREG_DIST_HI,
-        dist_lo=BACK_REF_SUBREG_DIST_LO,
-        length=BACK_REF_SUBREG_LEN,
-        extra_subregs=frozenset(),
-    ),
-    PATTERN_REPLAY_OP: _DistancePairSpec(
-        # "PR" matches the original error-message abbreviation for
-        # PATTERN_REPLAY DIST/LEN assertions; tests grep for it.
-        label="PR",
-        dist_hi=PATTERN_REPLAY_SUBREG_DIST_HI,
-        dist_lo=PATTERN_REPLAY_SUBREG_DIST_LO,
-        length=PATTERN_REPLAY_SUBREG_LEN,
-        extra_subregs=frozenset({PATTERN_REPLAY_SUBREG_OVERLAY_COUNT}),
-    ),
-}
-
-
-@dataclass
 class _DistancePairState:
     output_frame_count: int = 0
     pending_dist_op: Optional[int] = None
@@ -63,10 +36,11 @@ class _DistancePairState:
     pending_dist_hi: Optional[int] = None
 
 
-def _step_distance_pair(idx, row, sr, op, spec, state):
+def _step_distance_pair(idx, row, sr, op, spec: DistancePairSpec, state):
     """Advance one row through the distance-pair state machine. Mutates state."""
     label = spec.label
-    if sr == spec.dist_hi:
+    role = distance_pair_role(op, sr)
+    if role == "dist_hi":
         assert state.pending_dist_op is None, (
             f"row {idx}: pending {state.pending_dist_op} at row "
             f"{state.pending_dist_idx} not closed before new {label} DIST_HI"
@@ -75,7 +49,7 @@ def _step_distance_pair(idx, row, sr, op, spec, state):
         state.pending_dist_idx = idx
         state.pending_dist_hi = int(row["val"])
         return
-    if sr == spec.dist_lo:
+    if role == "dist_lo":
         assert state.pending_dist_op == op and state.pending_dist_hi is not None, (
             f"row {idx}: {label} DIST_LO without preceding DIST_HI "
             f"(pending_dist_op={state.pending_dist_op})"
@@ -92,7 +66,7 @@ def _step_distance_pair(idx, row, sr, op, spec, state):
         )
         state.pending_dist_hi = None
         return
-    if sr == spec.length:
+    if role == "len":
         assert state.pending_dist_op == op and state.pending_dist_hi is None, (
             f"row {idx}: {label} length without a complete DIST pair "
             f"(pending_dist_op={state.pending_dist_op}, "
@@ -102,7 +76,7 @@ def _step_distance_pair(idx, row, sr, op, spec, state):
         state.pending_dist_op = None
         state.pending_dist_idx = None
         return
-    if sr in spec.extra_subregs:
+    if role == "ov_count":
         return
     allowed = sorted({spec.dist_hi, spec.dist_lo, spec.length, *spec.extra_subregs})
     raise AssertionError(
@@ -208,7 +182,7 @@ def validate_back_refs(df, prompt_frame_count=0):
     state = _DistancePairState(output_frame_count=prompt_frame_count)
     for idx, row in df.iterrows():
         op = int(row["op"]) if not pd.isna(row["op"]) else SET_OP
-        spec = _DISTANCE_PAIR_OPS.get(op)
+        spec = DISTANCE_PAIR_OPS.get(op)
         if spec is not None:
             sr_raw = row.get("subreg", -1)
             sr = int(sr_raw) if not pd.isna(sr_raw) else -1

@@ -1,4 +1,4 @@
-"""Unit tests for ``preframr_tokens.constrained_decode``. Torch-free: mask checks call ``state._compute_invalid()`` (returns numpy bool); the torch glue at the masked_fill boundary is exercised in the main repo's predict tests."""
+"""Unit tests for ``preframr_tokens.constrained_decode``. Torch-free: mask checks call ``state.compute_invalid_mask()`` (returns numpy bool); the torch glue at the masked_fill boundary is exercised in the main repo's predict tests."""
 
 import unittest
 
@@ -7,7 +7,7 @@ import pandas as pd
 
 from preframr_tokens.constrained_decode import (
     StreamState,
-    _frame_marker_count,
+    frame_marker_count,
     precompute_subtoken_arrays,
     precompute_vocab_arrays,
     tail_charge_for_prompt,
@@ -114,7 +114,7 @@ def _build_vocab():
 
 
 def _mask_bool(state, n_vocab):
-    invalid = state._compute_invalid()  # pylint: disable=protected-access
+    invalid = state.compute_invalid_mask()
     return [bool(invalid[i]) for i in range(n_vocab)]
 
 
@@ -122,10 +122,10 @@ class TestFrameMarkerCount(unittest.TestCase):
     def test_counts_frame_and_delay(self):
         is_frame_marker = np.array([False, True, True], dtype=bool)
         ids = [0, 1, 0, 2, 1]
-        self.assertEqual(_frame_marker_count(ids, is_frame_marker), 3)
+        self.assertEqual(frame_marker_count(ids, is_frame_marker), 3)
 
     def test_empty(self):
-        self.assertEqual(_frame_marker_count([], np.zeros(1, dtype=bool)), 0)
+        self.assertEqual(frame_marker_count([], np.zeros(1, dtype=bool)), 0)
 
 
 class TestPrecomputeVocabArrays(unittest.TestCase):
@@ -471,7 +471,7 @@ class TestStreamStateSubtokenMode(unittest.TestCase):
     def test_pad_masked(self):
         arrs = self._arrays([[BR_HI], [SET_R0]])
         state = StreamState(arrs, init_frame_count=0, irq=10000)
-        invalid = state._compute_invalid()  # pylint: disable=protected-access
+        invalid = state.compute_invalid_mask()
         self.assertTrue(bool(invalid[0]))
 
     def test_back_ref_triple_state_machine(self):

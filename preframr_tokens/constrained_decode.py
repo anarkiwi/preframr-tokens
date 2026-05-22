@@ -1,5 +1,7 @@
 """Sampling-time logit guard for predict.py."""
 
+from enum import IntEnum
+
 import numpy as np
 
 from preframr_tokens.stfconstants import (
@@ -32,13 +34,16 @@ from preframr_tokens.stfconstants import (
 )
 
 
-def _frame_marker_count(token_ids, is_frame_marker):
+def frame_marker_count(token_ids, is_frame_marker):
     """Number of frame-marker tokens in ``token_ids`` (a 1-D iterable of
     vocab indices)."""
     arr = np.asarray(token_ids, dtype=np.int64)
     if arr.size == 0:
         return 0
     return int(is_frame_marker[arr].sum().item())
+
+
+_frame_marker_count = frame_marker_count  # back-compat alias
 
 
 def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
@@ -615,8 +620,42 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     }
 
 
+class PendingSlot(IntEnum):
+    """Which structural slot the next token must fill. The 7 macro mid-walk states are mutually exclusive — the previous implementation tracked them as 7 independent booleans, which made the invariant implicit and the dispatch table long. Overlay-in-flight is tracked separately via ``pending_overlays`` because it's a counter, not a single-shot slot."""
+
+    NONE = 0
+    BACK_REF_DIST_LO = 1
+    BACK_REF_LEN = 2
+    PR_DIST_LO = 3
+    PR_LEN = 4
+    PR_OV_COUNT = 5
+    SLOPE_TERM_LO = 6
+    SLOPE_RUNTIME = 7
+
+
+def _make_slot_property(slot: PendingSlot):
+    def fget(self) -> bool:
+        return self.pending_slot == slot
+
+    def fset(self, value: bool) -> None:
+        if value:
+            self.pending_slot = slot
+        elif self.pending_slot == slot:
+            self.pending_slot = PendingSlot.NONE
+
+    return property(fget, fset)
+
+
 class StreamState:
     """Per-step structural-validity tracker."""
+
+    pending_back_ref_dist_lo = _make_slot_property(PendingSlot.BACK_REF_DIST_LO)
+    pending_back_ref_len = _make_slot_property(PendingSlot.BACK_REF_LEN)
+    pending_pr_dist_lo = _make_slot_property(PendingSlot.PR_DIST_LO)
+    pending_pr_len = _make_slot_property(PendingSlot.PR_LEN)
+    pending_pr_ov_count = _make_slot_property(PendingSlot.PR_OV_COUNT)
+    pending_slope_term_lo = _make_slot_property(PendingSlot.SLOPE_TERM_LO)
+    pending_slope_runtime = _make_slot_property(PendingSlot.SLOPE_RUNTIME)
 
     def __init__(
         self,
@@ -634,13 +673,7 @@ class StreamState:
         self.frame_count = int(init_frame_count)
         self.pending_overlays = 0
         self.pending_overlay_slot = PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-        self.pending_back_ref_dist_lo = False
-        self.pending_back_ref_len = False
-        self.pending_pr_dist_lo = False
-        self.pending_pr_len = False
-        self.pending_pr_ov_count = False
-        self.pending_slope_term_lo = False
-        self.pending_slope_runtime = False
+        self.pending_slot: PendingSlot = PendingSlot.NONE
         self.current_dist_hi = 0
         self.irq = int(irq)
         self.frame_budget = int(init_budget) if init_budget is not None else int(irq)
@@ -657,16 +690,19 @@ class StreamState:
         """Set logits of structurally-invalid tokens to -inf. Computes the invalid mask in numpy then applies it to ``logits`` via a single ``masked_fill`` (torch is imported lazily so the rest of this module stays torch-free)."""
         import torch  # pylint: disable=import-outside-toplevel
 
-        invalid_np = self._compute_invalid()
+        invalid_np = self.compute_invalid_mask()
         invalid = torch.from_numpy(invalid_np).to(logits.device)
         return logits.masked_fill(invalid, float("-inf"))
 
-    def _compute_invalid(self):
+    def compute_invalid_mask(self):
+        """Per-vocab-id bool numpy array; True for tokens that would violate structural invariants at the current state. Pure numpy; consumers in torch land call ``mask_logits`` instead."""
         if self.subtoken_mode:
             invalid = self._compute_invalid_subtoken()
         else:
             invalid = self._compute_invalid_atomic()
         return self._unstick(invalid, self.arrays["is_frame_marker"])
+
+    _compute_invalid = compute_invalid_mask  # back-compat alias
 
     def update(self, token_id):
         """Advance state with the just-sampled token."""
@@ -680,25 +716,26 @@ class StreamState:
         invalid = np.zeros(a["n_vocab"], dtype=np.bool_)
 
         invalid |= a["is_pad"]
-        if self.pending_back_ref_dist_lo:
+        slot = self.pending_slot
+        if slot == PendingSlot.BACK_REF_DIST_LO:
             invalid |= ~a["is_back_ref_dist_lo"]
             full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
                 "dist_lo_val"
             ]
             too_far = full_dist > self.frame_count
             invalid |= a["is_back_ref_dist_lo"] & too_far
-        elif self.pending_pr_dist_lo:
+        elif slot == PendingSlot.PR_DIST_LO:
             invalid |= ~a["is_pattern_replay_dist_lo"]
             full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
                 "dist_lo_val"
             ]
             too_far = full_dist > self.frame_count
             invalid |= a["is_pattern_replay_dist_lo"] & too_far
-        elif self.pending_back_ref_len:
+        elif slot == PendingSlot.BACK_REF_LEN:
             invalid |= ~a["is_back_ref_len"]
-        elif self.pending_pr_len:
+        elif slot == PendingSlot.PR_LEN:
             invalid |= ~a["is_pattern_replay_len"]
-        elif self.pending_pr_ov_count:
+        elif slot == PendingSlot.PR_OV_COUNT:
             invalid |= ~a["is_pattern_replay_ov_count"]
             if self.remaining_steps is not None:
                 cap = max((self.remaining_steps - 1) // 3, 0)
@@ -706,9 +743,9 @@ class StreamState:
                     a["overlay_count"] > cap
                 )
                 invalid |= ov_too_long
-        elif self.pending_slope_term_lo:
+        elif slot == PendingSlot.SLOPE_TERM_LO:
             invalid |= ~a["is_slope_term_lo"]
-        elif self.pending_slope_runtime:
+        elif slot == PendingSlot.SLOPE_RUNTIME:
             invalid |= ~a["is_slope_runtime"]
         elif self.pending_overlays > 0:
             if self.pending_overlay_slot == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET:
@@ -743,25 +780,26 @@ class StreamState:
         invalid = np.zeros(a["n_vocab"], dtype=np.bool_)
         invalid |= a["is_pad"]
         invalid |= a["is_malformed_macro"]
-        if self.pending_back_ref_dist_lo:
+        slot = self.pending_slot
+        if slot == PendingSlot.BACK_REF_DIST_LO:
             invalid |= ~a["consumes_back_ref_dist_lo_gate"]
             full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
                 "dist_lo_val"
             ]
             too_far = full_dist > self.frame_count
             invalid |= a["consumes_back_ref_dist_lo_gate"] & too_far
-        elif self.pending_pr_dist_lo:
+        elif slot == PendingSlot.PR_DIST_LO:
             invalid |= ~a["consumes_pr_dist_lo_gate"]
             full_dist = (self.current_dist_hi << BACK_REF_DIST_HI_SHIFT) + a[
                 "dist_lo_val"
             ]
             too_far = full_dist > self.frame_count
             invalid |= a["consumes_pr_dist_lo_gate"] & too_far
-        elif self.pending_back_ref_len:
+        elif slot == PendingSlot.BACK_REF_LEN:
             invalid |= ~a["consumes_back_ref_len_gate"]
-        elif self.pending_pr_len:
+        elif slot == PendingSlot.PR_LEN:
             invalid |= ~a["consumes_pr_len_gate"]
-        elif self.pending_pr_ov_count:
+        elif slot == PendingSlot.PR_OV_COUNT:
             invalid |= ~a["consumes_pr_ov_count_gate"]
             if self.remaining_steps is not None:
                 cap = max((self.remaining_steps - 1) // 3, 0)

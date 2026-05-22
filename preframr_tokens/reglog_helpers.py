@@ -1,8 +1,9 @@
-"""Standalone helpers used by the reglog parser pipeline."""
+"""Helpers used by the reglog parser pipeline. Palette sidecar IO has moved to ``preframr_tokens.palette_io`` and ``wrapbits`` has moved to ``preframr_tokens.utils``; both are re-exported here for back-compat. New consumers should import from the source modules."""
 
-import json
-import os
-
+from preframr_tokens.palette_io import (
+    dump_palettes_attrs,
+    load_palettes_attrs,
+)
 from preframr_tokens.stfconstants import (
     DEFAULT_IRQ_CYCLES,
     DELAY_REG,
@@ -13,6 +14,27 @@ from preframr_tokens.stfconstants import (
     VOICES,
     VOICE_REG_SIZE,
 )
+from preframr_tokens.utils import wrapbits
+
+__all__ = [
+    # Voice-relative reg matchers.
+    "vreg_match",
+    "freq_match",
+    "pcm_match",
+    "ctrl_match",
+    "adsr_match",
+    "ad_match",
+    "sr_match",
+    "filter_match",
+    "frame_match",
+    # Decision helpers + dtype tightening.
+    "read_initial_irq",
+    "tighten_persist_dtypes",
+    # Re-exports.
+    "dump_palettes_attrs",
+    "load_palettes_attrs",
+    "wrapbits",
+]
 
 
 def vreg_match(vreg):
@@ -75,55 +97,3 @@ def tighten_persist_dtypes(df):
     if "description" in df.columns and df["description"].dtype != DESCRIPTION_PDTYPE:
         df["description"] = df["description"].astype(DESCRIPTION_PDTYPE)
     return df
-
-
-def _palettes_sidecar_path(parquet_path):
-    """Sidecar JSON path that carries the macro-pipeline palettes
-    (``gate_palette``, ``instrument_palette``) for one parsed parquet.
-    Decoupled from ``df.attrs`` because pandas / pyarrow can't
-    serialise tuple-keyed attrs to parquet metadata.
-    """
-    return parquet_path + ".palettes.json"
-
-
-def dump_palettes_attrs(attrs, parquet_path):
-    """Write engine fingerprint / cluster attrs to ``parquet_path``'s
-    sidecar JSON when present.
-    """
-    if not attrs:
-        return
-    out = {}
-    ef = attrs.get("engine_fingerprint")
-    if ef is not None:
-        out["engine_fingerprint"] = list(ef)
-    if "engine_fp_cluster" in attrs:
-        out["engine_fp_cluster"] = int(attrs["engine_fp_cluster"])
-    if not out:
-        return
-    with open(_palettes_sidecar_path(parquet_path), "w") as f:
-        json.dump(out, f)
-
-
-def load_palettes_attrs(parquet_path):
-    """Inverse of :func:`dump_palettes_attrs`. Returns a dict suitable
-    for assignment to ``df.attrs``; empty if the sidecar doesn't
-    exist.
-    """
-    sidecar = _palettes_sidecar_path(parquet_path)
-    if not os.path.exists(sidecar):
-        return {}
-    with open(sidecar) as f:
-        raw = json.load(f)
-    out = {}
-    if "engine_fingerprint" in raw:
-        out["engine_fingerprint"] = [float(x) for x in raw["engine_fingerprint"]]
-    if "engine_fp_cluster" in raw:
-        out["engine_fp_cluster"] = int(raw["engine_fp_cluster"])
-    return out
-
-
-def wrapbits(x, reglen):
-    """Bit-rotate-left by 1 within a ``reglen``-bit window."""
-    base = (x << 1) & (2**reglen - 1)
-    lsb = (x >> (reglen - 1)) & 1
-    return base ^ lsb
