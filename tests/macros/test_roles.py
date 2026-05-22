@@ -60,7 +60,6 @@ class TestDistancePairRole(unittest.TestCase):
         )
 
     def test_back_ref_has_no_ov_count(self):
-        # PATTERN_REPLAY_SUBREG_OVERLAY_COUNT == 3; BACK_REF_OP spec has no extras.
         self.assertIsNone(distance_pair_role(BACK_REF_OP, 3))
 
     def test_non_distance_op_returns_none(self):

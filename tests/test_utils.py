@@ -1,11 +1,4 @@
-"""Tests for ``preframr_tokens.utils``.
-
-``get_logger`` has no callers inside ``preframr_tokens`` itself, but the
-sibling ``preframr`` repo uses it from ~9 modules (parse.py,
-stftokenize.py, inference/predict.py, train/trainer.py,
-inference/render_play.py, integration_tests/*). It is part of the public
-surface and must not be removed without coordinating with that repo.
-"""
+"""Tests for ``preframr_tokens.utils``. ``get_logger`` has no in-package callers but is consumed by ~9 modules in the sibling ``preframr`` repo; it is part of the public surface."""
 
 import logging
 import unittest
@@ -19,10 +12,7 @@ class TestGetLogger(unittest.TestCase):
         self.assertIsInstance(logger, logging.Logger)
 
     def test_idempotent_handler_install(self):
-        # Repeated calls must not stack handlers on the module logger.
-        # (Under pytest the root logger has a handler, so
-        # ``hasHandlers()`` short-circuits and no install ever happens —
-        # that's still the "no growth" contract we care about.)
+        """Repeated get_logger calls must not stack handlers on the module logger."""
         logger = get_logger()
         before = len(logger.handlers)
         get_logger()

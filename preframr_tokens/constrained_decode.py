@@ -82,23 +82,25 @@ class MacroShape(IntEnum):
     OV_TARGET_THEN_NEW_VAL = 22
 
 
-# Shapes whose first atom is a DIST_LO row (val_a[0] feeds dist_lo_val).
-_SHAPES_WITH_DIST_LO_FIRST = frozenset({
-    MacroShape.SINGLETON_BACK_REF_DIST_LO,
-    MacroShape.SINGLETON_PR_DIST_LO,
-    MacroShape.BR_LO_THEN_LEN,
-    MacroShape.PR_LO_THEN_LEN,
-    MacroShape.PR_LO_THROUGH_OV_COUNT,
-})
+_SHAPES_WITH_DIST_LO_FIRST = frozenset(
+    {
+        MacroShape.SINGLETON_BACK_REF_DIST_LO,
+        MacroShape.SINGLETON_PR_DIST_LO,
+        MacroShape.BR_LO_THEN_LEN,
+        MacroShape.PR_LO_THEN_LEN,
+        MacroShape.PR_LO_THROUGH_OV_COUNT,
+    }
+)
 
-# Shapes whose second atom (atoms[1]) is a DIST_LO row that contributes the low byte of full_distance.
-_SHAPES_WITH_DIST_LO_SECOND = frozenset({
-    MacroShape.BR_HI_THEN_LO,
-    MacroShape.BR_COMPLETE,
-    MacroShape.PR_HI_THEN_LO,
-    MacroShape.PR_HI_THROUGH_LEN,
-    MacroShape.PR_COMPLETE,
-})
+_SHAPES_WITH_DIST_LO_SECOND = frozenset(
+    {
+        MacroShape.BR_HI_THEN_LO,
+        MacroShape.BR_COMPLETE,
+        MacroShape.PR_HI_THEN_LO,
+        MacroShape.PR_HI_THROUGH_LEN,
+        MacroShape.PR_COMPLETE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -204,8 +206,6 @@ _HEAD_RULES: dict[tuple[int, int], tuple[_ShapeRule, ...]] = {
     ),
     (BACK_REF_OP, BACK_REF_SUBREG_LEN): (
         _ShapeRule((), MacroShape.SINGLETON_BACK_REF_LEN, (0,)),
-        # BR_LEN_WITH_TAIL (n >= 2 with non-macro tail) handled out-of-table
-        # because the trailing-length is unbounded.
     ),
     (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI): (
         _ShapeRule((), MacroShape.SINGLETON_PR_DIST_HI, (0,)),
@@ -241,7 +241,6 @@ _HEAD_RULES: dict[tuple[int, int], tuple[_ShapeRule, ...]] = {
 _SHAPE_HANDLERS: dict[
     "MacroShape", tuple[tuple[str, ...], tuple[tuple[str, int], ...]]
 ] = {
-    # shape: (bool_flags_to_set, int_assigns=[(array_name, shape_tuple_index)])
     MacroShape.MALFORMED: (("is_malformed_macro",), ()),
     MacroShape.SINGLETON_BACK_REF_DIST_HI: (
         ("is_singleton_back_ref_dist_hi",),
@@ -357,10 +356,7 @@ _SHAPE_HANDLERS: dict[
 
 
 def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
-    """Classify a multi-atom sub-token's macro structure against ``_HEAD_RULES``. Returns ``(MacroShape, *extras)``; ``extras`` come from ``rule.val_indices`` lookups into ``val_a``.
-
-    ``BR_LEN_WITH_TAIL`` (head ``(BACK_REF_OP, LEN)`` with non-macro trailing atoms of any length) is the lone irregular shape and is handled out-of-table.
-    """
+    """Classify a sub-token's macro shape against ``_HEAD_RULES``; returns ``(MacroShape, *extras)``. ``BR_LEN_WITH_TAIL`` is the lone irregular shape, handled out-of-table."""
     n = atomic_ids.size
     if n == 0:
         return (MacroShape.NONE,)
@@ -394,9 +390,7 @@ def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
                 matched = False
                 break
         if matched:
-            extras = tuple(
-                int(val_a[int(atomic_ids[i])]) for i in rule.val_indices
-            )
+            extras = tuple(int(val_a[int(atomic_ids[i])]) for i in rule.val_indices)
             return (rule.shape, *extras)
     return (MacroShape.MALFORMED,)
 
@@ -440,7 +434,11 @@ def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)
     op, reg, subreg, val = to_int64_arrays(
-        tokens_df, "op", "reg", "subreg", "val",
+        tokens_df,
+        "op",
+        "reg",
+        "subreg",
+        "val",
         fillna={"op": SET_OP, "subreg": -1},
     )
 
@@ -505,40 +503,44 @@ def precompute_vocab_arrays(tokens_df):
     frame_sval = np.zeros(n, dtype=np.int64)
     frame_sval[is_frame_reg_strict] = val[is_frame_reg_strict] & 0x3F
 
-    return VocabArrays({
-        "n_vocab": n,
-        "subtoken_mode": False,
-        "is_frame_marker": is_frame_marker,
-        "is_delay_reg": is_delay_reg.astype(np.bool_),
-        "is_pad": is_pad.astype(np.bool_),
-        "is_real_reg": is_real_reg.astype(np.bool_),
-        "is_back_ref_dist_hi": is_back_ref_dist_hi.astype(np.bool_),
-        "is_back_ref_dist_lo": is_back_ref_dist_lo.astype(np.bool_),
-        "is_back_ref_len": is_back_ref_len.astype(np.bool_),
-        "is_slope_term_hi": is_slope_term_hi.astype(np.bool_),
-        "is_slope_term_lo": is_slope_term_lo.astype(np.bool_),
-        "is_slope_runtime": is_slope_runtime.astype(np.bool_),
-        "is_pattern_replay_dist_hi": is_pattern_replay_dist_hi.astype(np.bool_),
-        "is_pattern_replay_dist_lo": is_pattern_replay_dist_lo.astype(np.bool_),
-        "is_pattern_replay_len": is_pattern_replay_len.astype(np.bool_),
-        "is_pattern_replay_ov_count": is_pattern_replay_ov_count.astype(np.bool_),
-        "is_dist_hi_row": is_dist_hi_row.astype(np.bool_),
-        "is_dist_lo_row": is_dist_lo_row.astype(np.bool_),
-        "is_pair_intermediate": is_pair_intermediate.astype(np.bool_),
-        "is_pattern_overlay": is_pattern_overlay.astype(np.bool_),
-        "is_pattern_overlay_frame_offset": is_pattern_overlay_frame_offset.astype(
-            np.bool_
-        ),
-        "is_pattern_overlay_target_reg": is_pattern_overlay_target_reg.astype(np.bool_),
-        "is_pattern_overlay_new_val": is_pattern_overlay_new_val.astype(np.bool_),
-        "is_frame_reg_strict": is_frame_reg_strict.astype(np.bool_),
-        "is_voice_reg": is_voice_reg.astype(np.bool_),
-        "frame_sval": frame_sval,
-        "dist_hi_val": dist_hi_val,
-        "dist_lo_val": dist_lo_val,
-        "length": length,
-        "overlay_count": overlay_count,
-    })
+    return VocabArrays(
+        {
+            "n_vocab": n,
+            "subtoken_mode": False,
+            "is_frame_marker": is_frame_marker,
+            "is_delay_reg": is_delay_reg.astype(np.bool_),
+            "is_pad": is_pad.astype(np.bool_),
+            "is_real_reg": is_real_reg.astype(np.bool_),
+            "is_back_ref_dist_hi": is_back_ref_dist_hi.astype(np.bool_),
+            "is_back_ref_dist_lo": is_back_ref_dist_lo.astype(np.bool_),
+            "is_back_ref_len": is_back_ref_len.astype(np.bool_),
+            "is_slope_term_hi": is_slope_term_hi.astype(np.bool_),
+            "is_slope_term_lo": is_slope_term_lo.astype(np.bool_),
+            "is_slope_runtime": is_slope_runtime.astype(np.bool_),
+            "is_pattern_replay_dist_hi": is_pattern_replay_dist_hi.astype(np.bool_),
+            "is_pattern_replay_dist_lo": is_pattern_replay_dist_lo.astype(np.bool_),
+            "is_pattern_replay_len": is_pattern_replay_len.astype(np.bool_),
+            "is_pattern_replay_ov_count": is_pattern_replay_ov_count.astype(np.bool_),
+            "is_dist_hi_row": is_dist_hi_row.astype(np.bool_),
+            "is_dist_lo_row": is_dist_lo_row.astype(np.bool_),
+            "is_pair_intermediate": is_pair_intermediate.astype(np.bool_),
+            "is_pattern_overlay": is_pattern_overlay.astype(np.bool_),
+            "is_pattern_overlay_frame_offset": is_pattern_overlay_frame_offset.astype(
+                np.bool_
+            ),
+            "is_pattern_overlay_target_reg": is_pattern_overlay_target_reg.astype(
+                np.bool_
+            ),
+            "is_pattern_overlay_new_val": is_pattern_overlay_new_val.astype(np.bool_),
+            "is_frame_reg_strict": is_frame_reg_strict.astype(np.bool_),
+            "is_voice_reg": is_voice_reg.astype(np.bool_),
+            "frame_sval": frame_sval,
+            "dist_hi_val": dist_hi_val,
+            "dist_lo_val": dist_lo_val,
+            "length": length,
+            "overlay_count": overlay_count,
+        }
+    )
 
 
 def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
@@ -549,7 +551,11 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     n_sub = tkmodel.get_vocab_size()
     n_atomic = len(tokens_df)
     op_a, reg_a, subreg_a, val_a = to_int64_arrays(
-        tokens_df, "op", "reg", "subreg", "val",
+        tokens_df,
+        "op",
+        "reg",
+        "subreg",
+        "val",
         fillna={"op": SET_OP, "subreg": -1},
     )
     is_frame_marker_a = np.isin(reg_a, [FRAME_REG, DELAY_REG])
@@ -603,9 +609,6 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     fn_after_last_strict = np.zeros(n_sub, dtype=np.int64)
     pending_overlays_delta = np.zeros(n_sub, dtype=np.int64)
 
-    # Each shape's effect on the per-sub-token arrays is encoded in
-    # _SHAPE_HANDLERS as ``(bool_flags_to_set, int_assigns)``; the dispatch
-    # loop below looks up the handler once per sub-token.
     arrays_by_name = {
         "is_malformed_macro": is_malformed_macro,
         "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
@@ -699,57 +702,59 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         | is_singleton_pr_ov_count
     )
 
-    return VocabArrays({
-        "n_vocab": n_sub,
-        "subtoken_mode": True,
-        "is_frame_marker": (frame_advance > 0),
-        "is_pad": is_pad,
-        "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
-        "is_singleton_back_ref_dist_lo": is_singleton_back_ref_dist_lo,
-        "is_singleton_back_ref_len": is_singleton_back_ref_len,
-        "is_singleton_pr_dist_hi": is_singleton_pr_dist_hi,
-        "is_singleton_pr_dist_lo": is_singleton_pr_dist_lo,
-        "is_singleton_pr_len": is_singleton_pr_len,
-        "is_singleton_pr_ov_count": is_singleton_pr_ov_count,
-        "is_singleton_dist_hi": is_singleton_dist_hi,
-        "is_singleton_pair_intermediate": is_singleton_pair_intermediate,
-        "is_singleton_pattern_overlay": is_singleton_pattern_overlay,
-        "is_singleton_pattern_overlay_frame_offset": (
-            is_singleton_pattern_overlay_frame_offset
-        ),
-        "is_singleton_pattern_overlay_target_reg": (
-            is_singleton_pattern_overlay_target_reg
-        ),
-        "is_singleton_pattern_overlay_new_val": is_singleton_pattern_overlay_new_val,
-        "is_malformed_macro": is_malformed_macro,
-        "consumes_back_ref_len_gate": consumes_back_ref_len_gate,
-        "consumes_pr_len_gate": consumes_pr_len_gate,
-        "consumes_back_ref_dist_lo_gate": consumes_back_ref_dist_lo_gate,
-        "consumes_pr_dist_lo_gate": consumes_pr_dist_lo_gate,
-        "consumes_pr_ov_count_gate": consumes_pr_ov_count_gate,
-        "consumes_overlay_slot_0_gate": consumes_overlay_slot_0_gate,
-        "consumes_overlay_slot_1_gate": consumes_overlay_slot_1_gate,
-        "consumes_overlay_slot_2_gate": consumes_overlay_slot_2_gate,
-        "extends_to_back_ref_lo_consumed": extends_to_back_ref_lo_consumed,
-        "extends_to_back_ref_len_consumed": extends_to_back_ref_len_consumed,
-        "extends_to_pr_lo_consumed": extends_to_pr_lo_consumed,
-        "extends_to_pr_len_consumed": extends_to_pr_len_consumed,
-        "extends_to_pr_ov_count_consumed": extends_to_pr_ov_count_consumed,
-        "extends_to_overlay_completed": extends_to_overlay_completed,
-        "contains_delay": contains_delay,
-        "distance_hi": distance_hi,
-        "dist_lo_val": dist_lo_val,
-        "full_distance": full_distance,
-        "overlay_count": overlay_count,
-        "frame_advance": frame_advance,
-        "charge_first_segment": charge_first_segment,
-        "charge_last_segment": charge_last_segment,
-        "sets_sval": sets_sval,
-        "final_sval": final_sval,
-        "fn_delta": fn_delta,
-        "fn_after_last_strict": fn_after_last_strict,
-        "pending_overlays_delta": pending_overlays_delta,
-    })
+    return VocabArrays(
+        {
+            "n_vocab": n_sub,
+            "subtoken_mode": True,
+            "is_frame_marker": (frame_advance > 0),
+            "is_pad": is_pad,
+            "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
+            "is_singleton_back_ref_dist_lo": is_singleton_back_ref_dist_lo,
+            "is_singleton_back_ref_len": is_singleton_back_ref_len,
+            "is_singleton_pr_dist_hi": is_singleton_pr_dist_hi,
+            "is_singleton_pr_dist_lo": is_singleton_pr_dist_lo,
+            "is_singleton_pr_len": is_singleton_pr_len,
+            "is_singleton_pr_ov_count": is_singleton_pr_ov_count,
+            "is_singleton_dist_hi": is_singleton_dist_hi,
+            "is_singleton_pair_intermediate": is_singleton_pair_intermediate,
+            "is_singleton_pattern_overlay": is_singleton_pattern_overlay,
+            "is_singleton_pattern_overlay_frame_offset": (
+                is_singleton_pattern_overlay_frame_offset
+            ),
+            "is_singleton_pattern_overlay_target_reg": (
+                is_singleton_pattern_overlay_target_reg
+            ),
+            "is_singleton_pattern_overlay_new_val": is_singleton_pattern_overlay_new_val,
+            "is_malformed_macro": is_malformed_macro,
+            "consumes_back_ref_len_gate": consumes_back_ref_len_gate,
+            "consumes_pr_len_gate": consumes_pr_len_gate,
+            "consumes_back_ref_dist_lo_gate": consumes_back_ref_dist_lo_gate,
+            "consumes_pr_dist_lo_gate": consumes_pr_dist_lo_gate,
+            "consumes_pr_ov_count_gate": consumes_pr_ov_count_gate,
+            "consumes_overlay_slot_0_gate": consumes_overlay_slot_0_gate,
+            "consumes_overlay_slot_1_gate": consumes_overlay_slot_1_gate,
+            "consumes_overlay_slot_2_gate": consumes_overlay_slot_2_gate,
+            "extends_to_back_ref_lo_consumed": extends_to_back_ref_lo_consumed,
+            "extends_to_back_ref_len_consumed": extends_to_back_ref_len_consumed,
+            "extends_to_pr_lo_consumed": extends_to_pr_lo_consumed,
+            "extends_to_pr_len_consumed": extends_to_pr_len_consumed,
+            "extends_to_pr_ov_count_consumed": extends_to_pr_ov_count_consumed,
+            "extends_to_overlay_completed": extends_to_overlay_completed,
+            "contains_delay": contains_delay,
+            "distance_hi": distance_hi,
+            "dist_lo_val": dist_lo_val,
+            "full_distance": full_distance,
+            "overlay_count": overlay_count,
+            "frame_advance": frame_advance,
+            "charge_first_segment": charge_first_segment,
+            "charge_last_segment": charge_last_segment,
+            "sets_sval": sets_sval,
+            "final_sval": final_sval,
+            "fn_delta": fn_delta,
+            "fn_after_last_strict": fn_after_last_strict,
+            "pending_overlays_delta": pending_overlays_delta,
+        }
+    )
 
 
 class PendingSlot(IntEnum):
@@ -802,8 +807,11 @@ _OVERLAY_SLOT_INDEX = {
 }
 
 _ATOMIC_SLOT_TRANSITION = {
-    # current_slot: (assert_key, next_slot, action)
-    PendingSlot.BACK_REF_DIST_LO: ("is_back_ref_dist_lo", PendingSlot.BACK_REF_LEN, None),
+    PendingSlot.BACK_REF_DIST_LO: (
+        "is_back_ref_dist_lo",
+        PendingSlot.BACK_REF_LEN,
+        None,
+    ),
     PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", PendingSlot.PR_LEN, None),
     PendingSlot.BACK_REF_LEN: ("is_back_ref_len", PendingSlot.NONE, None),
     PendingSlot.PR_LEN: ("is_pattern_replay_len", PendingSlot.PR_OV_COUNT, None),
@@ -817,7 +825,6 @@ _ATOMIC_SLOT_TRANSITION = {
 }
 
 _ATOMIC_NEW_PENDING = (
-    # (gate_key, next_slot) — only the first matching gate fires.
     ("is_back_ref_dist_hi", PendingSlot.BACK_REF_DIST_LO),
     ("is_pattern_replay_dist_hi", PendingSlot.PR_DIST_LO),
     ("is_slope_term_hi", PendingSlot.SLOPE_TERM_LO),
@@ -954,7 +961,9 @@ class StreamState:
         """Sub-token-aware mask for the free-choice branch: each entry summarizes the aggregate effect of a Unigram sub-token's atomic-id decomposition. Voice-dependent masks (GATE_REPLAY / PLAY_INSTRUMENT palettes) are skipped here — the safety net catches palette violations post-decode."""
         invalid |= a["is_singleton_pattern_overlay"]
         invalid |= a["is_singleton_pair_intermediate"]
-        invalid |= a["consumes_back_ref_dist_lo_gate"] & ~a["is_singleton_back_ref_dist_lo"]
+        invalid |= (
+            a["consumes_back_ref_dist_lo_gate"] & ~a["is_singleton_back_ref_dist_lo"]
+        )
         invalid |= a["consumes_pr_dist_lo_gate"] & ~a["is_singleton_pr_dist_lo"]
         invalid |= a["consumes_back_ref_len_gate"] & ~a["is_singleton_back_ref_len"]
         invalid |= a["consumes_pr_len_gate"] & ~a["is_singleton_pr_len"]

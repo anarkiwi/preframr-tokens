@@ -12,7 +12,12 @@ from preframr_tokens.vocab_signature import (
     _op_tier_map,
 )
 
-__all__ = ["vocab_id_tier", "build_vocab_tier_ids", "build_vocab_tier_map", "CONTENT_TIER"]
+__all__ = [
+    "vocab_id_tier",
+    "build_vocab_tier_ids",
+    "build_vocab_tier_map",
+    "CONTENT_TIER",
+]
 
 
 def vocab_id_tier(vid: int, rt, tokens) -> str:

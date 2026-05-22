@@ -135,7 +135,6 @@ class LegatoPerClusterTransform(RowExpandingTransform):
     PROVIDES_OPS = _LEGATO_OPS
     EMITS_NON_SET_REGS = frozenset({4})
     PASS_CLASS = LegatoPerClusterPass
-    # Per-op decoder lookup via _LEGATO_DECODERS, not a single DECODER_CLASS.
 
     def expand_atom(self, row, state):
         decoder = _LEGATO_DECODERS[int(getattr(row, "op"))]

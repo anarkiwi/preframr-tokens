@@ -401,7 +401,6 @@ class Corpus:
         self.n_vocab = len(self.tokenizer.tokens["n"])
         if self.args.tkvocab:
             self.n_vocab = self.args.tkvocab
-        # Try metadata fast path.
         df_map_csv = self.args.df_map_csv
         if df_map_csv and os.path.exists(df_map_csv):
             df_map_df = pd.read_csv(df_map_csv)
@@ -443,7 +442,6 @@ class Corpus:
                         sorted(self.reg_widths.items()),
                     )
                     return
-        # Re-parse fallback.
         dump_files = None
         reglogs = None
         kind_by_dump = {}

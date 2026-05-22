@@ -64,14 +64,7 @@ def _row_weight(row) -> float:
 
 
 class VocabSignature:
-    """Per-vocab-id (loss-tier, frame-time-weight) signature, computed in one walk over the vocab. Public attributes are populated after ``__init__``:
-
-    - ``tier_ids``: ``np.int64`` array, index into ``tier_order``.
-    - ``tier_names``: ``dict[int, str]`` mapping vocab id to tier name.
-    - ``frame_weights``: ``np.float32`` array (default 1.0).
-
-    For Unigram sub-tokens the tier is taken from the **first** atomic id (matching legacy ``vocab_id_tier`` semantics); the frame weight accumulates across all atomic ids.
-    """
+    """Per-vocab-id (loss-tier, frame-time-weight) signature, computed in one walk over the vocab. Exposes ``tier_ids`` (int64 indices into ``tier_order``), ``tier_names`` (dict[int, str]), and ``frame_weights`` (float32, default 1.0). Under Unigram sub-tokens the tier is taken from the first atomic id; the frame weight accumulates across all atomic ids."""
 
     def __init__(
         self,
