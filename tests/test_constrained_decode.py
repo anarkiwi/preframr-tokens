@@ -648,6 +648,104 @@ class TestClassifyMacroShape(unittest.TestCase):
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 
+    def test_all_singleton_shapes(self):
+        """One-atom sub-tokens for every (op, subreg) that has a singleton entry."""
+        cases = [
+            (BACK_REF_OP, BACK_REF_SUBREG_DIST_HI, MacroShape.SINGLETON_BACK_REF_DIST_HI),
+            (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO, MacroShape.SINGLETON_BACK_REF_DIST_LO),
+            (BACK_REF_OP, BACK_REF_SUBREG_LEN, MacroShape.SINGLETON_BACK_REF_LEN),
+            (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI, MacroShape.SINGLETON_PR_DIST_HI),
+            (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_LO, MacroShape.SINGLETON_PR_DIST_LO),
+            (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN, MacroShape.SINGLETON_PR_LEN),
+            (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, MacroShape.SINGLETON_PR_OV_COUNT),
+            (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_FRAME_OFFSET, MacroShape.SINGLETON_OVERLAY_FRAME_OFFSET),
+            (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_TARGET_REG, MacroShape.SINGLETON_OVERLAY_TARGET_REG),
+            (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_NEW_VAL, MacroShape.SINGLETON_OVERLAY_NEW_VAL),
+        ]
+        for op, sr, expected in cases:
+            with self.subTest(op=op, sr=sr):
+                result = self._classify([{"op": op, "subreg": sr, "val": 11}])
+                self.assertEqual(result, (expected, 11))
+
+    def test_br_hi_then_lo(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 6},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 9},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.BR_HI_THEN_LO, 6))
+
+    def test_br_lo_then_len_no_extras(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 4},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 7},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.BR_LO_THEN_LEN,))
+
+    def test_pr_hi_then_lo(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_HI, "val": 3},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_LO, "val": 5},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_HI_THEN_LO, 3))
+
+    def test_pr_hi_through_len(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_HI, "val": 12},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_LO, "val": 14},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 3},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_HI_THROUGH_LEN, 12))
+
+    def test_pr_lo_then_len_no_extras(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_LO, "val": 2},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 8},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_LO_THEN_LEN,))
+
+    def test_pr_lo_through_ov_count_carries_third_val(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_LO, "val": 1},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 4},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, "val": 5},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_LO_THROUGH_OV_COUNT, 5))
+
+    def test_pr_len_then_ov_count_carries_second_val(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 9},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, "val": 3},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.PR_LEN_THEN_OV_COUNT, 3))
+
+    def test_ov_target_then_new_val_no_extras(self):
+        rows = [
+            {"op": PATTERN_OVERLAY_OP, "subreg": PATTERN_OVERLAY_SUBREG_TARGET_REG, "val": 1},
+            {"op": PATTERN_OVERLAY_OP, "subreg": PATTERN_OVERLAY_SUBREG_NEW_VAL, "val": 200},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.OV_TARGET_THEN_NEW_VAL,))
+
+    def test_overlay_frame_offset_multi_atom_is_malformed(self):
+        rows = [
+            {"op": PATTERN_OVERLAY_OP, "subreg": PATTERN_OVERLAY_SUBREG_FRAME_OFFSET, "val": 0},
+            {"op": PATTERN_OVERLAY_OP, "subreg": PATTERN_OVERLAY_SUBREG_TARGET_REG, "val": 1},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
+
+    def test_pr_ov_count_multi_atom_is_malformed(self):
+        rows = [
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, "val": 2},
+            {"op": SET_OP, "subreg": -1, "val": 1},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
+
+    def test_br_dist_hi_n2_with_wrong_trailing_subreg_is_malformed(self):
+        rows = [
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 5},
+            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 3},
+        ]
+        self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
+
 
 class TestModuleTorchFree(unittest.TestCase):
     def test_constrained_decode_imports_without_torch(self):
