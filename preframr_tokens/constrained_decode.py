@@ -41,6 +41,20 @@ def _frame_marker_count(token_ids, is_frame_marker):
     return int(is_frame_marker[arr].sum().item())
 
 
+def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
+    """Cycles consumed by real-reg writes between the last frame marker in ``prompt_ids`` and prompt end. Used by predictors to seed the in-frame ``frame_budget`` when resuming sampling so the first generated token doesn't double-charge. Returns 0 if the prompt has no frame markers (treat as fresh frame)."""
+    arr = np.asarray(prompt_ids, dtype=np.int64)
+    if arr.size == 0:
+        return 0
+    is_frame_marker = vocab_arrays["is_frame_marker"]
+    is_real_reg = vocab_arrays["is_real_reg"]
+    marker_positions = np.nonzero(is_frame_marker[arr])[0]
+    if marker_positions.size == 0:
+        return 0
+    tail = arr[int(marker_positions[-1]) + 1 :]
+    return int(is_real_reg[tail].sum() * MIN_DIFF)
+
+
 def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)

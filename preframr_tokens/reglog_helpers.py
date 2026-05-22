@@ -4,6 +4,7 @@ import json
 import os
 
 from preframr_tokens.stfconstants import (
+    DEFAULT_IRQ_CYCLES,
     DELAY_REG,
     DESCRIPTION_PDTYPE,
     FC_LO_REG,
@@ -52,6 +53,14 @@ def filter_match(df):
 
 def frame_match(df):
     return (df["reg"] == FRAME_REG) | (df["reg"] == DELAY_REG)
+
+
+def read_initial_irq(df, default: int = DEFAULT_IRQ_CYCLES) -> int:
+    """Read the initial IRQ cycle interval from a parser-output df by taking the first FRAME_REG row's ``diff`` column. Returns ``default`` (canonical SID ~50.1 Hz raster) if no FRAME rows present."""
+    frame_rows = df[df["reg"] == FRAME_REG]
+    if frame_rows.empty:
+        return int(default)
+    return int(frame_rows["diff"].iloc[0])
 
 
 def tighten_persist_dtypes(df):
