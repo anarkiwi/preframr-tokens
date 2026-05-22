@@ -248,6 +248,52 @@ def prepare_df_for_audio(orig_df, reg_widths, irq, sidq, strict=False, prompt_le
     return df, reg_widths
 
 
+_OPTIONAL_TRANSFORMS = (
+    (
+        "voice_trajectory_pass",
+        "preframr_tokens.macros.transforms_voice_trajectory",
+        "VoiceTrajectoryTransform",
+        "voice_trajectory_window",
+        8,
+    ),
+    (
+        "voice_trajectory_distributed_pass",
+        "preframr_tokens.macros.transforms_voice_trajectory_distributed",
+        "VoiceTrajectoryDistributedTransform",
+        "voice_trajectory_window",
+        8,
+    ),
+    (
+        "set_to_diff_pass",
+        "preframr_tokens.macros.transforms_set_to_diff",
+        "SetToDiffTransform",
+        None,
+        None,
+    ),
+)
+
+
+def _apply_optional_transforms(xdf, args):
+    """Apply each opt-in Transform listed in ``_OPTIONAL_TRANSFORMS`` whose args-flag is truthy. Lazy-imports the transform module on first use."""
+    import importlib
+
+    for (
+        flag,
+        module_name,
+        class_name,
+        window_arg,
+        window_default,
+    ) in _OPTIONAL_TRANSFORMS:
+        if not getattr(args, flag, False):
+            continue
+        klass = getattr(importlib.import_module(module_name), class_name)
+        kwargs = {}
+        if window_arg is not None:
+            kwargs["window"] = int(getattr(args, window_arg, window_default))
+        xdf = klass(**kwargs).forward(xdf, args=args)
+    return xdf
+
+
 class RegLogParser:
     def __init__(self, args=None, logger=logging, cluster_table=None):
         self.args = args
@@ -813,30 +859,7 @@ class RegLogParser:
             xdf = self._norm_pr_order(xdf)
             xdf = macros.run_post_norm_pre_voice_passes(xdf, args=self.args)
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
-            if getattr(self.args, "voice_trajectory_pass", False):
-                from preframr_tokens.macros.transforms_voice_trajectory import (
-                    VoiceTrajectoryTransform,
-                )
-
-                window = int(getattr(self.args, "voice_trajectory_window", 8))
-                xdf = VoiceTrajectoryTransform(window=window).forward(
-                    xdf, args=self.args
-                )
-            if getattr(self.args, "voice_trajectory_distributed_pass", False):
-                from preframr_tokens.macros.transforms_voice_trajectory_distributed import (
-                    VoiceTrajectoryDistributedTransform,
-                )
-
-                window = int(getattr(self.args, "voice_trajectory_window", 8))
-                xdf = VoiceTrajectoryDistributedTransform(window=window).forward(
-                    xdf, args=self.args
-                )
-            if getattr(self.args, "set_to_diff_pass", False):
-                from preframr_tokens.macros.transforms_set_to_diff import (
-                    SetToDiffTransform,
-                )
-
-                xdf = SetToDiffTransform().forward(xdf, args=self.args)
+            xdf = _apply_optional_transforms(xdf, self.args)
             xdf = xdf.reset_index(drop=True)
             for k in TOKEN_KEYS:
                 if k not in xdf.columns:
