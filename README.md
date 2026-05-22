@@ -42,7 +42,22 @@ Optional extras:
   audio-domain bucketing).
 - `preframr_tokens.dump_meta` -- per-dump metadata sidecar with code-hash
   staleness gate.
-- `preframr_tokens.reglog_helpers` -- palette IO + dtype tightening.
+- `preframr_tokens.reglog_helpers` -- voice-relative reg matchers, dtype
+  tightening, and re-exports of `wrapbits` (now in `utils`) and the
+  palette sidecar IO (now in `palette_io`) for back-compat. New consumers
+  should import from the source modules.
+- `preframr_tokens.palette_io` -- JSON sidecar load/dump for the
+  engine-fingerprint / engine-fp-cluster `df.attrs` (extracted from
+  `reglog_helpers`).
+- `preframr_tokens.macros.roles` -- single source of truth for
+  `(op, subreg)` → role classification. `distance_pair_role`,
+  `slope_subreg_role`, `frame_weight_role`, plus the
+  `DISTANCE_PAIR_OPS` table and the `DistancePairSpec` dataclass.
+- `preframr_tokens.vocab_signature` -- `VocabSignature` class. Single-
+  pass per-vocab-id (loss-tier, frame-time-weight) computation. The
+  `tier_classify` and `token_weighting` free functions are thin
+  wrappers; consumers that need both should build a `VocabSignature`
+  directly to avoid two passes over the vocab.
 - `preframr_tokens.alphabet_projection` -- eval-set atom projection
   table.
 - `preframr_tokens.reg_mappers` -- `FreqMapper` (PAL clock + cents
@@ -100,6 +115,9 @@ plus the narrowing opportunities still on the table is in
 - `preframr_tokens.token_weighting.vocab_frame_weights` — per-vocab
   audio-frame-time weighting. Replaces ad-hoc BACK_REF / DO_LOOP /
   SLOPE / DELAY / FRAME val accounting in consumers.
+- `preframr_tokens.vocab_signature.VocabSignature` — single-pass
+  bundle of both of the above. Consumers that need both `tier_ids`
+  and `frame_weights` should construct this directly.
 - `preframr_tokens.reglog_helpers.read_initial_irq` — first-frame
   diff lookup with PAL default. Replaces the `df[df["reg"] ==
   FRAME_REG]` dance in consumers.
@@ -107,6 +125,19 @@ plus the narrowing opportunities still on the table is in
   cycle cost of real-reg writes after the last frame marker.
   Replaces the manual `is_real_reg[tail].sum() * MIN_DIFF`
   arithmetic + the matching `MIN_DIFF` import in consumers.
+- `preframr_tokens.constrained_decode.frame_marker_count` —
+  formerly `_frame_marker_count`; promoted (the underscore alias
+  remains for one release cycle).
+- `preframr_tokens.constrained_decode.StreamState.compute_invalid_mask`
+  — formerly `_compute_invalid`; promoted (the underscore alias
+  remains for one release cycle).
+- `preframr_tokens.macros.transform.ensure_default_transforms_registered`
+  — call before any `_REGISTRY` lookup to populate
+  `transforms_audio_bit_exact` / `transforms_bit_exact` side effects.
+  Idempotent. Replaces the duplicated import-and-cache dance.
+- `preframr_tokens.corpus.TokenizeMeta` — typed snapshot of the
+  tokenize-stage metadata previously carried as an untyped dict on
+  `Corpus._tokenize_meta`.
 
 ## Stability
 
@@ -116,17 +147,36 @@ major version since they invalidate downstream checkpoints.
 
 Public surface (semver-promised once v1.0):
 
-- **Classes**: `RegLogParser`, `RegTokenizer`, `Corpus`,
-  `StreamState`, `Transform` (+ `register` decorator, `PipelineEntry`,
-  `TransformPipeline`).
+- **Classes**: `RegLogParser`, `RegTokenizer`, `Corpus`, `TokenizeMeta`,
+  `StreamState`, `PendingSlot`, `VocabSignature`, `Transform`
+  (+ `register` decorator, `PipelineEntry`, `TransformPipeline`),
+  `DistancePairSpec`.
 - **Decision helpers**: see `API_SURFACE.md` "Decision helpers"
   section.
 - **Routines**: `parse_corpus`, `precompute_vocab_arrays`,
   `precompute_subtoken_arrays`, `prepare_df_for_audio`,
   `remove_voice_reg`, `validate_back_refs`,
-  `validate_pattern_overlays`.
+  `validate_pattern_overlays`, `frame_marker_count`,
+  `ensure_default_transforms_registered`, `distance_pair_role`,
+  `slope_subreg_role`, `frame_weight_role`.
 - **Boundary constants**: `PAD_ID`, `MODEL_PDTYPE`, `DUMP_SUFFIX`,
-  `LEGACY_EVAL_SUBSET_NAME`, `DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`.
+  `LEGACY_EVAL_SUBSET_NAME`, `DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`,
+  `DISTANCE_PAIR_OPS`, `CONTENT_TIER`.
+
+### Back-compat aliases scheduled to drop
+
+The narrowing pass added or kept these aliases so the next main-repo
+release cycle can land without breaking. They will be removed in the
+release after.
+
+| alias | replacement | location |
+|---|---|---|
+| `constrained_decode._frame_marker_count` | `frame_marker_count` | `preframr_tokens/constrained_decode.py` |
+| `StreamState._compute_invalid` | `StreamState.compute_invalid_mask` | `preframr_tokens/constrained_decode.py` |
+| `transform._LOSS_TIER_NAMES` | `LOSS_TIER_NAMES` | `preframr_tokens/macros/transform.py` |
+| `reglog_helpers.dump_palettes_attrs` | `palette_io.dump_palettes_attrs` | `preframr_tokens/reglog_helpers.py` |
+| `reglog_helpers.load_palettes_attrs` | `palette_io.load_palettes_attrs` | `preframr_tokens/reglog_helpers.py` |
+| `reglog_helpers.wrapbits` | `utils.wrapbits` | `preframr_tokens/reglog_helpers.py` |
 
 Symbols prefixed `_` are package-internal and may change without
 notice (current consumers that reach into them are tracked in

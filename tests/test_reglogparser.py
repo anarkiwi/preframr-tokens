@@ -706,19 +706,21 @@ class TestRegLogParser(unittest.TestCase):
         self.assertEqual(len(result_df[result_df["reg"] == DELAY_REG]), 1)
 
     def test_remove_voice_reg(self):
-        test_df = pd.DataFrame([{"reg": 0, "val": 1, "diff": 32}], dtype=MODEL_PDTYPE)
+        test_df = pd.DataFrame(
+            [{"reg": 0, "val": 1, "diff": 32, "op": SET_OP}], dtype=MODEL_PDTYPE
+        )
         result_df, result_widths = remove_voice_reg(test_df, {})
         self.assertTrue(test_df.equals(result_df))
 
         test_df = pd.DataFrame(
             [
-                {"reg": FRAME_REG, "val": 57, "diff": 19000},
-                {"reg": VOICE_REG, "val": 0, "diff": 32},
-                {"reg": 0, "val": 100, "diff": 32},
-                {"reg": VOICE_REG, "val": 0, "diff": 32},
-                {"reg": 0, "val": 200, "diff": 32},
-                {"reg": VOICE_REG, "val": 0, "diff": 32},
-                {"reg": 0, "val": 150, "diff": 32},
+                {"reg": FRAME_REG, "val": 57, "diff": 19000, "op": SET_OP},
+                {"reg": VOICE_REG, "val": 0, "diff": 32, "op": SET_OP},
+                {"reg": 0, "val": 100, "diff": 32, "op": SET_OP},
+                {"reg": VOICE_REG, "val": 0, "diff": 32, "op": SET_OP},
+                {"reg": 0, "val": 200, "diff": 32, "op": SET_OP},
+                {"reg": VOICE_REG, "val": 0, "diff": 32, "op": SET_OP},
+                {"reg": 0, "val": 150, "diff": 32, "op": SET_OP},
             ],
             dtype=MODEL_PDTYPE,
         )

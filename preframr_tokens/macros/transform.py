@@ -10,6 +10,21 @@ from typing import Any, ClassVar, Iterable, Optional
 import pandas as pd
 
 _REGISTRY: dict[str, type["Transform"]] = {}
+_DEFAULTS_REGISTERED = False
+
+
+def ensure_default_transforms_registered() -> None:
+    """Import the ``transforms_bit_exact`` / ``transforms_audio_bit_exact`` modules once so their ``@register(...)`` side effects populate ``_REGISTRY``. Idempotent; safe to call anywhere ``collect_op_loss_tiers`` / ``collect_substitutable_ops`` / ``get_transform_class`` is reachable."""
+    global _DEFAULTS_REGISTERED  # pylint: disable=global-statement
+    if _DEFAULTS_REGISTERED:
+        return
+    # pylint: disable=import-outside-toplevel,unused-import
+    from preframr_tokens.macros import (
+        transforms_audio_bit_exact,  # noqa: F401
+        transforms_bit_exact,  # noqa: F401
+    )
+
+    _DEFAULTS_REGISTERED = True
 
 
 def register(name: str):

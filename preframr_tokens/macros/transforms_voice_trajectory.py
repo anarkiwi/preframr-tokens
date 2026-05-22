@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.macros.passes_base import _int64_cols
+from preframr_tokens.macros.roles import slope_subreg_role
 from preframr_tokens.macros.transform import Transform, register
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -24,9 +25,6 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SLOPE_FREQ_LO_OP,
     SLOPE_FREQ_LO_SHIFTED_OP,
-    SLOPE_SUBREG_RUNTIME,
-    SLOPE_SUBREG_TERMINAL_HI,
-    SLOPE_SUBREG_TERMINAL_LO,
     SUBREG_FLUSH_OP,
     TRANSPOSE_OP,
     VOICE_REG,
@@ -238,10 +236,10 @@ def compute_frame_stats(df: pd.DataFrame):
                 b -= 256
             stats["freq_delta_sum"] = int(stats["freq_delta_sum"]) + a + b
         elif op_i in _SLOPE_FREQ_OPS and r == _FREQ_LO_OFFSET:
-            s_idx = int(subreg_col[i])
-            if s_idx == int(SLOPE_SUBREG_TERMINAL_HI):
+            role = slope_subreg_role(op_i, int(subreg_col[i]))
+            if role == "terminal_hi":
                 stats["slope_term_hi"] = int(val[i])
-            elif s_idx == int(SLOPE_SUBREG_TERMINAL_LO):
+            elif role == "terminal_lo":
                 stats["slope_term_lo"] = int(val[i])
         elif op_i == ctrl_bigram_op_int and r == _CTRL_OFFSET:
             idx = int(val[i])

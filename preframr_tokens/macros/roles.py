@@ -1,0 +1,99 @@
+"""Single source of truth for ``(op, subreg)`` → role classification used by the constrained-decode pre-compute, the stream validators, the per-vocab tier classifier, and the frame-time weighting helper. Each role is a tiny tag so callers can dispatch on it with a single dict lookup instead of re-encoding the (op, subreg) constants inline."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+from preframr_tokens.stfconstants import (
+    BACK_REF_OP,
+    BACK_REF_SUBREG_DIST_HI,
+    BACK_REF_SUBREG_DIST_LO,
+    BACK_REF_SUBREG_LEN,
+    DO_LOOP_OP,
+    PATTERN_REPLAY_OP,
+    PATTERN_REPLAY_SUBREG_DIST_HI,
+    PATTERN_REPLAY_SUBREG_DIST_LO,
+    PATTERN_REPLAY_SUBREG_LEN,
+    PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
+    SLOPE_OPS,
+    SLOPE_SUBREG_RUNTIME,
+    SLOPE_SUBREG_TERMINAL_HI,
+    SLOPE_SUBREG_TERMINAL_LO,
+)
+
+
+@dataclass(frozen=True)
+class DistancePairSpec:
+    """Mapping from a distance-pair op (``BACK_REF`` / ``PATTERN_REPLAY``) to its DIST_HI / DIST_LO / LEN slot ids and any extra trailing slots (``PATTERN_REPLAY`` carries OVERLAY_COUNT)."""
+
+    label: str
+    dist_hi: int
+    dist_lo: int
+    length: int
+    extra_subregs: frozenset[int]
+
+
+DISTANCE_PAIR_OPS: dict[int, DistancePairSpec] = {
+    BACK_REF_OP: DistancePairSpec(
+        label="BACK_REF",
+        dist_hi=BACK_REF_SUBREG_DIST_HI,
+        dist_lo=BACK_REF_SUBREG_DIST_LO,
+        length=BACK_REF_SUBREG_LEN,
+        extra_subregs=frozenset(),
+    ),
+    PATTERN_REPLAY_OP: DistancePairSpec(
+        label="PR",
+        dist_hi=PATTERN_REPLAY_SUBREG_DIST_HI,
+        dist_lo=PATTERN_REPLAY_SUBREG_DIST_LO,
+        length=PATTERN_REPLAY_SUBREG_LEN,
+        extra_subregs=frozenset({PATTERN_REPLAY_SUBREG_OVERLAY_COUNT}),
+    ),
+}
+
+
+_SLOPE_OP_SET = frozenset(SLOPE_OPS)
+
+
+def distance_pair_role(op: int, subreg: int) -> Optional[str]:
+    """``"dist_hi" | "dist_lo" | "len" | "ov_count" | None`` for distance-pair ops; ``None`` if ``op`` is not a distance-pair op or ``subreg`` doesn't match any slot."""
+    spec = DISTANCE_PAIR_OPS.get(int(op))
+    if spec is None:
+        return None
+    sr = int(subreg)
+    if sr == spec.dist_hi:
+        return "dist_hi"
+    if sr == spec.dist_lo:
+        return "dist_lo"
+    if sr == spec.length:
+        return "len"
+    if sr in spec.extra_subregs:
+        return "ov_count"
+    return None
+
+
+def slope_subreg_role(op: int, subreg: int) -> Optional[str]:
+    """``"terminal_hi" | "terminal_lo" | "runtime" | None`` for slope ops; ``None`` otherwise."""
+    if int(op) not in _SLOPE_OP_SET:
+        return None
+    sr = int(subreg)
+    if sr == SLOPE_SUBREG_TERMINAL_HI:
+        return "terminal_hi"
+    if sr == SLOPE_SUBREG_TERMINAL_LO:
+        return "terminal_lo"
+    if sr == SLOPE_SUBREG_RUNTIME:
+        return "runtime"
+    return None
+
+
+def frame_weight_role(op: int, subreg: int) -> Optional[str]:
+    """``"back_ref_len" | "do_loop_len" | "slope_runtime" | None`` for the three op-side weight sources (the reg-side DELAY / FRAME ones live in ``token_weighting``)."""
+    op = int(op)
+    sr = int(subreg)
+    if op == BACK_REF_OP and sr == BACK_REF_SUBREG_LEN:
+        return "back_ref_len"
+    if op == DO_LOOP_OP and sr == 0:
+        return "do_loop_len"
+    if op in _SLOPE_OP_SET and sr == SLOPE_SUBREG_RUNTIME:
+        return "slope_runtime"
+    return None

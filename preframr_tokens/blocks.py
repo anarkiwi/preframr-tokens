@@ -5,6 +5,7 @@ import os
 import random as _random
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -28,8 +29,8 @@ class SeqMeta:
     irq: int
     df_file: str
     i: int
-    l: int = None
-    npy_path: int = None
+    l: Optional[int] = None
+    npy_path: Optional[str] = None
 
 
 def parse_eval_reglogs(value):

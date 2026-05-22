@@ -34,22 +34,22 @@ SPLITTERS = len(SPLITCHS)
 
 
 def _substitutable_ops():
-    from preframr_tokens.macros import (  # noqa: F401 register transforms
-        transforms_audio_bit_exact,
-        transforms_bit_exact,
+    from preframr_tokens.macros.transform import (
+        collect_substitutable_ops,
+        ensure_default_transforms_registered,
     )
-    from preframr_tokens.macros.transform import collect_substitutable_ops
 
+    ensure_default_transforms_registered()
     return collect_substitutable_ops()
 
 
 def _substitutable_op_subregs():
-    from preframr_tokens.macros import (  # noqa: F401 register transforms
-        transforms_audio_bit_exact,
-        transforms_bit_exact,
+    from preframr_tokens.macros.transform import (
+        collect_substitutable_op_subregs,
+        ensure_default_transforms_registered,
     )
-    from preframr_tokens.macros.transform import collect_substitutable_op_subregs
 
+    ensure_default_transforms_registered()
     return collect_substitutable_op_subregs()
 
 
@@ -347,12 +347,12 @@ class RegTokenizer:
         return df
 
     def _decompose_missing_via_registry(self, df, tokens, missing_tokens):
-        from preframr_tokens.macros import (  # noqa: F401 register transforms
-            transforms_audio_bit_exact,
-            transforms_bit_exact,
+        from preframr_tokens.macros.transform import (
+            _REGISTRY,
+            ensure_default_transforms_registered,
         )
-        from preframr_tokens.macros.transform import _REGISTRY
 
+        ensure_default_transforms_registered()
         if df.empty or not _REGISTRY:
             return df
         by_op = {}

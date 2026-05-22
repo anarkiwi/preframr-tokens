@@ -5,6 +5,8 @@ import json
 import multiprocessing
 import os
 from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -33,6 +35,17 @@ from preframr_tokens.stfconstants import (
 )
 
 
+@dataclass
+class TokenizeMeta:
+    """Per-corpus tokenize-stage metadata snapshot. Populated by ``Corpus.make_tokens``; consumed by the dataset-map writer + the iter-block-seqs fast path."""
+
+    irq_by_file: dict = field(default_factory=dict)
+    rotations_by_file: dict = field(default_factory=dict)
+    kind_by_file: dict = field(default_factory=dict)
+    reg_widths: dict = field(default_factory=dict)
+    val_subsets: list = field(default_factory=list)
+
+
 class Corpus:
     """Torch-free corpus orchestration. See module docstring."""
 
@@ -44,7 +57,7 @@ class Corpus:
         self.n_vocab = 0
         self.n_words = 0
         self.val_subset_names = []
-        self._tokenize_meta = None
+        self._tokenize_meta: Optional[TokenizeMeta] = None
 
     def load_dfs(self, reglogs=None, dump_files=None, max_perm=99, encode=True):
         """Yield (dump_file, i, df, seq, irq, blocks) tuples; parallel parser_worker; tokenizer.encode if tokens are already built and encode=True."""
@@ -202,13 +215,13 @@ class Corpus:
         assert self.tokenizer.tokens[tokens["val"].isna()].empty, tokens[
             tokens["val"].isna()
         ]
-        self._tokenize_meta = {
-            "irq_by_file": irq_by_file,
-            "rotations_by_file": rotations_by_file,
-            "kind_by_file": kind_by_file,
-            "reg_widths": self.tokenizer.get_reg_width_from_max(reg_max),
-            "val_subsets": list(eval_subsets.keys()),
-        }
+        self._tokenize_meta = TokenizeMeta(
+            irq_by_file=irq_by_file,
+            rotations_by_file=rotations_by_file,
+            kind_by_file=kind_by_file,
+            reg_widths=self.tokenizer.get_reg_width_from_max(reg_max),
+            val_subsets=list(eval_subsets.keys()),
+        )
         return train_files, val_files, cached_blocks
 
     def encode_and_save_cached_blocks(self, cached_blocks):
@@ -306,17 +319,17 @@ class Corpus:
         meta = self._tokenize_meta
 
         def _df_map_frame():
-            kind_lookup = (meta or {}).get("kind_by_file") if meta else None
+            kind_lookup = meta.kind_by_file if meta else {}
             rows = []
             for p in train_files:
-                rows.append((p, (kind_lookup or {}).get(p, "train")))
+                rows.append((p, kind_lookup.get(p, "train")))
             for p in val_files:
-                rows.append((p, (kind_lookup or {}).get(p, LEGACY_EVAL_SUBSET_NAME)))
+                rows.append((p, kind_lookup.get(p, LEGACY_EVAL_SUBSET_NAME)))
             df = pd.DataFrame(rows, columns=["dump_file", "kind"])
             if meta:
-                df["irq"] = df["dump_file"].map(meta["irq_by_file"]).astype("Int64")
+                df["irq"] = df["dump_file"].map(meta.irq_by_file).astype("Int64")
                 df["n_rotations"] = (
-                    df["dump_file"].map(meta["rotations_by_file"]).astype("Int64")
+                    df["dump_file"].map(meta.rotations_by_file).astype("Int64")
                 )
             return df
 
@@ -326,7 +339,7 @@ class Corpus:
             sidecar = reg_widths_path(df_map_csv_path)
             self.logger.info("writing reg_widths to %s", sidecar)
             with open(sidecar, "w") as f:
-                json.dump({str(k): int(v) for k, v in meta["reg_widths"].items()}, f)
+                json.dump({str(k): int(v) for k, v in meta.reg_widths.items()}, f)
 
         if not self.args.tkvocab and not dataset_csv:
             if df_map_csv:
