@@ -20,6 +20,44 @@ Probes already run on the prodlike training corpus (see main repo `integration_t
 
 Three findings, one root cause: **the tokenizer compresses some patterns well (PRESET, SLOPE, FLIP2 for ±a/±b alternation) but misses others (slope chains, lonely PW context, sub-50-cent FREQ vibrato), leaving the long tail and PWM mass disproportion that the model fails to learn.**
 
+### Per-family op-coverage probe (500 prodlike songs)
+
+Post-macro-pass row counts per voice-register family:
+
+| family | total rows | SET-only | macro-encoded | SET% | macro% | top non-SET op |
+|---|---|---|---|---|---|---|
+| FREQ_LO | 680039 | 231023 | 19163 | 34.0% | 2.8% | DIFF_OP (op=1) 412947 |
+| PW_LO | 923047 | 0 | 921139 | 0.0% | **99.8%** | PWM_PRESET (op=35) 790651 |
+| CTRL | 332944 | 161343 | 1530 | 48.5% | 0.5% | CTRL_BIGRAM (op=42) 169955 |
+| **AD** | 130845 | 130845 | **0** | **100.0%** | **0.0%** | (none) |
+| **SR** | 165465 | 165465 | **0** | **100.0%** | **0.0%** | (none) |
+
+**Critical gaps:**
+- **AD + SR are 100% raw SET**, zero macro coverage. ADSR programs (instrument envelope changes) are completely uncompressed despite following strong repeating patterns.
+- **CTRL is split SET / CTRL_BIGRAM**. The SET half is the residual that no macro caught.
+- **FREQ_LO is 34% SET**. The 4-row pattern probe on FREQ_LO SETs found:
+  - 45 arithmetic 4-tuples (caught by SLOPE if longer)
+  - 657 geometric 4-tuples (exponential frequency curves — **SLOPE can't capture these**)
+  - **7027 damped-oscillation 4-tuples** (alternating sign with decreasing magnitude — **OSCILLATE with fixed amplitude can't capture these either; needs a decay parameter or DAMPED_OSCILLATE variant**)
+- **Patch-swap windows** (AD + SR + CTRL all changing within 3 rows on same voice): **137887 occurrences** across 500 songs ≈ **275 per song**. The single most common multi-register coupled pattern, currently uncaptured.
+
+## Architectural principle: zero "lonely" updates
+
+**Mandate:** every voice-register write must be part of a larger trajectory primitive (SLOPE, OSCILLATE, PATCH_SET, ATTACK, RELEASE, etc.). The 40% long-tail-SET pattern is to be **eliminated, not compressed**. Carveouts are explicit (enumerated) rather than the default fallback.
+
+Rationale: the long-tail SET atoms are the model's hardest tokens (each appears few times in training). Replacing them with structured trajectory atoms that compose from a smaller alphabet of "shapes" gives the model fewer-but-more-meaningful primitives to learn. The model's content-tier ceiling at prodlike (~13% eval_a acc across five architectures) appears to be a function of how many distinct rare SETs it has to memorize.
+
+### Explicit carveout list (proposed)
+
+Where lonely SETs remain acceptable:
+1. **First write per voice per song** — establishes initial state; no preceding trajectory possible.
+2. **Section-boundary state changes** — when CTRL gate flips off and stays off for ≥K frames, the trailing SET on that voice may carry the "off-state" carve-out (rare).
+3. **Filter-routing changes (reg 23)** — discrete topology change; not a trajectory.
+4. **Master volume (reg 24)** — single-channel global control; rarely-changing setpoints.
+5. **Truly first-of-pattern atoms** — the first SET in a SLOPE/OSCILLATE chain IS the SLOPE/OSCILLATE atom's anchor; not a separate SET.
+
+Every other voice-register write must be folded into a trajectory primitive. The doc's proposed primitives below collectively aim to satisfy this.
+
 ## Proposed improvements
 
 Listed in recommended landing order. Each has an explicit fail-fast gate so non-viable changes get killed within hours.
@@ -187,6 +225,83 @@ Cross-link to main repo `integration_tests/design/audio_equivalence_normalizatio
 
 The OSCILLATE + FREQ-reorder + PCM_BITS sweep above are subsets of what audio normalization could achieve more generally, but they're simpler to land and validate. **Recommended landing order: 1 → 2 → 3 → 4 → 5 (probe), then 6 (general normalization) once the targeted improvements have established the round-trip audit + fail-fast gates as standard infrastructure.**
 
+### 7. PATCH_SET op (ADSR + CTRL coupled programs)
+
+**Problem (from per-family probe):** AD + SR are **100% raw SET** rows; CTRL is 48.5% raw SET. ADSR changes mostly happen as INSTRUMENT PROGRAM CHANGES — a coordinated AD + SR + CTRL-waveform change within ≤3 rows on the same voice. **137887 such windows detected in 500 songs ≈ 275/song.** Each window is currently 3-4 SET atoms; could be 1 PATCH_SET atom.
+
+**Schema:**
+- `op = PATCH_SET_OP` (new)
+- `reg = <voice CTRL reg>` (4, 11, or 18 — anchors the patch to a voice)
+- Subregs (packed 16-bit val):
+  - `subreg 0`: AD byte (8 bits)
+  - `subreg 1`: SR byte (8 bits)
+  - `subreg 2`: CTRL waveform bits (bits 1-7 of CTRL, packed 7 bits; gate bit handled separately)
+  - `subreg 3`: optional PWM preset id (or sentinel "no PWM change")
+
+**Detector (`PatchSetPass`, runs before `slope`):** for each voice, scan rolling 3-row windows looking for `{AD, SR, CTRL-non-gate}` co-occurrence. Replace the 3-4 SET atoms with one PATCH_SET atom + (optional) gate-only CTRL SET preserved.
+
+**Compression estimate:** 137k patch-swaps × ~3 atoms each = ~410k atoms replaced by ~137k PATCH_SET atoms × 4 subregs = ~548k. Wait, that's larger — but **the win is vocab compression, not atom count**: a single PATCH_SET vocab atom covers (AD, SR, CTRL) combinations that span thousands of distinct SET atoms today (each tuple is one atom). Long-tail collapse on AD/SR/CTRL would shrink content vocab substantially.
+
+**Fail-fast:**
+1. Implement `PatchSetPass` + `PatchSetDecoder`. Tests on synthetic patch-swap windows.
+2. Round-trip audio fidelity on 100 sample songs (same audit as items 1-5).
+3. Count residual SETs on AD/SR/CTRL after PatchSetPass; target ≥50% reduction.
+4. Main-repo mini A/B if round-trip passes.
+
+### 8. DAMPED_OSCILLATE (or OSCILLATE decay parameter)
+
+**Problem:** **7027 damped-oscillation 4-tuples in FREQ_LO** (alternating-sign deltas with decreasing magnitude) currently encoded as 4+ SET atoms each. OSCILLATE with fixed amplitude doesn't fit.
+
+**Two design options:**
+
+**Option A (preferred):** add a decay parameter to OSCILLATE. Subreg 4 (new) = `decay_rate_per_cycle` (0 = constant amplitude = vanilla OSCILLATE; positive = amplitude shrinks). 1 atom for both vanilla and damped cases.
+
+**Option B:** separate DAMPED_OSCILLATE op. Simpler decoder but doubles vocab footprint of oscillation atoms.
+
+**Fail-fast:** measure how many damped-oscillation windows in real corpus have approximately-exponential decay (where Option A's single decay_rate captures it well) vs more complex envelopes (where neither option captures faithfully — fall back to chain-of-SETs). If ≥80% of damped-osc windows are well-fit by single decay_rate, Option A is sufficient.
+
+### 9. GEOMETRIC slope variant (exponential progressions)
+
+**Problem:** **657 geometric 4-tuples in FREQ_LO** (constant-ratio deltas) — exponential frequency curves like rapid pitch sweeps or portamento. Current SLOPE pass requires arithmetic progressions (constant additive step); geometric progressions fail the ±1-LSB tolerance check and emit as 4+ SET atoms.
+
+**Schema:** new `SLOPE_GEOMETRIC_OP` (per-reg, like the existing SLOPE_REG_TO_OP table). Subregs: terminal_hi, terminal_lo, runtime, ratio_per_step (8-bit fixed-point, e.g., `0x80 = 1.0` baseline, `0x90 = 1.125` = 1/8 octave per step). Decoder reconstructs by multiplying each frame.
+
+**Fail-fast:** count geometric 4-tuples in 500-song probe (already 657 in the residual SET probe; likely 3-10× more in raw FREQ before slope detection). Mini A/B if compression is ≥5% of FREQ_LO SET atoms.
+
+### 10. Under/overshoot correction audio test (CPU-only)
+
+**Motivation:** OSCILLATE collapses N chained slopes into one atom with `(anchor, amplitude, period, n_cycles)`. The reconstruction emits N slopes that approximate the original sequence. Real-music chains often end with a "correction" SET (a lonely write that fixes the final landing value when the chain's last cycle over/undershoots the intended end-state). The principled-zero-lonelies mandate wants those corrections folded INTO the OSCILLATE atom (e.g., subreg 5 = `terminal_correction`); the empirical question is whether dropping them outright is audibly equivalent in practice.
+
+**Test design:** CPU-only audio diff on real songs.
+
+```
+for each chained-slope sequence in 100 sample songs:
+    identify the "correction" lonely SET that follows the chain (if any)
+    version_A_writes = original chain + correction
+    version_B_writes = OSCILLATE-reconstructed chain (no correction)
+    samples_A = render_writes_to_samples(version_A_writes, ...)
+    samples_B = render_writes_to_samples(version_B_writes, ...)
+    diff = mel_distance(mel_features(samples_A), mel_features(samples_B))
+    correction_magnitude = abs(original_final_val - oscillate_predicted_final_val)
+    emit (correction_magnitude, mel_diff, song_path)
+
+plot/bucket: correction_magnitude vs mel_diff
+```
+
+**Output:** a chart with X = correction magnitude in slope-terminal-grid units, Y = mel feature distance. Buckets show:
+- **Drop-safe zone:** correction_magnitude ≤ K AND mel_diff ≤ ε → OSCILLATE without correction is audibly indistinguishable.
+- **Fold-into-OSCILLATE zone:** correction_magnitude in (K, M], mel_diff in (ε, δ] → noticeable but small; OSCILLATE should learn the correction via a `terminal_correction` subreg.
+- **Keep-explicit zone:** correction_magnitude > M OR mel_diff > δ → drop a chain-of-SETs is wrong; keep correction as a follow-up SET (rare; ideally <10% of cases).
+
+**Tooling:** uses only `preframr_audio.audio_driver.render_to_samples` + `preframr_audio.features.mel_features` (both shipped in preframr-audio v0.3.0). No GPU. ~30 min on fogbank for 100 songs.
+
+**Decision logic from output:**
+- **>80% drop-safe at K=3, ε=0.05:** the lonely-correction lookup table can be dropped entirely from OSCILLATE reconstruction. Saves a subreg slot.
+- **40-80% drop-safe:** OSCILLATE needs the `terminal_correction` subreg to handle non-drop-safe cases. Drop-safe cases use a sentinel value.
+- **<40% drop-safe:** chains have too-variable terminations for any fixed-form OSCILLATE encoding. Fall back: keep correction SETs but flag them in the macros pipeline as "explicit overshoot fix" with a special carveout op (so the model sees them as a structured class, not as raw long-tail SETs).
+
+**This is the highest-priority empirical probe** because it directly validates whether the "zero lonely updates" mandate is achievable at acceptable audio fidelity. If it isn't, the mandate needs revision (e.g., "≤5% lonely updates with explicit overshoot-fix op").
+
 ## Cross-cutting infrastructure needed
 
 Two preframr-audio additions (already drafted in main repo's
@@ -233,8 +348,11 @@ Run on every PR that modifies the macro pipeline.
 
 ## Empirical TODO (probes that haven't run yet)
 
-1. Lonely PW trajectory classification probe (item 3 fail-fast step 1).
-2. PCM_BITS slope-detection sweep (item 4 fail-fast).
-3. FREQ slope count at `cents=10` vs `cents=50` on 100 sample songs (item 2 fail-fast step 3).
+1. **Under/overshoot correction audio test** (item 10 — highest priority; validates the zero-lonely-updates mandate). ~30 min fogbank.
+2. Lonely PW trajectory classification probe (item 3 fail-fast step 1). ~30 min.
+3. PCM_BITS slope-detection sweep (item 4 fail-fast). ~2 hr.
+4. FREQ slope count at `cents=10` vs `cents=50` on 100 sample songs (item 2 fail-fast step 3). ~30 min.
+5. Damped-oscillation decay-fit goodness probe (item 8 fail-fast). ~30 min.
+6. Geometric slope ratio quantization probe (item 9 fail-fast). ~30 min.
 
-All three are ≤2 hr each on fogbank, no GPU needed.
+All are ≤2 hr each on fogbank, no GPU needed. The under/overshoot test (#1) gates the entire OSCILLATE design.
