@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0]
+
+Fail-on-lonely: drive the strict-no-diff residual to zero (see
+`TOKEN_IMPROVEMENTS.md` "Fail-on-lonely"). A v0.12.0 residual probe (100
+prodlike songs) found 5,384 surviving lonely writes — FREQ (3,923) and SR (4)
+that FREQ_NUDGE/RELEASE_UPDATE's isolation heuristic skipped, plus CTRL (1,457)
+short runs CTRL_BIGRAM/TRIPLE missed — none of which are preset-anchor related.
+
+### Added
+
+- `lonely_catch_all` arg flag (default OFF). When on, the trailing absorbers
+  become true catch-alls (each conversion is an exact single-write encoding):
+  FREQ_NUDGE absorbs *every* residual FREQ SET (not just isolated ones),
+  RELEASE_UPDATE absorbs every residual SR/AD SET, and the new `CtrlUpdatePass`
+  (`CTRL_UPDATE_OP` = 51, SET-equivalent decode) absorbs every residual CTRL SET
+  the control macros left.
+
+### Changed
+
+- `RegLogParser.parse`: `LonelyWriteValidatorPass` now runs **last** (after
+  `add_voice_reg`, the optional transforms, FreqNudge and CtrlUpdate), as the
+  spec intended — previously it ran before FreqNudge, so the catch-alls could
+  not clear the residual it checked.
+
+### Result
+
+- With `lonely_catch_all` on, the strict-no-diff residual is **0** on 100
+  prodlike songs (was 5,384), and `strict_lonely` parses **150/150** songs with
+  zero `UnmodelledLonelyWriteError`. Fail-on-lonely is achievable. Default
+  output is unchanged (`lonely_catch_all` and `strict_lonely` default OFF).
+
 ## [0.12.0]
 
 Raw-stream OSCILLATE_ENV rework (see `TOKEN_IMPROVEMENTS.md` "Validation-phase

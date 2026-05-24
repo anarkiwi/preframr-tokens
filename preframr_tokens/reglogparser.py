@@ -11,6 +11,7 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
+from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.freq_run_pass import FreqRunPass
@@ -870,10 +871,11 @@ class RegLogParser:
             xdf = macros.run_passes(xdf, args=self.args)
             xdf = self._norm_pr_order(xdf)
             xdf = macros.run_post_norm_pre_voice_passes(xdf, args=self.args)
-            xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
             xdf = _apply_optional_transforms(xdf, self.args)
             xdf = FreqNudgePass().apply(xdf, args=self.args)
+            xdf = CtrlUpdatePass().apply(xdf, args=self.args)
+            xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
             xdf = xdf.reset_index(drop=True)
             for k in TOKEN_KEYS:
                 if k not in xdf.columns:

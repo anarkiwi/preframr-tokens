@@ -949,3 +949,27 @@ default-ON pass.
 - **12-SID WAV audition**, then flip `vibrato_env_pass` on + re-cut training data.
 - gap=0 (17%, same-frame multi-writes) and non-uniform-gap runs are left raw;
   revisit if the audition wants them.
+
+## Fail-on-lonely — LANDED v0.13.0 (residual driven to zero)
+
+A v0.12.0 residual probe (100 prodlike songs, `lonely_catch_all` off) left 5,384
+lonely writes; the same-reg-neighbour breakdown showed they are **not**
+preset-anchor related (the immediate-row view that suggested PWM/FC presets was
+misleading — those are different registers). They are catch-all gaps:
+- **FREQ 3,923** — isolated-ish FREQ writes FREQ_NUDGE's `_isolated` gate skipped.
+- **CTRL 1,457** — short runs CTRL_BIGRAM/CTRL_TRIPLE didn't cover.
+- **SR 4** — RELEASE_UPDATE isolation-gate misses.
+
+Since FreqNudge/ReleaseUpdate run *after* every trajectory pass, anything left is
+genuinely residual, so the isolation gate is unnecessary for strict-no-diff. The
+`lonely_catch_all` flag drops those gates (FreqNudge / RELEASE_UPDATE become true
+catch-alls) and enables `CtrlUpdatePass` (`CTRL_UPDATE_OP`) for residual CTRL.
+The validator was moved to run **last** (it previously ran before FreqNudge).
+Every conversion is an exact single-write encoding — no fidelity risk, no
+audition needed (unlike vibrato).
+
+**Result:** strict-no-diff residual **0** on 100 songs (was 5,384), and
+`strict_lonely` parses **150/150** songs with zero `UnmodelledLonelyWriteError`.
+The production strict-no-diff config is now `all-primitives + lonely_catch_all +
+strict_lonely`. `lonely_catch_all` keys the aggressive absorption independently
+of `strict_lonely` (the raise) so the residual is measurable without aborting.

@@ -80,6 +80,14 @@ class TestReleaseUpdatePass(unittest.TestCase):
         self.assertFalse(bool((out["op"] == RELEASE_UPDATE_OP).any()))
         self.assertEqual(_decoded_reg(df, 6), _decoded_reg(out, 6))
 
+    def test_catch_all_converts_adjacent_sr_writes(self):
+        rows = [_frame(), _r(6, 0xF0), _frame(), _r(6, 0xA0), _frame(), _r(6, 0x80)]
+        df = pd.DataFrame(rows)
+        out = _apply(df, lonely_catch_all=True)
+        self.assertEqual(len(out[(out["reg"] == 6) & (out["op"] == SET_OP)]), 0)
+        self.assertTrue(bool((out["op"] == RELEASE_UPDATE_OP).any()))
+        self.assertEqual(_decoded_reg(df, 6), _decoded_reg(out, 6))
+
 
 if __name__ == "__main__":
     unittest.main()
