@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# preframr-tokens: parser meta sidecars regenerated next to fixture dumps
+tests/fixtures/*.meta.parquet
