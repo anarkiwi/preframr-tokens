@@ -67,6 +67,7 @@ class FreqNudgePass(MacroPass):
             else -1
         )
 
+        catch_all = getattr(args, "lonely_catch_all", False)
         drop_idx = []
         new_rows = []
         for reg in _FREQ_REGS:
@@ -89,7 +90,7 @@ class FreqNudgePass(MacroPass):
                 elif (
                     op == SET_OP
                     and int(subregs[i]) == -1
-                    and self._isolated(reg_frames, pos)
+                    and (catch_all or self._isolated(reg_frames, pos))
                 ):
                     self._convert(
                         reg,

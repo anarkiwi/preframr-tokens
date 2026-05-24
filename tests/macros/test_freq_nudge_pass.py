@@ -83,6 +83,14 @@ class TestFreqNudgePass(unittest.TestCase):
         self.assertFalse(bool((out["op"] == FREQ_NUDGE_OP).any()))
         self.assertEqual(_decoded_reg(df, 0), _decoded_reg(out, 0))
 
+    def test_catch_all_nudges_every_residual_set(self):
+        rows = [_frame(), _r(0, 10), _frame(), _r(0, 20), _frame(), _r(0, 30)]
+        df = pd.DataFrame(rows)
+        out = _apply(df, lonely_catch_all=True)
+        self.assertEqual(len(out[(out["reg"] == 0) & (out["op"] == SET_OP)]), 0)
+        self.assertTrue(bool((out["op"] == FREQ_NUDGE_OP).any()))
+        self.assertEqual(_decoded_reg(df, 0), _decoded_reg(out, 0))
+
     def test_negative_diff_round_trips(self):
         rows = [
             _frame(),

@@ -15,6 +15,7 @@ __all__ = [
     "FreqNudgeDecoder",
     "FreqRunDecoder",
     "ReleaseUpdateDecoder",
+    "CtrlUpdateDecoder",
     "CtrlTripleDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
@@ -30,6 +31,7 @@ from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_BIGRAM_TABLE,
     CTRL_TRIPLE_OP,
+    CTRL_UPDATE_OP,
     CTRL_TRIPLE_SUBREG_0,
     CTRL_TRIPLE_SUBREG_1,
     CTRL_TRIPLE_SUBREG_2,
@@ -451,6 +453,21 @@ class ReleaseUpdateDecoder(MacroDecoder):
         return pre + [(reg, int(row.val), row.diff, row.description)]
 
 
+class CtrlUpdateDecoder(MacroDecoder):
+    """Decode a CTRL_UPDATE atom: a single residual CTRL write the bigram/triple
+    passes did not take, equivalent to a SET on that register but tagged as a
+    recognised op so it is not a lonely write."""
+
+    op_code = CTRL_UPDATE_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, int(row.val), row.diff, row.description)]
+
+
 class CtrlTripleDecoder(MacroDecoder):
     """Decode a CTRL_TRIPLE atom (3 byte subregs): three consecutive adjacent-
     frame CTRL writes. Byte 0 is written at the atom frame; bytes 1 and 2 queue
@@ -610,6 +627,7 @@ DECODERS = {
         FreqNudgeDecoder(),
         FreqRunDecoder(),
         ReleaseUpdateDecoder(),
+        CtrlUpdateDecoder(),
         CtrlTripleDecoder(),
     )
 }

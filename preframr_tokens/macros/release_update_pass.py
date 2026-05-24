@@ -40,6 +40,7 @@ class ReleaseUpdatePass(MacroPass):
             else -1
         )
 
+        catch_all = getattr(args, "lonely_catch_all", False)
         drop_idx = []
         new_rows = []
         for reg in _ENV_REGS:
@@ -52,7 +53,7 @@ class ReleaseUpdatePass(MacroPass):
             ]
             frames = [fr for fr, _ in sets]
             for pos, (_fr, i) in enumerate(sets):
-                if not self._isolated(frames, pos):
+                if not (catch_all or self._isolated(frames, pos)):
                     continue
                 diff = int(diffs[i]) if diffs is not None else 0
                 new_rows.append(
