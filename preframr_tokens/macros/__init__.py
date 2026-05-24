@@ -15,6 +15,7 @@ from preframr_tokens.macros.passes import (
     TransposePass,
     VoiceBlockOrderPass,
 )
+from preframr_tokens.macros.ctrl_triple_pass import CtrlTriplePass
 from preframr_tokens.macros.local_macros import CtrlBigramPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.preset_pass import PresetPass
@@ -43,6 +44,7 @@ PASSES = [
     DedupSetPass(),
     HardRestartPass(),
     LegatoPerClusterPass(),
+    CtrlTriplePass(),
     CtrlBigramPass(),
     SubregPass(),
 ]
