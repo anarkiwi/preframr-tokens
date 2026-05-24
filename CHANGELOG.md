@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.0]
+
+### Changed (BREAKING — re-cut corpora and checkpoints; no metric transfer)
+
+- Unified FREQ-trajectory primitive `FREQ_TRAJ` (reuses op 45) replaces the four
+  split FREQ passes (`SlopePass`, `OscillationEnvelopePass`,
+  `RawVibratoEnvelopePass`, `FreqRunPass`) with one `FreqTrajectoryPass`
+  carrying `MONOTONE_RAMP` / `OSCILLATE` / `RUN` subtypes over a lossless
+  delta-run payload. `FREQ_NUDGE` (op 47) moves to a 2-atom `mode + signed
+  delta` form. Op-code reuse and the payload change invalidate any pinned
+  vocab/alphabet.
+
+### Added
+
+- Permanent torch-free tokenizer profiling tools: `tokenizer_config` (config
+  source of truth), `op_atom_profile` / `register_state` / `trajectory_coverage`
+  in `audit_primitives`, and the `python -m preframr_tokens.tokenizer_profile`
+  CLI (with `--compare`).
+
 ## [0.15.0]
 
 The public API now lives behind a curated `preframr_tokens` package façade:
