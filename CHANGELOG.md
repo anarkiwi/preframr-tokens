@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.1]
+
+Decode-only fix: the multi-frame collapse decoders drained one frame too early.
+`CtrlBigramDecoder`, `CtrlTripleDecoder`, `FreqRunDecoder` and `FreqVibratoDecoder`
+each emitted byte 0 immediately into frame N, then frame N's own `tick_frame()`
+drained byte 1 from `pending_set_writes` into the SAME frame — clobbering byte 0
+and shifting the whole run one frame early. For CTRL hard-restart runs this
+corrupted gate/waveform timing (audible pitch-ups, broken percussion). The
+encoder was already correct; only the decode placement was wrong, so tokenized
+output (the train alphabet) is unchanged and existing corpora/checkpoints stay
+valid — only audio reconstruction is fixed.
+
+### Fixed
+
+- All four decoders now queue ALL bytes into `pending_set_writes` and emit none
+  immediately: frame N's tick drains byte 0, N+1 drains byte 1, N+2 drains byte 2
+  — matching the raw (no-macro) stream exactly. Verified byte-exact against the
+  raw decode across the full 314s Grid_Runner song, and audibly identical in
+  render (`ctrl_triple`/`freq_run` isolated vs raw: PASS, worst rel-RMS 0.0002).
+
+### Added
+
+- `tests/test_full_pipeline_fidelity.py`: a per-frame register-STATE gate that
+  parses fixtures through the WHOLE pipeline under each macro and asserts decoded
+  per-frame state equals the no-macro baseline — catching frame-PLACEMENT bugs
+  the single-pass synthetic round-trip tests (value-sequence only) miss. Two
+  fixtures: `grid_runner_head` (~3s, ctrl_bigram/ctrl_triple) and
+  `grid_runner_26s` (~26s, freq_run); each test asserts its decoder fired.
+
 ## [0.14.0]
 
 Vibrato rework — lossless `FREQ_VIBRATO` replacing the lossy parametric
