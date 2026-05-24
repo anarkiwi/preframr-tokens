@@ -1,7 +1,6 @@
 """Parametric envelope families for the ``OSCILLATE_ENV`` primitive: the
 shared source of truth for the encode-side fitter and decode-side
-reconstructor of per-cycle amplitude. Design + empirical tables live in
-``TOKEN_IMPROVEMENTS.md`` item 0."""
+reconstructor of per-cycle amplitude."""
 
 from __future__ import annotations
 

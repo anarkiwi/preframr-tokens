@@ -1,7 +1,7 @@
-"""Strict-lonely / strict-no-diff validator (TOKEN_IMPROVEMENTS.md item 11):
-behind the ``strict_lonely`` arg flag (default OFF) it raises
-``UnmodelledLonelyWriteError`` for any full SET off the carveout allow-list and
-for any DIFF op on any register; flag-off it is an identity no-op."""
+"""Strict-lonely / strict-no-diff validator: behind the ``strict_lonely`` arg
+flag (default OFF) it raises ``UnmodelledLonelyWriteError`` for any full SET off
+the carveout allow-list and for any DIFF op on any register; flag-off it is an
+identity no-op."""
 
 __all__ = [
     "LonelyWriteValidatorPass",

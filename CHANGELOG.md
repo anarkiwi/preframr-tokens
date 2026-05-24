@@ -15,6 +15,13 @@ dumps never appear in any committed tree.
 - `tests/fixtures/grid_runner_head.dump.parquet` and
   `tests/fixtures/grid_runner_26s.dump.parquet` (and the now-empty
   `tests/fixtures/` directory). Purged from the whole branch history.
+- `TOKEN_IMPROVEMENTS.md` (strategic-backlog narrative) — purged from the
+  whole branch history; its "item N" citations were dropped from source
+  docstrings and CHANGELOG entries.
+- `API_SURFACE.md` — its durable content (design principle, decision-helper
+  inventory, public surface, intentional-shape rationale, versioning policy)
+  is folded into the README "API surface" / "Stability" sections; the
+  standalone doc is deleted.
 
 ### Added
 
@@ -107,8 +114,7 @@ multi-frame drain.
 
 ## [0.13.0]
 
-Fail-on-lonely: drive the strict-no-diff residual to zero (see
-`TOKEN_IMPROVEMENTS.md` "Fail-on-lonely"). A v0.12.0 residual probe (100
+Fail-on-lonely: drive the strict-no-diff residual to zero. A v0.12.0 residual probe (100
 prodlike songs) found 5,384 surviving lonely writes — FREQ (3,923) and SR (4)
 that FREQ_NUDGE/RELEASE_UPDATE's isolation heuristic skipped, plus CTRL (1,457)
 short runs CTRL_BIGRAM/TRIPLE missed — none of which are preset-anchor related.
@@ -138,8 +144,7 @@ short runs CTRL_BIGRAM/TRIPLE missed — none of which are preset-anchor related
 
 ## [0.12.0]
 
-Raw-stream OSCILLATE_ENV rework (see `TOKEN_IMPROVEMENTS.md` "Validation-phase
-structural-primitive findings" → "Next increment").
+Raw-stream OSCILLATE_ENV rework.
 
 ### Added
 
@@ -172,8 +177,7 @@ structural-primitive findings" → "Next increment").
 
 ## [0.11.0]
 
-Validation-phase structural-primitive fixes (see `TOKEN_IMPROVEMENTS.md`
-"Validation-phase structural-primitive findings"):
+Validation-phase structural-primitive fixes:
 
 ### Changed
 
@@ -198,10 +202,8 @@ Validation-phase structural-primitive fixes (see `TOKEN_IMPROVEMENTS.md`
 
 ### Added
 
-- TOKEN_IMPROVEMENTS.md canonical-spec tokenizer primitives, each with
-  synthetic round-trip tests (see `TOKEN_IMPROVEMENTS.md` "Implementation
-  log" for per-primitive design decisions and the postponed validation
-  gates):
+- Canonical-spec tokenizer primitives, each with synthetic round-trip
+  tests:
   - `OSCILLATE_ENV_OP` (45, **default on**): envelope-modulated oscillation
     collapsing alternating-sign SLOPE chains; 8 parametric envelope families
     in `macros/envelope.py`; `OscillationEnvelopePass` + decoder.
@@ -314,8 +316,6 @@ Validation-phase structural-primitive fixes (see `TOKEN_IMPROVEMENTS.md`
 
 ### Known issues / outstanding work
 
-See `API_SURFACE.md`:
-
 - `reglog_helpers.{dump,load}_palettes_attrs` and
   `reglog_helpers.wrapbits` re-exports are still present, blocked on
   a main-repo `render_play.py` cutover.
@@ -328,9 +328,7 @@ See `API_SURFACE.md`:
 
 API surface narrowing round 2: helper consolidations, `macros.roles`
 predicates, `VocabSignature` single-pass classifier, new boundary
-constants (`DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`). See
-`API_SURFACE.md` for the full inventory and the per-helper
-"replaces" mapping.
+constants (`DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`).
 
 ## [0.7.0]
 

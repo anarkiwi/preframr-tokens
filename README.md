@@ -105,9 +105,9 @@ on top of them, that's a sign the helper should live here instead.
 Helpers ride the same code as the parser/tokenizer, so the
 classification matches the data by construction.
 
-Full inventory of what the main `preframr` repo currently consumes
-plus the narrowing opportunities still on the table is in
-[`API_SURFACE.md`](API_SURFACE.md). Recent additions in that vein:
+The decision helpers below were added in that vein; each replaces an
+ad-hoc reg/op classification or arithmetic that consumers used to
+open-code on top of raw `stfconstants`:
 
 - `preframr_tokens.tier_classify` — `vocab_id_tier`,
   `build_vocab_tier_ids`, `build_vocab_tier_map`, `CONTENT_TIER`.
@@ -169,8 +169,9 @@ Public surface (semver-promised once v1.0):
   `Transform` (+ `register` decorator, `PipelineEntry`,
   `TransformPipeline`, `PassBackedTransform`, `RowExpandingTransform`),
   `DistancePairSpec`.
-- **Decision helpers**: see `API_SURFACE.md` "Decision helpers"
-  section.
+- **Decision helpers**: the `tier_classify` / `token_weighting` /
+  `VocabSignature` / `read_initial_irq` / `to_int64_arrays` family
+  catalogued under "API surface" above.
 - **Routines**: `parse_corpus`, `precompute_vocab_arrays`,
   `precompute_subtoken_arrays`, `prepare_df_for_audio`,
   `remove_voice_reg`, `validate_back_refs`,
@@ -181,6 +182,19 @@ Public surface (semver-promised once v1.0):
 - **Boundary constants**: `PAD_ID`, `MODEL_PDTYPE`, `DUMP_SUFFIX`,
   `LEGACY_EVAL_SUBSET_NAME`, `DEFAULT_IRQ_CYCLES`, `LOSS_TIER_NAMES`,
   `DISTANCE_PAIR_OPS`, `CONTENT_TIER`.
+
+### Intentional shape (won't narrow)
+
+- `precompute_vocab_arrays` / `precompute_subtoken_arrays` return a
+  `dict` of numpy arrays (the `VocabArrays` subclass adds attribute
+  access without breaking dict consumers) — fast iteration over named
+  keys with no per-call wrapper ceremony.
+- `RegLogParser` and `Corpus` take an `argparse.Namespace` and thread
+  `args` through their methods — matches how the main repo wires them;
+  a typed config object would force every consumer to translate.
+- `BlockMapper` / DataLoader wrapping stays in the main repo — the
+  torch-free guarantee here is load-bearing and never accepts a torch
+  dependency.
 
 ### Back-compat aliases scheduled to drop
 
@@ -197,8 +211,7 @@ on a main-repo cutover of `render_play.py`.
 | `reglog_helpers.wrapbits` | `utils.wrapbits` | `preframr_tokens/reglog_helpers.py` |
 
 Symbols prefixed `_` are package-internal and may change without
-notice (current consumers that reach into them are tracked in
-`API_SURFACE.md` as "leaks to clean up").
+notice.
 
 ## License
 

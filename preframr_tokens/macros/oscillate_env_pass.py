@@ -1,8 +1,8 @@
 """Collapse alternating-sign SLOPE chains into ``OSCILLATE_ENV`` atoms, post
-``SlopePass`` + ``PresetPass`` (TOKEN_IMPROVEMENTS.md item 0): a maximal run of
-same-reg SLOPE atoms is split into uniform-runtime sub-runs, and each sub-run
-whose terminals alternate about their midline and fit an envelope family
-becomes one 8-subreg atom, else the raw slopes are left as a fallback."""
+``SlopePass`` + ``PresetPass``: a maximal run of same-reg SLOPE atoms is split
+into uniform-runtime sub-runs, and each sub-run whose terminals alternate about
+their midline and fit an envelope family becomes one 8-subreg atom, else the raw
+slopes are left as a fallback."""
 
 __all__ = ["OscillationEnvelopePass", "OSC_MIN_SLOPES"]
 

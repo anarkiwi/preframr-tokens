@@ -1,8 +1,8 @@
-"""Cross-voice FREQ tracking macro (TOKEN_IMPROVEMENTS.md item 12), behind the
-``voice_track_pass`` flag (default OFF). REFUTED 2026-05-24: on cent-bin FREQ a
-musical interval is an additive offset, not the ``round(lead*ratio)+detune``
-multiplicative model here; a 40-song headroom probe found zero >=10-frame
-tracking spans under either model, so this stays off. See TOKEN_IMPROVEMENTS.md."""
+"""Cross-voice FREQ tracking macro, behind the ``voice_track_pass`` flag
+(default OFF). REFUTED 2026-05-24: on cent-bin FREQ a musical interval is an
+additive offset, not the ``round(lead*ratio)+detune`` multiplicative model here;
+a 40-song headroom probe found zero >=10-frame tracking spans under either
+model, so this stays off."""
 
 __all__ = ["VoiceTrackPass"]
 
