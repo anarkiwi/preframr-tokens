@@ -128,6 +128,20 @@ class TestOscillationEnvelopePass(unittest.TestCase):
         encoded = _encode(rows)
         self.assertFalse(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
 
+    def test_uniform_subrun_collapses_when_chain_runtime_changes(self):
+        """A chain whose per-slope runtime changes mid-way still collapses its
+        leading uniform-runtime sub-run (>=3 slopes) and round-trips exactly."""
+        head = _oscillation_rows(0, [150, 50, 150, 50], 5, 100)
+        cur = 50
+        for term in (150, 50):
+            for j in range(1, 4):
+                head.append(_frame())
+                head.append(_row(0, cur + ((term - cur) * j) // 3))
+            cur = term
+        encoded = _encode(head)
+        self.assertTrue(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
+        self.assertEqual(_decoded_reg(pd.DataFrame(head), 0), _decoded_reg(encoded, 0))
+
 
 if __name__ == "__main__":
     unittest.main()
