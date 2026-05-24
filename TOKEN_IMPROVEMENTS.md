@@ -931,5 +931,21 @@ The pass detects on `SlopePass` output (≥3 consecutive same-reg SLOPE atoms), 
 ### VOICE_TRACK — REFUTED (disabled, kept default-OFF)
 Zero qualifying spans across **three** detection models over 40 songs: per-frame-SET exact (the shipped pass), held-value multiplicative ±2%, and held-value additive-exact. Three compounding reasons: (1) FREQ here is a **cent-bin index (logarithmic)**, where a musical interval is a constant *additive* offset — the shipped `round(lead·ratio)+detune` *multiplicative* model is mismatched to the representation; (2) the consecutive-per-frame-SET requirement only ever catches a voice's own glissando (held harmony is squeezed to a single SET, invisible); (3) the spec's own `MIN_TRACK_DURATION=10` sweep notes most "tracking" is 4–5-frame chord-change overlaps — already absorbed by FREQ_RUN/FREQ_NUDGE. The 246k "tracker FREQ writes" the spec predicted are those short overlaps, not sustained cross-voice tracking. Pass left in place but marked REFUTED in its docstring and kept default-OFF.
 
-### Next increment
-Raw-stream OSCILLATE_ENV (detector + step-mode decoder + audio-equivalent round-trip), gated per-primitive by `compare_renders(max_frame_drift=2)` ≥95% over 100 songs, then the 12-SID WAV audition, before flipping on and re-cutting training data.
+### Raw-stream OSCILLATE_ENV rework — LANDED v0.12.0 (default-OFF)
+`RawVibratoEnvelopePass` (`vibrato_env_pass`, default OFF) detects alternating
+short FREQ-SET runs on the raw stream (the 2–4-frame vibrato half-cycles below
+SlopePass's `SLOPE_MIN_RUN_LEN=5`) and collapses each maximal uniform-frame-gap
+run into a **step-mode** `OSCILLATE_ENV` atom (FAMILY-byte `OSC_STEP_MODE_BIT`;
+the decoder holds each terminal for `period` frames). gap=1 round-trips exactly;
+gap>1 is audio-equivalent (identical per-frame FREQ). 40-song probe: OSCILLATE_ENV
+firing 240→24,848 atom rows (**103×**) — the headroom realized. Amplitude fit
+shares `OscillationEnvelopePass`'s `FIT_TOLERANCE`, so no new lossiness vs the
+default-ON pass.
+
+### Remaining before flip-on
+- **Round-trip audio fidelity** on the corpus via `compare_renders(max_frame_drift=2)`
+  ≥95% (needs the audio render pipeline; the per-frame-FREQ invariant is already
+  proven by construction + unit tests).
+- **12-SID WAV audition**, then flip `vibrato_env_pass` on + re-cut training data.
+- gap=0 (17%, same-frame multi-writes) and non-uniform-gap runs are left raw;
+  revisit if the audition wants them.

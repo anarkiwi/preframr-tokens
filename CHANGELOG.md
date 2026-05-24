@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0]
+
+Raw-stream OSCILLATE_ENV rework (see `TOKEN_IMPROVEMENTS.md` "Validation-phase
+structural-primitive findings" → "Next increment").
+
+### Added
+
+- `RawVibratoEnvelopePass` (`macros/raw_vibrato_pass.py`), behind the
+  `vibrato_env_pass` arg flag (**default OFF**): collapses alternating short
+  FREQ SET runs — vibrato whose 2–4-frame half-cycles SlopePass's
+  `SLOPE_MIN_RUN_LEN=5` gate never turns into SLOPE atoms — into step-mode
+  `OSCILLATE_ENV` atoms. Each maximal uniform-frame-gap run that alternates
+  about its midline and fits an envelope family becomes one atom. On a 40-song
+  prodlike probe this raised OSCILLATE_ENV firing 103× (240→24,848 atom rows),
+  reaching the raw-vibrato headroom the SLOPE-chain path cannot.
+- `OSC_STEP_MODE_BIT` / `OSC_FAMILY_MASK` (`stfconstants`): the FAMILY subreg
+  high bit selects step-mode reconstruction.
+
+### Changed
+
+- `OscillationEnvelopeDecoder`: step-mode atoms reconstruct by holding each
+  terminal for `period` frames (audio-exact; re-writing a held FREQ value is
+  inaudible) rather than ramping. gap=1 collapses to the exact per-frame case
+  and round-trips byte-for-byte; gap>1 is audio-equivalent (identical per-frame
+  FREQ trajectory). Ramp-mode (existing SLOPE-sourced, default-ON) atoms are
+  unchanged — the step bit is unset on them and FAMILY masking is a no-op.
+
+### Notes
+
+- `vibrato_env_pass` ships default-OFF: its amplitude fit shares
+  `OscillationEnvelopePass`'s `FIT_TOLERANCE`, so it is no lossier than the
+  already-default-ON pass, but flipping it on changes tokenizer output and is
+  gated on the 12-SID WAV audition + a re-cut of training data.
+
 ## [0.11.0]
 
 Validation-phase structural-primitive fixes (see `TOKEN_IMPROVEMENTS.md`
