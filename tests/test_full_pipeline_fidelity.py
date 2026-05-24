@@ -4,11 +4,12 @@ matches the no-macro baseline. Single-pass round-trip tests compare value
 sequences and miss frame-placement bugs (right values, wrong frames) that break
 pitch/waveform; divergence is reported per register-class to localise them."""
 
-import os
 import unittest
 from types import SimpleNamespace
 
 import numpy as np
+
+from tests.sid_fixtures import FixtureUnavailable, grid_runner_dumps
 
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.state import (
@@ -25,10 +26,6 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     FREQ_RUN_OP,
 )
-
-_FIX = os.path.join(os.path.dirname(__file__), "fixtures")
-FIXTURE_HEAD = os.path.join(_FIX, "grid_runner_head.dump.parquet")
-FIXTURE_WIDE = os.path.join(_FIX, "grid_runner_26s.dump.parquet")
 
 _BASE = dict(
     cents=50,
@@ -136,9 +133,16 @@ def _divergence(ref, st):
 
 
 class TestFullPipelineFidelity(unittest.TestCase):
-    def setUp(self):
-        if not (os.path.exists(FIXTURE_HEAD) and os.path.exists(FIXTURE_WIDE)):
-            self.skipTest("fixture dump missing")
+    @classmethod
+    def setUpClass(cls):
+        """Source the Grid Runner dump via the HVSC-regenerating helper (no
+        copyrighted SID data is committed); skip when it can't be built."""
+        try:
+            head, wide = grid_runner_dumps()
+        except FixtureUnavailable as err:
+            raise unittest.SkipTest(f"Grid Runner dump unavailable: {err}")
+        cls.fixture_head = str(head)
+        cls.fixture_wide = str(wide)
 
     def _assert_fired(self, fixture, flags, op, label):
         ops = _decode(_args(**flags), fixture)["op"].to_numpy()
@@ -164,16 +168,19 @@ class TestFullPipelineFidelity(unittest.TestCase):
 
     def test_ctrl_collapse_lossless(self):
         self._assert_fired(
-            FIXTURE_HEAD, dict(ctrl_bigram_pass=True), CTRL_BIGRAM_OP, "ctrl_bigram"
+            self.fixture_head,
+            dict(ctrl_bigram_pass=True),
+            CTRL_BIGRAM_OP,
+            "ctrl_bigram",
         )
         self._assert_fired(
-            FIXTURE_HEAD,
+            self.fixture_head,
             dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
             CTRL_TRIPLE_OP,
             "ctrl_triple",
         )
         self._assert_lossless(
-            FIXTURE_HEAD,
+            self.fixture_head,
             {
                 "slope_pass": dict(slope_pass=True),
                 "ctrl_bigram_pass": dict(ctrl_bigram_pass=True),
@@ -186,10 +193,10 @@ class TestFullPipelineFidelity(unittest.TestCase):
 
     def test_freq_run_lossless(self):
         self._assert_fired(
-            FIXTURE_WIDE, dict(freq_run_pass=True), FREQ_RUN_OP, "freq_run"
+            self.fixture_wide, dict(freq_run_pass=True), FREQ_RUN_OP, "freq_run"
         )
         self._assert_lossless(
-            FIXTURE_WIDE,
+            self.fixture_wide,
             {
                 "freq_run_noslope": dict(freq_run_pass=True),
                 "freq_run_slope": dict(slope_pass=True, freq_run_pass=True),

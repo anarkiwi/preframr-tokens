@@ -217,5 +217,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# preframr-tokens: parser meta sidecars regenerated next to fixture dumps
-tests/fixtures/*.meta.parquet
+# preframr-tokens: SID register dumps are NOT committed (they derive from
+# copyrighted HVSC song data). tests/sid_fixtures.py regenerates them from HVSC
+# into a local cache outside the source tree ($PREFRAMR_SID_FIXTURE_CACHE,
+# default $XDG_CACHE_HOME/preframr-tokens/sid-fixtures). Ignore any in-tree
+# cache or stray dump/meta parquet so a song can never be re-committed.
+tests/.sid-cache/
+**/*.dump.parquet
+**/*.meta.parquet

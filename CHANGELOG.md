@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+No copyrighted SID-derived song data is committed anymore. The two
+`grid_runner_*.dump.parquet` fidelity fixtures were register dumps of HVSC
+`MUSICIANS/J/Jammer/Grid_Runner.sid` and are now regenerated on demand from
+HVSC and cached locally outside the source tree. History was rewritten so the
+dumps never appear in any committed tree.
+
+### Removed
+
+- `tests/fixtures/grid_runner_head.dump.parquet` and
+  `tests/fixtures/grid_runner_26s.dump.parquet` (and the now-empty
+  `tests/fixtures/` directory). Purged from the whole branch history.
+
+### Added
+
+- `tests/sid_fixtures.py`: a `SidDumpSpec`-driven helper that downloads the
+  `.sid` from HVSC, renders a register dump with `vsid` inside the
+  `anarkiwi/headlessvice` image (a regular-file dump target, replicating
+  vsiddump.py's post-processing byte-for-byte — no FIFO deadlock), slices the
+  `head`/`26s` fixtures, and caches them under `$PREFRAMR_SID_FIXTURE_CACHE`
+  (default `$XDG_CACHE_HOME/preframr-tokens/sid-fixtures`). `test_full_pipeline_fidelity.py`
+  sources its fixtures through it and skips (`FixtureUnavailable`) when Docker,
+  the image, or the network are absent — the same contract as the prior
+  "fixture missing" skip.
+
 ## [0.14.1]
 
 Decode-only fix: the multi-frame collapse decoders drained one frame too early.
