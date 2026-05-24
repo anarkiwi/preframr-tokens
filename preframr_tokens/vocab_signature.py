@@ -6,7 +6,6 @@ import numpy as np
 
 from preframr_tokens.macros.roles import frame_weight_role
 from preframr_tokens.macros.transform import (
-    LOSS_TIER_NAMES,
     collect_op_loss_tiers,
     ensure_default_transforms_registered,
 )
@@ -14,6 +13,7 @@ from preframr_tokens.stfconstants import (
     DELAY_REG,
     FILTER_REG,
     FRAME_REG,
+    LOSS_TIER_NAMES,
     MODE_VOL_REG,
     VOICE_CTRL_REG,
 )

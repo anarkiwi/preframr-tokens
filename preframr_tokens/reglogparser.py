@@ -25,14 +25,15 @@ from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.slope_pass import SlopePass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
-from preframr_tokens.reglog_helpers import (
+from preframr_tokens.palette_io import load_palettes_attrs
+from preframr_tokens.reg_match import (
     ctrl_match,
     frame_match,
     freq_match,
-    load_palettes_attrs,
-    wrapbits,
 )
+from preframr_tokens.utils import wrapbits
 from preframr_tokens.stfconstants import (
+    DEFAULT_IRQ_CYCLES,
     DELAY_REG,
     DIFF_PDTYPE,
     IRQ_PDTYPE,
@@ -67,6 +68,7 @@ __all__ = [
     "RegLogParser",
     "remove_voice_reg",
     "prepare_df_for_audio",
+    "read_initial_irq",
 ]
 
 _SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP), int(WAVETABLE_SUSTAIN_OP)}
@@ -82,6 +84,14 @@ FRAME_DTYPES = {
 
 PY_MTIME = Path(__file__).resolve().stat().st_mtime
 pd.set_option("future.no_silent_downcasting", True)
+
+
+def read_initial_irq(df, default: int = DEFAULT_IRQ_CYCLES) -> int:
+    """Read the initial IRQ cycle interval from a parser-output df by taking the first FRAME_REG row's ``diff`` column. Returns ``default`` (canonical SID ~50.1 Hz raster) if no FRAME rows present."""
+    frame_rows = df[df["reg"] == FRAME_REG]
+    if frame_rows.empty:
+        return int(default)
+    return int(frame_rows["diff"].iloc[0])
 
 
 FILTER_SHIFT_DF = pd.DataFrame(

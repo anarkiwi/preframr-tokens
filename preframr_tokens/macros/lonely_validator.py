@@ -11,13 +11,7 @@ __all__ = [
 ]
 
 from preframr_tokens.macros.passes_base import MacroPass
-from preframr_tokens.macros.state import (
-    AD_REGS_BY_VOICE,
-    CTRL_REGS_BY_VOICE,
-    FREQ_REGS_BY_VOICE,
-    PWM_REGS_BY_VOICE,
-    SR_REGS_BY_VOICE,
-)
+from preframr_tokens.reg_match import reg_class
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     DIFF_OP,
@@ -30,7 +24,6 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SLOPE_OPS,
     TRANSPOSE_OP,
-    VOICES,
 )
 
 TRAJECTORY_ANCHOR_WINDOW = 5
@@ -41,14 +34,6 @@ _TRAJECTORY_ANCHOR_OPS = _SLOPE_OPS | {
     FLIP2_OP,
     TRANSPOSE_OP,
 }
-
-_REG_CLASS = {}
-for _v in range(VOICES):
-    _REG_CLASS[FREQ_REGS_BY_VOICE[_v]] = ("FREQ", _v)
-    _REG_CLASS[PWM_REGS_BY_VOICE[_v]] = ("PW", _v)
-    _REG_CLASS[CTRL_REGS_BY_VOICE[_v]] = ("CTRL", _v)
-    _REG_CLASS[AD_REGS_BY_VOICE[_v]] = ("AD", _v)
-    _REG_CLASS[SR_REGS_BY_VOICE[_v]] = ("SR", _v)
 
 
 class UnmodelledLonelyWriteError(Exception):
@@ -78,14 +63,14 @@ def classify_carveout(regs, ops, subregs, vals, k, first_seen, last_ctrl_val):
     ``first_seen`` and ``last_ctrl_val`` are mutable per-walk caches the caller
     threads across rows, matching the reference probe classifier."""
     reg = int(regs[k])
-    cls = _REG_CLASS.get(reg)
+    cls = reg_class(reg)
     if reg == FILTER_REG:
         return "filter_route"
     if reg == MODE_VOL_REG:
         return "master_volume"
     if cls is None:
         return None
-    reg_class, voice = cls
+    kind, voice = cls
     key = (voice, reg)
     if key not in first_seen:
         first_seen[key] = k
@@ -95,12 +80,12 @@ def classify_carveout(regs, ops, subregs, vals, k, first_seen, last_ctrl_val):
         regs, ops, k, reg, -1, n
     ):
         return "trajectory_anchor"
-    return _gate_off(reg_class, vals, k, last_ctrl_val, voice)
+    return _gate_off(kind, vals, k, last_ctrl_val, voice)
 
 
-def _gate_off(reg_class, vals, k, last_ctrl_val, voice):
+def _gate_off(kind, vals, k, last_ctrl_val, voice):
     """gate_off_terminal carveout: CTRL write with gate clear now and before."""
-    if reg_class != "CTRL":
+    if kind != "CTRL":
         return None
     new_val = int(vals[k])
     prev = last_ctrl_val.get(voice)
@@ -126,7 +111,7 @@ class LonelyWriteValidatorPass(MacroPass):
             reg = int(regs[k])
             op = int(ops[k])
             subreg = int(subregs[k])
-            cls = _REG_CLASS.get(reg)
+            cls = reg_class(reg)
             if op == SET_OP and cls is not None and cls[0] == "CTRL":
                 last_ctrl_val[cls[1]] = int(vals[k])
             if reg in (FRAME_REG, DELAY_REG) or reg < 0:

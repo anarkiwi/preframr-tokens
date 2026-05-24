@@ -88,16 +88,6 @@ class TestPaletteIo(unittest.TestCase):
                 [float, float, float],
             )
 
-    def test_reglog_helpers_reexport(self):
-        """The old import path stays callable for one release cycle."""
-        from preframr_tokens.reglog_helpers import (  # noqa: F401
-            dump_palettes_attrs as dpa,
-            load_palettes_attrs as lpa,
-        )
-
-        self.assertIs(dpa, dump_palettes_attrs)
-        self.assertIs(lpa, load_palettes_attrs)
-
 
 if __name__ == "__main__":
     unittest.main()

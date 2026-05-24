@@ -79,7 +79,7 @@ class TestBuildVocabTierIds(unittest.TestCase):
             ]
         )
         arr = build_vocab_tier_ids(_rt(tokens), tokens, n_vocab=4)
-        from preframr_tokens.macros.transform import LOSS_TIER_NAMES
+        from preframr_tokens.stfconstants import LOSS_TIER_NAMES
 
         order = {n: i for i, n in enumerate(LOSS_TIER_NAMES)}
         self.assertEqual(arr.dtype.kind, "i")

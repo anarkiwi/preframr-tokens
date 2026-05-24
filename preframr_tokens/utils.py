@@ -2,7 +2,9 @@ import logging
 
 import numpy as np
 
-__all__ = ["get_logger", "wrapbits", "to_int64_arrays"]
+from preframr_tokens.stfconstants import DESCRIPTION_PDTYPE, SUBREG_PDTYPE
+
+__all__ = ["get_logger", "wrapbits", "to_int64_arrays", "tighten_persist_dtypes"]
 
 
 def get_logger(level=None):
@@ -31,3 +33,17 @@ def to_int64_arrays(df, *names, fillna=None):
         .to_numpy()
         for name in names
     )
+
+
+def tighten_persist_dtypes(df):
+    """Cast ``subreg`` to Int16 and ``description`` to Int8 in-place if
+    they're wider. The macro pipeline creates these columns at int64
+    by default (numpy literal broadcast); the parsed-parquet write
+    site casts them down before persistence. Saves a sizeable fraction
+    of parsed-form in-memory footprint at parse + preload.
+    """
+    if "subreg" in df.columns and df["subreg"].dtype != SUBREG_PDTYPE:
+        df["subreg"] = df["subreg"].astype(SUBREG_PDTYPE)
+    if "description" in df.columns and df["description"].dtype != DESCRIPTION_PDTYPE:
+        df["description"] = df["description"].astype(DESCRIPTION_PDTYPE)
+    return df

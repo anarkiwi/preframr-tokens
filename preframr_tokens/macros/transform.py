@@ -16,6 +16,7 @@ from preframr_tokens.macros.transform_registry import (
     ensure_default_transforms_registered,
     register,
 )
+from preframr_tokens.stfconstants import LOSS_TIER_NAMES
 
 __all__ = [
     "Transform",
@@ -31,7 +32,6 @@ __all__ = [
     "collect_substitutable_op_subregs",
     "collect_decomposing_op_codes",
     "collect_op_loss_tiers",
-    "LOSS_TIER_NAMES",
 ]
 
 
@@ -203,9 +203,6 @@ def collect_decomposing_op_codes() -> frozenset[int]:
         if klass.DECOMPOSES_TO_ATOMS:
             out.update(int(o) for o in klass.OP_CODES)
     return frozenset(out)
-
-
-LOSS_TIER_NAMES = ("structural", "mid", "content", "zero")
 
 
 def _row_to_dict(row, columns):

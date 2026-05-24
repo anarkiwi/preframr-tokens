@@ -1,4 +1,4 @@
-"""Tests for ``preframr_tokens.reglog_helpers``."""
+"""Tests for ``preframr_tokens.reglogparser.read_initial_irq``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from preframr_tokens.reglog_helpers import read_initial_irq
+from preframr_tokens.reglogparser import read_initial_irq
 from preframr_tokens.stfconstants import DEFAULT_IRQ_CYCLES, DELAY_REG, FRAME_REG
 
 

@@ -7,7 +7,7 @@ __all__ = ["PerRegBurstPass"]
 import pandas as pd
 
 from preframr_tokens.macros.passes_base import MacroPass
-from preframr_tokens.reglog_helpers import filter_match, freq_match, pcm_match
+from preframr_tokens.reg_match import filter_match, freq_match, pcm_match
 from preframr_tokens.stfconstants import (
     DIFF_OP,
     FC_LO_REG,

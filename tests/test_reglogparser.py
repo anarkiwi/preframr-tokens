@@ -5,12 +5,11 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.macros.decode import expand_ops
-from preframr_tokens.reglog_helpers import (
+from preframr_tokens.palette_io import dump_palettes_attrs, load_palettes_attrs
+from preframr_tokens.reg_match import (
     ad_match,
     adsr_match,
-    dump_palettes_attrs,
     freq_match,
-    load_palettes_attrs,
     pcm_match,
     sr_match,
 )
