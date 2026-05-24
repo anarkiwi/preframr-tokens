@@ -28,6 +28,15 @@ dumps never appear in any committed tree.
   the image, or the network are absent — the same contract as the prior
   "fixture missing" skip.
 
+### Changed
+
+- Centralised duplicated macro-pass logic into `macros/passes_base.py`:
+  `_first_irq(df)` replaces the identical "first IRQ value else -1" ternary
+  open-coded in 11 sites (10 passes + `_splice_rows`), and `_frame_isolated(
+  frames, pos, gap)` replaces the byte-identical lonely-SET isolation predicate
+  in `FreqNudgePass` and `ReleaseUpdatePass` (now parameterised by the gap
+  constant). Behaviour-preserving; internal API only.
+
 ## [0.14.1]
 
 Decode-only fix: the multi-frame collapse decoders drained one frame too early.

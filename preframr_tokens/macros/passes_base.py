@@ -45,6 +45,25 @@ def _frame_index(df):
     return df["reg"].isin({FRAME_REG, DELAY_REG}).astype(int).cumsum()
 
 
+def _first_irq(df, default=-1):
+    """First row's IRQ value, or ``default`` when ``df`` is empty or has no
+    usable ``irq`` column; the shared irq-seed every splice / row-emitting pass
+    stamps onto the rows it synthesises."""
+    if "irq" in df.columns and len(df) and df["irq"].notna().any():
+        return int(df["irq"].iloc[0])
+    return default
+
+
+def _frame_isolated(frames, pos, gap):
+    """True when the same-register SET at sorted ``frames[pos]`` has no same-reg
+    neighbour within ``gap`` frames on either side; the shared lonely-SET test
+    behind the FREQ_NUDGE and RELEASE_UPDATE catch-all passes."""
+    fr = frames[pos]
+    prev_ok = pos == 0 or fr - frames[pos - 1] >= gap
+    next_ok = pos == len(frames) - 1 or frames[pos + 1] - fr >= gap
+    return prev_ok and next_ok
+
+
 def _ensure_subreg(df):
     if "subreg" not in df.columns:
         df = df.copy()
@@ -60,11 +79,7 @@ def _splice_rows(df, drop_idx, new_rows):
         return df
     orig_attrs = dict(df.attrs)
     df = _ensure_subreg(df)
-    irq_value = (
-        int(df["irq"].iloc[0])
-        if "irq" in df.columns and len(df) and df["irq"].notna().any()
-        else -1
-    )
+    irq_value = _first_irq(df)
     orig_dtypes = df.dtypes.to_dict()
     df = df.drop(index=drop_idx)
     df["__pos"] = df.index.astype("int64")

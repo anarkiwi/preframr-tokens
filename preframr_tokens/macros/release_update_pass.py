@@ -6,9 +6,11 @@ RELEASE_UPDATE op so it is no longer a lonely SET for the validator."""
 __all__ = ["ReleaseUpdatePass"]
 
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _frame_index,
+    _frame_isolated,
     _splice_rows,
 )
 from preframr_tokens.macros.state import AD_REGS_BY_VOICE, SR_REGS_BY_VOICE
@@ -34,11 +36,7 @@ class ReleaseUpdatePass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
 
         catch_all = getattr(args, "lonely_catch_all", False)
         drop_idx = []
@@ -53,7 +51,10 @@ class ReleaseUpdatePass(MacroPass):
             ]
             frames = [fr for fr, _ in sets]
             for pos, (_fr, i) in enumerate(sets):
-                if not (catch_all or self._isolated(frames, pos)):
+                if not (
+                    catch_all
+                    or _frame_isolated(frames, pos, RELEASE_UPDATE_ISOLATION_GAP)
+                ):
                     continue
                 diff = int(diffs[i]) if diffs is not None else 0
                 new_rows.append(
@@ -72,13 +73,3 @@ class ReleaseUpdatePass(MacroPass):
         if not drop_idx:
             return df
         return _splice_rows(df, drop_idx, new_rows)
-
-    @staticmethod
-    def _isolated(frames, pos):
-        fr = frames[pos]
-        prev_ok = pos == 0 or fr - frames[pos - 1] >= RELEASE_UPDATE_ISOLATION_GAP
-        next_ok = (
-            pos == len(frames) - 1
-            or frames[pos + 1] - fr >= RELEASE_UPDATE_ISOLATION_GAP
-        )
-        return prev_ok and next_ok

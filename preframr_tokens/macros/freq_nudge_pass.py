@@ -6,9 +6,11 @@ FREQ SET becomes an absolute-mode nudge, leaving SET runs for FREQ_RUN."""
 __all__ = ["FreqNudgePass"]
 
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _frame_index,
+    _frame_isolated,
     _splice_rows,
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
@@ -61,11 +63,7 @@ class FreqNudgePass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
 
         catch_all = getattr(args, "lonely_catch_all", False)
         drop_idx = []
@@ -90,7 +88,10 @@ class FreqNudgePass(MacroPass):
                 elif (
                     op == SET_OP
                     and int(subregs[i]) == -1
-                    and (catch_all or self._isolated(reg_frames, pos))
+                    and (
+                        catch_all
+                        or _frame_isolated(reg_frames, pos, FREQ_NUDGE_ISOLATION_GAP)
+                    )
                 ):
                     self._convert(
                         reg,
@@ -105,16 +106,6 @@ class FreqNudgePass(MacroPass):
         if not drop_idx:
             return df
         return _splice_rows(df, drop_idx, new_rows)
-
-    @staticmethod
-    def _isolated(reg_frames, pos):
-        fr = reg_frames[pos]
-        prev_ok = pos == 0 or fr - reg_frames[pos - 1] >= FREQ_NUDGE_ISOLATION_GAP
-        next_ok = (
-            pos == len(reg_frames) - 1
-            or reg_frames[pos + 1] - fr >= FREQ_NUDGE_ISOLATION_GAP
-        )
-        return prev_ok and next_ok
 
     @staticmethod
     def _convert(reg, i, mode, payload, diff, irq, drop_idx, new_rows):

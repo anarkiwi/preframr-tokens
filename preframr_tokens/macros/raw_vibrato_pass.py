@@ -8,6 +8,7 @@ parametric envelope fit, no cycle cap; non-periodic runs are left for FREQ_RUN.
 __all__ = ["RawVibratoEnvelopePass", "VIB_MIN_LEN"]
 
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _frame_index,
@@ -78,11 +79,7 @@ class RawVibratoEnvelopePass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
         drop_idx = []
         new_rows = []
         for reg in _FREQ_REGS:

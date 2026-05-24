@@ -3,6 +3,7 @@
 __all__ = ["PresetPass"]
 
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _splice_rows,
@@ -63,11 +64,7 @@ class PresetPass(MacroPass):
         vals = df["val"].to_numpy()
         ops = df["op"].to_numpy()
         subregs = df["subreg"].to_numpy()
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
 
         drop_idx = []

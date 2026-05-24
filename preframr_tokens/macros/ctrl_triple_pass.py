@@ -7,7 +7,7 @@ __all__ = ["CtrlTriplePass"]
 
 import numpy as np
 
-from preframr_tokens.macros.passes_base import MacroPass, _splice_rows
+from preframr_tokens.macros.passes_base import MacroPass, _splice_rows, _first_irq
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_TRIPLE_OP,
@@ -57,11 +57,7 @@ class CtrlTriplePass(MacroPass):
         subregs = (
             df["subreg"].to_numpy() if "subreg" in df.columns else np.full(len(df), -1)
         )
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
         if FRAME_REG not in regs:
             return df
 

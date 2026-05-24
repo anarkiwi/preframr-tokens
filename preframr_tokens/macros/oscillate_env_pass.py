@@ -8,6 +8,7 @@ __all__ = ["OscillationEnvelopePass", "OSC_MIN_SLOPES"]
 
 from preframr_tokens.macros import envelope as env
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _splice_rows,
@@ -84,11 +85,7 @@ class OscillationEnvelopePass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
         n = len(df)
 
         per_reg = {reg: [] for reg in SLOPE_REG_TO_OP}

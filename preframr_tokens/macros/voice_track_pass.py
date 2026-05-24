@@ -7,6 +7,7 @@ tracking spans under either model, so this stays off. See TOKEN_IMPROVEMENTS.md.
 __all__ = ["VoiceTrackPass"]
 
 from preframr_tokens.macros.passes_base import (
+    _first_irq,
     MacroPass,
     _ensure_subreg,
     _frame_index,
@@ -76,11 +77,7 @@ class VoiceTrackPass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        irq_default = (
-            int(df["irq"].iloc[0])
-            if "irq" in df.columns and len(df) and df["irq"].notna().any()
-            else -1
-        )
+        irq_default = _first_irq(df)
         n_frames = int(f_idx[-1]) + 1 if len(df) else 0
 
         freq_at = {
