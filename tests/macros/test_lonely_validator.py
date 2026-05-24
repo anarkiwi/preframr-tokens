@@ -14,11 +14,9 @@ from preframr_tokens.stfconstants import (
     FLIP_OP,
     FRAME_REG,
     MODE_VOL_REG,
-    OSC_SUBREG_ANCHOR_HI,
-    OSCILLATE_ENV_OP,
+    FREQ_TRAJ_OP,
+    FT_SUBREG_FLAGS,
     SET_OP,
-    SLOPE_FREQ_LO_OP,
-    SLOPE_SUBREG_TERMINAL_HI,
     TRANSPOSE_OP,
 )
 
@@ -91,7 +89,7 @@ class TestLonelyValidator(unittest.TestCase):
             _r(0, 5),
             _frame(),
             _r(0, 7),
-            _r(0, 0, op=SLOPE_FREQ_LO_OP, subreg=SLOPE_SUBREG_TERMINAL_HI),
+            _r(0, 0, op=FREQ_TRAJ_OP, subreg=FT_SUBREG_FLAGS),
         ]
         self.assertIsNotNone(_validate(rows))
 
@@ -101,7 +99,7 @@ class TestLonelyValidator(unittest.TestCase):
             _r(0, 5),
             _frame(),
             _r(0, 7),
-            _r(0, 0, op=OSCILLATE_ENV_OP, subreg=OSC_SUBREG_ANCHOR_HI),
+            _r(0, 0, op=FREQ_TRAJ_OP, subreg=FT_SUBREG_FLAGS),
         ]
         self.assertIsNotNone(_validate(rows))
 

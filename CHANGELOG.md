@@ -8,20 +8,30 @@ All notable changes to this project will be documented in this file.
 
 ### Changed (BREAKING — re-cut corpora and checkpoints; no metric transfer)
 
-- Unified FREQ-trajectory primitive `FREQ_TRAJ` (reuses op 45) replaces the four
-  split FREQ passes (`SlopePass`, `OscillationEnvelopePass`,
-  `RawVibratoEnvelopePass`, `FreqRunPass`) with one `FreqTrajectoryPass`
-  carrying `MONOTONE_RAMP` / `OSCILLATE` / `RUN` subtypes over a lossless
-  delta-run payload. `FREQ_NUDGE` (op 47) moves to a 2-atom `mode + signed
-  delta` form. Op-code reuse and the payload change invalidate any pinned
-  vocab/alphabet.
+- Unified FREQ/PW/FC trajectory primitive `FREQ_TRAJ` (op 45) replaces the four
+  split passes (`SlopePass`, `OscillationEnvelopePass`, `RawVibratoEnvelopePass`,
+  `FreqRunPass`) with one `FreqTrajectoryPass` over every slope-able register
+  (FREQ 0/7/14, PW 2/9/16, FC 21). A `SUBTYPE` in the `FLAGS` byte selects the
+  payload: `MONOTONE_RAMP` keeps SLOPE's terminal+runtime fit unchanged;
+  `OSCILLATE` is recognised by a gap-tolerant sign-alternation gate
+  (`OSC_MAX_GAP=2`, `OSC_MIN_ALTERNATION=0.5`, `OSC_MIN_HALFCYCLES=3`); `RUN`
+  catches the rest. `OSCILLATE`/`RUN` share one lossless `v0` + cumulative-delta
+  payload — signed-byte deltas with a `0x80` escape to a 16-bit absolute value
+  (PW/FC exceed a signed-16 delta), plus optional periodic collapse.
+- `FREQ_NUDGE` (op 47) delta mode is now a 2-atom `mode + signed-delta-byte`
+  (escape to 16-bit), down from `mode + hi + lo`.
+- Retired ops 32–34 (`SLOPE_*`), 37–38 (`SLOPE_*_SHIFTED`), 48 (`FREQ_RUN`),
+  52 (`FREQ_VIBRATO`) and their `SLOPE_*` / `OSC_*` / `VIB_*` constants and
+  decoders. `GateSlopeShiftPass` now shifts presets only; `PerRegBurstPass`
+  skips its FREQ/PW/FC burst when `freq_trajectory_pass` is active (the unified
+  pass owns those registers). The registered `slope` transform is renamed
+  `freq_traj`.
+- Op-code reuse and the payload change invalidate any pinned vocab/alphabet:
+  corpora and checkpoints must be re-cut (no metric transfer).
 
-### Added
+### Changed
 
-- Permanent torch-free tokenizer profiling tools: `tokenizer_config` (config
-  source of truth), `op_atom_profile` / `register_state` / `trajectory_coverage`
-  in `audit_primitives`, and the `python -m preframr_tokens.tokenizer_profile`
-  CLI (with `--compare`).
+- `audio` extra floor bumped to `preframr-audio>=0.5.0`.
 
 ## [0.15.0]
 

@@ -10,7 +10,6 @@ from preframr_tokens.stfconstants import (
     DIFF_OP,
     FRAME_REG,
     FREQ_NUDGE_OP,
-    FREQ_NUDGE_SUBREG_COUNT,
     SET_OP,
 )
 
@@ -73,7 +72,7 @@ class TestFreqNudgePass(unittest.TestCase):
         df = pd.DataFrame(rows)
         out = _apply(df)
         nudges = out[out["op"] == FREQ_NUDGE_OP]
-        self.assertEqual(len(nudges) % FREQ_NUDGE_SUBREG_COUNT, 0)
+        self.assertGreater(len(nudges), 0)
         self.assertEqual(_decoded_reg(df, 0), _decoded_reg(out, 0))
 
     def test_adjacent_sets_not_absolute_nudged(self):

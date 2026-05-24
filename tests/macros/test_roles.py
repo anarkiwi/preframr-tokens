@@ -23,12 +23,10 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
-    SLOPE_FREQ_LO_OP,
-    SLOPE_OPS,
-    SLOPE_PW_LO_OP,
-    SLOPE_SUBREG_RUNTIME,
-    SLOPE_SUBREG_TERMINAL_HI,
-    SLOPE_SUBREG_TERMINAL_LO,
+    FREQ_TRAJ_OP,
+    FT_SUBREG_RUNTIME,
+    FT_SUBREG_TERMINAL_HI,
+    FT_SUBREG_TERMINAL_LO,
 )
 
 
@@ -92,23 +90,17 @@ class TestDistancePairOps(unittest.TestCase):
 
 class TestSlopeSubregRole(unittest.TestCase):
     def test_each_role(self):
-        op = SLOPE_FREQ_LO_OP
-        self.assertEqual(slope_subreg_role(op, SLOPE_SUBREG_TERMINAL_HI), "terminal_hi")
-        self.assertEqual(slope_subreg_role(op, SLOPE_SUBREG_TERMINAL_LO), "terminal_lo")
-        self.assertEqual(slope_subreg_role(op, SLOPE_SUBREG_RUNTIME), "runtime")
-
-    def test_all_slope_ops_recognised(self):
-        for op in SLOPE_OPS:
-            self.assertEqual(
-                slope_subreg_role(op, SLOPE_SUBREG_TERMINAL_HI), "terminal_hi"
-            )
+        op = FREQ_TRAJ_OP
+        self.assertEqual(slope_subreg_role(op, FT_SUBREG_TERMINAL_HI), "terminal_hi")
+        self.assertEqual(slope_subreg_role(op, FT_SUBREG_TERMINAL_LO), "terminal_lo")
+        self.assertEqual(slope_subreg_role(op, FT_SUBREG_RUNTIME), "runtime")
 
     def test_non_slope_op_returns_none(self):
-        self.assertIsNone(slope_subreg_role(SET_OP, SLOPE_SUBREG_TERMINAL_HI))
-        self.assertIsNone(slope_subreg_role(BACK_REF_OP, SLOPE_SUBREG_TERMINAL_HI))
+        self.assertIsNone(slope_subreg_role(SET_OP, FT_SUBREG_TERMINAL_HI))
+        self.assertIsNone(slope_subreg_role(BACK_REF_OP, FT_SUBREG_TERMINAL_HI))
 
     def test_unknown_subreg_returns_none(self):
-        self.assertIsNone(slope_subreg_role(SLOPE_PW_LO_OP, 99))
+        self.assertIsNone(slope_subreg_role(FREQ_TRAJ_OP, 99))
 
 
 class TestFrameWeightRole(unittest.TestCase):
@@ -121,19 +113,15 @@ class TestFrameWeightRole(unittest.TestCase):
         self.assertEqual(frame_weight_role(DO_LOOP_OP, 0), "do_loop_len")
 
     def test_slope_runtime(self):
-        for op in SLOPE_OPS:
-            self.assertEqual(
-                frame_weight_role(op, SLOPE_SUBREG_RUNTIME), "slope_runtime"
-            )
+        self.assertEqual(
+            frame_weight_role(FREQ_TRAJ_OP, FT_SUBREG_RUNTIME), "slope_runtime"
+        )
 
     def test_back_ref_dist_hi_is_not_a_weight_source(self):
         self.assertIsNone(frame_weight_role(BACK_REF_OP, BACK_REF_SUBREG_DIST_HI))
 
     def test_do_loop_non_zero_subreg(self):
         self.assertIsNone(frame_weight_role(DO_LOOP_OP, 1))
-
-    def test_slope_terminal_subreg_is_not_runtime(self):
-        self.assertIsNone(frame_weight_role(SLOPE_FREQ_LO_OP, SLOPE_SUBREG_TERMINAL_HI))
 
     def test_unrelated_op(self):
         self.assertIsNone(frame_weight_role(SET_OP, 0))

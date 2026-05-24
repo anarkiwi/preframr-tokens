@@ -6,12 +6,13 @@ from preframr_tokens.macros.decoders import (
     DiffDecoder,
     Flip2Decoder,
     FlipDecoder,
+    FreqTrajectoryDecoder,
     PresetDecoder,
     SetDecoder,
     ShiftedDecoder,
-    SlopeDecoder,
     TransposeDecoder,
 )
+from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.loop_pass import LoopPass
 from preframr_tokens.macros.loops import expand_loops
 from preframr_tokens.macros.passes import (
@@ -21,7 +22,6 @@ from preframr_tokens.macros.passes import (
 )
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.slope_pass import SlopePass
 from preframr_tokens.macros.transform import (
     PassBackedTransform,
     Transform,
@@ -36,6 +36,7 @@ from preframr_tokens.stfconstants import (
     FC_PRESET_OP,
     FLIP_OP,
     FLIP2_OP,
+    FREQ_TRAJ_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -43,48 +44,26 @@ from preframr_tokens.stfconstants import (
     PWM_PRESET_OP,
     PWM_PRESET_SHIFTED_OP,
     SET_OP,
-    SLOPE_FC_LO_OP,
-    SLOPE_FREQ_LO_OP,
-    SLOPE_FREQ_LO_SHIFTED_OP,
-    SLOPE_PW_LO_OP,
-    SLOPE_PW_LO_SHIFTED_OP,
     TRANSPOSE_OP,
 )
 
-_SLOPE_OPS = (
-    SLOPE_FREQ_LO_OP,
-    SLOPE_PW_LO_OP,
-    SLOPE_FC_LO_OP,
-    SLOPE_FREQ_LO_SHIFTED_OP,
-    SLOPE_PW_LO_SHIFTED_OP,
-)
 _PRESET_OPS = (PWM_PRESET_OP, FC_PRESET_OP, PWM_PRESET_SHIFTED_OP)
 
 
-@register("slope")
-class SlopeTransform(PassBackedTransform):
+@register("freq_traj")
+class FreqTrajectoryTransform(PassBackedTransform):
     TIER = "audio_bit_exact"
-    OP_CODES = frozenset(_SLOPE_OPS)
+    OP_CODES = frozenset({FREQ_TRAJ_OP})
     SUBSTITUTABLE_OP_SUBREGS = frozenset(
-        (int(op), int(sr)) for op in _SLOPE_OPS for sr in (0, 1, 2, 3, 4)
+        (int(FREQ_TRAJ_OP), int(sr)) for sr in range(7)
     )
     OPERATES_ON_VOICE_REGS = True
     LOSS_TIER = "content"
-    REQUIRES_ARGS = frozenset({"slope_pass"})
-    PROVIDES_OPS = frozenset(_SLOPE_OPS)
+    REQUIRES_ARGS = frozenset({"freq_trajectory_pass"})
+    PROVIDES_OPS = frozenset({FREQ_TRAJ_OP})
     EMITS_NON_SET_REGS = frozenset({0, 2, 21})
-    PASS_CLASS = SlopePass
-    DECODER_CLASS = SlopeDecoder
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._shifted_decoder = ShiftedDecoder()
-
-    def expand_atom(self, row, state):
-        op = int(getattr(row, "op"))
-        if op in (SLOPE_FREQ_LO_SHIFTED_OP, SLOPE_PW_LO_SHIFTED_OP):
-            return self._shifted_decoder.expand(row, state)
-        return self._decoder.expand(row, state)
+    PASS_CLASS = FreqTrajectoryPass
+    DECODER_CLASS = FreqTrajectoryDecoder
 
 
 @register("preset")

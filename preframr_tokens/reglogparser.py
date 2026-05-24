@@ -14,15 +14,12 @@ from preframr_tokens.engine_fingerprint import (
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
-from preframr_tokens.macros.freq_run_pass import FreqRunPass
+from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
-from preframr_tokens.macros.oscillate_env_pass import OscillationEnvelopePass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
-from preframr_tokens.macros.raw_vibrato_pass import RawVibratoEnvelopePass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
-from preframr_tokens.macros.slope_pass import SlopePass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
@@ -837,13 +834,10 @@ class RegLogParser:
             return
         df = self._squeeze_frame_regs(df)
         df = VoiceTrackPass().apply(df, args=self.args)
-        df = SlopePass().apply(df, args=self.args)
+        df = FreqTrajectoryPass().apply(df, args=self.args)
         df = PresetPass().apply(df, args=self.args)
-        df = OscillationEnvelopePass().apply(df, args=self.args)
         df = PerRegBurstPass().apply(df, args=self.args)
         df = GateSlopeShiftPass().apply(df, args=self.args)
-        df = RawVibratoEnvelopePass().apply(df, args=self.args)
-        df = FreqRunPass().apply(df, args=self.args)
         df = ReleaseUpdatePass().apply(df, args=self.args)
         df = self._consolidate_frames(df)
         df = self._cap_delay(df)

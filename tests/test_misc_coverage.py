@@ -51,17 +51,17 @@ class TestReadMetaCorruptParquet(unittest.TestCase):
 class TestVoiceOfShiftable(unittest.TestCase):
     def test_fc_preset_returns_none(self):
         from preframr_tokens.macros.gate_slope_shift_pass import _voice_of_shiftable
-        from preframr_tokens.stfconstants import FC_PRESET_OP, SLOPE_FREQ_LO_OP
+        from preframr_tokens.stfconstants import FC_PRESET_OP, PWM_PRESET_OP
 
         self.assertIsNone(_voice_of_shiftable(0, FC_PRESET_OP))
-        self.assertEqual(_voice_of_shiftable(0, SLOPE_FREQ_LO_OP), 0)
-        self.assertEqual(_voice_of_shiftable(7, SLOPE_FREQ_LO_OP), 1)
+        self.assertEqual(_voice_of_shiftable(0, PWM_PRESET_OP), 0)
+        self.assertEqual(_voice_of_shiftable(7, PWM_PRESET_OP), 1)
 
     def test_out_of_voice_range_returns_none(self):
         from preframr_tokens.macros.gate_slope_shift_pass import _voice_of_shiftable
-        from preframr_tokens.stfconstants import SLOPE_FREQ_LO_OP
+        from preframr_tokens.stfconstants import PWM_PRESET_OP
 
-        self.assertIsNone(_voice_of_shiftable(99, SLOPE_FREQ_LO_OP))
+        self.assertIsNone(_voice_of_shiftable(99, PWM_PRESET_OP))
 
 
 class TestGateSlopeShiftPassEarlyExits(unittest.TestCase):

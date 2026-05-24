@@ -24,7 +24,7 @@ from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_TRIPLE_OP,
     FRAME_REG,
-    FREQ_RUN_OP,
+    FREQ_TRAJ_OP,
 )
 
 _BASE = dict(
@@ -44,7 +44,7 @@ _BASE = dict(
     meta_require=False,
 )
 _ALL_FLAGS = (
-    "slope_pass",
+    "freq_trajectory_pass",
     "preset_pass",
     "hard_restart_pass",
     "legato_pass_c2",
@@ -62,10 +62,7 @@ _ALL_FLAGS = (
     "voice_trajectory_pass",
     "voice_trajectory_distributed_pass",
     "set_to_diff_pass",
-    "oscillate_env_pass",
-    "vibrato_env_pass",
     "freq_nudge_pass",
-    "freq_run_pass",
     "release_update_pass",
     "ctrl_triple_pass",
     "lonely_catch_all",
@@ -182,7 +179,7 @@ class TestFullPipelineFidelity(unittest.TestCase):
         self._assert_lossless(
             self.fixture_head,
             {
-                "slope_pass": dict(slope_pass=True),
+                "freq_trajectory": dict(freq_trajectory_pass=True),
                 "ctrl_bigram_pass": dict(ctrl_bigram_pass=True),
                 "ctrl_triple_pass": dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
                 "freq_nudge_catch_all": dict(
@@ -191,15 +188,22 @@ class TestFullPipelineFidelity(unittest.TestCase):
             },
         )
 
-    def test_freq_run_lossless(self):
+    def test_freq_trajectory_lossless(self):
         self._assert_fired(
-            self.fixture_wide, dict(freq_run_pass=True), FREQ_RUN_OP, "freq_run"
+            self.fixture_wide,
+            dict(freq_trajectory_pass=True),
+            FREQ_TRAJ_OP,
+            "freq_traj",
         )
         self._assert_lossless(
             self.fixture_wide,
             {
-                "freq_run_noslope": dict(freq_run_pass=True),
-                "freq_run_slope": dict(slope_pass=True, freq_run_pass=True),
+                "freq_trajectory": dict(freq_trajectory_pass=True),
+                "freq_traj_nudge": dict(
+                    freq_trajectory_pass=True,
+                    freq_nudge_pass=True,
+                    lonely_catch_all=True,
+                ),
                 "ctrl_triple_pass": dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
             },
         )

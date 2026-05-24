@@ -16,10 +16,13 @@ from preframr_tokens.macros.passes_base import (
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     DIFF_OP,
+    FREQ_NUDGE_DELTA_ESCAPE,
+    FREQ_NUDGE_DELTA_MAX,
     FREQ_NUDGE_ISOLATION_GAP,
     FREQ_NUDGE_MODE_ABSOLUTE,
     FREQ_NUDGE_MODE_DELTA,
     FREQ_NUDGE_OP,
+    FREQ_NUDGE_SUBREG_DELTA,
     FREQ_NUDGE_SUBREG_HI,
     FREQ_NUDGE_SUBREG_LO,
     FREQ_NUDGE_SUBREG_MODE,
@@ -30,12 +33,20 @@ _FREQ_REGS = frozenset(FREQ_REGS_BY_VOICE)
 
 
 def _nudge_rows(reg, mode, payload, diff, irq):
-    payload &= 0xFFFF
-    fields = [
-        (FREQ_NUDGE_SUBREG_MODE, int(mode)),
-        (FREQ_NUDGE_SUBREG_HI, (payload >> 8) & 0xFF),
-        (FREQ_NUDGE_SUBREG_LO, payload & 0xFF),
-    ]
+    fields = [(FREQ_NUDGE_SUBREG_MODE, int(mode))]
+    if mode == FREQ_NUDGE_MODE_DELTA and -FREQ_NUDGE_DELTA_MAX <= payload <= (
+        FREQ_NUDGE_DELTA_MAX
+    ):
+        fields.append((FREQ_NUDGE_SUBREG_DELTA, int(payload) & 0xFF))
+    elif mode == FREQ_NUDGE_MODE_DELTA:
+        du = int(payload) & 0xFFFF
+        fields.append((FREQ_NUDGE_SUBREG_DELTA, FREQ_NUDGE_DELTA_ESCAPE))
+        fields.append((FREQ_NUDGE_SUBREG_HI, (du >> 8) & 0xFF))
+        fields.append((FREQ_NUDGE_SUBREG_LO, du & 0xFF))
+    else:
+        pu = int(payload) & 0xFFFF
+        fields.append((FREQ_NUDGE_SUBREG_HI, (pu >> 8) & 0xFF))
+        fields.append((FREQ_NUDGE_SUBREG_LO, pu & 0xFF))
     return [
         {
             "reg": int(reg),

@@ -8,8 +8,7 @@ import unittest
 
 import pandas as pd
 
-from preframr_tokens.macros.freq_run_pass import FreqRunPass
-from preframr_tokens.macros.raw_vibrato_pass import RawVibratoEnvelopePass
+from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import FRAME_REG, SET_OP, VOICE_REG_SIZE
 
@@ -42,38 +41,41 @@ def _row(reg, val):
     }
 
 
-def _emit(pass_cls, flag, reg, values):
+def _emit(reg, values):
     rows = [_frame(), _row(reg, values[0])]
     for v in values[1:]:
         rows += [_frame(), _row(reg, v)]
-    out = pass_cls().apply(pd.DataFrame(rows), args=FakeArgs(**{flag: True}))
+    rows += [_frame()]
+    out = FreqTrajectoryPass().apply(
+        pd.DataFrame(rows), args=FakeArgs(freq_trajectory_pass=True)
+    )
     return out[out["op"] != SET_OP].reset_index(drop=True)
 
 
 _CASES = (
-    (RawVibratoEnvelopePass, "vibrato_env_pass", [120, 122, 120, 122, 120, 122]),
-    (FreqRunPass, "freq_run_pass", [100, 101, 103, 107, 111]),
+    ("oscillate", [120, 122, 120, 122, 120, 122]),
+    ("run", [100, 101, 103, 107, 111]),
 )
 
 
 class TestVoiceAgnostic(unittest.TestCase):
     def test_atom_payload_is_voice_invariant(self):
-        for pass_cls, flag, vals in _CASES:
-            with self.subTest(pass_cls.__name__):
-                m0 = _emit(pass_cls, flag, FREQ_REGS_BY_VOICE[0], vals)
-                m1 = _emit(pass_cls, flag, FREQ_REGS_BY_VOICE[1], vals)
+        for label, vals in _CASES:
+            with self.subTest(label):
+                m0 = _emit(FREQ_REGS_BY_VOICE[0], vals)
+                m1 = _emit(FREQ_REGS_BY_VOICE[1], vals)
                 self.assertGreater(len(m0), 0, "macro did not fire")
                 self.assertEqual(len(m0), len(m1))
                 p0 = m0[["op", "subreg", "val"]]
                 p1 = m1[["op", "subreg", "val"]]
                 self.assertTrue(
                     p0.equals(p1),
-                    f"{pass_cls.__name__} payload differs across voices (leaks voice)",
+                    f"{label} payload differs across voices (leaks voice)",
                 )
                 offsets = m1["reg"].to_numpy() - m0["reg"].to_numpy()
                 self.assertTrue(
                     (offsets == VOICE_REG_SIZE).all(),
-                    f"{pass_cls.__name__} register offset is not the voice stride",
+                    f"{label} register offset is not the voice stride",
                 )
 
 

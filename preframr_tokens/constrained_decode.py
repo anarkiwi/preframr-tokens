@@ -27,10 +27,6 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
-    SLOPE_OPS,
-    SLOPE_SUBREG_RUNTIME,
-    SLOPE_SUBREG_TERMINAL_HI,
-    SLOPE_SUBREG_TERMINAL_LO,
     VOICE_REG,
 )
 from preframr_tokens.utils import to_int64_arrays
@@ -450,10 +446,9 @@ def precompute_vocab_arrays(tokens_df):
     is_real_reg = (reg >= 0) & (reg <= MAX_REG)
     is_back_ref = op == BACK_REF_OP
     is_pattern_replay = op == PATTERN_REPLAY_OP
-    is_slope = np.isin(op, np.asarray(SLOPE_OPS, dtype=np.int64))
-    is_slope_term_hi = is_slope & (subreg == SLOPE_SUBREG_TERMINAL_HI)
-    is_slope_term_lo = is_slope & (subreg == SLOPE_SUBREG_TERMINAL_LO)
-    is_slope_runtime = is_slope & (subreg == SLOPE_SUBREG_RUNTIME)
+    is_slope_term_hi = np.zeros_like(is_back_ref)
+    is_slope_term_lo = np.zeros_like(is_back_ref)
+    is_slope_runtime = np.zeros_like(is_back_ref)
     is_back_ref_dist_hi = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_HI)
     is_back_ref_dist_lo = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_LO)
     is_back_ref_len = is_back_ref & (subreg == BACK_REF_SUBREG_LEN)

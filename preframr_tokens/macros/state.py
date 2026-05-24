@@ -153,16 +153,12 @@ class DecodeState:
         self.pending_track_links = []
         self.pending_track_fields = {}
         self.pending_nudge_fields = {}
-        self.pending_run = None
-        self.pending_vib = None
+        self.pending_ft = None
         self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
         self.last_ctrl = {v: 0 for v in range(VOICES)}
-        self.pending_slope_terminal_hi = 0
-        self.pending_slope_terminal_lo = 0
-        self.pending_osc_fields = {}
         self.pending_filter_triple_hi = 0
         self.pending_filter_triple_lo = 0
         self.pending_deferred_pre_unroll = []

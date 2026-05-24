@@ -17,12 +17,11 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     PRESET_OPS,
     SET_OP,
-    SLOPE_OPS,
     VOICE_REG_SIZE,
     VOICES,
 )
 
-SHIFTABLE_OPS = frozenset(set(SLOPE_OPS) | set(PRESET_OPS))
+SHIFTABLE_OPS = frozenset(PRESET_OPS)
 CTRL_REGS = tuple(4 + v * VOICE_REG_SIZE for v in range(VOICES))
 
 
@@ -83,8 +82,6 @@ class GateSlopeShiftPass(MacroPass):
             if op not in BASE_TO_SHIFTED_OP:
                 continue
             if op in PRESET_OPS and body_len != 1:
-                continue
-            if op in SLOPE_OPS and body_len != 3:
                 continue
             shift_voice = _voice_of_shiftable(int(regs[mid + 1]), op)
             if shift_voice is None or shift_voice not in gate_voices:
