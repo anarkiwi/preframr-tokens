@@ -10,6 +10,12 @@ __all__ = [
     "TransposeDecoder",
     "HardRestartDecoder",
     "SlopeDecoder",
+    "OscillationEnvelopeDecoder",
+    "TrackRefDecoder",
+    "FreqNudgeDecoder",
+    "FreqRunDecoder",
+    "ReleaseUpdateDecoder",
+    "CtrlTripleDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
     "SubregFlushDecoder",
@@ -18,25 +24,50 @@ __all__ = [
     "CtrlBigramDecoder",
 ]
 
+from preframr_tokens.macros.envelope import cycle_multipliers
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_BIGRAM_TABLE,
+    CTRL_TRIPLE_OP,
+    CTRL_TRIPLE_SUBREG_0,
+    CTRL_TRIPLE_SUBREG_1,
+    CTRL_TRIPLE_SUBREG_2,
     DIFF_OP,
     FC_LO_REG,
     FC_PRESET_TABLE,
     FLIP2_OP,
     FLIP_OP,
+    FREQ_NUDGE_MODE_DELTA,
+    FREQ_NUDGE_OP,
+    FREQ_NUDGE_SUBREG_HI,
+    FREQ_NUDGE_SUBREG_LO,
+    FREQ_NUDGE_SUBREG_MODE,
+    FREQ_RUN_OP,
+    FREQ_RUN_SUBREG_COUNT,
+    FREQ_RUN_SUBREG_HI,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
+    OSC_SUBREG_AMP_HI,
+    OSC_SUBREG_AMP_LO,
+    OSC_SUBREG_ANCHOR_HI,
+    OSC_SUBREG_ANCHOR_LO,
+    OSC_SUBREG_FAMILY,
+    OSC_SUBREG_NCYCLES,
+    OSC_SUBREG_PARAM,
+    OSC_SUBREG_PERIOD,
+    OSC_NCYCLES_MASK,
+    OSC_START_DOWN_BIT,
+    OSCILLATE_ENV_OP,
     PRESET_OPS,
     PRESET_SHIFTED_OPS,
     PWM_PRESET_OP,
     PWM_PRESET_TABLE,
     PWM_SUSTAIN_OP,
+    RELEASE_UPDATE_OP,
     SET_OP,
     SHIFTED_TO_BASE_OP,
     SLOPE_OPS,
@@ -45,6 +76,12 @@ from preframr_tokens.stfconstants import (
     SLOPE_SUBREG_TERMINAL_HI,
     SLOPE_SUBREG_TERMINAL_LO,
     SUBREG_FLUSH_OP,
+    TRACK_INTERVAL_RATIOS,
+    TRACK_REF_OP,
+    TRACK_REF_SUBREG_DETUNE,
+    TRACK_REF_SUBREG_DURATION,
+    TRACK_REF_SUBREG_INTERVAL,
+    TRACK_REF_SUBREG_LEAD,
     TRANSPOSE_OP,
     VOICES,
     WAVETABLE_SUSTAIN_OP,
@@ -251,6 +288,186 @@ class SlopeDecoder(MacroDecoder):
         return pre or None
 
 
+class OscillationEnvelopeDecoder(MacroDecoder):
+    """Decode an OSCILLATE_ENV atom (8 subreg rows) back into the per-frame
+    ramp sequence the collapsed slope chain produced. Subregs accumulate into
+    ``pending_osc_fields``; on the final (PARAM) subreg the whole oscillation
+    is reconstructed and queued into ``pending_set_writes`` (drained one value
+    per frame by ``tick_frame``), exactly as ``SlopeDecoder`` queues a ramp."""
+
+    op_code = OSCILLATE_ENV_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        state.pending_osc_fields[subreg] = int(row.val) & 0xFF
+        if subreg != OSC_SUBREG_PARAM:
+            return None
+
+        f = state.pending_osc_fields
+        state.pending_osc_fields = {}
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+
+        anchor = (f.get(OSC_SUBREG_ANCHOR_HI, 0) << 8) | f.get(OSC_SUBREG_ANCHOR_LO, 0)
+        amp = (f.get(OSC_SUBREG_AMP_HI, 0) << 8) | f.get(OSC_SUBREG_AMP_LO, 0)
+        slope_frames = max(1, int(f.get(OSC_SUBREG_PERIOD, 1)))
+        ncycles_byte = int(f.get(OSC_SUBREG_NCYCLES, 0))
+        n_slopes = ncycles_byte & OSC_NCYCLES_MASK
+        start_down = bool(ncycles_byte & OSC_START_DOWN_BIT)
+        family = int(f.get(OSC_SUBREG_FAMILY, 0))
+        param = int(f.get(OSC_SUBREG_PARAM, 0))
+
+        mult = cycle_multipliers(family, param, n_slopes)
+        sign0 = -1 if start_down else 1
+        cur = int(state.last_val[reg])
+        state.last_diff[reg] = row.diff
+        for h in range(n_slopes):
+            s = sign0 if h % 2 == 0 else -sign0
+            amp_h = int(round(amp * mult[h]))
+            terminal = anchor + s * amp_h
+            delta = terminal - cur
+            for j in range(1, slope_frames + 1):
+                state.pending_set_writes[reg].append(
+                    int(cur + (delta * j) // slope_frames)
+                )
+            cur = terminal
+        return pre or None
+
+
+class TrackRefDecoder(MacroDecoder):
+    """Decode a TRACK_REF atom (4 subreg rows): the tracker voice's FREQ is
+    ``round(lead_freq * interval_ratio) + detune`` for ``duration`` frames.
+    The first frame is written directly; later frames are reconstructed by a
+    ``pending_track_links`` entry drained per frame by ``tick_frame``."""
+
+    op_code = TRACK_REF_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        state.pending_track_fields[subreg] = int(row.val)
+        if subreg != TRACK_REF_SUBREG_DURATION:
+            return None
+        f = state.pending_track_fields
+        state.pending_track_fields = {}
+        tracker_reg = int(row.reg)
+        lead_reg = int(FREQ_REGS_BY_VOICE[f.get(TRACK_REF_SUBREG_LEAD, 0)])
+        ratio = TRACK_INTERVAL_RATIOS[f.get(TRACK_REF_SUBREG_INTERVAL, 0)]
+        detune = f.get(TRACK_REF_SUBREG_DETUNE, 0) & 0xFF
+        if detune >= 128:
+            detune -= 256
+        duration = max(1, int(f.get(TRACK_REF_SUBREG_DURATION, 1)))
+        pre = state.maybe_flush_for(tracker_reg, -1)
+        state.last_diff[tracker_reg] = row.diff
+        state.pending_track_links.append(
+            {
+                "src": lead_reg,
+                "tgt": tracker_reg,
+                "ratio": ratio,
+                "detune": detune,
+                "remaining": duration,
+            }
+        )
+        return pre or None
+
+
+class FreqNudgeDecoder(MacroDecoder):
+    """Decode a FREQ_NUDGE atom (mode, hi, lo): one isolated FREQ event that
+    unifies DIFF (mode=delta, add signed payload) and absolute-SET (mode=
+    absolute, set payload). One write on the final (LO) subreg."""
+
+    op_code = FREQ_NUDGE_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        state.pending_nudge_fields[subreg] = int(row.val) & 0xFF
+        if subreg != FREQ_NUDGE_SUBREG_LO:
+            return None
+        f = state.pending_nudge_fields
+        state.pending_nudge_fields = {}
+        reg = int(row.reg)
+        payload = (f.get(FREQ_NUDGE_SUBREG_HI, 0) << 8) | f.get(FREQ_NUDGE_SUBREG_LO, 0)
+        pre = state.maybe_flush_for(reg, -1)
+        if f.get(FREQ_NUDGE_SUBREG_MODE, 0) == FREQ_NUDGE_MODE_DELTA:
+            delta = payload if payload < 0x8000 else payload - 0x10000
+            state.last_val[reg] += delta
+        else:
+            state.last_val[reg] = payload
+        own = (reg, int(state.last_val[reg]), row.diff, row.description)
+        return pre + [own]
+
+
+class FreqRunDecoder(MacroDecoder):
+    """Decode a FREQ_RUN atom: a count subreg then ``count`` (hi, lo) value
+    pairs replaying a run of consecutive-frame FREQ SETs. Value 0 is written at
+    the atom's frame; the rest queue into ``pending_set_writes`` per frame."""
+
+    op_code = FREQ_RUN_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        reg = int(row.reg)
+        val = int(row.val) & 0xFF
+        if subreg == FREQ_RUN_SUBREG_COUNT:
+            state.pending_run = {"reg": reg, "count": val, "vals": [], "hi": None}
+            return None
+        run = state.pending_run
+        if run is None or run["reg"] != reg:
+            return None
+        if subreg == FREQ_RUN_SUBREG_HI:
+            run["hi"] = val
+            return None
+        run["vals"].append((run["hi"] << 8) | val)
+        if len(run["vals"]) < run["count"]:
+            return None
+        vals = run["vals"]
+        state.pending_run = None
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_diff[reg] = row.diff
+        state.last_val[reg] = vals[0]
+        for v in vals[1:]:
+            state.pending_set_writes[reg].append(int(v))
+        return pre + [(reg, int(vals[0]), row.diff, row.description)]
+
+
+class ReleaseUpdateDecoder(MacroDecoder):
+    """Decode a RELEASE_UPDATE atom: a single isolated SR/AD envelope write,
+    equivalent to a SET on that register but tagged as a recognised op."""
+
+    op_code = RELEASE_UPDATE_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, int(row.val), row.diff, row.description)]
+
+
+class CtrlTripleDecoder(MacroDecoder):
+    """Decode a CTRL_TRIPLE atom (3 byte subregs): three consecutive adjacent-
+    frame CTRL writes. Byte 0 is written at the atom frame; bytes 1 and 2 queue
+    into ``pending_set_writes`` for the following two frames (like CTRL_BIGRAM
+    extended by one)."""
+
+    op_code = CTRL_TRIPLE_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        reg = int(row.reg)
+        state.pending_ctrl_triple[subreg] = int(row.val) & 0xFF
+        if subreg != CTRL_TRIPLE_SUBREG_2:
+            return None
+        f = state.pending_ctrl_triple
+        state.pending_ctrl_triple = {}
+        pre = state.maybe_flush_for(reg, -1)
+        b0 = f.get(CTRL_TRIPLE_SUBREG_0, 0)
+        state.last_val[reg] = b0
+        state.last_diff[reg] = row.diff
+        state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_1, 0))
+        state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_2, 0))
+        return pre + [(reg, b0, row.diff, row.description)]
+
+
 class PresetDecoder(MacroDecoder):
     """Decode PRESET_OP rows: emit a SET-equivalent write with table-snapped val."""
 
@@ -380,6 +597,12 @@ DECODERS = {
         CtrlBigramDecoder(),
         PwmSustainDecoder(),
         WavetableSustainDecoder(),
+        OscillationEnvelopeDecoder(),
+        TrackRefDecoder(),
+        FreqNudgeDecoder(),
+        FreqRunDecoder(),
+        ReleaseUpdateDecoder(),
+        CtrlTripleDecoder(),
     )
 }
 _SLOPE_DECODER = SlopeDecoder()
