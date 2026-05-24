@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0]
+
+Vibrato rework — lossless `FREQ_VIBRATO` replacing the lossy parametric
+OSCILLATE-for-vibrato. A per-voice/per-frame fidelity probe found `vibrato_env_pass`
+was the single biggest register divergence vs a no-macro render (~7-9k FREQ
+frames on a prodlike song); root cause was NOT the fit tolerance (accepted fits
+were exact) but (a) an absolute-anchor parametric atom capped at 31 cycles, and
+(b) the pass running early, so later passes + frame consolidation misaligned its
+multi-frame drain.
+
+### Added
+
+- `FreqVibratoPass` output op `FREQ_VIBRATO_OP` (52) + `FreqVibratoDecoder`: a
+  consecutive-frame FREQ run whose values repeat with a small period encodes as
+  `(period, 16-bit count, v0, signed delta-cycle)` and is replayed EXACTLY on
+  decode (v0 + cyclic deltas). Lossless, uncapped, no envelope fit; non-periodic
+  runs fall through to FREQ_RUN. (`RawVibratoEnvelopePass` rewritten.)
+- `tests/macros/test_voice_agnostic.py`: enforces FREQ macros carry no
+  out-of-band voice info — the same content on a different voice must yield
+  byte-identical atom payloads (op, subreg, val), differing only by the register
+  stride.
+
+### Changed
+
+- `RawVibratoEnvelopePass` now runs immediately before `FreqRunPass` (late,
+  after the frame-altering passes) rather than early; this alone removed the
+  multi-frame-drain phase swap + frame-count drift.
+
+### Removed
+
+- The OSCILLATE step-mode path (`OSC_STEP_MODE_BIT`, `OSC_FAMILY_MASK`, added in
+  0.12.0) — superseded by `FREQ_VIBRATO`. `OscillationEnvelopeDecoder` is back to
+  ramp-only.
+
+### Result
+
+- On the prodlike probe, removing `vibrato_env_pass` now clears **0** register
+  divergence (was ~9550): vibrato matches the lossless FREQ_RUN baseline exactly.
+
 ## [0.13.0]
 
 Fail-on-lonely: drive the strict-no-diff residual to zero (see

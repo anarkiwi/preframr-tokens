@@ -14,6 +14,7 @@ __all__ = [
     "TrackRefDecoder",
     "FreqNudgeDecoder",
     "FreqRunDecoder",
+    "FreqVibratoDecoder",
     "ReleaseUpdateDecoder",
     "CtrlUpdateDecoder",
     "CtrlTripleDecoder",
@@ -48,6 +49,13 @@ from preframr_tokens.stfconstants import (
     FREQ_RUN_OP,
     FREQ_RUN_SUBREG_COUNT,
     FREQ_RUN_SUBREG_HI,
+    FREQ_VIBRATO_OP,
+    VIB_SUBREG_PERIOD,
+    VIB_SUBREG_COUNT_HI,
+    VIB_SUBREG_COUNT_LO,
+    VIB_SUBREG_V0_HI,
+    VIB_SUBREG_V0_LO,
+    VIB_SUBREG_DELTA,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
@@ -63,8 +71,6 @@ from preframr_tokens.stfconstants import (
     OSC_SUBREG_PERIOD,
     OSC_NCYCLES_MASK,
     OSC_START_DOWN_BIT,
-    OSC_FAMILY_MASK,
-    OSC_STEP_MODE_BIT,
     OSCILLATE_ENV_OP,
     PRESET_OPS,
     PRESET_SHIFTED_OPS,
@@ -318,9 +324,7 @@ class OscillationEnvelopeDecoder(MacroDecoder):
         ncycles_byte = int(f.get(OSC_SUBREG_NCYCLES, 0))
         n_slopes = ncycles_byte & OSC_NCYCLES_MASK
         start_down = bool(ncycles_byte & OSC_START_DOWN_BIT)
-        fam_byte = int(f.get(OSC_SUBREG_FAMILY, 0))
-        step_mode = bool(fam_byte & OSC_STEP_MODE_BIT)
-        family = fam_byte & OSC_FAMILY_MASK
+        family = int(f.get(OSC_SUBREG_FAMILY, 0))
         param = int(f.get(OSC_SUBREG_PARAM, 0))
 
         mult = cycle_multipliers(family, param, n_slopes)
@@ -331,15 +335,11 @@ class OscillationEnvelopeDecoder(MacroDecoder):
             s = sign0 if h % 2 == 0 else -sign0
             amp_h = int(round(amp * mult[h]))
             terminal = anchor + s * amp_h
-            if step_mode:
-                reps = slope_frames if h < n_slopes - 1 else 1
-                state.pending_set_writes[reg].extend([terminal] * reps)
-            else:
-                delta = terminal - cur
-                for j in range(1, slope_frames + 1):
-                    state.pending_set_writes[reg].append(
-                        int(cur + (delta * j) // slope_frames)
-                    )
+            delta = terminal - cur
+            for j in range(1, slope_frames + 1):
+                state.pending_set_writes[reg].append(
+                    int(cur + (delta * j) // slope_frames)
+                )
             cur = terminal
         return pre or None
 
@@ -437,6 +437,59 @@ class FreqRunDecoder(MacroDecoder):
         for v in vals[1:]:
             state.pending_set_writes[reg].append(int(v))
         return pre + [(reg, int(vals[0]), row.diff, row.description)]
+
+
+class FreqVibratoDecoder(MacroDecoder):
+    """Decode a FREQ_VIBRATO atom: period, 16-bit count, start value v0, then
+    ``period`` signed deltas. Replays v0 (written at the atom frame) then
+    ``count`` cumulative deltas applied cyclically, one per frame — the exact
+    original FREQ run, lossless and uncapped."""
+
+    op_code = FREQ_VIBRATO_OP
+
+    def expand(self, row, state):
+        subreg = int(row.subreg)
+        reg = int(row.reg)
+        val = int(row.val) & 0xFF
+        if subreg == VIB_SUBREG_PERIOD:
+            state.pending_vib = {
+                "reg": reg,
+                "period": val,
+                "count": None,
+                "hi": None,
+                "v0_hi": None,
+                "v0": None,
+                "deltas": [],
+            }
+            return None
+        vib = state.pending_vib
+        if vib is None or vib["reg"] != reg:
+            return None
+        if subreg == VIB_SUBREG_COUNT_HI:
+            vib["hi"] = val
+            return None
+        if subreg == VIB_SUBREG_COUNT_LO:
+            vib["count"] = (vib["hi"] << 8) | val
+            return None
+        if subreg == VIB_SUBREG_V0_HI:
+            vib["v0_hi"] = val
+            return None
+        if subreg == VIB_SUBREG_V0_LO:
+            vib["v0"] = (vib["v0_hi"] << 8) | val
+            return None
+        vib["deltas"].append(val if val < 128 else val - 256)
+        if len(vib["deltas"]) < vib["period"]:
+            return None
+        state.pending_vib = None
+        period = max(1, vib["period"])
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_diff[reg] = row.diff
+        state.last_val[reg] = vib["v0"]
+        cur = vib["v0"]
+        for i in range(vib["count"]):
+            cur += vib["deltas"][i % period]
+            state.pending_set_writes[reg].append(int(cur))
+        return pre + [(reg, int(vib["v0"]), row.diff, row.description)]
 
 
 class ReleaseUpdateDecoder(MacroDecoder):
@@ -629,6 +682,7 @@ DECODERS = {
         ReleaseUpdateDecoder(),
         CtrlUpdateDecoder(),
         CtrlTripleDecoder(),
+        FreqVibratoDecoder(),
     )
 }
 _SLOPE_DECODER = SlopeDecoder()
