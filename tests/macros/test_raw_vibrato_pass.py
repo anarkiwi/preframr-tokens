@@ -1,4 +1,4 @@
-"""Tests for RawVibratoEnvelopePass + step-mode OscillationEnvelopeDecoder."""
+"""Tests for RawVibratoEnvelopePass + FreqVibratoDecoder (delta-cycle vibrato)."""
 
 import unittest
 
@@ -7,7 +7,7 @@ import pandas as pd
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.raw_vibrato_pass import RawVibratoEnvelopePass
 from preframr_tokens.macros.slope_pass import SlopePass
-from preframr_tokens.stfconstants import FRAME_REG, OSCILLATE_ENV_OP, SET_OP, SLOPE_OPS
+from preframr_tokens.stfconstants import FRAME_REG, FREQ_VIBRATO_OP, SET_OP, SLOPE_OPS
 
 
 class FakeArgs:
@@ -38,13 +38,10 @@ def _row(reg, val, diff=32):
     }
 
 
-def _vibrato_rows(reg, values, gap=1):
-    """A raw per-frame FREQ-SET stream: each value on its own frame, with
-    ``gap`` frames (the value held) between successive SETs."""
+def _vibrato_rows(reg, values):
     rows = [_frame(), _row(reg, values[0])]
     for v in values[1:]:
-        for _ in range(gap):
-            rows.append(_frame())
+        rows.append(_frame())
         rows.append(_row(reg, v))
     return rows
 
@@ -59,57 +56,44 @@ def _decoded_reg(df, reg):
     return out[out["reg"] == reg]["val"].tolist()
 
 
-def _squeeze(seq):
-    """Collapse consecutive duplicate writes: re-writing a held FREQ value is
-    inaudible, so the change-sequence is the audio-equivalence invariant."""
-    out = []
-    for v in seq:
-        if not out or out[-1] != v:
-            out.append(v)
-    return out
-
-
 class TestRawVibratoEnvelopePass(unittest.TestCase):
     def test_disabled_returns_unchanged(self):
         rows = _vibrato_rows(0, [120, 100, 120, 100, 120, 100])
         df = SlopePass().apply(pd.DataFrame(rows), args=FakeArgs(slope_pass=True))
-        result = RawVibratoEnvelopePass().apply(
+        out = RawVibratoEnvelopePass().apply(
             df.copy(), args=FakeArgs(vibrato_env_pass=False)
         )
-        self.assertTrue(result.equals(df))
+        self.assertTrue(out.equals(df))
 
-    def test_slope_pass_leaves_short_vibrato_raw(self):
-        """The >=5-frame SLOPE gate never sees alternating per-frame vibrato."""
-        rows = _vibrato_rows(0, [120, 100, 120, 100, 120, 100])
-        df = SlopePass().apply(pd.DataFrame(rows), args=FakeArgs(slope_pass=True))
-        self.assertFalse(bool(df["op"].isin(SLOPE_OPS).any()))
-
-    def test_gap1_collapses_and_round_trips_exactly(self):
-        rows = _vibrato_rows(0, [120, 100, 120, 100, 120, 100], gap=1)
+    def test_period2_collapses_and_round_trips_exactly(self):
+        rows = _vibrato_rows(0, [120, 122, 120, 122, 120, 122, 120, 122])
         encoded = _encode(rows)
-        self.assertTrue(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
+        self.assertTrue(bool((encoded["op"] == FREQ_VIBRATO_OP).any()))
+        self.assertFalse(bool(encoded["op"].isin(SLOPE_OPS).any()))
         self.assertEqual(_decoded_reg(pd.DataFrame(rows), 0), _decoded_reg(encoded, 0))
 
-    def test_gap2_collapses_and_round_trips_audio_equivalent(self):
-        """gap>1 holds each terminal; the forward-filled per-frame value
-        sequence (what the SID actually plays) is preserved."""
-        rows = _vibrato_rows(0, [120, 100, 120, 100, 120, 100], gap=2)
+    def test_period3_round_trips_exactly(self):
+        rows = _vibrato_rows(0, [200, 205, 198, 200, 205, 198, 200, 205, 198])
         encoded = _encode(rows)
-        self.assertTrue(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
-        self.assertEqual(
-            _squeeze(_decoded_reg(pd.DataFrame(rows), 0)),
-            _squeeze(_decoded_reg(encoded, 0)),
-        )
+        self.assertTrue(bool((encoded["op"] == FREQ_VIBRATO_OP).any()))
+        self.assertEqual(_decoded_reg(pd.DataFrame(rows), 0), _decoded_reg(encoded, 0))
 
-    def test_monotonic_not_collapsed(self):
-        rows = _vibrato_rows(0, [10, 20, 30, 40, 50], gap=1)
+    def test_uncapped_long_run_round_trips(self):
+        rows = _vibrato_rows(0, [120, 122] * 300)
         encoded = _encode(rows)
-        self.assertFalse(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
+        osc = encoded[encoded["op"] == FREQ_VIBRATO_OP]
+        self.assertTrue(len(osc) > 0)
+        self.assertEqual(_decoded_reg(pd.DataFrame(rows), 0), _decoded_reg(encoded, 0))
+
+    def test_non_periodic_left_for_freq_run(self):
+        rows = _vibrato_rows(0, [120, 122, 119, 130, 100, 140])
+        encoded = _encode(rows)
+        self.assertFalse(bool((encoded["op"] == FREQ_VIBRATO_OP).any()))
 
     def test_below_min_not_collapsed(self):
-        rows = _vibrato_rows(0, [120, 100], gap=1)
+        rows = _vibrato_rows(0, [120, 122])
         encoded = _encode(rows)
-        self.assertFalse(bool((encoded["op"] == OSCILLATE_ENV_OP).any()))
+        self.assertFalse(bool((encoded["op"] == FREQ_VIBRATO_OP).any()))
 
 
 if __name__ == "__main__":

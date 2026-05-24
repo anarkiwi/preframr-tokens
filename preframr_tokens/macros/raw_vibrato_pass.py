@@ -1,12 +1,12 @@
-"""Raw-stream vibrato collapser (TOKEN_IMPROVEMENTS.md item 0 rework), behind
-``vibrato_env_pass`` (default OFF): alternating short FREQ SET runs that
-SlopePass's >=5-frame gate never makes into SLOPE atoms collapse into step-mode
-``OSCILLATE_ENV`` atoms. Each maximal uniform-frame-gap run that alternates
-about its midline and fits an envelope family becomes one atom, else kept raw."""
+"""Collapse periodic FREQ vibrato into one ``FREQ_VIBRATO`` atom (validation-
+phase rework), behind ``vibrato_env_pass`` (default OFF): a consecutive-frame
+FREQ SET run whose values repeat with a small period becomes ``(period, count,
+v0, delta-cycle)`` and is replayed EXACTLY on decode (v0 + cyclic deltas). No
+parametric envelope fit, no cycle cap; non-periodic runs are left for FREQ_RUN.
+"""
 
-__all__ = ["RawVibratoEnvelopePass", "VIBRATO_MIN_SLOPES"]
+__all__ = ["RawVibratoEnvelopePass", "VIB_MIN_LEN"]
 
-from preframr_tokens.macros import envelope as env
 from preframr_tokens.macros.passes_base import (
     MacroPass,
     _ensure_subreg,
@@ -15,50 +15,48 @@ from preframr_tokens.macros.passes_base import (
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
-    OSC_MAX_NCYCLES,
-    OSC_START_DOWN_BIT,
-    OSC_STEP_MODE_BIT,
-    OSC_SUBREG_AMP_HI,
-    OSC_SUBREG_AMP_LO,
-    OSC_SUBREG_ANCHOR_HI,
-    OSC_SUBREG_ANCHOR_LO,
-    OSC_SUBREG_FAMILY,
-    OSC_SUBREG_NCYCLES,
-    OSC_SUBREG_PARAM,
-    OSC_SUBREG_PERIOD,
-    OSCILLATE_ENV_OP,
+    FREQ_VIBRATO_OP,
     SET_OP,
+    VIB_MAX_DELTA,
+    VIB_MAX_PERIOD,
+    VIB_MIN_LEN,
+    VIB_SUBREG_COUNT_HI,
+    VIB_SUBREG_COUNT_LO,
+    VIB_SUBREG_DELTA,
+    VIB_SUBREG_PERIOD,
+    VIB_SUBREG_V0_HI,
+    VIB_SUBREG_V0_LO,
 )
 
-VIBRATO_MIN_SLOPES = 3
 _FREQ_REGS = tuple(FREQ_REGS_BY_VOICE)
-_MAX_GAP = 0xFF
+_MAX_COUNT = 0xFFFF
 
 
-def _osc_step_rows(
-    reg, anchor, amp, period, n_slopes, start_down, family, param, diff, irq
-):
-    anchor_u = int(anchor) & 0xFFFF
-    amp_u = int(amp) & 0xFFFF
-    ncycles_byte = (int(n_slopes) & OSC_MAX_NCYCLES) | (
-        OSC_START_DOWN_BIT if start_down else 0
-    )
+def _value_period(vals):
+    """Smallest period (2..VIB_MAX_PERIOD) the value sequence repeats with, or 0."""
+    n = len(vals)
+    for p in range(2, min(VIB_MAX_PERIOD, n // 2) + 1):
+        if all(vals[i] == vals[i - p] for i in range(p, n)):
+            return p
+    return 0
+
+
+def _vib_rows(reg, period, count, v0, deltas, diff, irq):
+    v0u = int(v0) & 0xFFFF
     fields = [
-        (OSC_SUBREG_ANCHOR_HI, (anchor_u >> 8) & 0xFF),
-        (OSC_SUBREG_ANCHOR_LO, anchor_u & 0xFF),
-        (OSC_SUBREG_AMP_HI, (amp_u >> 8) & 0xFF),
-        (OSC_SUBREG_AMP_LO, amp_u & 0xFF),
-        (OSC_SUBREG_PERIOD, int(period) & 0xFF),
-        (OSC_SUBREG_NCYCLES, ncycles_byte & 0xFF),
-        (OSC_SUBREG_FAMILY, (int(family) | OSC_STEP_MODE_BIT) & 0xFF),
-        (OSC_SUBREG_PARAM, int(param) & 0xFF),
+        (VIB_SUBREG_PERIOD, int(period)),
+        (VIB_SUBREG_COUNT_HI, (int(count) >> 8) & 0xFF),
+        (VIB_SUBREG_COUNT_LO, int(count) & 0xFF),
+        (VIB_SUBREG_V0_HI, (v0u >> 8) & 0xFF),
+        (VIB_SUBREG_V0_LO, v0u & 0xFF),
     ]
+    fields += [(VIB_SUBREG_DELTA, int(d) & 0xFF) for d in deltas]
     return [
         {
             "reg": int(reg),
             "val": int(val),
             "diff": int(diff),
-            "op": int(OSCILLATE_ENV_OP),
+            "op": int(FREQ_VIBRATO_OP),
             "subreg": int(subreg),
             "irq": int(irq),
             "description": 0,
@@ -88,61 +86,42 @@ class RawVibratoEnvelopePass(MacroPass):
         drop_idx = []
         new_rows = []
         for reg in _FREQ_REGS:
-            events = [
-                (i, int(f_idx[i]), int(vals[i]))
+            sets = [
+                (int(f_idx[i]), i)
                 for i in range(len(df))
                 if int(regs[i]) == reg
                 and int(ops[i]) == SET_OP
                 and int(subregs[i]) == -1
             ]
-            self._collapse_reg(reg, events, diffs, irq_default, drop_idx, new_rows)
+            self._collapse_reg(reg, sets, vals, diffs, irq_default, drop_idx, new_rows)
         if not drop_idx:
             return df
         return _splice_rows(df, drop_idx, new_rows)
 
-    def _collapse_reg(self, reg, events, diffs, irq_default, drop_idx, new_rows):
+    def _collapse_reg(self, reg, sets, vals, diffs, irq_default, drop_idx, new_rows):
         k = 0
-        while k < len(events) - 1:
-            gap = events[k + 1][1] - events[k][1]
-            if gap < 1 or gap > _MAX_GAP:
-                k += 1
-                continue
+        while k < len(sets):
             j = k
-            while j + 1 < len(events) and events[j + 1][1] - events[j][1] == gap:
+            while j + 1 < len(sets) and sets[j + 1][0] == sets[j][0] + 1:
                 j += 1
-            self._collapse_run(
-                reg, events[k : j + 1], gap, diffs, irq_default, drop_idx, new_rows
-            )
+            run = sets[k : j + 1]
+            if len(run) >= VIB_MIN_LEN:
+                self._emit(reg, run, vals, diffs, irq_default, drop_idx, new_rows)
             k = j + 1
 
-    def _collapse_run(self, reg, run, gap, diffs, irq_default, drop_idx, new_rows):
-        m = len(run)
-        if m > OSC_MAX_NCYCLES:
-            m = OSC_MAX_NCYCLES
-            run = run[:m]
-        if m < VIBRATO_MIN_SLOPES:
+    @staticmethod
+    def _emit(reg, run, vals, diffs, irq_default, drop_idx, new_rows):
+        seq = [int(vals[i]) for _, i in run]
+        period = _value_period(seq)
+        if period == 0 or len(seq) - 1 > _MAX_COUNT:
             return
-        terminals = [e[2] for e in run]
-        anchor = round(sum(terminals) / len(terminals))
-        signs = [t - anchor for t in terminals]
-        if any(s == 0 for s in signs):
+        deltas = [seq[(j + 1) % period] - seq[j % period] for j in range(period)]
+        if any(abs(d) > VIB_MAX_DELTA for d in deltas) or not any(deltas):
             return
-        for a, b in zip(signs, signs[1:]):
-            if (a > 0) == (b > 0):
-                return
-        base = abs(signs[0])
-        if base <= 0:
-            return
-        family, param, residual = env.fit_family([abs(s) / base for s in signs])
-        if residual > env.FIT_TOLERANCE:
-            return
-        first_idx = run[0][0]
+        first_idx = run[0][1]
         diff = int(diffs[first_idx]) if diffs is not None else 0
-        atom = _osc_step_rows(
-            reg, anchor, base, gap, m, signs[0] < 0, family, param, diff, irq_default
-        )
+        atom = _vib_rows(reg, period, len(seq) - 1, seq[0], deltas, diff, irq_default)
         for nr in atom:
             nr["__pos"] = first_idx
         new_rows.extend(atom)
-        for e in run:
-            drop_idx.append(int(e[0]))
+        drop_idx.extend(i for _, i in run)
