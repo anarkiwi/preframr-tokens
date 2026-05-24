@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from preframr_tokens.macros.transform import LOSS_TIER_NAMES
+from preframr_tokens.stfconstants import LOSS_TIER_NAMES
 from preframr_tokens.vocab_signature import (
     CONTENT_TIER,
     VocabSignature,

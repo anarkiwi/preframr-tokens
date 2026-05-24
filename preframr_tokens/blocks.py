@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 
 from preframr_tokens.macros import iter_self_contained_row_blocks, self_contain_slice
-from preframr_tokens.reglog_helpers import load_palettes_attrs
+from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reglogparser import RegLogParser, remove_voice_reg
 from preframr_tokens.stfconstants import (
     DELAY_REG,

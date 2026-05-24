@@ -7,7 +7,7 @@ import tempfile
 
 import pandas as pd
 
-from preframr_tokens.reglog_helpers import tighten_persist_dtypes
+from preframr_tokens.utils import tighten_persist_dtypes
 from preframr_tokens.stfconstants import DESCRIPTION_PDTYPE, SUBREG_PDTYPE
 
 

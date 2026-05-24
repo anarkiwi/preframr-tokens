@@ -8,7 +8,8 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from preframr_tokens.blocks import glob_dumps
-from preframr_tokens.reglog_helpers import dump_palettes_attrs, tighten_persist_dtypes
+from preframr_tokens.palette_io import dump_palettes_attrs
+from preframr_tokens.utils import tighten_persist_dtypes
 from preframr_tokens.reglogparser import RegLogParser
 
 __all__ = ["write_df", "parse_corpus"]
