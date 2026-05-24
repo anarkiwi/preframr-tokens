@@ -1,8 +1,8 @@
 """Cross-voice FREQ tracking macro (TOKEN_IMPROVEMENTS.md item 12), behind the
-``voice_track_pass`` arg flag (default OFF): consecutive-frame spans where a
-tracker voice's FREQ equals ``round(lead_freq * interval) + detune`` for a
-constant detune collapse into one ``TRACK_REF`` atom, reconstructed from the
-lead voice (possible here because this repo keeps all voices in one stream)."""
+``voice_track_pass`` flag (default OFF). REFUTED 2026-05-24: on cent-bin FREQ a
+musical interval is an additive offset, not the ``round(lead*ratio)+detune``
+multiplicative model here; a 40-song headroom probe found zero >=10-frame
+tracking spans under either model, so this stays off. See TOKEN_IMPROVEMENTS.md."""
 
 __all__ = ["VoiceTrackPass"]
 

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0]
+
+Validation-phase structural-primitive fixes (see `TOKEN_IMPROVEMENTS.md`
+"Validation-phase structural-primitive findings"):
+
+### Changed
+
+- `OscillationEnvelopePass`: the all-or-nothing uniform-runtime gate is
+  replaced by splitting each maximal SLOPE chain into maximal uniform-runtime
+  sub-runs (≥3 slopes), each collapsed and round-tripping exactly through the
+  ramp decoder. OSCILLATE_ENV firing rose ~2.5× on a 40-song prodlike probe
+  (88→224 atom rows) with no change to reconstruction fidelity. Default-ON
+  behaviour now collapses more oscillation chains.
+
+### Refuted
+
+- `VoiceTrackPass` (`voice_track_pass`, default OFF) is marked REFUTED: a
+  40-song headroom probe found zero ≥10-frame cross-voice tracking spans under
+  the multiplicative, held-value, and additive-offset models. FREQ is a
+  cent-bin index where intervals are additive, not the multiplicative
+  `round(lead·ratio)+detune` the pass models; sustained tracking is absent and
+  short chord-change overlaps are already absorbed by FREQ_RUN/FREQ_NUDGE. Code
+  left in place, kept default-OFF.
+
 ## [0.10.0]
 
 ### Added

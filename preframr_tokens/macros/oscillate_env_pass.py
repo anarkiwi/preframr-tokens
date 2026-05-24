@@ -1,8 +1,8 @@
-"""Collapse alternating-sign SLOPE chains into one ``OSCILLATE_ENV`` atom,
-post ``SlopePass`` + ``PresetPass`` (TOKEN_IMPROVEMENTS.md item 0): a maximal
-run of same-reg SLOPE atoms whose terminals alternate about their midline is
-fit to an envelope family; a within-tolerance fit becomes one 8-subreg atom,
-else the raw slopes are left as a valid fallback primitive."""
+"""Collapse alternating-sign SLOPE chains into ``OSCILLATE_ENV`` atoms, post
+``SlopePass`` + ``PresetPass`` (TOKEN_IMPROVEMENTS.md item 0): a maximal run of
+same-reg SLOPE atoms is split into uniform-runtime sub-runs, and each sub-run
+whose terminals alternate about their midline and fit an envelope family
+becomes one 8-subreg atom, else the raw slopes are left as a fallback."""
 
 __all__ = ["OscillationEnvelopePass", "OSC_MIN_SLOPES"]
 
@@ -141,6 +141,17 @@ class OscillationEnvelopePass(MacroPass):
         return _splice_rows(df, drop_idx, new_rows)
 
     def _maybe_collapse(self, reg, run, diffs, irq_default, drop_idx, new_rows):
+        a = 0
+        while a < len(run):
+            b = a + 1
+            while b < len(run) and run[b][3] == run[a][3]:
+                b += 1
+            self._collapse_uniform(
+                reg, run[a:b], diffs, irq_default, drop_idx, new_rows
+            )
+            a = b
+
+    def _collapse_uniform(self, reg, run, diffs, irq_default, drop_idx, new_rows):
         m = len(run)
         if m > OSC_MAX_NCYCLES:
             m = OSC_MAX_NCYCLES
@@ -148,9 +159,8 @@ class OscillationEnvelopePass(MacroPass):
         if m < OSC_MIN_SLOPES:
             return
         terminals = [e[2] for e in run]
-        runtimes = [e[3] for e in run]
-        runtime = runtimes[0]
-        if runtime <= 0 or any(r != runtime for r in runtimes):
+        runtime = run[0][3]
+        if runtime <= 0:
             return
         anchor = round(sum(terminals) / len(terminals))
         signs = [t - anchor for t in terminals]
