@@ -18,6 +18,7 @@ from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.oscillate_env_pass import OscillationEnvelopePass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
+from preframr_tokens.macros.raw_vibrato_pass import RawVibratoEnvelopePass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.slope_pass import SlopePass
@@ -828,6 +829,7 @@ class RegLogParser:
         df = SlopePass().apply(df, args=self.args)
         df = PresetPass().apply(df, args=self.args)
         df = OscillationEnvelopePass().apply(df, args=self.args)
+        df = RawVibratoEnvelopePass().apply(df, args=self.args)
         df = PerRegBurstPass().apply(df, args=self.args)
         df = GateSlopeShiftPass().apply(df, args=self.args)
         df = FreqRunPass().apply(df, args=self.args)

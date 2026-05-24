@@ -61,6 +61,8 @@ from preframr_tokens.stfconstants import (
     OSC_SUBREG_PERIOD,
     OSC_NCYCLES_MASK,
     OSC_START_DOWN_BIT,
+    OSC_FAMILY_MASK,
+    OSC_STEP_MODE_BIT,
     OSCILLATE_ENV_OP,
     PRESET_OPS,
     PRESET_SHIFTED_OPS,
@@ -314,7 +316,9 @@ class OscillationEnvelopeDecoder(MacroDecoder):
         ncycles_byte = int(f.get(OSC_SUBREG_NCYCLES, 0))
         n_slopes = ncycles_byte & OSC_NCYCLES_MASK
         start_down = bool(ncycles_byte & OSC_START_DOWN_BIT)
-        family = int(f.get(OSC_SUBREG_FAMILY, 0))
+        fam_byte = int(f.get(OSC_SUBREG_FAMILY, 0))
+        step_mode = bool(fam_byte & OSC_STEP_MODE_BIT)
+        family = fam_byte & OSC_FAMILY_MASK
         param = int(f.get(OSC_SUBREG_PARAM, 0))
 
         mult = cycle_multipliers(family, param, n_slopes)
@@ -325,11 +329,15 @@ class OscillationEnvelopeDecoder(MacroDecoder):
             s = sign0 if h % 2 == 0 else -sign0
             amp_h = int(round(amp * mult[h]))
             terminal = anchor + s * amp_h
-            delta = terminal - cur
-            for j in range(1, slope_frames + 1):
-                state.pending_set_writes[reg].append(
-                    int(cur + (delta * j) // slope_frames)
-                )
+            if step_mode:
+                reps = slope_frames if h < n_slopes - 1 else 1
+                state.pending_set_writes[reg].extend([terminal] * reps)
+            else:
+                delta = terminal - cur
+                for j in range(1, slope_frames + 1):
+                    state.pending_set_writes[reg].append(
+                        int(cur + (delta * j) // slope_frames)
+                    )
             cur = terminal
         return pre or None
 
