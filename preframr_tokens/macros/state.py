@@ -150,12 +150,18 @@ class DecodeState:
         self.pending_diffs = defaultdict(list)
         self.pending_set_writes = defaultdict(list)
         self.interval_links = []
+        self.pending_track_links = []
+        self.pending_track_fields = {}
+        self.pending_nudge_fields = {}
+        self.pending_run = None
+        self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
         self.last_ctrl = {v: 0 for v in range(VOICES)}
         self.pending_slope_terminal_hi = 0
         self.pending_slope_terminal_lo = 0
+        self.pending_osc_fields = {}
         self.pending_filter_triple_hi = 0
         self.pending_filter_triple_lo = 0
         self.pending_deferred_pre_unroll = []
@@ -240,6 +246,14 @@ class DecodeState:
             link["remaining"] -= 1
             if link["remaining"] <= 0:
                 self.interval_links.remove(link)
+        for link in list(self.pending_track_links):
+            lead = int(self.last_val[link["src"]])
+            tgt_val = int(round(lead * link["ratio"])) + link["detune"]
+            self.last_val[link["tgt"]] = tgt_val
+            writes.append((link["tgt"], tgt_val, self.diff_for(link["tgt"])))
+            link["remaining"] -= 1
+            if link["remaining"] <= 0:
+                self.pending_track_links.remove(link)
         np.copyto(self.prev_frame_val, self.last_val)
         return writes
 
