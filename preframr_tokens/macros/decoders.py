@@ -408,8 +408,8 @@ class FreqNudgeDecoder(MacroDecoder):
 
 class FreqRunDecoder(MacroDecoder):
     """Decode a FREQ_RUN atom: a count subreg then ``count`` (hi, lo) value
-    pairs replaying a run of consecutive-frame FREQ SETs. Value 0 is written at
-    the atom's frame; the rest queue into ``pending_set_writes`` per frame."""
+    pairs replaying a run of consecutive-frame FREQ SETs. All values queue into
+    ``pending_set_writes``, one drained per frame tick from the atom's frame."""
 
     op_code = FREQ_RUN_OP
 
@@ -434,16 +434,16 @@ class FreqRunDecoder(MacroDecoder):
         pre = state.maybe_flush_for(reg, -1)
         state.last_diff[reg] = row.diff
         state.last_val[reg] = vals[0]
-        for v in vals[1:]:
+        for v in vals:
             state.pending_set_writes[reg].append(int(v))
-        return pre + [(reg, int(vals[0]), row.diff, row.description)]
+        return list(pre)
 
 
 class FreqVibratoDecoder(MacroDecoder):
     """Decode a FREQ_VIBRATO atom: period, 16-bit count, start value v0, then
-    ``period`` signed deltas. Replays v0 (written at the atom frame) then
-    ``count`` cumulative deltas applied cyclically, one per frame — the exact
-    original FREQ run, lossless and uncapped."""
+    ``period`` signed deltas. Replays v0 then ``count`` cumulative deltas applied
+    cyclically; all queue into ``pending_set_writes``, one drained per frame tick
+    from the atom's frame — the exact original FREQ run, lossless and uncapped."""
 
     op_code = FREQ_VIBRATO_OP
 
@@ -485,11 +485,12 @@ class FreqVibratoDecoder(MacroDecoder):
         pre = state.maybe_flush_for(reg, -1)
         state.last_diff[reg] = row.diff
         state.last_val[reg] = vib["v0"]
+        state.pending_set_writes[reg].append(int(vib["v0"]))
         cur = vib["v0"]
         for i in range(vib["count"]):
             cur += vib["deltas"][i % period]
             state.pending_set_writes[reg].append(int(cur))
-        return pre + [(reg, int(vib["v0"]), row.diff, row.description)]
+        return list(pre)
 
 
 class ReleaseUpdateDecoder(MacroDecoder):
@@ -523,9 +524,9 @@ class CtrlUpdateDecoder(MacroDecoder):
 
 class CtrlTripleDecoder(MacroDecoder):
     """Decode a CTRL_TRIPLE atom (3 byte subregs): three consecutive adjacent-
-    frame CTRL writes. Byte 0 is written at the atom frame; bytes 1 and 2 queue
-    into ``pending_set_writes`` for the following two frames (like CTRL_BIGRAM
-    extended by one)."""
+    frame CTRL writes. All three bytes queue into ``pending_set_writes``, one
+    drained per frame tick from the atom's frame (like CTRL_BIGRAM extended by
+    one)."""
 
     op_code = CTRL_TRIPLE_OP
 
@@ -541,9 +542,10 @@ class CtrlTripleDecoder(MacroDecoder):
         b0 = f.get(CTRL_TRIPLE_SUBREG_0, 0)
         state.last_val[reg] = b0
         state.last_diff[reg] = row.diff
+        state.pending_set_writes[reg].append(b0)
         state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_1, 0))
         state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_2, 0))
-        return pre + [(reg, b0, row.diff, row.description)]
+        return list(pre)
 
 
 class PresetDecoder(MacroDecoder):
@@ -652,10 +654,11 @@ class CtrlBigramDecoder(MacroDecoder):
         idx = int(row.val)
         prev_byte, cur_byte = CTRL_BIGRAM_TABLE[idx]
         pre = state.maybe_flush_for(ctrl_reg, -1)
+        state.last_diff[ctrl_reg] = row.diff
         state.last_val[ctrl_reg] = int(prev_byte)
-        own = (ctrl_reg, int(prev_byte), row.diff, row.description)
+        state.pending_set_writes[ctrl_reg].append(int(prev_byte))
         state.pending_set_writes[ctrl_reg].append(int(cur_byte))
-        return list(pre) + [own]
+        return list(pre)
 
 
 DECODERS = {
