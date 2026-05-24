@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.0]
+
+The public API now lives behind a curated `preframr_tokens` package façade:
+import everything from the package root and rely on `__all__` as the
+semver-promised surface, so internal module layout can change without breaking
+consumers. `stfconstants` and `engine_fingerprint` remain public submodule
+namespaces; all other submodule paths are now internal.
+
 No copyrighted SID-derived song data is committed anymore. The two
 `grid_runner_*.dump.parquet` fidelity fixtures were register dumps of HVSC
 `MUSICIANS/J/Jammer/Grid_Runner.sid` and are now regenerated on demand from
@@ -12,6 +20,17 @@ dumps never appear in any committed tree.
 
 ### Removed
 
+- `preframr_tokens.reglog_helpers` — the back-compat re-export grab-bag is
+  dissolved. Voice-relative reg matchers plus a new scalar `reg_class`
+  classifier moved to `preframr_tokens.reg_match`; `read_initial_irq` to
+  `preframr_tokens.reglogparser`; `tighten_persist_dtypes` to
+  `preframr_tokens.utils`. (The `wrapbits` / palette-sidecar re-exports were
+  already removed.)
+- `LOSS_TIER_NAMES` is no longer importable from
+  `preframr_tokens.macros.transform`; it now lives in
+  `preframr_tokens.stfconstants`.
+- `preframr_tokens.macros.lonely_validator._REG_CLASS` (private) — replaced by
+  the public `preframr_tokens.reg_match.reg_class`.
 - `tests/fixtures/grid_runner_head.dump.parquet` and
   `tests/fixtures/grid_runner_26s.dump.parquet` (and the now-empty
   `tests/fixtures/` directory). Purged from the whole branch history.
@@ -25,6 +44,10 @@ dumps never appear in any committed tree.
 
 ### Added
 
+- `preframr_tokens/__init__.py` re-exports the full public surface as
+  `__all__` (57 names): `from preframr_tokens import RegLogParser, reg_class, …`.
+- `reg_class(reg) -> (kind, voice)` scalar register classifier in
+  `preframr_tokens.reg_match`, the parse-domain sibling of `macros.roles`.
 - `tests/sid_fixtures.py`: a `SidDumpSpec`-driven helper that downloads the
   `.sid` from HVSC, renders a register dump with `vsid` inside the
   `anarkiwi/headlessvice` image (a regular-file dump target, replicating
@@ -37,6 +60,10 @@ dumps never appear in any committed tree.
 
 ### Changed
 
+- **Breaking:** import from the `preframr_tokens` package root rather than
+  submodule paths (e.g. `from preframr_tokens import RegLogParser`). Only
+  `stfconstants` and `engine_fingerprint` stay importable as submodules; every
+  other `preframr_tokens.*` path is internal and may move between releases.
 - Centralised duplicated macro-pass logic into `macros/passes_base.py`:
   `_first_irq(df)` replaces the identical "first IRQ value else -1" ternary
   open-coded in 11 sites (10 passes + `_splice_rows`), and `_frame_isolated(
