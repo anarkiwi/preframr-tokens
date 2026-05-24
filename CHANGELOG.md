@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0]
+
+### Added
+
+- TOKEN_IMPROVEMENTS.md canonical-spec tokenizer primitives, each with
+  synthetic round-trip tests (see `TOKEN_IMPROVEMENTS.md` "Implementation
+  log" for per-primitive design decisions and the postponed validation
+  gates):
+  - `OSCILLATE_ENV_OP` (45, **default on**): envelope-modulated oscillation
+    collapsing alternating-sign SLOPE chains; 8 parametric envelope families
+    in `macros/envelope.py`; `OscillationEnvelopePass` + decoder.
+  - `LonelyWriteValidatorPass` (`macros/lonely_validator.py`, behind
+    `strict_lonely`, default off): raises `UnmodelledLonelyWriteError` for
+    any full SET off the carveout allow-list and for any DIFF op. Carveout
+    classifier includes the trajectory-anchor extension (a SET adjacent to a
+    SLOPE/OSCILLATE_ENV/FLIP/FLIP2/TRANSPOSE primitive).
+  - `TRACK_REF_OP` (46, behind `voice_track_pass`): cross-voice FREQ
+    tracking via exact interval-ratio + constant detune.
+  - `FREQ_NUDGE_OP` (47, `freq_nudge_pass`), `FREQ_RUN_OP` (48,
+    `freq_run_pass`), `RELEASE_UPDATE_OP` (49, `release_update_pass`),
+    `CTRL_TRIPLE_OP` (50, `ctrl_triple_pass`).
+- `macros.envelope` module (parametric envelope fit + reconstruct).
+- Per-op decoders for the new ops in `macros/decoders.py`; matching
+  `pending_*` fields and a per-frame `pending_track_links` reconstructor in
+  `DecodeState`.
+
+### Changed
+
+- `RegLogParser.parse()` pipeline gains the new passes. Every
+  residual-absorbing primitive and the validator are gated behind
+  default-off arg flags, so default tokenizer output is unchanged;
+  `OSCILLATE_ENV` is default-on (additive, passes the audio-invariant
+  suite).
+
 ## [0.9.0]
 
 ### Added
