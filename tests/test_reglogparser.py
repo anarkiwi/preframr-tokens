@@ -18,6 +18,7 @@ from preframr_tokens.reglogparser import (
     RegLogParser,
     last_reg_val_frame,
     prepare_df_for_audio,
+    read_initial_irq,
     remove_voice_reg,
     reset_diffs,
 )
@@ -678,11 +679,12 @@ class TestRegLogParser(unittest.TestCase):
         )
         consolidate_df = pd.DataFrame(
             [
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
                 {"reg": 7, "val": 1, "diff": 32},
                 {"reg": DELAY_REG, "val": 2, "diff": 19000},
                 {"reg": FRAME_REG, "val": 0, "diff": 19000},
                 {"reg": 7, "val": 1, "diff": 32},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": DELAY_REG, "val": 1, "diff": 19000},
                 {"reg": FRAME_REG, "val": 0, "diff": 19000},
             ],
             dtype=MODEL_PDTYPE,
@@ -705,6 +707,55 @@ class TestRegLogParser(unittest.TestCase):
         )
         result_df = loader._consolidate_frames(test_df)
         self.assertEqual(len(result_df[result_df["reg"] == DELAY_REG]), 1)
+        self.assertEqual(
+            int(result_df[result_df["reg"] == DELAY_REG]["val"].iloc[0]), 5
+        )
+
+    @staticmethod
+    def _frame_cycles(df):
+        """Total playback cycles: each non-DELAY row contributes its diff, each
+        DELAY contributes val * frame_period."""
+        period = read_initial_irq(df)
+        delay = df["reg"] == DELAY_REG
+        return int(df[~delay]["diff"].sum()) + int(df[delay]["val"].sum()) * period
+
+    def test_consolidate_frames_preserves_playback_cycles(self):
+        loader = RegLogParser(FakeArgs())
+        test_df = pd.DataFrame(
+            [
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 1, "diff": 32},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": DELAY_REG, "val": 4, "diff": 19000},
+                {"reg": DELAY_REG, "val": 3, "diff": 19000},
+                {"reg": DELAY_REG, "val": 2, "diff": 19000},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 2, "diff": 32},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        result_df = loader._consolidate_frames(test_df)
+        self.assertEqual(self._frame_cycles(result_df), self._frame_cycles(test_df))
+
+    def test_consolidate_frames_zero_first_frame_diff(self):
+        loader = RegLogParser(FakeArgs())
+        test_df = pd.DataFrame(
+            [
+                {"reg": FRAME_REG, "val": 0, "diff": 0},
+                {"reg": 7, "val": 1, "diff": 32},
+                {"reg": FRAME_REG, "val": 0, "diff": 19656},
+                {"reg": FRAME_REG, "val": 0, "diff": 19656},
+                {"reg": FRAME_REG, "val": 0, "diff": 19656},
+                {"reg": 7, "val": 2, "diff": 32},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        self.assertEqual(read_initial_irq(test_df), 19656)
+        result_df = loader._consolidate_frames(test_df)
+        self.assertEqual(self._frame_cycles(result_df), self._frame_cycles(test_df))
 
     def test_remove_voice_reg(self):
         test_df = pd.DataFrame(

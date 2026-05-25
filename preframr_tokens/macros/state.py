@@ -268,15 +268,19 @@ def _build_last_diff(df):
 
 def _build_decode_state(df, strict=False):
     """Construct a ``DecodeState`` seeded the same way ``expand_ops`` does:
-    ``frame_diff`` from the first FRAME_REG row, ``last_diff`` per reg
-    from each reg's first SET. Returns ``None`` if there is no FRAME_REG.
+    ``frame_diff`` from the first FRAME_REG row with a positive ``diff`` (a
+    degenerate leading frame can carry diff 0, which would zero every
+    DELAY-unrolled frame's playback time), ``last_diff`` per reg from each reg's
+    first SET. Returns ``None`` if there is no FRAME_REG.
     """
     fr = df[df["reg"] == FRAME_REG]["diff"]
     if fr.empty:
         return None
+    positive = fr[fr > 0]
+    frame_diff = int(positive.iloc[0]) if not positive.empty else int(fr.iloc[0])
     last_diff = _build_last_diff(df)
     return DecodeState(
-        int(fr.iloc[0]),
+        frame_diff,
         last_diff=last_diff,
         strict=strict,
     )

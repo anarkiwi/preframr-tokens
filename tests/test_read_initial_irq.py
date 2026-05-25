@@ -22,6 +22,22 @@ class TestReadInitialIrq(unittest.TestCase):
         )
         self.assertEqual(read_initial_irq(df), 19656)
 
+    def test_skips_zero_first_frame_diff(self):
+        df = pd.DataFrame(
+            [
+                {"reg": FRAME_REG, "diff": 0},
+                {"reg": 0, "diff": 5},
+                {"reg": FRAME_REG, "diff": 19656},
+            ]
+        )
+        self.assertEqual(read_initial_irq(df), 19656)
+
+    def test_returns_default_when_all_frame_diffs_zero(self):
+        df = pd.DataFrame(
+            [{"reg": FRAME_REG, "diff": 0}, {"reg": FRAME_REG, "diff": 0}]
+        )
+        self.assertEqual(read_initial_irq(df), DEFAULT_IRQ_CYCLES)
+
     def test_returns_default_when_no_frame_rows(self):
         df = pd.DataFrame([{"reg": 0, "diff": 12}, {"reg": DELAY_REG, "diff": 8}])
         self.assertEqual(read_initial_irq(df), DEFAULT_IRQ_CYCLES)
