@@ -5,13 +5,10 @@ sequences and miss frame-placement bugs (right values, wrong frames) that break
 pitch/waveform; divergence is reported per register-class to localise them."""
 
 import unittest
-from types import SimpleNamespace
-
-import numpy as np
 
 from tests.sid_fixtures import FixtureUnavailable, grid_runner_dumps
 
-from preframr_tokens.macros.decode import expand_ops
+from preframr_tokens.audit_primitives import register_state as _per_frame_state
 from preframr_tokens.macros.state import (
     AD_REGS_BY_VOICE,
     CTRL_REGS_BY_VOICE,
@@ -19,54 +16,13 @@ from preframr_tokens.macros.state import (
     PWM_REGS_BY_VOICE,
     SR_REGS_BY_VOICE,
 )
-from preframr_tokens.reglogparser import RegLogParser, remove_voice_reg
+from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_TRIPLE_OP,
-    FRAME_REG,
     FREQ_TRAJ_OP,
 )
-
-_BASE = dict(
-    cents=50,
-    exclude_list=None,
-    min_irq=int(1.5e4),
-    max_irq=int(2.5e4),
-    min_song_tokens=0,
-    diffq=4,
-    loop_lookahead=3,
-    coarsen_min_len=16,
-    voice_trajectory_window=8,
-    pipeline_spec="",
-    meta_exclude_digi=False,
-    meta_irq_lo=0,
-    meta_irq_hi=0,
-    meta_require=False,
-)
-_ALL_FLAGS = (
-    "freq_trajectory_pass",
-    "preset_pass",
-    "hard_restart_pass",
-    "legato_pass_c2",
-    "legato_pass_c3",
-    "legato_pass_c4",
-    "legato_pass_c7",
-    "voice_canonical_block_order",
-    "ctrl_bigram_pass",
-    "loop_pass",
-    "loop_transposed",
-    "fuzzy_loop_pass",
-    "fuzzy_fp_adsr",
-    "coarsen_pass",
-    "mode_vol_flip_pass",
-    "voice_trajectory_pass",
-    "voice_trajectory_distributed_pass",
-    "set_to_diff_pass",
-    "freq_nudge_pass",
-    "release_update_pass",
-    "ctrl_triple_pass",
-    "lonely_catch_all",
-)
+from preframr_tokens.tokenizer_config import default_tokenizer_args as _args
 
 _CLASS = {}
 for _v in range(3):
@@ -77,43 +33,11 @@ for _v in range(3):
     _CLASS[SR_REGS_BY_VOICE[_v]] = f"v{_v}.SR"
 
 
-def _args(**overrides):
-    cfg = dict(_BASE)
-    for flag in _ALL_FLAGS:
-        cfg[flag] = False
-    cfg.update(overrides)
-    return SimpleNamespace(**cfg)
-
-
 def _decode(args, fixture):
     parser = RegLogParser(args=args)
     xdf = next(parser.parse(fixture, max_perm=1, require_pq=False, reparse=True), None)
     assert xdf is not None and len(xdf), "fixture produced no rows"
     return xdf
-
-
-def _per_frame_state(xdf):
-    """Decoded per-frame state of SID registers 0-24, as ``(n_frames, 25)``."""
-    df, _ = remove_voice_reg(xdf.copy(), {})
-    dec = expand_ops(df, strict=False).reset_index(drop=True)
-    regs = dec["reg"].to_numpy()
-    vals = dec["val"].to_numpy()
-    n_frames = int((regs == FRAME_REG).sum()) + 1
-    state = np.zeros((n_frames, 25), dtype=np.int64)
-    cur = np.zeros(25, dtype=np.int64)
-    cf = 0
-    for i in range(len(dec)):
-        reg = int(regs[i])
-        if reg == FRAME_REG:
-            if cf < n_frames:
-                state[cf] = cur
-            cf += 1
-        elif 0 <= reg <= 24:
-            cur[reg] = int(vals[i])
-    while cf < n_frames:
-        state[cf] = cur
-        cf += 1
-    return state
 
 
 def _divergence(ref, st):

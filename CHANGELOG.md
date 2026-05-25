@@ -33,6 +33,15 @@ All notable changes to this project will be documented in this file.
 
 - `audio` extra floor bumped to `preframr-audio>=0.5.0`.
 
+### Added
+
+- Torch-free tokenizer profiling tools: `tokenizer_config`
+  (`default_tokenizer_args` / `named_config` — one source of truth for the
+  parser/macro args namespace, now consumed by the fidelity test),
+  `register_state` / `op_atom_profile` / `trajectory_coverage` in
+  `audit_primitives`, and the `python -m preframr_tokens.tokenizer_profile`
+  (with `--compare`) and `python -m preframr_tokens.trajectory_coverage` CLIs.
+
 ## [0.15.0]
 
 The public API now lives behind a curated `preframr_tokens` package façade:

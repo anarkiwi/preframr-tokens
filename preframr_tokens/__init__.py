@@ -24,7 +24,14 @@ from preframr_tokens.macros.roles import (
 from preframr_tokens.audit_primitives import (
     detect_tail_cycle,
     distinct_n,
+    op_atom_profile,
+    register_state,
     tier_accuracy,
+    trajectory_coverage,
+)
+from preframr_tokens.tokenizer_config import (
+    default_tokenizer_args,
+    named_config,
 )
 from preframr_tokens.vocab_signature import CONTENT_TIER, VocabSignature
 from preframr_tokens.tier_classify import (
@@ -116,6 +123,11 @@ __all__ = [
     "tier_accuracy",
     "detect_tail_cycle",
     "distinct_n",
+    "register_state",
+    "op_atom_profile",
+    "trajectory_coverage",
+    "default_tokenizer_args",
+    "named_config",
     "distance_pair_role",
     "slope_subreg_role",
     "frame_weight_role",
