@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0]
+
+### Fixed (BREAKING — re-cut corpora and checkpoints; no metric transfer)
+
+- Frame timing now preserves playback duration through the parse pipeline. The
+  base tokenizer was dropping wall-clock song duration — up to ~67% on some
+  songs — independent of any macro; `FreqTrajectoryPass` only exposed it by
+  emptying frames. Three fixes:
+  - `read_initial_irq` and `macros.state._build_decode_state` take the first
+    FRAME row with a **positive** `diff` as the frame period. A degenerate
+    leading frame can carry `diff` 0 (song starts at t=0); using it as the
+    period zeroed every DELAY-expanded frame's playback time.
+  - `RegLogParser._consolidate_frames` rewritten to be cycle-preserving. The old
+    consecutive-DELAY merge lost values on runs of ≥3 adjacent DELAY markers and
+    counted frames rather than time; it now collapses each marker-only run into
+    one DELAY + trailing frame while conserving total cycles (FRAME worth
+    `round(diff / period)`, DELAY worth its val, the run's final marker kept
+    verbatim so its voice-order survives).
+  - `RegLogParser._add_frame_reg` rounds a marker's frame count
+    (`round(irqdiff / irq)`) instead of truncating. After `_squeeze_changes`
+    merges rows the surviving gaps are rarely integer multiples of the period,
+    so truncation dropped a fractional frame on every marker (worst on dumps
+    whose play rate is not a simple multiple of the period).
+- Net effect on a 12-SID cohort: the macro round-trip now preserves duration vs
+  the no-macro baseline to within 0–0.5% (was −37% to −44% on
+  ramp/oscillation-heavy songs), and base tokenization tracks the true dump
+  clock-span to within ~3% (was −30% to −67%). Output bytes change for affected
+  songs, so corpora and checkpoints must be re-cut.
+
 ## [0.17.0]
 
 ### Changed
