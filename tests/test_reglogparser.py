@@ -254,6 +254,28 @@ class TestRegLogParser(unittest.TestCase):
         self.assertEqual(irq, 19000)
         self.assertTrue(frame_df.equals(result_df))
 
+    def test_add_frame_reg_rounds_partial_frames(self):
+        loader = RegLogParser(FakeArgs())
+        test_df = pd.DataFrame(
+            [
+                {"clock": 0, "reg": 0, "val": 1, "irq": 0},
+                {"clock": 10000, "reg": 4, "val": 1, "irq": 10000},
+                {"clock": 20000, "reg": 7, "val": 2, "irq": 20000},
+                {"clock": 30000, "reg": 11, "val": 3, "irq": 30000},
+                {"clock": 49000, "reg": 14, "val": 4, "irq": 49000},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        irq, result_df = loader._add_frame_reg(test_df, 512, min_irq_prop=0.5)
+        self.assertEqual(irq, 10000)
+        delays = result_df[result_df["reg"] == DELAY_REG]
+        self.assertEqual(len(delays), 1)
+        self.assertEqual(int(delays["val"].iloc[0]), 2)
+        frame_units = int((result_df["reg"] == FRAME_REG).sum()) + int(
+            result_df[result_df["reg"] == DELAY_REG]["val"].sum()
+        )
+        self.assertEqual(frame_units, 5)
+
     def test_last_reg_val_frame(self):
         test_df = pd.DataFrame(
             [

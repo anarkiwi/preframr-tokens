@@ -462,7 +462,7 @@ class RegLogParser:
         irq_df["i"] -= 1
         irq_df["reg"] = FRAME_REG
         irq_df["diff"] = irq_df["irqdiff"]
-        irq_df["val"] = (irq_df["diff"] / irq).astype(MODEL_PDTYPE)
+        irq_df["val"] = (irq_df["diff"] / irq).round().astype(MODEL_PDTYPE)
         irq_df["diff"] = irq
         irq_df.loc[irq_df["val"] > 1, "reg"] = DELAY_REG
         irq_df.loc[irq_df["reg"] == DELAY_REG, "diff"] = 0
