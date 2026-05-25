@@ -84,11 +84,16 @@ pd.set_option("future.no_silent_downcasting", True)
 
 
 def read_initial_irq(df, default: int = DEFAULT_IRQ_CYCLES) -> int:
-    """Read the initial IRQ cycle interval from a parser-output df by taking the first FRAME_REG row's ``diff`` column. Returns ``default`` (canonical SID ~50.1 Hz raster) if no FRAME rows present."""
-    frame_rows = df[df["reg"] == FRAME_REG]
-    if frame_rows.empty:
-        return int(default)
-    return int(frame_rows["diff"].iloc[0])
+    """Read the IRQ cycle interval (frame period) from a parser-output df: the
+    first FRAME_REG row with a positive ``diff``. A degenerate leading frame can
+    carry ``diff`` 0 (song starts at t=0); using it as the period zeroes every
+    DELAY-expanded frame's playback time. Falls back to ``default`` (canonical
+    SID ~50.1 Hz raster) when no FRAME row has a positive diff."""
+    frame_diffs = df[df["reg"] == FRAME_REG]["diff"]
+    positive = frame_diffs[frame_diffs > 0]
+    if not positive.empty:
+        return int(positive.iloc[0])
+    return int(default)
 
 
 FILTER_SHIFT_DF = pd.DataFrame(
@@ -457,7 +462,7 @@ class RegLogParser:
         irq_df["i"] -= 1
         irq_df["reg"] = FRAME_REG
         irq_df["diff"] = irq_df["irqdiff"]
-        irq_df["val"] = (irq_df["diff"] / irq).astype(MODEL_PDTYPE)
+        irq_df["val"] = (irq_df["diff"] / irq).round().astype(MODEL_PDTYPE)
         irq_df["diff"] = irq
         irq_df.loc[irq_df["val"] > 1, "reg"] = DELAY_REG
         irq_df.loc[irq_df["reg"] == DELAY_REG, "diff"] = 0
@@ -719,37 +724,65 @@ class RegLogParser:
         return df.sort_values("clock", kind="stable").reset_index(drop=True)
 
     def _consolidate_frames(self, orig_df):
-        df = norm_df(orig_df.copy())
-        m = (
-            (df["reg"] == FRAME_REG)
-            & (df["reg"].shift(-1) != FRAME_REG)
-            & (df["reg"].shift(1) == FRAME_REG)
-        )
-        df.loc[m, "val"] = 1
-        df.loc[m, "reg"] = DELAY_REG
-        for i in (-1, 1):
-            while True:
-                m = (df["reg"] == DELAY_REG) & (df["reg"].shift(i) == FRAME_REG)
-                df.loc[m, "val"] += 1
-                m = (df["reg"] == FRAME_REG) & (df["reg"].shift(-i) == DELAY_REG)
-                if len(df[m]) == 0:
-                    break
-                df = df[~m]
-        while True:
-            m = (df["reg"] == DELAY_REG) & (df["reg"].shift(1) == DELAY_REG)
-            df.loc[m, "val"] += df["val"].shift(1)
-            m = (df["reg"] == DELAY_REG) & (df["reg"].shift(-1) == DELAY_REG)
-            if len(df[m]) == 0:
-                break
-            df = df[~m]
-        m = df["reg"] == DELAY_REG
-        df.loc[m, "val"] = df[m]["val"] - 1
-        u_df = df[m].copy()
-        u_df["n"] += 1
-        u_df["reg"] = FRAME_REG
-        u_df["val"] = 0
-        df = pd.concat([df, u_df], ignore_index=False).sort_values("n")
-        return df[orig_df.columns].reset_index(drop=True)
+        """Collapse each maximal run of marker-only (content-free) frames into one
+        DELAY plus a trailing frame, preserving total playback time. A FRAME
+        marker is worth ``round(diff / frame_period)`` units, a DELAY its val; the
+        run's final marker (the next content frame) is kept verbatim so its
+        voice-order survives. Cycle-preserving by construction."""
+        rows = norm_df(orig_df.copy()).to_dict("records")
+        n = len(rows)
+        if not n:
+            return orig_df.reset_index(drop=True)
+        frame_period = read_initial_irq(orig_df)
+
+        def _units(r):
+            if int(r["reg"]) == DELAY_REG:
+                return int(r["val"])
+            return int(round(int(r["diff"]) / frame_period)) if frame_period else 1
+
+        def _is_marker(r):
+            return int(r["reg"]) in (FRAME_REG, DELAY_REG)
+
+        out = []
+        i = 0
+        while i < n:
+            if not _is_marker(rows[i]):
+                out.append(rows[i])
+                i += 1
+                continue
+            j = i
+            while j < n and _is_marker(rows[j]):
+                j += 1
+            last = rows[j - 1]
+            if int(last["reg"]) == FRAME_REG:
+                empty = sum(_units(rows[k]) for k in range(i, j - 1))
+                if empty > 0:
+                    out.append(
+                        {
+                            **rows[i],
+                            "reg": DELAY_REG,
+                            "val": empty,
+                            "diff": frame_period,
+                        }
+                    )
+                out.append(last)
+            else:
+                total = sum(_units(rows[k]) for k in range(i, j))
+                if total - 1 > 0:
+                    out.append(
+                        {
+                            **rows[i],
+                            "reg": DELAY_REG,
+                            "val": total - 1,
+                            "diff": frame_period,
+                        }
+                    )
+                out.append(
+                    {**rows[i], "reg": FRAME_REG, "val": 0, "diff": frame_period}
+                )
+            i = j
+        df = pd.DataFrame(out)
+        return df[orig_df.columns].astype(orig_df.dtypes).reset_index(drop=True)
 
     def _squeeze_frame_regs(self, orig_df, regs=(0, 2, 21)):
         df = norm_df(orig_df.copy())
