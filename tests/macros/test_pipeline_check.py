@@ -19,7 +19,7 @@ def _args(**kw):
         hard_restart_pass=True,
         ctrl_bigram_pass=True,
         voice_canonical_block_order=True,
-        slope_pass=True,
+        freq_trajectory_pass=True,
         preset_pass=True,
         loop_pass=True,
     )
@@ -218,12 +218,14 @@ class TestPipelineTier(unittest.TestCase):
         self.assertEqual(p_bitexact.tier, "bit_exact")
         spec2 = {
             "transforms": [
-                {"name": "slope"},
+                {"name": "freq_traj"},
                 {"name": "hard_restart"},
                 {"name": "voice_block_order"},
             ]
         }
-        p_audio = TransformPipeline.from_spec(spec2, args=_args(slope_pass=True))
+        p_audio = TransformPipeline.from_spec(
+            spec2, args=_args(freq_trajectory_pass=True)
+        )
         self.assertEqual(p_audio.tier, "audio_bit_exact")
 
 
@@ -267,7 +269,7 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
             set_to_diff_pass=True,
             hard_restart_pass=True,
             ctrl_bigram_pass=True,
-            slope_pass=True,
+            freq_trajectory_pass=True,
             preset_pass=True,
             loop_pass=True,
         )
@@ -342,14 +344,17 @@ class TestRegisterStateContract(unittest.TestCase):
 
         spec = {
             "transforms": [
-                {"name": "slope"},
+                {"name": "freq_traj"},
                 {"name": "preset"},
                 {"name": "voice_block_order"},
                 {"name": "set_to_diff"},
             ]
         }
         errors = validate_pipeline_spec(
-            spec, args=_args(slope_pass=True, preset_pass=True, set_to_diff_pass=True)
+            spec,
+            args=_args(
+                freq_trajectory_pass=True, preset_pass=True, set_to_diff_pass=True
+            ),
         )
         self.assertEqual(errors, [])
 
@@ -381,11 +386,11 @@ class TestRegisterStateContract(unittest.TestCase):
         try:
             spec = {
                 "transforms": [
-                    {"name": "slope"},
+                    {"name": "freq_traj"},
                     {"name": "_test_motion_consumer"},
                 ]
             }
-            errors = validate_pipeline_spec(spec, args=_args(slope_pass=True))
+            errors = validate_pipeline_spec(spec, args=_args(freq_trajectory_pass=True))
             self.assertTrue(
                 any("EXPECTS_SET_ON_REGS" in e for e in errors),
                 msg=f"expected EXPECTS_SET_ON_REGS error, got {errors}",

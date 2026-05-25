@@ -15,7 +15,6 @@ from preframr_tokens.stfconstants import (
     FC_LO_REG,
     FC_PRESET_OP,
     FRAME_REG,
-    SLOPE_FC_LO_OP,
     VOICE_REG,
 )
 
@@ -112,12 +111,11 @@ def _frames_with_filter_activity(reg, op, f_idx, n):
     fc_lo_int = int(FC_LO_REG)
     fc_hi_int = fc_lo_int + 1
     fc_preset_op_int = int(FC_PRESET_OP)
-    slope_fc_op_int = int(SLOPE_FC_LO_OP)
     frames: set[int] = set()
     for i in range(n):
         r = int(reg[i])
         op_i = int(op[i])
-        if r in (fc_lo_int, fc_hi_int) or op_i in (fc_preset_op_int, slope_fc_op_int):
+        if r in (fc_lo_int, fc_hi_int) or op_i == fc_preset_op_int:
             frames.add(int(f_idx[i]))
     return frames
 

@@ -47,6 +47,7 @@ class FakeArgs:
         max_irq=100000,
         min_song_tokens=4,
         exclude_list=None,
+        freq_trajectory_pass=False,
     ):
         self.reglog = None
         self.reglogs = ""
@@ -57,6 +58,7 @@ class FakeArgs:
         self.max_irq = max_irq
         self.min_song_tokens = min_song_tokens
         self.exclude_list = exclude_list
+        self.freq_trajectory_pass = freq_trajectory_pass
 
 
 class TestRegLogParser(unittest.TestCase):
@@ -301,7 +303,7 @@ class TestRegLogParser(unittest.TestCase):
         )
         result_df = (
             PerRegBurstPass(opcodes=[DIFF_OP, FLIP_OP])
-            .apply(test_df, args=FakeArgs(cents=50))
+            .apply(test_df, args=FakeArgs(cents=50, freq_trajectory_pass=False))
             .astype(MODEL_PDTYPE)
         )
         self.assertTrue(change_df.equals(result_df))

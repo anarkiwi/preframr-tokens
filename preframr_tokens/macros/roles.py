@@ -16,10 +16,10 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_DIST_LO,
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
-    SLOPE_OPS,
-    SLOPE_SUBREG_RUNTIME,
-    SLOPE_SUBREG_TERMINAL_HI,
-    SLOPE_SUBREG_TERMINAL_LO,
+    FREQ_TRAJ_OP,
+    FT_SUBREG_RUNTIME,
+    FT_SUBREG_TERMINAL_HI,
+    FT_SUBREG_TERMINAL_LO,
 )
 
 __all__ = [
@@ -60,7 +60,7 @@ DISTANCE_PAIR_OPS: dict[int, DistancePairSpec] = {
 }
 
 
-_SLOPE_OP_SET = frozenset(SLOPE_OPS)
+_SLOPE_OP_SET = frozenset({FREQ_TRAJ_OP})
 
 
 def distance_pair_role(op: int, subreg: int) -> Optional[str]:
@@ -85,11 +85,11 @@ def slope_subreg_role(op: int, subreg: int) -> Optional[str]:
     if int(op) not in _SLOPE_OP_SET:
         return None
     sr = int(subreg)
-    if sr == SLOPE_SUBREG_TERMINAL_HI:
+    if sr == FT_SUBREG_TERMINAL_HI:
         return "terminal_hi"
-    if sr == SLOPE_SUBREG_TERMINAL_LO:
+    if sr == FT_SUBREG_TERMINAL_LO:
         return "terminal_lo"
-    if sr == SLOPE_SUBREG_RUNTIME:
+    if sr == FT_SUBREG_RUNTIME:
         return "runtime"
     return None
 
@@ -102,6 +102,6 @@ def frame_weight_role(op: int, subreg: int) -> Optional[str]:
         return "back_ref_len"
     if op == DO_LOOP_OP and sr == 0:
         return "do_loop_len"
-    if op in _SLOPE_OP_SET and sr == SLOPE_SUBREG_RUNTIME:
+    if op in _SLOPE_OP_SET and sr == FT_SUBREG_RUNTIME:
         return "slope_runtime"
     return None

@@ -1,10 +1,21 @@
-"""Shared primitives for generalization audits: tier accuracy, tail-cycle, distinct-n."""
+"""Shared primitives for generalization audits and tokenizer profiling: tier
+accuracy, tail-cycle, distinct-n, decoded register state, per-op atom profile,
+and FREQ/PW/FC trajectory coverage."""
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
-__all__ = ["distinct_n", "detect_tail_cycle", "tier_accuracy"]
+import numpy as np
+
+__all__ = [
+    "distinct_n",
+    "detect_tail_cycle",
+    "tier_accuracy",
+    "register_state",
+    "op_atom_profile",
+    "trajectory_coverage",
+]
 
 
 def distinct_n(tokens, n: int = 4) -> int:
@@ -71,4 +82,148 @@ def tier_accuracy(predicted, ground_truth, tier_map):
         "per_tier": per_tier,
         "content_over_structural": content / struct if struct > 0 else 0.0,
         "n_positions": n,
+    }
+
+
+def register_state(xdf):
+    """Decoded per-frame SID register state (regs 0-24) as ``(n_frames, 25)``;
+    the canonical atoms->writes reduction the fidelity oracle and the profiler
+    share, via the public expand_ops path."""
+    from preframr_tokens.macros.decode import expand_ops
+    from preframr_tokens.reglogparser import remove_voice_reg
+    from preframr_tokens.stfconstants import FRAME_REG
+
+    df, _ = remove_voice_reg(xdf.copy(), {})
+    dec = expand_ops(df, strict=False).reset_index(drop=True)
+    regs = dec["reg"].to_numpy()
+    vals = dec["val"].to_numpy()
+    n_frames = int((regs == FRAME_REG).sum()) + 1
+    state = np.zeros((n_frames, 25), dtype=np.int64)
+    cur = np.zeros(25, dtype=np.int64)
+    cf = 0
+    for i in range(len(dec)):
+        reg = int(regs[i])
+        if reg == FRAME_REG:
+            if cf < n_frames:
+                state[cf] = cur
+            cf += 1
+        elif 0 <= reg <= 24:
+            cur[reg] = int(vals[i])
+    while cf < n_frames:
+        state[cf] = cur
+        cf += 1
+    return state
+
+
+def op_atom_profile(xdf):
+    """Per-op atom histogram, %atoms, total, atoms/frame, per-tier budget (via
+    the public op->tier map), and FREQ payload byte-widths for one parsed df."""
+    from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
+    from preframr_tokens.macros.transform import collect_op_loss_tiers
+    from preframr_tokens.macros.transform_registry import (
+        ensure_default_transforms_registered,
+    )
+    from preframr_tokens.stfconstants import FRAME_REG
+
+    ops = xdf["op"].to_numpy() if "op" in xdf.columns else np.zeros(len(xdf), dtype=int)
+    regs = xdf["reg"].to_numpy()
+    hist = Counter(int(o) for o in ops)
+    total = int(sum(hist.values()))
+    n_frames = max(1, int((regs == FRAME_REG).sum()))
+    ensure_default_transforms_registered()
+    tier_map = collect_op_loss_tiers()
+    per_tier = Counter()
+    for op, count in hist.items():
+        per_tier[tier_map.get(int(op), "other")] += count
+    state = register_state(xdf)
+    freq = state[:, list(FREQ_REGS_BY_VOICE)]
+    freq_nz = freq[freq > 0]
+    deltas = np.diff(freq, axis=0).ravel()
+    deltas = deltas[deltas != 0]
+    return {
+        "total_atoms": total,
+        "n_frames": n_frames,
+        "atoms_per_frame": total / n_frames,
+        "op_hist": {int(o): int(c) for o, c in hist.items()},
+        "op_pct": {int(o): c / total for o, c in hist.items()} if total else {},
+        "per_tier": {t: int(c) for t, c in per_tier.items()},
+        "freq_hi_byte_pct": float(np.mean(freq_nz > 0xFF)) if freq_nz.size else 0.0,
+        "delta_fits_byte_pct": (
+            float(np.mean(np.abs(deltas) <= 127)) if deltas.size else 1.0
+        ),
+    }
+
+
+def _record_segment(seq, seg, run_lengths, gaps, alternations):
+    run_lengths.append(len(seg))
+    gaps.extend(b - a for a, b in zip(seg, seg[1:]))
+    vals = [int(seq[f]) for f in seg]
+    nz = [b - a for a, b in zip(vals, vals[1:]) if b != a]
+    if len(nz) >= 2:
+        changes = sum(1 for x, y in zip(nz, nz[1:]) if (x > 0) != (y > 0))
+        alternations.append(changes / (len(nz) - 1))
+
+
+def trajectory_coverage(xdf, tier="freq"):
+    """Segment each register's per-frame motion gap-tolerantly (from register_state)
+    and report structural FREQ_TRAJ coverage vs mop-ups plus run-length / gap /
+    alternation distributions for the ``freq`` / ``pw`` / ``fc`` register family."""
+    from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE, PWM_REGS_BY_VOICE
+    from preframr_tokens.stfconstants import (
+        FC_LO_REG,
+        FREQ_NUDGE_OP,
+        FREQ_NUDGE_SUBREG_MODE,
+        FREQ_TRAJ_OP,
+        FT_SUBREG_FLAGS,
+        OSC_MAX_GAP,
+        SET_OP,
+    )
+
+    regs = {
+        "freq": tuple(FREQ_REGS_BY_VOICE),
+        "pw": tuple(PWM_REGS_BY_VOICE),
+        "fc": (int(FC_LO_REG),),
+    }[tier]
+    state = register_state(xdf)
+    run_lengths, gaps, alternations = [], [], []
+    for reg in regs:
+        seq = state[:, reg]
+        changed = [f for f in range(1, len(seq)) if int(seq[f]) != int(seq[f - 1])]
+        if not changed:
+            continue
+        seg = [changed[0]]
+        for f in changed[1:]:
+            if f - seg[-1] <= OSC_MAX_GAP:
+                seg.append(f)
+                continue
+            _record_segment(seq, seg, run_lengths, gaps, alternations)
+            seg = [f]
+        _record_segment(seq, seg, run_lengths, gaps, alternations)
+    ops = xdf["op"].to_numpy()
+    xregs = xdf["reg"].to_numpy()
+    subregs = xdf["subreg"].to_numpy() if "subreg" in xdf.columns else None
+    in_regs = np.isin(xregs, np.asarray(regs, dtype=np.int64))
+    head = (
+        (subregs == FT_SUBREG_FLAGS) if subregs is not None else np.ones_like(in_regs)
+    )
+    structural = int(np.sum(in_regs & (ops == FREQ_TRAJ_OP) & head))
+    nudge_head = (
+        (subregs == FREQ_NUDGE_SUBREG_MODE)
+        if subregs is not None
+        else np.ones_like(in_regs)
+    )
+    mopup = int(
+        np.sum(in_regs & (ops == FREQ_NUDGE_OP) & nudge_head)
+        + np.sum(in_regs & (ops == SET_OP))
+    )
+    denom = structural + mopup
+    return {
+        "tier": tier,
+        "n_segments": len(run_lengths),
+        "run_length_mean": float(np.mean(run_lengths)) if run_lengths else 0.0,
+        "gap_mean": float(np.mean(gaps)) if gaps else 0.0,
+        "alternation_mean": float(np.mean(alternations)) if alternations else 0.0,
+        "structural_atoms": structural,
+        "mopup_atoms": mopup,
+        "captured_frac": structural / denom if denom else 0.0,
     }

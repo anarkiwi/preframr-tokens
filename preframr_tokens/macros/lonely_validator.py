@@ -19,17 +19,15 @@ from preframr_tokens.stfconstants import (
     FLIP2_OP,
     FLIP_OP,
     FRAME_REG,
+    FREQ_TRAJ_OP,
     MODE_VOL_REG,
-    OSCILLATE_ENV_OP,
     SET_OP,
-    SLOPE_OPS,
     TRANSPOSE_OP,
 )
 
 TRAJECTORY_ANCHOR_WINDOW = 5
-_SLOPE_OPS = frozenset(SLOPE_OPS)
-_TRAJECTORY_ANCHOR_OPS = _SLOPE_OPS | {
-    OSCILLATE_ENV_OP,
+_TRAJECTORY_ANCHOR_OPS = {
+    FREQ_TRAJ_OP,
     FLIP_OP,
     FLIP2_OP,
     TRANSPOSE_OP,

@@ -23,8 +23,7 @@ from preframr_tokens.stfconstants import (
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
     SET_OP,
-    SLOPE_FREQ_LO_OP,
-    SLOPE_FREQ_LO_SHIFTED_OP,
+    FREQ_TRAJ_OP,
     SUBREG_FLUSH_OP,
     TRANSPOSE_OP,
     VOICE_REG,
@@ -47,7 +46,7 @@ _LEGATO_CLUSTER_NIBBLE_OPS = frozenset(
 _GATE_RESTART_OPS = frozenset(
     {int(HARD_RESTART_OP), int(LEGATO_OP_CLUSTER_7)} | _LEGATO_CLUSTER_NIBBLE_OPS
 )
-_SLOPE_FREQ_OPS = frozenset({int(SLOPE_FREQ_LO_OP), int(SLOPE_FREQ_LO_SHIFTED_OP)})
+_SLOPE_FREQ_OPS = frozenset({int(FREQ_TRAJ_OP)})
 
 
 def _is_voice_marker(reg, op):

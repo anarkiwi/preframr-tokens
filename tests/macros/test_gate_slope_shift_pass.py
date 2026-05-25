@@ -5,7 +5,6 @@ import pandas as pd
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.slope_pass import SlopePass
 from preframr_tokens.stfconstants import (
     BASE_TO_SHIFTED_OP,
     DELAY_REG,
@@ -14,7 +13,6 @@ from preframr_tokens.stfconstants import (
     MODEL_PDTYPE,
     PWM_PRESET_OP,
     SET_OP,
-    SLOPE_FC_LO_OP,
 )
 
 
@@ -64,10 +62,8 @@ def _sid_writes(df):
 
 
 class TestGateSlopeShiftPassAudioInvariant(unittest.TestCase):
-    def _expand_through_pass(self, baseline, run_slope=False, run_preset=False):
+    def _expand_through_pass(self, baseline, run_preset=False):
         df = baseline.copy()
-        if run_slope:
-            df = SlopePass().apply(df, args=FakeArgs(slope_pass=True))
         if run_preset:
             df = PresetPass().apply(df, args=FakeArgs(preset_pass=True))
         baseline_writes = _sid_writes(expand_ops(df, strict=False))
@@ -114,31 +110,6 @@ class TestGateSlopeShiftPassAudioInvariant(unittest.TestCase):
         )
         _df, _shifted, base_w, shift_w = self._expand_through_pass(
             baseline, run_preset=True
-        )
-        pd.testing.assert_frame_equal(base_w, shift_w)
-
-    def test_slope_3row_gate_lonely_frame(self):
-        baseline = pd.DataFrame(
-            [
-                _frame(),
-                _row(4, 0x11),
-                _row(0, 10),
-                _frame(),
-                _row(4, 0x10),
-                _row(0, 11),
-                _frame(),
-                _row(0, 12),
-                _frame(),
-                _row(0, 13),
-                _frame(),
-                _row(0, 14),
-                _frame(),
-                _row(4, 0x21),
-            ],
-            dtype=MODEL_PDTYPE,
-        )
-        _df, _shifted, base_w, shift_w = self._expand_through_pass(
-            baseline, run_slope=True
         )
         pd.testing.assert_frame_equal(base_w, shift_w)
 
@@ -266,27 +237,6 @@ class TestGateSlopeShiftPassAudioInvariant(unittest.TestCase):
             df.copy(), args=FakeArgs(gate_slope_shift_pass=True)
         )
         self.assertEqual(int((out["op"] == FC_PRESET_OP).sum()), 1)
-
-    def test_no_crash_on_slope_fc_lo_body(self):
-        df = pd.DataFrame(
-            [
-                _frame(),
-                _row(4, 0x11),
-                _frame(),
-                _row(4, 0x10),
-                _frame(),
-                _row(21, 0x10, op=SLOPE_FC_LO_OP, subreg=0),
-                _row(21, 0x20, op=SLOPE_FC_LO_OP, subreg=1),
-                _row(21, 4, op=SLOPE_FC_LO_OP, subreg=2),
-                _frame(),
-                _row(0, 50),
-            ],
-            dtype=MODEL_PDTYPE,
-        )
-        out = GateSlopeShiftPass().apply(
-            df.copy(), args=FakeArgs(gate_slope_shift_pass=True)
-        )
-        self.assertEqual(int((out["op"] == SLOPE_FC_LO_OP).sum()), 3)
 
 
 if __name__ == "__main__":

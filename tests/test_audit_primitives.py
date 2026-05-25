@@ -2,11 +2,36 @@
 
 import unittest
 
+import pandas as pd
+
 from preframr_tokens.audit_primitives import (
     detect_tail_cycle,
     distinct_n,
+    op_atom_profile,
+    register_state,
     tier_accuracy,
+    trajectory_coverage,
 )
+from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
+from preframr_tokens.stfconstants import FRAME_REG, SET_OP
+
+
+class FakeArgs:
+    def __init__(self, **flags):
+        for k, v in flags.items():
+            setattr(self, k, v)
+
+
+def _stream(reg, values, gap=1):
+    rows = []
+    for v in values:
+        for _ in range(gap):
+            rows.append(
+                {"reg": FRAME_REG, "val": 0, "op": SET_OP, "subreg": -1, "diff": 32}
+            )
+        rows.append({"reg": reg, "val": v, "op": SET_OP, "subreg": -1, "diff": 32})
+    rows.append({"reg": FRAME_REG, "val": 0, "op": SET_OP, "subreg": -1, "diff": 32})
+    return pd.DataFrame(rows)
 
 
 class TestDistinctN(unittest.TestCase):
@@ -72,6 +97,40 @@ class TestTierAccuracy(unittest.TestCase):
     def test_length_mismatch_truncates(self):
         out = tier_accuracy([1, 2, 3], [1], {1: "structural"})
         self.assertEqual(out["n_positions"], 1)
+
+
+class TestProfilingReductions(unittest.TestCase):
+    def test_register_state_tracks_per_frame_values(self):
+        st = register_state(_stream(0, [100, 102, 100]))
+        self.assertEqual(st.shape[1], 25)
+        col0 = [int(x) for x in st[:, 0]]
+        self.assertIn(100, col0)
+        self.assertIn(102, col0)
+
+    def test_op_atom_profile_counts(self):
+        df = _stream(0, [10, 20, 30])
+        prof = op_atom_profile(df)
+        self.assertEqual(prof["total_atoms"], len(df))
+        self.assertEqual(prof["op_hist"][SET_OP], len(df))
+        self.assertGreater(prof["atoms_per_frame"], 0)
+        self.assertIn("per_tier", prof)
+
+    def test_trajectory_coverage_raw_is_mopup(self):
+        cov = trajectory_coverage(
+            _stream(0, [120, 122, 120, 122, 120, 122]), tier="freq"
+        )
+        self.assertEqual(cov["structural_atoms"], 0)
+        self.assertGreater(cov["mopup_atoms"], 0)
+        self.assertAlmostEqual(cov["alternation_mean"], 1.0)
+
+    def test_trajectory_coverage_structural_after_pass(self):
+        df = _stream(0, [120, 122, 120, 122, 120, 122])
+        out = FreqTrajectoryPass().apply(
+            df.copy(), args=FakeArgs(freq_trajectory_pass=True)
+        )
+        cov = trajectory_coverage(out, tier="freq")
+        self.assertGreater(cov["structural_atoms"], 0)
+        self.assertGreater(cov["captured_frac"], 0.0)
 
 
 if __name__ == "__main__":
