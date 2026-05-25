@@ -1,8 +1,8 @@
 """Torch-free source of truth for a tokenizer/parser args namespace: parser
-params + every macro-pass flag, so ``RegLogParser`` / the macro passes read
-defaults from one place. ``full_macros`` is the production-registered subset
-(``REGISTERED_MACROS``), NOT every flag -- the rest are experimental/refuted and
-corrupt FRAME svt when combined."""
+params + every macro-pass flag. ``MACRO_FLAGS`` is derived from the passes
+(``flag_registry.macro_flag_names``) not hand-listed, so flags can't drift.
+``full_macros`` is the production-registered subset (``REGISTERED_MACROS``), NOT
+every flag -- the rest are experimental/refuted and corrupt FRAME svt combined."""
 
 from __future__ import annotations
 
@@ -34,30 +34,25 @@ PARSER_DEFAULTS = {
     "meta_require": False,
 }
 
-MACRO_FLAGS = (
-    "freq_trajectory_pass",
-    "preset_pass",
-    "hard_restart_pass",
-    "legato_pass_c2",
-    "legato_pass_c3",
-    "legato_pass_c4",
-    "legato_pass_c7",
-    "voice_canonical_block_order",
-    "ctrl_bigram_pass",
-    "loop_pass",
-    "loop_transposed",
-    "fuzzy_loop_pass",
-    "fuzzy_fp_adsr",
-    "coarsen_pass",
-    "mode_vol_flip_pass",
-    "voice_trajectory_pass",
-    "voice_trajectory_distributed_pass",
-    "set_to_diff_pass",
-    "freq_nudge_pass",
-    "release_update_pass",
-    "ctrl_triple_pass",
-    "lonely_catch_all",
-)
+_MACRO_FLAGS_CACHE: tuple[str, ...] | None = None
+
+
+def _macro_flags() -> tuple[str, ...]:
+    """Sorted tuple of every macro-pass gating flag, collected from the passes.
+    Memoized: the (pandas-touching) macro import only happens on first use."""
+    global _MACRO_FLAGS_CACHE  # pylint: disable=global-statement
+    if _MACRO_FLAGS_CACHE is None:
+        # pylint: disable=import-outside-toplevel
+        from preframr_tokens.macros.flag_registry import macro_flag_names
+
+        _MACRO_FLAGS_CACHE = tuple(sorted(macro_flag_names()))
+    return _MACRO_FLAGS_CACHE
+
+
+def __getattr__(name):
+    if name == "MACRO_FLAGS":
+        return _macro_flags()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def default_tokenizer_args(**overrides) -> SimpleNamespace:
@@ -65,7 +60,7 @@ def default_tokenizer_args(**overrides) -> SimpleNamespace:
     and off (the no-macro baseline); ``overrides`` win so callers enable only the
     passes they want."""
     cfg = dict(PARSER_DEFAULTS)
-    for flag in MACRO_FLAGS:
+    for flag in _macro_flags():
         cfg[flag] = False
     cfg.update(overrides)
     return SimpleNamespace(**cfg)

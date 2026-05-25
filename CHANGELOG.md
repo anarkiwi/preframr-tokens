@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.17.0]
+
+### Changed
+
+- `tokenizer_config.MACRO_FLAGS` is now *derived* from the passes rather than
+  hand-listed. Each gated `MacroPass` declares the args it reads via a
+  `GATE_FLAGS` frozenset (each `Transform` already declared its via
+  `REQUIRES_ARGS`); the new `macros.flag_registry.macro_flag_names` glob-imports
+  the `macros` package and unions the declarations. A renamed/added/removed pass
+  flag can no longer drift out of sync with `MACRO_FLAGS`, and a new
+  `test_flag_registry` drift guard fails CI if a pass reads a boolean arg that no
+  declaration covers.
+- Dropped two phantom flags that no pass read (`mode_vol_flip_pass`,
+  `legato_pass_c3`) and surfaced four that passes read but the hand-list omitted
+  (`gate_slope_shift_pass`, `voice_track_pass`, `strict_lonely`,
+  `super_frame_pass`). The no-macro baseline (`default_tokenizer_args()`) now
+  zeroes `gate_slope_shift_pass` too (previously it leaked its default-on state);
+  pass output is unaffected because the pass is applied consistently across the
+  baseline and every macro config the fidelity oracle compares.
+
 ## [0.16.0]
 
 ### Changed (BREAKING — re-cut corpora and checkpoints; no metric transfer)

@@ -24,6 +24,8 @@ _ENV_REGS = frozenset(SR_REGS_BY_VOICE) | frozenset(AD_REGS_BY_VOICE)
 
 
 class ReleaseUpdatePass(MacroPass):
+    GATE_FLAGS = frozenset({"release_update_pass", "lonely_catch_all"})
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "release_update_pass", False):
             return df

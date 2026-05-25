@@ -18,6 +18,7 @@ from preframr_tokens.stfconstants import (
 
 
 class CtrlBigramPass(MacroPass):
+    GATE_FLAGS = frozenset({"ctrl_bigram_pass"})
     target_regs = CTRL_REGS_BY_VOICE
 
     def apply(self, df, args=None):

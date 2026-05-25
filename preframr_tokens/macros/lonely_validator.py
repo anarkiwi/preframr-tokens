@@ -93,6 +93,8 @@ def _gate_off(kind, vals, k, last_ctrl_val, voice):
 
 
 class LonelyWriteValidatorPass(MacroPass):
+    GATE_FLAGS = frozenset({"strict_lonely"})
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "strict_lonely", False):
             return df

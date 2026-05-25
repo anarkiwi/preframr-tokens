@@ -62,6 +62,8 @@ def _nudge_rows(reg, mode, payload, diff, irq):
 
 
 class FreqNudgePass(MacroPass):
+    GATE_FLAGS = frozenset({"freq_nudge_pass", "lonely_catch_all"})
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "freq_nudge_pass", False):
             return df

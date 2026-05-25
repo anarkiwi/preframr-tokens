@@ -35,6 +35,8 @@ def _voice_of_shiftable(reg, op):
 
 
 class GateSlopeShiftPass(MacroPass):
+    GATE_FLAGS = frozenset({"gate_slope_shift_pass"})
+
     def apply(self, df, args=None):
         if df is None or len(df) == 0 or "op" not in df.columns:
             return df
