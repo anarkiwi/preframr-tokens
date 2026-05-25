@@ -177,6 +177,8 @@ class FreqTrajectoryPass(MacroPass):
     """Replace SlopePass/OscillationEnvelopePass/RawVibratoEnvelopePass/FreqRunPass
     with one trajectory primitive over every slope-able register."""
 
+    GATE_FLAGS = frozenset({"freq_trajectory_pass"})
+
     def apply(self, df, args=None):
         if args is not None and not getattr(args, "freq_trajectory_pass", True):
             return df

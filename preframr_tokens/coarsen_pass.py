@@ -7,6 +7,7 @@ from collections import defaultdict
 import pandas as pd
 
 from preframr_tokens.macros.loops import OVERLAY_BODY_FREQ_DELTA
+from preframr_tokens.macros.passes_base import MacroPass
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
     BACK_REF_OP,
@@ -197,8 +198,10 @@ def coarsen_pass(df, min_coarse_len=DEFAULT_MIN_COARSE_LEN):
     return expanded
 
 
-class CoarsenPass:
+class CoarsenPass(MacroPass):
     """Wrapper to fit ``run_post_norm_pre_voice_passes`` interface."""
+
+    GATE_FLAGS = frozenset({"coarsen_pass"})
 
     # pylint: disable=unused-argument
     def apply(self, df, args=None):

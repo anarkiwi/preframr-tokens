@@ -42,6 +42,7 @@ def _triple_rows(reg, bytes3, diff, irq):
 
 
 class CtrlTriplePass(MacroPass):
+    GATE_FLAGS = frozenset({"ctrl_triple_pass"})
     target_regs = CTRL_REGS_BY_VOICE
 
     def apply(self, df, args=None):

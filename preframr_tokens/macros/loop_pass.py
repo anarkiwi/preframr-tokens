@@ -304,6 +304,9 @@ def _best_lz_transposed_njit(
 class LoopPass(MacroPass):
     """Hybrid encoder for repeated frame sequences."""
 
+    GATE_FLAGS = frozenset(
+        {"loop_pass", "loop_transposed", "fuzzy_loop_pass", "fuzzy_fp_adsr"}
+    )
     min_lz_match = 2
     min_do_repeat = 2
     max_lz_length = 64

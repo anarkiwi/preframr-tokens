@@ -19,6 +19,8 @@ _CTRL_REGS = frozenset(CTRL_REGS_BY_VOICE)
 
 
 class CtrlUpdatePass(MacroPass):
+    GATE_FLAGS = frozenset({"lonely_catch_all"})
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "lonely_catch_all", False):
             return df

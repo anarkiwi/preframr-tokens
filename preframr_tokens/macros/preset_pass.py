@@ -50,6 +50,8 @@ def _preset_row(reg, preset_id, diff_default, irq_default):
 class PresetPass(MacroPass):
     """Single-row preset snap for wide-val plain SETs on regs 2 + 21."""
 
+    GATE_FLAGS = frozenset({"preset_pass"})
+
     def apply(self, df, args=None):
         if args is not None and not getattr(args, "preset_pass", True):
             return df

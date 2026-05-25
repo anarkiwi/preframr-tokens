@@ -65,6 +65,8 @@ def _match_interval(lead_vals, tracker_vals):
 
 
 class VoiceTrackPass(MacroPass):
+    GATE_FLAGS = frozenset({"voice_track_pass"})
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "voice_track_pass", False):
             return df

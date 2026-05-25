@@ -17,6 +17,8 @@ __all__ = ["MacroPass", "requires_state"]
 class MacroPass:
     """Base class for encode-side passes operating on a token DataFrame."""
 
+    GATE_FLAGS: frozenset = frozenset()
+
     def apply(self, df, args=None):
         raise NotImplementedError
 

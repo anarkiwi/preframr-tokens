@@ -94,6 +94,8 @@ class PerRegBurstPass(MacroPass):
     stay literal SETs.
     """
 
+    GATE_FLAGS = frozenset({"freq_trajectory_pass"})
+
     DEFAULT_OPCODES = (DIFF_OP, FLIP_OP)
 
     def __init__(self, opcodes=None):

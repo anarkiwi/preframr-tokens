@@ -162,6 +162,7 @@ class HardRestartPass(MacroPass):
     ``HARD_RESTART_OP`` token.
     """
 
+    GATE_FLAGS = frozenset({"hard_restart_pass"})
     target_regs = CTRL_REGS_BY_VOICE
     _ctrl_reg_to_voice = {r: v for v, r in enumerate(CTRL_REGS_BY_VOICE)}
 
@@ -303,6 +304,7 @@ _LEGATO_PER_CLUSTER_RULES = {
 class LegatoPerClusterPass(MacroPass):
     """Cluster-specific legato encoder gated on ``df.attrs["engine_fp_cluster"]``."""
 
+    GATE_FLAGS = frozenset(_LEGATO_PER_CLUSTER_FLAG_ATTRS.values())
     target_regs = CTRL_REGS_BY_VOICE
 
     def apply(self, df, args=None):
@@ -527,6 +529,8 @@ class VoiceBlockOrderPass(MacroPass):
     captured by FRAME_REG svt naturally, so no PERM_REG / reg-rewrite
     needed; tokens within each canonical slot collapse across voice
     rotations because the slot's content is voice-invariant."""
+
+    GATE_FLAGS = frozenset({"voice_canonical_block_order"})
 
     @staticmethod
     def _voice_key(prev_ctrl, prev_freq, v):
