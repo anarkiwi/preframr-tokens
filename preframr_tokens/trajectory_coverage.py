@@ -31,8 +31,15 @@ def main(argv=None):
     run_len_acc = 0.0
     alt_acc = 0.0
     songs = 0
+    skipped = 0
     for path in dumps:
-        xdf = next(rlp.parse(path, max_perm=1, require_pq=False, reparse=True), None)
+        try:
+            xdf = next(
+                rlp.parse(path, max_perm=1, require_pq=False, reparse=True), None
+            )
+        except Exception:  # pylint: disable=broad-except
+            skipped += 1
+            continue
         if xdf is None or not len(xdf):
             continue
         cov = _coverage(xdf, tier=opts.tier)
@@ -43,7 +50,7 @@ def main(argv=None):
         alt_acc += cov["alternation_mean"] * cov["n_segments"]
         songs += 1
     denom = structural + mopup
-    print(f"tier={opts.tier} songs={songs} segments={segments}")
+    print(f"tier={opts.tier} songs={songs} skipped={skipped} segments={segments}")
     print(f"  structural_atoms={structural} mopup_atoms={mopup}")
     print(f"  captured_frac={structural / denom if denom else 0.0:.3f}")
     print(f"  run_length_mean={run_len_acc / segments if segments else 0.0:.2f}")

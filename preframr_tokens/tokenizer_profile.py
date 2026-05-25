@@ -45,8 +45,15 @@ def profile_corpus(args_ns, corpus, sample, seed=0):
     total_atoms = 0
     total_frames = 0
     songs = 0
+    skipped = 0
     for path in dumps:
-        xdf = next(parser.parse(path, max_perm=1, require_pq=False, reparse=True), None)
+        try:
+            xdf = next(
+                parser.parse(path, max_perm=1, require_pq=False, reparse=True), None
+            )
+        except Exception:  # pylint: disable=broad-except
+            skipped += 1
+            continue
         if xdf is None or not len(xdf):
             continue
         prof = op_atom_profile(xdf)
@@ -57,6 +64,7 @@ def profile_corpus(args_ns, corpus, sample, seed=0):
         songs += 1
     return {
         "songs": songs,
+        "skipped": skipped,
         "total_atoms": total_atoms,
         "atoms_per_song": total_atoms / songs if songs else 0.0,
         "atoms_per_frame": total_atoms / total_frames if total_frames else 0.0,
@@ -67,7 +75,8 @@ def profile_corpus(args_ns, corpus, sample, seed=0):
 
 def _print_profile(prof):
     print(
-        f"songs={prof['songs']} atoms={prof['total_atoms']} "
+        f"songs={prof['songs']} skipped={prof.get('skipped', 0)} "
+        f"atoms={prof['total_atoms']} "
         f"atoms/song={prof['atoms_per_song']:.1f} "
         f"atoms/frame={prof['atoms_per_frame']:.3f}"
     )

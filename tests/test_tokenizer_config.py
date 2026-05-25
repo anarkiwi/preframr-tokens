@@ -7,6 +7,7 @@ from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.tokenizer_config import (
     MACRO_FLAGS,
     PARSER_DEFAULTS,
+    REGISTERED_MACROS,
     default_tokenizer_args,
     named_config,
 )
@@ -29,9 +30,11 @@ class TestTokenizerConfig(unittest.TestCase):
         ns = named_config("baseline")
         self.assertTrue(all(getattr(ns, f) is False for f in MACRO_FLAGS))
 
-    def test_named_full_macros_all_on(self):
+    def test_named_full_macros_is_registered_set(self):
         ns = named_config("full_macros")
-        self.assertTrue(all(getattr(ns, f) is True for f in MACRO_FLAGS))
+        on = {f for f in MACRO_FLAGS if getattr(ns, f) is True}
+        self.assertEqual(on, set(REGISTERED_MACROS))
+        self.assertTrue(set(REGISTERED_MACROS).issubset(MACRO_FLAGS))
 
     def test_named_override(self):
         ns = named_config("full_macros", freq_trajectory_pass=False)

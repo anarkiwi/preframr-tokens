@@ -1,7 +1,8 @@
 """Torch-free source of truth for a tokenizer/parser args namespace: parser
-params plus every macro-pass flag, so ``RegLogParser(args=...)`` and the macro
-passes have one place to read defaults from instead of hand-rolling a namespace
-per experiment or test."""
+params + every macro-pass flag, so ``RegLogParser`` / the macro passes read
+defaults from one place. ``full_macros`` is the production-registered subset
+(``REGISTERED_MACROS``), NOT every flag -- the rest are experimental/refuted and
+corrupt FRAME svt when combined."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 __all__ = [
     "PARSER_DEFAULTS",
     "MACRO_FLAGS",
+    "REGISTERED_MACROS",
     "default_tokenizer_args",
     "named_config",
     "NAMED_CONFIGS",
@@ -69,9 +71,25 @@ def default_tokenizer_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**cfg)
 
 
+REGISTERED_MACROS = (
+    "freq_trajectory_pass",
+    "preset_pass",
+    "hard_restart_pass",
+    "legato_pass_c2",
+    "legato_pass_c4",
+    "voice_canonical_block_order",
+    "ctrl_bigram_pass",
+    "loop_pass",
+    "loop_transposed",
+    "freq_nudge_pass",
+    "release_update_pass",
+    "ctrl_triple_pass",
+    "lonely_catch_all",
+)
+
 NAMED_CONFIGS = {
     "baseline": {},
-    "full_macros": {flag: True for flag in MACRO_FLAGS},
+    "full_macros": {flag: True for flag in REGISTERED_MACROS},
 }
 
 
