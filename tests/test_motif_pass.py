@@ -83,4 +83,4 @@ def test_get_motif_dict_object_and_path(tmp_path):
     args = SimpleNamespace(motif_dict=str(path))
     loaded = get_motif_dict(args)
     assert loaded.merges == d.merges and loaded.expansions == d.expansions
-    assert get_motif_dict(args) is loaded  # cached on args, not re-read
+    assert get_motif_dict(args) is loaded
