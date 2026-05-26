@@ -1,14 +1,15 @@
 """Tests for the motif pass: lossless round-trip, boundary and cross-composer
-guards, determinism, JSON serialization, and unknown-atom passthrough."""
+guards, determinism, JSON serialization, and unknown-atom passthrough. Atoms are
+``(op, reg, subreg, val, diff)`` so timing round-trips exactly."""
 
 from preframr_tokens.macros.motif_pass import MotifDict, mine_motifs
 from preframr_tokens.stfconstants import FRAME_REG
 
-FRAME = (0, FRAME_REG, -1, 57)
-A = (0, 2, -1, 33)
-B = (0, -126, -1, 0)
-C = (0, 5, 0, 15)
-DD = (0, 6, -1, 0)
+FRAME = (0, FRAME_REG, -1, 57, 19656)
+A = (0, 2, -1, 33, 32)
+B = (0, -126, -1, 0, 32)
+C = (0, 5, 0, 15, 32)
+DD = (0, 6, -1, 0, 32)
 
 
 def _corpus():
@@ -65,6 +66,6 @@ def test_json_roundtrip():
 
 def test_unknown_atoms_passthrough():
     _, d = _mine()
-    novel = (0, 14, -1, 99)
+    novel = (0, 14, -1, 99, 32)
     s = [FRAME, A, B, novel, FRAME, A, B]
     assert d.expand(d.encode(s)) == s

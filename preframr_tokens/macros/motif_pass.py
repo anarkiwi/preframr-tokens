@@ -1,24 +1,23 @@
 """Corpus-mined motif pass: a boundary-constrained, cross-composer motif
 dictionary applied between the structural macros and Unigram. A motif is a
 recurring atom sequence replaced losslessly by one MOTIF_OP atom; ``expand``
-inverts it exactly. OFF by default and unwired (see release notes for the
-pipeline / decode / constrained-decode integration)."""
+inverts it exactly. OFF by default; the ``motif`` transform self-gates on
+``args.motif_pass`` and needs a mined ``args.motif_dict``."""
 
 import json
 from collections import Counter
 
 from preframr_tokens.macros.passes_base import MacroPass
+from preframr_tokens.macros.transform import Transform, register
 from preframr_tokens.stfconstants import FRAME_REG, MOTIF_OP
 
-__all__ = ["MotifDict", "mine_motifs", "MotifPass", "MOTIF_OP", "MOTIF_SUBREG"]
+__all__ = ["MotifDict", "mine_motifs", "MotifPass", "MotifTransform", "MOTIF_OP"]
 
-MOTIF_SUBREG = -1
-
-_ATOM_KEYS = ("op", "reg", "subreg", "val")
+_ATOM_KEYS = ("op", "reg", "subreg", "val", "diff")
 
 
 def _as_atom(row):
-    """Normalise a row / dict / tuple to an ``(op, reg, subreg, val)`` tuple."""
+    """Normalise a row / dict / tuple to an ``(op, reg, subreg, val, diff)`` tuple."""
     if isinstance(row, tuple):
         return row
     return tuple(int(row[k]) for k in _ATOM_KEYS)
@@ -30,8 +29,9 @@ def _is_frame_advance(atom):
 
 
 def _motif_atom(mid):
-    """The single MOTIF_OP atom standing in for motif ``mid`` (id in ``val``)."""
-    return (MOTIF_OP, MOTIF_SUBREG, MOTIF_SUBREG, int(mid))
+    """The single MOTIF_OP atom standing in for motif ``mid`` (id in ``val``);
+    filler fields are 0 to stay within the row df's unsigned dtypes."""
+    return (MOTIF_OP, 0, 0, int(mid), 0)
 
 
 def _merge_run(seq, sym_a, sym_b, mid):
@@ -160,35 +160,79 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
     return MotifDict(merges, {mid: expand[mid] for _, _, mid in merges})
 
 
+def _atoms_of(df):
+    """Extract the ``(op,reg,subreg,val,diff)`` atom stream from a row df."""
+    return [
+        (int(r.op), int(r.reg), int(getattr(r, "subreg", -1)), int(r.val), int(r.diff))
+        for r in df.itertuples()
+    ]
+
+
+def _rebuild_df(df, atoms):
+    """Rebuild a row df from an atom stream, reusing ``df``'s columns and the
+    per-song-constant ``irq``; ``description`` defaults to 0."""
+    import pandas as pd
+
+    irq = int(df["irq"].iloc[0]) if "irq" in df.columns and len(df) else -1
+    rows = []
+    for op, reg, subreg, val, diff in atoms:
+        row = {"op": op, "reg": reg, "subreg": subreg, "val": val, "diff": diff}
+        if "irq" in df.columns:
+            row["irq"] = irq
+        if "description" in df.columns:
+            row["description"] = 0
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    out = out[[c for c in df.columns if c in out.columns]]
+    for col, dt in df.dtypes.items():
+        if col in out.columns:
+            try:
+                out[col] = out[col].astype(dt)
+            except (TypeError, ValueError):
+                pass
+    out.attrs.update(df.attrs)
+    return out
+
+
 class MotifPass(MacroPass):
-    """Pipeline pass substituting dictionary motifs in a token DataFrame; OFF
-    unless ``args.motif_pass`` with a loaded ``args.motif_dict``."""
+    """Encode-side pass: substitute dictionary motifs; OFF unless
+    ``args.motif_pass`` with a loaded ``args.motif_dict``."""
 
     GATE_FLAGS = frozenset({"motif_pass"})
 
     def apply(self, df, args=None):
-        """Encode the row stream with the loaded motif dictionary, or pass through."""
+        """Collapse dictionary motifs into MOTIF_OP rows, or pass through."""
         if args is None or not getattr(args, "motif_pass", False):
             return df
         motif_dict = getattr(args, "motif_dict", None)
-        if motif_dict is None:
+        if motif_dict is None or "op" not in df.columns or df.empty:
             return df
-        atoms = [
-            (int(r.op), int(r.reg), int(getattr(r, "subreg", -1)), int(r.val))
-            for r in df.itertuples()
-        ]
-        encoded = motif_dict.encode(atoms)
-        if len(encoded) == len(atoms):
+        encoded = motif_dict.encode(_atoms_of(df))
+        if len(encoded) == len(df):
             return df
-        import pandas as pd
+        return _rebuild_df(df, encoded)
 
-        out = pd.DataFrame(
-            [
-                {"op": a[0], "reg": a[1], "subreg": a[2], "val": a[3], "description": 0}
-                for a in encoded
-            ]
-        )
-        if "irq" in df.columns and len(df):
-            out["irq"] = int(df["irq"].iloc[0])
-        out.attrs.update(df.attrs)
-        return out
+
+@register("motif")
+class MotifTransform(Transform):
+    """Pipeline transform: forward collapses dictionary motifs into MOTIF_OP
+    rows, inverse expands them back (lossless)."""
+
+    NAME = "motif"
+    TIER = "bit_exact"
+    OP_CODES = frozenset({MOTIF_OP})
+    DECOMPOSES_TO_ATOMS = True
+    DECODES_VIA_DF = True
+    LOSS_TIER = "zero"
+    REQUIRES_ARGS = frozenset({"motif_pass"})
+
+    def forward(self, df, args=None):
+        return MotifPass().apply(df, args=args)
+
+    def inverse(self, df, args=None):
+        motif_dict = getattr(args, "motif_dict", None) if args is not None else None
+        if motif_dict is None or "op" not in df.columns or df.empty:
+            return df
+        if not (df["op"] == MOTIF_OP).any():
+            return df
+        return _rebuild_df(df, motif_dict.expand(_atoms_of(df)))
