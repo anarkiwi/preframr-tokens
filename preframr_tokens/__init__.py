@@ -65,6 +65,7 @@ from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.lonely_validator import classify_carveout
+from preframr_tokens.macros.motif_pass import MotifDict, MotifPass, mine_motifs
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.reglogparser import (
     RegLogParser,
@@ -84,6 +85,9 @@ from preframr_tokens.parse_runner import parse_corpus
 __all__ = [
     "RegLogParser",
     "RegTokenizer",
+    "MotifDict",
+    "MotifPass",
+    "mine_motifs",
     "Corpus",
     "TokenizeMeta",
     "StreamState",

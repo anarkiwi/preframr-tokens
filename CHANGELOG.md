@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0]
+
+### Added
+
+- Corpus-mined `motif` pass (`preframr_tokens.macros.motif_pass`): a
+  boundary-constrained, cross-composer motif dictionary that losslessly
+  collapses recurring atom sequences into single `MOTIF_OP` (52) atoms between
+  the structural macros and Unigram. Public API `mine_motifs` / `MotifDict` /
+  `MotifPass`; `MotifDict.encode`/`expand` round-trip byte-exact. OFF by default
+  (`motif_pass` flag); not yet wired into the default pipeline.
+
 ## [0.18.0]
 
 ### Fixed (BREAKING — re-cut corpora and checkpoints; no metric transfer)
