@@ -11,9 +11,41 @@ from preframr_tokens.macros.passes_base import MacroPass
 from preframr_tokens.macros.transform import Transform, register
 from preframr_tokens.stfconstants import FRAME_REG, MOTIF_OP
 
-__all__ = ["MotifDict", "mine_motifs", "MotifPass", "MotifTransform", "MOTIF_OP"]
+__all__ = [
+    "MotifDict",
+    "mine_motifs",
+    "MotifPass",
+    "MotifTransform",
+    "MOTIF_OP",
+    "get_motif_dict",
+]
 
 _ATOM_KEYS = ("op", "reg", "subreg", "val", "diff")
+
+
+def get_motif_dict(args):
+    """Resolve ``args.motif_dict`` to a ``MotifDict``. Accepts either a loaded
+    ``MotifDict`` (tests / in-process callers) or a path string to a ``to_json``
+    artifact (the ``--motif-dict`` CLI flag); the loaded object is cached back on
+    ``args`` so a corpus parse reads the JSON once per worker. Returns ``None``
+    when unset/empty."""
+    if args is None:
+        return None
+    cached = getattr(args, "_motif_dict_obj", None)
+    if cached is not None:
+        return cached
+    raw = getattr(args, "motif_dict", None)
+    if raw is None or isinstance(raw, str) and not raw:
+        return None
+    if isinstance(raw, MotifDict):
+        return raw
+    with open(raw) as f:
+        loaded = MotifDict.from_json(f.read())
+    try:
+        args._motif_dict_obj = loaded
+    except AttributeError:
+        pass
+    return loaded
 
 
 def _as_atom(row):
@@ -204,7 +236,7 @@ class MotifPass(MacroPass):
         """Collapse dictionary motifs into MOTIF_OP rows, or pass through."""
         if args is None or not getattr(args, "motif_pass", False):
             return df
-        motif_dict = getattr(args, "motif_dict", None)
+        motif_dict = get_motif_dict(args)
         if motif_dict is None or "op" not in df.columns or df.empty:
             return df
         encoded = motif_dict.encode(_atoms_of(df))
@@ -230,7 +262,7 @@ class MotifTransform(Transform):
         return MotifPass().apply(df, args=args)
 
     def inverse(self, df, args=None):
-        motif_dict = getattr(args, "motif_dict", None) if args is not None else None
+        motif_dict = get_motif_dict(args)
         if motif_dict is None or "op" not in df.columns or df.empty:
             return df
         if not (df["op"] == MOTIF_OP).any():

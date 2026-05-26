@@ -69,8 +69,10 @@ from preframr_tokens.macros.motif_pass import (
     MotifDict,
     MotifPass,
     MotifTransform,
+    get_motif_dict,
     mine_motifs,
 )
+from preframr_tokens.motif_mine import mine_dict_from_dumps
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.reglogparser import (
     RegLogParser,
@@ -93,7 +95,9 @@ __all__ = [
     "MotifDict",
     "MotifPass",
     "MotifTransform",
+    "get_motif_dict",
     "mine_motifs",
+    "mine_dict_from_dumps",
     "Corpus",
     "TokenizeMeta",
     "StreamState",
