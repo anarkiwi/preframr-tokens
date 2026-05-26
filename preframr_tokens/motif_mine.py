@@ -1,9 +1,8 @@
-"""Mine a ``MotifDict`` from a dump corpus. Parses each dump with the same
-parser/macro args training uses (motif pass forced OFF so it sees the un-collapsed
-atoms), groups the per-song atom streams by composer (the dump's parent dir), and
-runs the cross-composer greedy miner. The framework ``mine_motifs`` CLI shim and
-the experiment ``pre_run_hook`` both drive this; kept torch-free so it runs in the
-parser environment without the model stack."""
+"""Mine a ``MotifDict`` from a dump corpus: parse each dump with the parser/macro
+args training uses (motif pass forced OFF so it sees un-collapsed atoms), group the
+per-block atom streams by composer (the dump's parent dir), and run the
+cross-composer greedy miner. Torch-free, so it runs in the parser environment; the
+framework mine CLI and the experiment pre_run_hook both drive it."""
 
 import logging
 from pathlib import Path
@@ -30,12 +29,11 @@ def mine_dict_from_dumps(
     min_composers=3,
     logger=logging,
 ):
-    """Parse ``reglogs`` (a comma-separated dump-glob spec) with ``args`` and mine
-    a ``MotifDict``. ``args.motif_pass`` is forced off for the mining parse so the
-    miner sees the un-collapsed atoms, and mining is over the SAME self-contained
-    voiced blocks the encode path collapses (``iter_voiced_blocks``) -- so the
-    mined merges actually match at encode time. Each block is one stream tagged by
-    its composer; only the identity rotation is used (matching ``--max-perm 1``)."""
+    """Parse ``reglogs`` (a comma-separated dump-glob spec) with ``args`` and mine a
+    ``MotifDict``. ``motif_pass`` is forced off and mining runs over the SAME
+    self-contained voiced blocks the encode path collapses (``iter_voiced_blocks``),
+    so the mined merges match at encode time. Each block is one stream tagged by
+    composer; only the identity rotation is used (matching ``--max-perm 1``)."""
     args.motif_pass = False
     parser = RegLogParser(args, logger)
     block_parser = RegLogParser(args, logger)
