@@ -10,6 +10,7 @@ from typing import Optional
 import numpy as np
 
 from preframr_tokens.macros import iter_self_contained_row_blocks, self_contain_slice
+from preframr_tokens.macros.motif_pass import MotifPass
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reglogparser import RegLogParser, remove_voice_reg
 from preframr_tokens.stfconstants import (
@@ -143,6 +144,7 @@ def iter_voiced_blocks(
             )
         except Exception:  # pylint: disable=broad-except
             continue
+        voiced = MotifPass().apply(voiced, args=parser.args)
         yield voiced
 
 

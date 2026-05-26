@@ -2,7 +2,9 @@
 guards, determinism, JSON serialization, and unknown-atom passthrough. Atoms are
 ``(op, reg, subreg, val, diff)`` so timing round-trips exactly."""
 
-from preframr_tokens.macros.motif_pass import MotifDict, mine_motifs
+from types import SimpleNamespace
+
+from preframr_tokens.macros.motif_pass import MotifDict, get_motif_dict, mine_motifs
 from preframr_tokens.stfconstants import FRAME_REG
 
 FRAME = (0, FRAME_REG, -1, 57, 19656)
@@ -69,3 +71,16 @@ def test_unknown_atoms_passthrough():
     novel = (0, 14, -1, 99, 32)
     s = [FRAME, A, B, novel, FRAME, A, B]
     assert d.expand(d.encode(s)) == s
+
+
+def test_get_motif_dict_object_and_path(tmp_path):
+    _, d = _mine()
+    assert get_motif_dict(SimpleNamespace(motif_dict=d)) is d
+    assert get_motif_dict(SimpleNamespace(motif_dict="")) is None
+    assert get_motif_dict(SimpleNamespace()) is None
+    path = tmp_path / "motif_dict.json"
+    path.write_text(d.to_json())
+    args = SimpleNamespace(motif_dict=str(path))
+    loaded = get_motif_dict(args)
+    assert loaded.merges == d.merges and loaded.expansions == d.expansions
+    assert get_motif_dict(args) is loaded  # cached on args, not re-read
