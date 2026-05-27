@@ -84,3 +84,11 @@ def test_get_motif_dict_object_and_path(tmp_path):
     loaded = get_motif_dict(args)
     assert loaded.merges == d.merges and loaded.expansions == d.expansions
     assert get_motif_dict(args) is loaded
+
+
+def test_no_motif_contains_frame_advance():
+    streams, comps = _corpus()
+    md = mine_motifs(streams, comps, k=32, min_count=3, min_composers=2)
+    assert md.expansions
+    for seq in md.expansions.values():
+        assert all(atom[1] != FRAME_REG for atom in seq)

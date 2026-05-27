@@ -258,16 +258,17 @@ class MotifDict:
 
 def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
     """Mine a ``MotifDict`` from per-song atom streams with two greedy guards:
-    a boundary guard (no motif ends on a frame-advance) and a cross-composer
-    floor (a pair must span >= ``min_composers`` composers)."""
+    a frame guard (a motif may not CONTAIN a frame-advance atom, so frame markers
+    stay visible to the per-block tokenizer) and a cross-composer floor (a pair
+    must span >= ``min_composers`` composers). Motif ids are frame-free by
+    construction, so only base atoms can carry a frame."""
     seqs = [[_as_atom(a) for a in s] for s in streams]
-    ends_fa = {}
     expand = {}
     merges = []
     next_id = 0
 
-    def ends_frame_advance(sym):
-        return ends_fa[sym] if isinstance(sym, int) else _is_frame_advance(sym)
+    def has_frame(sym):
+        return False if isinstance(sym, int) else _is_frame_advance(sym)
 
     for _ in range(k):
         cnt = Counter()
@@ -279,7 +280,7 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
         for (sym_a, sym_b), count in cnt.most_common():
             if count < min_count:
                 break
-            if ends_frame_advance(sym_b):
+            if has_frame(sym_a) or has_frame(sym_b):
                 continue
             if _ncomposers(seqs, composers, sym_a, sym_b) < min_composers:
                 continue
@@ -293,7 +294,6 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
         exp_a = expand[sym_a] if isinstance(sym_a, int) else [sym_a]
         exp_b = expand[sym_b] if isinstance(sym_b, int) else [sym_b]
         expand[mid] = exp_a + exp_b
-        ends_fa[mid] = ends_frame_advance(sym_b)
         merges.append((sym_a, sym_b, mid))
         seqs = [_merge_run(s, sym_a, sym_b, mid) for s in seqs]
     return MotifDict(merges, {mid: expand[mid] for _, _, mid in merges})
@@ -301,14 +301,15 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
 
 def _shape_stats(streams, composers):
     """Per-shape occurrence count, composer set, and per-position value sets
-    over length-3/2 windows that do not end on a frame-advance."""
+    over length-3/2 windows that contain no frame-advance atom (so frame markers
+    stay visible to the per-block tokenizer)."""
     stats = {}
     for s, cp in zip(streams, composers):
         atoms = [_as_atom(a) for a in s]
         for length in (3, 2):
             for i in range(len(atoms) - length + 1):
                 window = atoms[i : i + length]
-                if _is_frame_advance(window[-1]):
+                if any(_is_frame_advance(a) for a in window):
                     continue
                 st = stats.setdefault(
                     _shape(window),
