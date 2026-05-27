@@ -91,3 +91,12 @@ def test_mine_templates_skips_frame_advance_end():
     md = mine_templates(streams, ["c1", "c2", "c3"], min_count=3, min_composers=3)
     bad = ((0, 2, -1, 32), (0, FRAME_REG, -1, 100))
     assert all(t["shape"] != bad for t in (md.templates or []))
+
+
+def test_no_template_contains_frame_advance():
+    frame = (0, FRAME_REG, -1, 1, 100)
+    streams = [[frame, (0, 2, -1, 33, 32), (0, 5, 0, v, 32)] * 3 for v in (10, 20, 30)]
+    md = mine_templates(streams, ["c1", "c2", "c3"], k=16, min_count=3, min_composers=3)
+    assert md.templates
+    for t in md.templates:
+        assert all(s[1] != FRAME_REG for s in t["shape"])
