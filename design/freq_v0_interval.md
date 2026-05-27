@@ -1,8 +1,11 @@
 # Interval-coded freq V0 (transposition-invariant melodic onsets)
 
-**Status:** Design + implementation in progress (branch `feat/freq-v0-interval`). Self-contained
-in preframr-tokens; opt-in (`--freq-v0-interval`, default OFF); FREQ_TRAJ byte-exact round-trip
-must stay green. Target: next minor.
+**Status:** IMPLEMENTED — PR [#19](https://github.com/anarkiwi/preframr-tokens/pull/19) (tokens,
+fallback 0.26.0) + framework `--freq-v0-interval` (preframr PR #139, floor >=0.26.0, VERSION
+0.2.7). Opt-in (default OFF). Full tokens suite green in docker (775 passed): byte-exact
+round-trip, transposition invariance, freq-regs-only, default-off equivalence. Next: merge
+(tokens first) → build 0.2.7 → mini A/B (anchored+interval vs anchored-absolute), read by the
+V0-onset subreg split + `audit.melody_predictability`.
 
 ## Problem (evidence-backed)
 
