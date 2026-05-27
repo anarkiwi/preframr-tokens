@@ -13,6 +13,7 @@ from preframr_tokens.macros.passes_base import (
 )
 from preframr_tokens.stfconstants import (
     FREQ_TRAJ_OP,
+    FREQ_TRAJ_REGS,
     FT_DELTA_ESCAPE,
     FT_DELTA_MAX,
     FT_MAX_PERIOD,
@@ -30,6 +31,7 @@ from preframr_tokens.stfconstants import (
     FT_SUBTYPE_MONOTONE_RAMP,
     FT_SUBTYPE_OSCILLATE,
     FT_SUBTYPE_RUN,
+    FT_V0_INTERVAL_BIT,
     OSC_MAX_GAP,
     OSC_MIN_ALTERNATION,
     OSC_MIN_HALFCYCLES,
@@ -177,7 +179,7 @@ class FreqTrajectoryPass(MacroPass):
     """Replace SlopePass/OscillationEnvelopePass/RawVibratoEnvelopePass/FreqRunPass
     with one trajectory primitive over every slope-able register."""
 
-    GATE_FLAGS = frozenset({"freq_trajectory_pass"})
+    GATE_FLAGS = frozenset({"freq_trajectory_pass", "freq_v0_interval"})
 
     def apply(self, df, args=None):
         if args is not None and not getattr(args, "freq_trajectory_pass", True):
@@ -230,7 +232,49 @@ class FreqTrajectoryPass(MacroPass):
                 )
         if not new_rows:
             return df
+        if args is not None and getattr(args, "freq_v0_interval", False):
+            self._interval_encode_freq_v0(new_rows)
         return _splice_rows(df, drop_idx, new_rows)
+
+    @staticmethod
+    def _interval_encode_freq_v0(new_rows):
+        """Rewrite each FREQ-reg trajectory's characteristic value (V0/terminal, in the
+        shared subreg1/2 bytes) to a signed 16-bit interval from the previous freq
+        trajectory on that reg, setting ``FT_V0_INTERVAL_BIT``; the first per reg stays
+        absolute. Freq regs only; byte-exact (decode reconstructs via last_freq_v0)."""
+        groups = []
+        cur = None
+        for row in new_rows:
+            sr = int(row["subreg"])
+            if sr == FT_SUBREG_FLAGS:
+                cur = {
+                    "reg": int(row["reg"]),
+                    "pos": row.get("__pos", 0),
+                    "flags": row,
+                    "hi": None,
+                    "lo": None,
+                }
+                groups.append(cur)
+            elif cur is not None and sr == FT_SUBREG_V0_HI:
+                cur["hi"] = row
+            elif cur is not None and sr == FT_SUBREG_V0_LO:
+                cur["lo"] = row
+        for reg in FREQ_TRAJ_REGS:
+            traj = sorted(
+                (g for g in groups if g["reg"] == reg and g["hi"] and g["lo"]),
+                key=lambda g: g["pos"],
+            )
+            prev = None
+            for g in traj:
+                char = ((int(g["hi"]["val"]) & 0xFF) << 8) | (
+                    int(g["lo"]["val"]) & 0xFF
+                )
+                if prev is not None:
+                    iv = (char - prev) & 0xFFFF
+                    g["hi"]["val"] = (iv >> 8) & 0xFF
+                    g["lo"]["val"] = iv & 0xFF
+                    g["flags"]["val"] = int(g["flags"]["val"]) | FT_V0_INTERVAL_BIT
+                prev = char
 
     @staticmethod
     def _anchor_chunks(reg, sets, regs, f_idx, anchors):

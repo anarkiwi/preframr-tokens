@@ -59,6 +59,7 @@ from preframr_tokens.stfconstants import (
     FT_SUBREG_V0_LO,
     FT_SUBTYPE_MASK,
     FT_SUBTYPE_MONOTONE_RAMP,
+    FT_V0_INTERVAL_BIT,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
@@ -358,6 +359,7 @@ class FreqTrajectoryDecoder(MacroDecoder):
                 "reg": reg,
                 "subtype": flags & FT_SUBTYPE_MASK,
                 "periodic": bool(flags & FT_PERIODIC_BIT),
+                "v0_interval": bool(flags & FT_V0_INTERVAL_BIT),
                 "fields": {},
                 "steps": [],
                 "esc": [],
@@ -388,7 +390,12 @@ class FreqTrajectoryDecoder(MacroDecoder):
         terminal_u = (
             (ft["fields"].get("thi", 0) << 8) | ft["fields"].get("tlo", 0)
         ) & (0xFFFF)
-        terminal = terminal_u if terminal_u < 0x8000 else terminal_u - 0x10000
+        signed = terminal_u if terminal_u < 0x8000 else terminal_u - 0x10000
+        if ft.get("v0_interval"):
+            terminal = int(state.last_freq_v0.get(reg, 0)) + signed
+        else:
+            terminal = signed
+        state.last_freq_v0[reg] = terminal
         runtime = max(1, int(row.val))
         start_val = int(state.last_val[reg])
         delta = terminal - start_val
@@ -443,7 +450,13 @@ class FreqTrajectoryDecoder(MacroDecoder):
         reg = ft["reg"]
         state.pending_ft = None
         pre = state.maybe_flush_for(reg, -1)
-        v0 = (ft["fields"].get("v0hi", 0) << 8) | ft["fields"].get("v0lo", 0)
+        raw = (ft["fields"].get("v0hi", 0) << 8) | ft["fields"].get("v0lo", 0)
+        if ft.get("v0_interval"):
+            signed = raw if raw < 0x8000 else raw - 0x10000
+            v0 = int(state.last_freq_v0.get(reg, 0)) + signed
+        else:
+            v0 = raw
+        state.last_freq_v0[reg] = v0
         steps = ft["steps"]
         period = ft["period"] if periodic else max(1, len(steps))
         state.last_diff[reg] = row.diff
