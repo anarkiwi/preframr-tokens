@@ -9,14 +9,16 @@ from collections import Counter
 
 from preframr_tokens.macros.passes_base import MacroPass
 from preframr_tokens.macros.transform import Transform, register
-from preframr_tokens.stfconstants import FRAME_REG, MOTIF_OP
+from preframr_tokens.stfconstants import FRAME_REG, MOTIF_ARG, MOTIF_OP
 
 __all__ = [
     "MotifDict",
     "mine_motifs",
+    "mine_templates",
     "MotifPass",
     "MotifTransform",
     "MOTIF_OP",
+    "MOTIF_ARG",
     "get_motif_dict",
 ]
 
@@ -92,18 +94,117 @@ def _ncomposers(streams, composers, sym_a, sym_b):
     return len(seen)
 
 
-class MotifDict:
-    """Frozen motif dictionary: ordered merges plus per-motif atom expansions."""
+def _arg_atom(val):
+    """The MOTIF_ARG atom carrying one slot value for the preceding template."""
+    return (MOTIF_ARG, 0, 0, int(val), 0)
 
-    def __init__(self, merges, expansions):
+
+def _shape(atoms):
+    """The value-free ``(op, reg, subreg, diff)`` shape of an atom sequence."""
+    return tuple((a[0], a[1], a[2], a[4]) for a in atoms)
+
+
+def _norm_template(t):
+    """Normalize one template dict: tuple shape, int positions / consts."""
+    return {
+        "id": int(t["id"]),
+        "shape": tuple(tuple(s) for s in t["shape"]),
+        "consts": {int(p): int(v) for p, v in t["consts"].items()},
+        "slots": [int(p) for p in t["slots"]],
+    }
+
+
+def _matches(window, tmpl):
+    """True when ``window`` matches a template's shape and constant vals."""
+    return _shape(window) == tmpl["shape"] and all(
+        window[p][3] == v for p, v in tmpl["consts"].items()
+    )
+
+
+def _encode_templates(seq, templates):
+    """Greedy longest-first collapse: each match -> a MOTIF_OP atom plus one
+    MOTIF_ARG atom per slot, in slot order."""
+    out = []
+    i = 0
+    while i < len(seq):
+        hit = next(
+            (
+                t
+                for t in templates
+                if i + len(t["shape"]) <= len(seq)
+                and _matches(seq[i : i + len(t["shape"])], t)
+            ),
+            None,
+        )
+        if hit is None:
+            out.append(seq[i])
+            i += 1
+            continue
+        out.append(_motif_atom(hit["id"]))
+        out.extend(_arg_atom(seq[i + p][3]) for p in hit["slots"])
+        i += len(hit["shape"])
+    return out
+
+
+def _expand_templates(seq, by_id):
+    """Inverse of ``_encode_templates`` (byte-exact)."""
+    out = []
+    i = 0
+    while i < len(seq):
+        if seq[i][0] != MOTIF_OP:
+            out.append(seq[i])
+            i += 1
+            continue
+        tmpl = by_id[seq[i][3]]
+        slot_at = {p: seq[i + 1 + k][3] for k, p in enumerate(tmpl["slots"])}
+        for pos, (op, reg, sub, diff) in enumerate(tmpl["shape"]):
+            val = slot_at[pos] if pos in slot_at else tmpl["consts"][pos]
+            out.append((op, reg, sub, val, diff))
+        i += 1 + len(tmpl["slots"])
+    return out
+
+
+class MotifDict:
+    """Frozen motif dictionary: v1 ordered merges + expansions, or v2 value-
+    slotted templates (shape + constant vals + slots)."""
+
+    def __init__(self, merges, expansions, templates=None):
         self.merges = [tuple(m) for m in merges]
         self.expansions = {int(k): [tuple(a) for a in v] for k, v in expansions.items()}
+        self.templates = None
+        self._by_id = {}
+        if templates:
+            self.templates = sorted(
+                (_norm_template(t) for t in templates),
+                key=lambda t: len(t["shape"]),
+                reverse=True,
+            )
+            self._by_id = {t["id"]: t for t in self.templates}
 
     def __len__(self):
-        return len(self.expansions)
+        return len(self.templates) if self.templates else len(self.expansions)
+
+    def _to_json_v2(self):
+        templates = self.templates or []
+        return json.dumps(
+            {
+                "version": 2,
+                "templates": [
+                    {
+                        "id": t["id"],
+                        "shape": [list(s) for s in t["shape"]],
+                        "consts": {str(p): v for p, v in t["consts"].items()},
+                        "slots": list(t["slots"]),
+                    }
+                    for t in templates
+                ],
+            }
+        )
 
     def to_json(self):
-        """Serialize the dictionary to a JSON string artifact."""
+        """Serialize to a JSON string (v1 merges or v2 templates)."""
+        if self.templates:
+            return self._to_json_v2()
 
         def enc(sym):
             return {"motif": sym} if isinstance(sym, int) else {"atom": list(sym)}
@@ -120,8 +221,10 @@ class MotifDict:
 
     @classmethod
     def from_json(cls, s):
-        """Load a dictionary from a JSON string produced by ``to_json``."""
+        """Load a dictionary (v1 merges or v2 templates) from JSON."""
         d = json.loads(s)
+        if d.get("version") == 2:
+            return cls([], {}, templates=d["templates"])
 
         def dec(sym):
             return sym["motif"] if "motif" in sym else tuple(sym["atom"])
@@ -131,17 +234,21 @@ class MotifDict:
         return cls(merges, expansions)
 
     def encode(self, atoms):
-        """Replay the merges, collapsing merged runs to single MOTIF_OP atoms."""
+        """Collapse motifs into MOTIF_OP rows (plus MOTIF_ARG slots in v2)."""
         seq = [_as_atom(a) for a in atoms]
+        if self.templates:
+            return _encode_templates(seq, self.templates)
         for sym_a, sym_b, mid in self.merges:
             seq = _merge_run(seq, sym_a, sym_b, mid)
         return [a if isinstance(a, tuple) else _motif_atom(a) for a in seq]
 
     def expand(self, atoms):
-        """Inverse of ``encode``: expand every MOTIF_OP atom (byte-exact)."""
+        """Inverse of ``encode`` (byte-exact)."""
+        seq = [_as_atom(a) for a in atoms]
+        if self.templates:
+            return _expand_templates(seq, self._by_id)
         out = []
-        for a in atoms:
-            a = _as_atom(a)
+        for a in seq:
             if a[0] == MOTIF_OP:
                 out.extend(self.expansions[a[3]])
             else:
@@ -190,6 +297,57 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
         merges.append((sym_a, sym_b, mid))
         seqs = [_merge_run(s, sym_a, sym_b, mid) for s in seqs]
     return MotifDict(merges, {mid: expand[mid] for _, _, mid in merges})
+
+
+def _shape_stats(streams, composers):
+    """Per-shape occurrence count, composer set, and per-position value sets
+    over length-3/2 windows that do not end on a frame-advance."""
+    stats = {}
+    for s, cp in zip(streams, composers):
+        atoms = [_as_atom(a) for a in s]
+        for length in (3, 2):
+            for i in range(len(atoms) - length + 1):
+                window = atoms[i : i + length]
+                if _is_frame_advance(window[-1]):
+                    continue
+                st = stats.setdefault(
+                    _shape(window),
+                    {"n": 0, "comp": set(), "vals": [set() for _ in range(length)]},
+                )
+                st["n"] += 1
+                st["comp"].add(cp)
+                for p, atom in enumerate(window):
+                    st["vals"][p].add(atom[3])
+    return stats
+
+
+def mine_templates(streams, composers, k=256, min_count=3, min_composers=3):
+    """Mine value-slotted templates: a (op,reg,subreg,diff) shape qualifies when
+    it spans >= min_composers composers and >= min_count occurrences (pooled over
+    value-instances); positions whose val varies become slots, constant positions
+    are baked. Greedy longest-first at encode."""
+    stats = _shape_stats(streams, composers)
+    qualified = sorted(
+        (
+            (sh, st)
+            for sh, st in stats.items()
+            if st["n"] >= min_count and len(st["comp"]) >= min_composers
+        ),
+        key=lambda x: x[1]["n"],
+        reverse=True,
+    )
+    templates = [
+        {
+            "id": tid,
+            "shape": [list(a) for a in sh],
+            "consts": {
+                p: next(iter(v)) for p, v in enumerate(st["vals"]) if len(v) == 1
+            },
+            "slots": [p for p, v in enumerate(st["vals"]) if len(v) > 1],
+        }
+        for tid, (sh, st) in enumerate(qualified[:k])
+    ]
+    return MotifDict([], {}, templates=templates)
 
 
 def _atoms_of(df):
@@ -252,7 +410,7 @@ class MotifTransform(Transform):
 
     NAME = "motif"
     TIER = "bit_exact"
-    OP_CODES = frozenset({MOTIF_OP})
+    OP_CODES = frozenset({MOTIF_OP, MOTIF_ARG})
     DECOMPOSES_TO_ATOMS = True
     DECODES_VIA_DF = True
     LOSS_TIER = "zero"
