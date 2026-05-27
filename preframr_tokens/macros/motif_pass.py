@@ -14,6 +14,7 @@ from preframr_tokens.stfconstants import FRAME_REG, MOTIF_ARG, MOTIF_OP
 __all__ = [
     "MotifDict",
     "mine_motifs",
+    "mine_templates",
     "MotifPass",
     "MotifTransform",
     "MOTIF_OP",
@@ -296,6 +297,57 @@ def mine_motifs(streams, composers, k=256, min_count=3, min_composers=3):
         merges.append((sym_a, sym_b, mid))
         seqs = [_merge_run(s, sym_a, sym_b, mid) for s in seqs]
     return MotifDict(merges, {mid: expand[mid] for _, _, mid in merges})
+
+
+def _shape_stats(streams, composers):
+    """Per-shape occurrence count, composer set, and per-position value sets
+    over length-3/2 windows that do not end on a frame-advance."""
+    stats = {}
+    for s, cp in zip(streams, composers):
+        atoms = [_as_atom(a) for a in s]
+        for length in (3, 2):
+            for i in range(len(atoms) - length + 1):
+                window = atoms[i : i + length]
+                if _is_frame_advance(window[-1]):
+                    continue
+                st = stats.setdefault(
+                    _shape(window),
+                    {"n": 0, "comp": set(), "vals": [set() for _ in range(length)]},
+                )
+                st["n"] += 1
+                st["comp"].add(cp)
+                for p, atom in enumerate(window):
+                    st["vals"][p].add(atom[3])
+    return stats
+
+
+def mine_templates(streams, composers, k=256, min_count=3, min_composers=3):
+    """Mine value-slotted templates: a (op,reg,subreg,diff) shape qualifies when
+    it spans >= min_composers composers and >= min_count occurrences (pooled over
+    value-instances); positions whose val varies become slots, constant positions
+    are baked. Greedy longest-first at encode."""
+    stats = _shape_stats(streams, composers)
+    qualified = sorted(
+        (
+            (sh, st)
+            for sh, st in stats.items()
+            if st["n"] >= min_count and len(st["comp"]) >= min_composers
+        ),
+        key=lambda x: x[1]["n"],
+        reverse=True,
+    )
+    templates = [
+        {
+            "id": tid,
+            "shape": [list(a) for a in sh],
+            "consts": {
+                p: next(iter(v)) for p, v in enumerate(st["vals"]) if len(v) == 1
+            },
+            "slots": [p for p, v in enumerate(st["vals"]) if len(v) > 1],
+        }
+        for tid, (sh, st) in enumerate(qualified[:k])
+    ]
+    return MotifDict([], {}, templates=templates)
 
 
 def _atoms_of(df):

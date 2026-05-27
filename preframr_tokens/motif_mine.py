@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 
 from preframr_tokens.blocks import glob_dumps, iter_voiced_blocks
-from preframr_tokens.macros.motif_pass import mine_motifs, _atoms_of
+from preframr_tokens.macros.motif_pass import mine_motifs, mine_templates, _atoms_of
 from preframr_tokens.reglogparser import RegLogParser
 
 __all__ = ["mine_dict_from_dumps"]
@@ -27,6 +27,7 @@ def mine_dict_from_dumps(
     k=256,
     min_count=3,
     min_composers=3,
+    version=1,
     logger=logging,
 ):
     """Parse ``reglogs`` (a comma-separated dump-glob spec) with ``args`` and mine a
@@ -65,6 +66,7 @@ def mine_dict_from_dumps(
         min_count,
         min_composers,
     )
-    return mine_motifs(
+    miner = mine_templates if version == 2 else mine_motifs
+    return miner(
         streams, composers, k=k, min_count=min_count, min_composers=min_composers
     )
