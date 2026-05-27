@@ -193,6 +193,13 @@ class FreqTrajectoryPass(MacroPass):
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
+        anchors = (
+            df["traj_anchor"].to_numpy().astype(bool)
+            if "traj_anchor" in df.columns
+            else None
+        )
+        if anchors is not None:
+            df = df.drop(columns=["traj_anchor"])
         irq = _first_irq(df)
         last_frame = int(f_idx.max()) if len(f_idx) else 0
         drop_idx = []
@@ -212,11 +219,45 @@ class FreqTrajectoryPass(MacroPass):
             ]
             if len(sets) < 2:
                 continue
-            claimed = self._emit_ramps(reg, sets, last_frame, irq, drop_idx, new_rows)
-            self._emit_osc_run(reg, sets, claimed, last_frame, irq, drop_idx, new_rows)
+            for chunk, emit in self._anchor_chunks(reg, sets, regs, f_idx, anchors):
+                if not emit or len(chunk) < 2:
+                    continue
+                claimed = self._emit_ramps(
+                    reg, chunk, last_frame, irq, drop_idx, new_rows
+                )
+                self._emit_osc_run(
+                    reg, chunk, claimed, last_frame, irq, drop_idx, new_rows
+                )
         if not new_rows:
             return df
         return _splice_rows(df, drop_idx, new_rows)
+
+    @staticmethod
+    def _anchor_chunks(reg, sets, regs, f_idx, anchors):
+        """Split a register's SETs into inter-anchor ``(chunk, emit)`` segments
+        cut at each ``traj_anchor`` frame, so no trajectory spans an anchor and
+        every emitted one begins on one (the leading segment emits only if the
+        first SET is itself an anchor). With no column the whole list is one
+        emittable, round-trip-safe segment."""
+        if anchors is None:
+            return [(sets, True)]
+        anchor_frames = {
+            int(f_idx[i])
+            for i in range(len(regs))
+            if int(regs[i]) == reg and bool(anchors[i])
+        }
+        if not anchor_frames:
+            return [(sets, True)]
+        chunks = [[sets[0]]]
+        for s in sets[1:]:
+            if s[0] in anchor_frames:
+                chunks.append([s])
+            else:
+                chunks[-1].append(s)
+        return [
+            (chunk, idx > 0 or chunk[0][0] in anchor_frames)
+            for idx, chunk in enumerate(chunks)
+        ]
 
     def _emit_ramps(self, reg, sets, last_frame, irq, drop_idx, new_rows):
         claimed = set()
