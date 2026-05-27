@@ -15,6 +15,7 @@ from preframr_tokens.stfconstants import (
     FRAME_REG,
     LOSS_TIER_NAMES,
     MODE_VOL_REG,
+    MOTIF_ARG,
     VOICE_CTRL_REG,
 )
 
@@ -35,9 +36,11 @@ def _op_tier_map() -> dict[int, str]:
 
 
 def _row_tier(row, op_tier: dict[int, str]) -> str:
-    """Tier for a single atomic row. Reg-specific overrides (FRAME, DELAY, FILTER, MODE_VOL, VOICE_CTRL) take precedence over the op-registry mapping; unmapped tokens fall through to ``content``."""
+    """Tier for a single atomic row. Reg-specific overrides (FRAME, DELAY, FILTER, MODE_VOL, VOICE_CTRL) take precedence over the op-registry mapping; MOTIF_ARG (a motif value slot) is forced to ``content`` (it carries content even though its motif transform is loss-tier zero); unmapped tokens fall through to ``content``."""
     op = int(row.op)
     reg = int(row.reg)
+    if op == MOTIF_ARG:
+        return CONTENT_TIER
     if reg == FRAME_REG:
         return "structural"
     if reg == DELAY_REG:

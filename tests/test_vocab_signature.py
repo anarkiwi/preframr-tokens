@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -13,10 +14,12 @@ from preframr_tokens.stfconstants import (
     DELAY_REG,
     FRAME_REG,
     MODEL_PDTYPE,
+    MOTIF_ARG,
+    MOTIF_OP,
     PAD_REG,
     SET_OP,
 )
-from preframr_tokens.vocab_signature import CONTENT_TIER, VocabSignature
+from preframr_tokens.vocab_signature import CONTENT_TIER, VocabSignature, _row_tier
 
 
 def _tiny_args():
@@ -132,6 +135,15 @@ class TestVocabSignatureConsistency(unittest.TestCase):
         sig = VocabSignature(_rt_atomic(tokens), tokens, n_vocab=4)
         for vid, name in sig.tier_names.items():
             self.assertEqual(sig.tier_order[int(sig.tier_ids[vid])], name)
+
+
+class TestMotifArgTier(unittest.TestCase):
+    def test_motif_arg_forced_content_motif_op_stays_zero(self):
+        op_tier = {MOTIF_OP: "zero", MOTIF_ARG: "zero"}
+        arg = SimpleNamespace(op=MOTIF_ARG, reg=0)
+        op = SimpleNamespace(op=MOTIF_OP, reg=0)
+        self.assertEqual(_row_tier(arg, op_tier), CONTENT_TIER)
+        self.assertEqual(_row_tier(op, op_tier), "zero")
 
 
 if __name__ == "__main__":
