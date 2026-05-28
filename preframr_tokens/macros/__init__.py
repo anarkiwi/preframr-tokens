@@ -16,9 +16,14 @@ from preframr_tokens.macros.passes import (
     VoiceBlockOrderPass,
 )
 from preframr_tokens.macros.ctrl_triple_pass import CtrlTriplePass
+from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
+from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.local_macros import CtrlBigramPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
+from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
+from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
+from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
     OVERLAY_BODY_FREQ_DELTA_BIN,
@@ -35,6 +40,15 @@ from preframr_tokens.macros.validators import (
     validate_pattern_overlays,
 )
 
+FREQ_BLOCK_PASSES = [
+    TrajectoryAnchorPass(),
+    FreqTrajectoryPass(),
+    FreqOnsetPass(),
+    PerRegBurstPass(),
+    ReleaseUpdatePass(),
+]
+
+
 PASSES = [
     PresetPass(),
     GateSlopeShiftPass(),
@@ -48,6 +62,17 @@ PASSES = [
     CtrlBigramPass(),
     SubregPass(),
 ]
+
+
+def run_freq_block_passes(df, args=None):
+    """Freq-encoder passes (TrajectoryAnchor / FreqTrajectory / FreqOnset / PerRegBurst /
+    ReleaseUpdate) that produce op45/47/48/49 atoms from literal SETs. Run once at the
+    start of each self-contained block (after ``expand_to_literal_form`` decompiles
+    everything) and once at parse-time before rotation -- kept out of ``PASSES`` so
+    they don't re-fire on already-encoded atoms inside the rotation loop."""
+    for macro_pass in FREQ_BLOCK_PASSES:
+        df = macro_pass.apply(df, args=args)
+    return df
 
 
 POST_NORM_PRE_VOICE_PASSES = [

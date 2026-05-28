@@ -64,7 +64,7 @@ def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None)
     PLAY_INSTRUMENT_OP, DO_LOOP_OP) rewritten to literals so the block
     can be tokenized and decoded standalone.
     """
-    from preframr_tokens.macros import run_passes
+    from preframr_tokens.macros import run_freq_block_passes, run_passes
 
     if stride is None or stride < 1:
         stride = frames_per_block
@@ -107,7 +107,11 @@ def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None)
         slice_df = literal.iloc[row_lo:row_hi].reset_index(drop=True).copy()
         if slice_df.empty:
             continue
-        block = run_passes(slice_df, args=args) if args is not None else slice_df
+        if args is not None:
+            slice_df = run_freq_block_passes(slice_df, args=args)
+            block = run_passes(slice_df, args=args)
+        else:
+            block = slice_df
         if block.empty:
             continue
         block.attrs.clear()

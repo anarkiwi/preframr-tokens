@@ -57,6 +57,17 @@ def is_melody_pitch_atom(op, reg, subreg) -> bool:
     return False
 
 
+def is_freq_onset_atom(op, reg, subreg) -> bool:
+    """A FREQ_TRAJ V0 onset atom: op45, freq reg (0/7/14), V0_HI/V0_LO subreg.
+    Strict subset of ``is_melody_pitch_atom``; the onset-loss-weight buffer uses this
+    narrower predicate to up-weight only the FREQ_TRAJ V0 class."""
+    return (
+        int(op) == FREQ_TRAJ_OP
+        and int(reg) in _FREQ_REGS_FROZEN
+        and int(subreg) in _FT_V0_SUBREGS
+    )
+
+
 def split_cross_boundary_merges(
     seq, decode_to_base_ids, base_to_unigram_id, is_melody, n_atoms, dtype=np.int32
 ):

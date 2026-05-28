@@ -73,7 +73,11 @@ from preframr_tokens.macros.motif_pass import (
     mine_motifs,
 )
 from preframr_tokens.motif_mine import mine_dict_from_dumps
-from preframr_tokens.regtokenizer import RegTokenizer
+from preframr_tokens.regtokenizer import (
+    RegTokenizer,
+    is_freq_onset_atom,
+    is_melody_pitch_atom,
+)
 from preframr_tokens.reglogparser import (
     RegLogParser,
     prepare_df_for_audio,
@@ -110,6 +114,8 @@ __all__ = [
     "PassBackedTransform",
     "RowExpandingTransform",
     "DistancePairSpec",
+    "is_freq_onset_atom",
+    "is_melody_pitch_atom",
     "FreqTrajectoryPass",
     "PresetPass",
     "PerRegBurstPass",
