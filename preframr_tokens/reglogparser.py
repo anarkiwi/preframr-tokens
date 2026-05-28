@@ -14,6 +14,7 @@ from preframr_tokens.engine_fingerprint import (
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
+from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
@@ -893,6 +894,7 @@ class RegLogParser:
         df = VoiceTrackPass().apply(df, args=self.args)
         df = TrajectoryAnchorPass().apply(df, args=self.args)
         df = FreqTrajectoryPass().apply(df, args=self.args)
+        df = FreqOnsetPass().apply(df, args=self.args)
         df = PresetPass().apply(df, args=self.args)
         df = PerRegBurstPass().apply(df, args=self.args)
         df = GateSlopeShiftPass().apply(df, args=self.args)

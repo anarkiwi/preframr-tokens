@@ -41,6 +41,7 @@ from preframr_tokens.stfconstants import (
     FREQ_NUDGE_MODE_ABSOLUTE,
     FREQ_NUDGE_MODE_DELTA,
     FREQ_NUDGE_OP,
+    FREQ_ONSET_OP,
     FREQ_NUDGE_SUBREG_DELTA,
     FREQ_NUDGE_SUBREG_HI,
     FREQ_NUDGE_SUBREG_MODE,
@@ -470,6 +471,21 @@ class FreqTrajectoryDecoder(MacroDecoder):
         return list(pre)
 
 
+class FreqOnsetDecoder(MacroDecoder):
+    """Decode a FREQ_ONSET atom: an isolated TRAJ_REG (freq/PW/filter) write, equivalent to a
+    SET on that register but tagged as a melodic/timbral onset (so it lives in the onset
+    channel, not op0 SET)."""
+
+    op_code = FREQ_ONSET_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, int(row.val), row.diff, row.description)]
+
+
 class ReleaseUpdateDecoder(MacroDecoder):
     """Decode a RELEASE_UPDATE atom: a single isolated SR/AD envelope write,
     equivalent to a SET on that register but tagged as a recognised op."""
@@ -654,6 +670,7 @@ DECODERS = {
         FreqTrajectoryDecoder(),
         TrackRefDecoder(),
         FreqNudgeDecoder(),
+        FreqOnsetDecoder(),
         ReleaseUpdateDecoder(),
         CtrlUpdateDecoder(),
         CtrlTripleDecoder(),
