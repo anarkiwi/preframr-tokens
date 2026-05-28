@@ -15,6 +15,14 @@ from preframr_tokens.macros.loops import (
 from preframr_tokens.stfconstants import (
     DUMP_SUFFIX,
     FRAME_REG,
+    FREQ_NUDGE_OP,
+    FREQ_NUDGE_SUBREG_HI,
+    FREQ_NUDGE_SUBREG_LO,
+    FREQ_ONSET_OP,
+    FREQ_TRAJ_OP,
+    FREQ_TRAJ_REGS,
+    FT_SUBREG_V0_HI,
+    FT_SUBREG_V0_LO,
     OP_PDTYPE,
     PAD_REG,
     SET_OP,
@@ -25,6 +33,56 @@ from preframr_tokens.stfconstants import (
     UNI_SUFFIX,
     VAL_PDTYPE,
 )
+
+_FREQ_REGS_FROZEN = frozenset(FREQ_TRAJ_REGS)
+_FT_V0_SUBREGS = frozenset({FT_SUBREG_V0_HI, FT_SUBREG_V0_LO})
+_NUDGE_PITCH_SUBREGS = frozenset({FREQ_NUDGE_SUBREG_HI, FREQ_NUDGE_SUBREG_LO})
+
+
+def is_melody_pitch_atom(op, reg, subreg) -> bool:
+    """True for a melodic-pitch atom: op45 V0 (FT_SUBREG_V0_HI/LO) or op48 FREQ_ONSET or
+    op47 FREQ_NUDGE HI/LO -- all restricted to freq regs (FREQ_TRAJ_REGS = 0/7/14). The
+    melody-merge-split rule uses this predicate to detect cross-boundary Unigram merges.
+    """
+    if int(reg) not in _FREQ_REGS_FROZEN:
+        return False
+    op = int(op)
+    subreg = int(subreg)
+    if op == FREQ_TRAJ_OP and subreg in _FT_V0_SUBREGS:
+        return True
+    if op == FREQ_ONSET_OP:
+        return True
+    if op == FREQ_NUDGE_OP and subreg in _NUDGE_PITCH_SUBREGS:
+        return True
+    return False
+
+
+def split_cross_boundary_merges(
+    seq, decode_to_base_ids, base_to_unigram_id, is_melody, n_atoms, dtype=np.int32
+):
+    """Expand any merged Unigram token whose decoded base atoms cross the melody/non-melody
+    boundary back into its base atoms. Pure-melody and pure-non-melody merges (and single
+    base atoms) are kept. Pure: takes ``decode_to_base_ids(uid) -> list[int]``,
+    ``base_to_unigram_id(bid) -> int|None`` (the single-atom Unigram id for that base id),
+    and ``is_melody(bid) -> bool``. Returns a possibly-longer 1-D numpy array of ids."""
+    out = []
+    for tid in seq:
+        tid = int(tid)
+        base_ids = [int(b) for b in decode_to_base_ids(tid)]
+        valid = [b for b in base_ids if 0 <= b < n_atoms]
+        if len(valid) <= 1:
+            out.append(tid)
+            continue
+        melody_n = sum(1 for b in valid if is_melody(b))
+        if melody_n == 0 or melody_n == len(valid):
+            out.append(tid)
+            continue
+        for b in valid:
+            u = base_to_unigram_id(b)
+            out.append(int(u) if u is not None else tid)
+    return np.asarray(out, dtype=dtype)
+
+
 from preframr_tokens.train_worker import train_worker
 
 __all__ = ["RegTokenizer"]
@@ -96,6 +154,43 @@ class RegTokenizer:
         if self.tkmodel:
             return self.decode_unicode(self.tkmodel.decode(encoded_tokens), dtype=dtype)
         return encoded_tokens
+
+    def split_melody_merges(self, seq):
+        """Expand Unigram merges that cross the melody/non-melody atom boundary; pure-melody
+        and pure-non-melody merges are kept. Opt-in (``args.melody_merge_split``); byte-exact
+        (decode is the inverse of merge in the Unigram vocab). Caches per-tokenizer maps on
+        first call so subsequent block encodes are O(seq)."""
+        if not self.tkmodel or self.tokens is None or not len(self.tokens):
+            return seq
+        if not hasattr(self, "_melody_atom_unigram_id"):
+            n_atoms = len(self.tokens)
+            atom_ns = self.tokens["n"].astype(np.int64).to_numpy()
+            uni_ids = [None] * n_atoms
+            for i in range(n_atoms):
+                ch = chr(UNICODE_BASE + int(atom_ns[i]))
+                uni_ids[i] = self.tkmodel.token_to_id(ch)
+            self._melody_atom_unigram_id = uni_ids
+            self._melody_atom_mask = [
+                is_melody_pitch_atom(
+                    self.tokens.iloc[i]["op"],
+                    self.tokens.iloc[i]["reg"],
+                    self.tokens.iloc[i]["subreg"],
+                )
+                for i in range(n_atoms)
+            ]
+        n_atoms = len(self.tokens)
+        return split_cross_boundary_merges(
+            seq,
+            decode_to_base_ids=lambda uid: self.decode([uid]),
+            base_to_unigram_id=lambda b: (
+                self._melody_atom_unigram_id[b] if 0 <= b < n_atoms else None
+            ),
+            is_melody=lambda b: (
+                self._melody_atom_mask[b] if 0 <= b < n_atoms else False
+            ),
+            n_atoms=n_atoms,
+            dtype=seq.dtype,
+        )
 
     def _all_atom_chars(self):
         """Every unique atom char that ``encode_unicode`` can emit for
