@@ -1,9 +1,8 @@
-"""SkeletonPass: collapse each clean held freq note into ONE ``SKEL`` atom (op54) -- a
-note->freq LUT index (absolute for the first claimed note per reg, a small signed semitone
-interval after) so a note is one atomic token; intra-note-motion / off-semitone notes stay
-raw op0 SET (byte-exact pass-through). Opt-in (``skeleton_pass``); when on,
-``freq_trajectory_pass`` and ``freq_onset_pass`` must be OFF (skeleton owns FREQ_TRAJ_REGS).
-"""
+"""SkeletonPass + ornament channel (Stage 1+2 unified pitch): segment each freq reg into
+NOTES (semitone-run + ``MIN_HOLD`` UNION gate-on), emit one ``SKEL`` atom per note (LUT
+index; abs first per reg, signed interval after) plus one ``ORN`` descriptor collapsing the
+note's intra-note arps/vibrato/slide into a classified primitive (PLAIN/OCTAVE/ARP/SLIDE/
+VIB/RESID, inline params). Opt-in; ported from audit.unified_pitch (validated)."""
 
 __all__ = [
     "SkeletonPass",
@@ -12,6 +11,8 @@ __all__ = [
     "midi_to_fn",
     "CLOCK_RATE",
     "CENTS_THRESHOLD",
+    "MIN_HOLD",
+    "fit_descriptor",
 ]
 
 import math
@@ -25,15 +26,34 @@ from preframr_tokens.macros.passes_base import (
 )
 from preframr_tokens.stfconstants import (
     FREQ_TRAJ_REGS,
+    ORN_OP,
+    ORN_SUBREG_P1,
+    ORN_SUBREG_P2,
+    ORN_SUBREG_TYPE,
+    ORN_TYPE_ARP,
+    ORN_TYPE_OCTAVE,
+    ORN_TYPE_PLAIN,
+    ORN_TYPE_RESID,
+    ORN_TYPE_SLIDE,
+    ORN_TYPE_VIB,
     SET_OP,
     SKEL_OP,
     SKEL_SUBREG_ABS,
     SKEL_SUBREG_INTERVAL,
+    VOICE_CTRL_REG,
+    VOICE_REG_SIZE,
 )
 
 CLOCK_RATE = 985248
 MIDI_LO, MIDI_HI = 16, 112
 CENTS_THRESHOLD = 8.0
+MIN_HOLD = 3
+VIB_MIN_CENTS = 8.0
+ARP_MAX_DISTINCT = 4
+_OFFSET_LIMIT = 24
+_CTRL_FOR_FREQ = {
+    int(reg): int(VOICE_CTRL_REG[reg // VOICE_REG_SIZE]) for reg in FREQ_TRAJ_REGS
+}
 
 
 def midi_to_fn(m):
@@ -63,12 +83,54 @@ def fn_to_note_resid(fn):
     return note, (mf - note) * 100.0
 
 
-def _row(reg, subreg, val, diff, irq):
+def _vib_depth(resids):
+    """Per-note sub-semitone vibrato depth bucket (0 none / 1 light / 2 heavy) from the cents
+    amplitude of the note's on-semitone writes (the held-note wobble)."""
+    near = [c for c in resids if abs(c) < 50]
+    if len(near) < 3:
+        return 0
+    amp = (max(near) - min(near)) / 2.0
+    return 0 if amp < VIB_MIN_CENTS else (1 if amp <= 30 else 2)
+
+
+def fit_descriptor(base, seg_fns):
+    """Classify a note's intra-note freq writes (16-bit, in frame order) into one ornament
+    primitive. ``base`` = the note's semitone; ``seg_fns`` = settled freqs AFTER the onset.
+    Returns (orn_type, offsets) where offsets is the ordered per-frame note-relative semitone
+    cycle (ARP/OCTAVE/SLIDE), () for PLAIN, depth bucket carried in VIB, raw deltas in RESID.
+    """
+    if not seg_fns:
+        return ORN_TYPE_PLAIN, ()
+    resolved = [fn_to_note_resid(fn) for fn in seg_fns]
+    if any(r is None for r in resolved):
+        return ORN_TYPE_RESID, ()
+    notes = [r[0] for r in resolved]
+    resids = [r[1] for r in resolved]
+    offs = [n - base for n in notes]
+    nonzero = [o for o in offs if o != 0]
+    if not nonzero:
+        depth = _vib_depth(resids)
+        return (ORN_TYPE_VIB, (depth,)) if depth else (ORN_TYPE_PLAIN, ())
+    if any(abs(o) > _OFFSET_LIMIT for o in offs):
+        return ORN_TYPE_RESID, ()
+    distinct = sorted(set(offs))
+    if set(distinct) <= {0, 12} or set(distinct) <= {0, -12}:
+        return ORN_TYPE_OCTAVE, tuple(offs)
+    diffs = [b - a for a, b in zip(offs, offs[1:])]
+    monotone = all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)
+    if monotone and abs(offs[-1] - offs[0]) >= 2:
+        return ORN_TYPE_SLIDE, tuple(offs)
+    if len(distinct) <= ARP_MAX_DISTINCT:
+        return ORN_TYPE_ARP, tuple(offs)
+    return ORN_TYPE_RESID, ()
+
+
+def _row(reg, op, subreg, val, diff, irq):
     return {
         "reg": int(reg),
         "val": int(val),
         "diff": int(diff),
-        "op": int(SKEL_OP),
+        "op": int(op),
         "subreg": int(subreg),
         "irq": int(irq),
         "description": 0,
@@ -76,9 +138,10 @@ def _row(reg, subreg, val, diff, irq):
 
 
 class SkeletonPass(MacroPass):
-    """Collapse clean held freq notes into one SKEL atom (op54) each; requires
-    ``freq_trajectory_pass`` and ``freq_onset_pass`` OFF (skeleton owns the freq channel).
-    Notes with intra-note motion or an off-semitone held value stay raw op0 SET."""
+    """Dense skeleton + ornament: segment each freq reg into notes (semitone-run + MIN_HOLD
+    UNION gate-on), emit one SKEL atom per note and one ORN descriptor collapsing its
+    intra-note arps/vibrato/slide. Requires ``freq_trajectory_pass`` / ``freq_onset_pass``
+    OFF (skeleton owns the freq channel)."""
 
     GATE_FLAGS = frozenset({"skeleton_pass"})
 
@@ -90,100 +153,178 @@ class SkeletonPass(MacroPass):
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
+        if "traj_anchor" in df.columns:
+            df = df.drop(columns=["traj_anchor"])
+        ctx = self._context(df)
+        irq = _first_irq(df)
+        drop_idx = []
+        new_rows = []
+        for reg in FREQ_TRAJ_REGS:
+            self._claim_reg(reg, ctx, irq, drop_idx, new_rows)
+        if not new_rows:
+            return df
+        return _splice_rows(df, drop_idx, new_rows)
+
+    @staticmethod
+    def _context(df):
+        """Per-row arrays + per-reg ordered (frame, row_index, val, diff) freq SETs and per-voice
+        gate-on rising-edge frames (ctrl bit0)."""
         f_idx = _frame_index(df).to_numpy()
         regs = df["reg"].to_numpy()
         ops = df["op"].to_numpy()
         subregs = df["subreg"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        anchors = (
-            df["traj_anchor"].to_numpy().astype(bool)
-            if "traj_anchor" in df.columns
-            else None
-        )
-        if anchors is not None:
-            df = df.drop(columns=["traj_anchor"])
-        irq = _first_irq(df)
-        drop_idx = []
-        new_rows = []
-        for reg in FREQ_TRAJ_REGS:
-            sets = [
-                (
-                    int(f_idx[i]),
-                    int(i),
-                    int(vals[i]),
-                    int(diffs[i]) if diffs is not None else 0,
+        freq_sets = {int(reg): [] for reg in FREQ_TRAJ_REGS}
+        gate_on = {int(reg): set() for reg in FREQ_TRAJ_REGS}
+        gate_state = {int(c): 0 for c in _CTRL_FOR_FREQ.values()}
+        ctrl_to_freq = {int(c): int(f) for f, c in _CTRL_FOR_FREQ.items()}
+        for i in range(len(df)):
+            reg = int(regs[i])
+            if reg in freq_sets and int(ops[i]) == SET_OP and int(subregs[i]) == -1:
+                freq_sets[reg].append(
+                    (
+                        int(f_idx[i]),
+                        int(i),
+                        int(vals[i]),
+                        int(diffs[i]) if diffs is not None else 0,
+                    )
                 )
-                for i in range(len(df))
-                if int(regs[i]) == reg
-                and int(ops[i]) == SET_OP
-                and int(subregs[i]) == -1
-            ]
-            if not sets:
-                continue
-            self._claim_reg(reg, sets, regs, f_idx, anchors, irq, drop_idx, new_rows)
-        if not new_rows:
-            return df
-        return _splice_rows(df, drop_idx, new_rows)
+            elif reg in gate_state and int(ops[i]) == SET_OP and int(subregs[i]) == -1:
+                g = int(vals[i]) & 1
+                if g and not gate_state[reg]:
+                    gate_on[ctrl_to_freq[reg]].add(int(f_idx[i]))
+                gate_state[reg] = g
+        return freq_sets, gate_on
 
-    def _claim_reg(self, reg, sets, regs, f_idx, anchors, irq, drop_idx, new_rows):
-        prev_note = [None]
-        for chunk, emit in self._anchor_chunks(reg, sets, regs, f_idx, anchors):
-            if not emit or not chunk:
-                continue
-            self._claim_chunk(reg, chunk, prev_note, irq, drop_idx, new_rows)
-
-    @staticmethod
-    def _claim_chunk(reg, chunk, prev_note, irq, drop_idx, new_rows):
-        """Claim a note chunk whose every freq value sits on ONE semitone within
-        CENTS_THRESHOLD (tolerates held-note jitter; rejects vibrato/slide/multi-
-        semitone to RESID) as one SKEL atom; leave any other chunk as raw op0 SET."""
-        note = None
-        for c in chunk:
-            res = fn_to_note_resid(c[2])
-            if res is None or abs(res[1]) > CENTS_THRESHOLD:
-                return
-            if note is None:
-                note = res[0]
-            elif res[0] != note:
-                return
-        if note is None:
+    def _claim_reg(self, reg, ctx, irq, drop_idx, new_rows):
+        freq_sets, gate_on = ctx
+        sets = freq_sets[int(reg)]
+        if not sets:
             return
-        first = chunk[0]
-        if prev_note[0] is None:
-            row = _row(reg, SKEL_SUBREG_ABS, note, first[3], irq)
-        else:
-            interval = note - prev_note[0]
-            if not -128 <= interval <= 127:
-                return
-            row = _row(reg, SKEL_SUBREG_INTERVAL, interval & 0xFF, first[3], irq)
-        prev_note[0] = note
-        row["__pos"] = first[1]
-        new_rows.append(row)
-        drop_idx.extend(c[1] for c in chunk)
+        onsets = self._segment_notes(sets, gate_on[int(reg)])
+        if len(onsets) < 2:
+            return
+        by_frame = {s[0]: s for s in sets}
+        onset_frames = [fr for fr, _ in onsets]
+        prev_note = None
+        for k, (onset_fr, note) in enumerate(onsets):
+            nxt_fr = (
+                onset_frames[k + 1]
+                if k + 1 < len(onset_frames)
+                else max(s[0] for s in sets) + 1
+            )
+            anchor = by_frame.get(onset_fr)
+            if anchor is None:
+                continue
+            seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
+            per_frame = self._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            orn_type, _ = fit_descriptor(note, [s[2] for s in seg])
+            claimed = self._emit_note(
+                reg, note, anchor, per_frame, orn_type, prev_note, irq, new_rows
+            )
+            if not claimed:
+                continue
+            prev_note = note
+            drop_idx.append(anchor[1])
+            drop_idx.extend(s[1] for s in seg)
 
     @staticmethod
-    def _anchor_chunks(reg, sets, regs, f_idx, anchors):
-        """Split a register's SETs into inter-anchor ``(chunk, emit)`` segments cut at
-        each ``traj_anchor`` frame, so no note chunk spans an anchor and every emitted one
-        begins on one (the leading segment emits only if its first SET is itself an
-        anchor). With no column the whole list is one emittable segment."""
-        if anchors is None:
-            return [(sets, True)]
-        anchor_frames = {
-            int(f_idx[i])
-            for i in range(len(regs))
-            if int(regs[i]) == reg and bool(anchors[i])
-        }
-        if not anchor_frames:
-            return [(sets, True)]
-        chunks = [[sets[0]]]
-        for s in sets[1:]:
-            if s[0] in anchor_frames:
-                chunks.append([s])
+    def _per_frame_fns(note, anchor, seg, onset_fr, nxt_fr):
+        """Forward-filled per-frame settled freq for frames AFTER the onset up to the next note
+        (held frames inherit the last write). Position 0 is the onset frame itself (= anchor
+        value, owned by the SKEL atom); the ornament replays positions 1..end byte-exactly.
+        """
+        span = max(0, nxt_fr - onset_fr - 1)
+        if span == 0:
+            return []
+        seg_at = {s[0] - onset_fr: int(s[2]) for s in seg}
+        out = []
+        cur = int(anchor[2])
+        for k in range(1, span + 1):
+            cur = seg_at.get(k, cur)
+            out.append(cur)
+        return out
+
+    @staticmethod
+    def _segment_notes(sets, gate_frames):
+        """Note onsets = semitone level-change that HOLDS >= MIN_HOLD frames (so fast arp steps
+        are not notes) UNION gate-on frames. Hold duration is measured by frame span (robust to
+        per-frame duplicate writes from the block-expand path). Returns sorted [(frame, note)].
+        """
+        resolved = []
+        for s in sets:
+            r = fn_to_note_resid(s[2])
+            if r is not None:
+                resolved.append((s[0], r[0]))
+        runs = []
+        for fr, note in resolved:
+            if runs and runs[-1][1] == note:
+                runs[-1] = (runs[-1][0], note, fr)
             else:
-                chunks[-1].append(s)
-        return [
-            (chunk, idx > 0 or chunk[0][0] in anchor_frames)
-            for idx, chunk in enumerate(chunks)
+                runs.append((fr, note, fr))
+        onsets = {}
+        for i, (start, note, last) in enumerate(runs):
+            end = runs[i + 1][0] if i + 1 < len(runs) else last + MIN_HOLD
+            if (end - start) >= MIN_HOLD:
+                onsets[start] = note
+        fn_at = {fr: note for fr, note in resolved}
+        for fr in gate_frames:
+            if fr in fn_at:
+                onsets.setdefault(fr, fn_at[fr])
+        return sorted(onsets.items())
+
+    def _emit_note(
+        self, reg, note, anchor, per_frame, orn_type, prev_note, irq, new_rows
+    ):
+        """Emit the SKEL atom (abs/interval) for one note followed by its ORN descriptor.
+        Returns False (claim nothing) if the skeleton interval overflows a signed byte.
+        """
+        skel = self._skel_row(reg, note, anchor, prev_note, irq)
+        if skel is None:
+            return False
+        orn = self._orn_rows(reg, note, per_frame, orn_type, anchor[3], irq)
+        skel["__pos"] = anchor[1]
+        new_rows.append(skel)
+        for row in orn:
+            row["__pos"] = anchor[1]
+            new_rows.append(row)
+        return True
+
+    @staticmethod
+    def _skel_row(reg, note, anchor, prev_note, irq):
+        if prev_note is None:
+            return _row(reg, SKEL_OP, SKEL_SUBREG_ABS, note, anchor[3], irq)
+        interval = note - prev_note
+        if not -128 <= interval <= 127:
+            return None
+        return _row(reg, SKEL_OP, SKEL_SUBREG_INTERVAL, interval & 0xFF, anchor[3], irq)
+
+    @staticmethod
+    def _orn_rows(reg, note, per_frame, orn_type, diff, irq):
+        """Build the ORN descriptor: a TYPE atom then inline per-frame params. Semitone types
+        (OCTAVE/ARP/SLIDE) store one signed P1 offset per frame (decoded LUT[note+off],
+        audio-exact at the semitone floor); VIB/RESID store the raw 16-bit freq per frame as a
+        P1 hi + P2 lo pair (byte-exact, the escape that keeps the wobble/unstructured tail).
+        PLAIN carries no params (the SKEL value holds)."""
+        count = 0 if orn_type == ORN_TYPE_PLAIN else len(per_frame)
+        count = min(count, 0xFFFF)
+        rows = [
+            _row(reg, ORN_OP, ORN_SUBREG_TYPE, orn_type, diff, irq),
+            _row(reg, ORN_OP, ORN_SUBREG_P2, count, diff, irq),
         ]
+        if count == 0:
+            return rows
+        if orn_type in (ORN_TYPE_VIB, ORN_TYPE_RESID):
+            for fn in per_frame[:count]:
+                u = int(fn) & 0xFFFF
+                rows.append(
+                    _row(reg, ORN_OP, ORN_SUBREG_P1, (u >> 8) & 0xFF, diff, irq)
+                )
+                rows.append(_row(reg, ORN_OP, ORN_SUBREG_P2, u & 0xFF, diff, irq))
+            return rows
+        for fn in per_frame[:count]:
+            res = fn_to_note_resid(int(fn))
+            off = (res[0] - note) if res is not None else 0
+            rows.append(_row(reg, ORN_OP, ORN_SUBREG_P1, int(off) & 0xFF, diff, irq))
+        return rows

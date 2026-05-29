@@ -7,6 +7,7 @@ from preframr_tokens.macros.decoders import (
     Flip2Decoder,
     FlipDecoder,
     FreqTrajectoryDecoder,
+    OrnamentDecoder,
     PresetDecoder,
     SetDecoder,
     ShiftedDecoder,
@@ -43,6 +44,7 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
     PATTERN_REPLAY_SUBREG_DIST_LO,
+    ORN_OP,
     PWM_PRESET_OP,
     PWM_PRESET_SHIFTED_OP,
     SET_OP,
@@ -71,16 +73,31 @@ class FreqTrajectoryTransform(PassBackedTransform):
 
 @register("skeleton")
 class SkeletonTransform(PassBackedTransform):
+    """Stage 1+2 unified pitch: SkeletonPass emits both the per-note SKEL atom (op54) and the
+    per-note ORN ornament descriptor (op55); decode dispatches SkeletonDecoder for SKEL and
+    OrnamentDecoder for ORN. Content-tier (semitone-snap is the deliberate pitch
+    quantisation); the RESID/VIB escapes keep the per-frame freq byte-exact at that floor.
+    """
+
     TIER = "audio_bit_exact"
-    OP_CODES = frozenset({SKEL_OP})
+    OP_CODES = frozenset({SKEL_OP, ORN_OP})
     OPERATES_ON_VOICE_REGS = True
     LOSS_TIER = "content"
     REQUIRES_ARGS = frozenset({"skeleton_pass"})
-    PROVIDES_OPS = frozenset({SKEL_OP})
+    PROVIDES_OPS = frozenset({SKEL_OP, ORN_OP})
     EMITS_NON_SET_REGS = frozenset({0, 7, 14})
     PASS_CLASS = SkeletonPass
     DECODER_CLASS = SkeletonDecoder
     LOSSY_TOLERANCE = 0.0
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self._orn_decoder = OrnamentDecoder()
+
+    def expand_atom(self, row, state):
+        if int(getattr(row, "op")) == ORN_OP:
+            return self._orn_decoder.expand(row, state)
+        return self._decoder.expand(row, state)
 
 
 @register("preset")

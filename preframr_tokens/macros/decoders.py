@@ -22,9 +22,19 @@ __all__ = [
     "WavetableSustainDecoder",
     "CtrlBigramDecoder",
     "SkeletonDecoder",
+    "OrnamentDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import LUT as SKEL_LUT
+from preframr_tokens.stfconstants import (
+    ORN_OP,
+    ORN_SUBREG_P1,
+    ORN_SUBREG_P2,
+    ORN_SUBREG_TYPE,
+    ORN_TYPE_PLAIN,
+    ORN_TYPE_RESID,
+    ORN_TYPE_VIB,
+)
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -671,11 +681,82 @@ class SkeletonDecoder(MacroDecoder):
             signed = v if v < 128 else v - 256
             note = int(state.last_skel_note.get(reg, 0)) + signed
         state.last_skel_note[reg] = note
-        freq = int(SKEL_LUT[note])
+        freq = int(SKEL_LUT[max(0, min(127, note))])
         pre = state.maybe_flush_for(reg, -1)
         state.last_val[reg] = freq
         state.last_diff[reg] = row.diff
         return pre + [(reg, freq, row.diff, row.description)]
+
+
+class OrnamentDecoder(MacroDecoder):
+    """Decode an ORN atom (op55): replay one note's pitch ornament onto the skeleton freq. A
+    TYPE atom selects the primitive, a P2 count gives the replay length, then per-frame params
+    follow (OCTAVE/ARP/SLIDE: signed P1 offset -> LUT[skel_note+off]; VIB/RESID: raw 16-bit
+    P1 hi + P2 lo). Values queue into pending_set_writes after a leading base re-assert, one
+    draining per frame tick over the note (the SKEL owns the onset frame)."""
+
+    op_code = ORN_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        subreg = int(row.subreg)
+        val = int(row.val) & 0xFF
+        if subreg == ORN_SUBREG_TYPE:
+            state.pending_orn = {
+                "reg": reg,
+                "type": val,
+                "count": None,
+                "vals": [],
+                "hi": None,
+            }
+            return None
+        orn = state.pending_orn
+        if orn is None or orn["reg"] != reg:
+            return None
+        if orn["count"] is None and subreg == ORN_SUBREG_P2:
+            orn["count"] = (int(row.val) & 0xFFFF) if int(row.val) >= 0 else 0
+            return self._maybe_finish(state, orn)
+        self._collect(orn, subreg, val)
+        return self._maybe_finish(state, orn)
+
+    @staticmethod
+    def _collect(orn, subreg, val):
+        if orn["type"] in (ORN_TYPE_VIB, ORN_TYPE_RESID):
+            if subreg == ORN_SUBREG_P1:
+                orn["hi"] = val
+            elif subreg == ORN_SUBREG_P2 and orn["hi"] is not None:
+                orn["vals"].append((orn["hi"] << 8) | val)
+                orn["hi"] = None
+        elif subreg == ORN_SUBREG_P1:
+            orn["vals"].append(val if val < 128 else val - 256)
+
+    def _maybe_finish(self, state, orn):
+        count = orn["count"]
+        if count is None:
+            return None
+        if orn["type"] == ORN_TYPE_PLAIN or count == 0:
+            state.pending_orn = None
+            return None
+        if len(orn["vals"]) < count:
+            return None
+        return self._queue(state, orn)
+
+    @staticmethod
+    def _queue(state, orn):
+        reg = orn["reg"]
+        state.pending_orn = None
+        note = int(state.last_skel_note.get(reg, 0))
+        base = int(SKEL_LUT[max(0, min(127, note))])
+        queue = state.pending_set_writes[reg]
+        queue.append(base)
+        if orn["type"] in (ORN_TYPE_VIB, ORN_TYPE_RESID):
+            for fn in orn["vals"]:
+                queue.append(int(fn) & 0xFFFF)
+        else:
+            for off in orn["vals"]:
+                idx = max(0, min(127, note + int(off)))
+                queue.append(int(SKEL_LUT[idx]))
+        return None
 
 
 DECODERS = {
@@ -703,6 +784,7 @@ DECODERS = {
         CtrlUpdateDecoder(),
         CtrlTripleDecoder(),
         SkeletonDecoder(),
+        OrnamentDecoder(),
     )
 }
 _PRESET_DECODER = PresetDecoder()

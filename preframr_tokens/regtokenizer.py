@@ -24,6 +24,7 @@ from preframr_tokens.stfconstants import (
     FT_SUBREG_V0_HI,
     FT_SUBREG_V0_LO,
     OP_PDTYPE,
+    ORN_OP,
     PAD_REG,
     SET_OP,
     SKEL_OP,
@@ -42,9 +43,9 @@ _NUDGE_PITCH_SUBREGS = frozenset({FREQ_NUDGE_SUBREG_HI, FREQ_NUDGE_SUBREG_LO})
 
 def is_melody_pitch_atom(op, reg, subreg) -> bool:
     """True for a melodic-pitch atom: op45 V0 (FT_SUBREG_V0_HI/LO) or op48 FREQ_ONSET or
-    op47 FREQ_NUDGE HI/LO or op54 SKEL -- all restricted to freq regs (FREQ_TRAJ_REGS =
-    0/7/14). The melody-merge-split rule uses this predicate to detect cross-boundary
-    Unigram merges."""
+    op47 FREQ_NUDGE HI/LO or op54 SKEL or op55 ORN (pitch-ornament) -- all restricted to freq
+    regs (FREQ_TRAJ_REGS = 0/7/14). The melody-merge-split rule uses this predicate to detect
+    cross-boundary Unigram merges."""
     if int(reg) not in _FREQ_REGS_FROZEN:
         return False
     op = int(op)
@@ -53,7 +54,7 @@ def is_melody_pitch_atom(op, reg, subreg) -> bool:
         return True
     if op == FREQ_ONSET_OP:
         return True
-    if op == SKEL_OP:
+    if op in (SKEL_OP, ORN_OP):
         return True
     if op == FREQ_NUDGE_OP and subreg in _NUDGE_PITCH_SUBREGS:
         return True
