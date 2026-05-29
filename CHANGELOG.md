@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.32.0]
+
+### Added
+
+- **Stage 1+2 unified pitch: dense skeleton + ornament channel** (`ORN_OP=55`).
+  `SkeletonPass` was rewritten to segment each freq reg's settled per-frame values
+  into NOTES via the validated `audit.unified_pitch` algorithm — semitone-run with
+  `MIN_HOLD=3` (so fast arp steps are not notes) UNIONed with gate-on rising edges
+  (ctrl bit0) — instead of `traj_anchor` chunks. Each note emits one `SKEL` atom
+  (note→freq LUT index; absolute first per reg, signed semitone interval after)
+  plus one `ORN` descriptor that collapses the note's intra-note arps/vibrato/slide
+  into a single classified primitive (`PLAIN`/`OCTAVE`/`ARP`/`SLIDE`/`VIB`/`RESID`)
+  with params stored **inline** (per-frame note-relative offset cycle for
+  OCTAVE/ARP/SLIDE; raw per-frame 16-bit freq escape for VIB/RESID). So a note's
+  dozens of sub-frame freq writes collapse to one SKEL + one ORN — arps decode AS
+  arps (coherent), not raw op0 "clicks". (Future compression step: a mined
+  per-composer ARP/offset codebook replacing the inline per-frame params.)
+- `OrnamentDecoder` (`op_code=ORN_OP`) replays the ornament onto the skeleton freq
+  via `pending_set_writes` (one drain per frame tick, the SKEL owns the onset
+  frame): OCTAVE/ARP/SLIDE → `LUT[skel_note+off]` per frame; VIB/RESID → the raw
+  16-bit escape. Registered in `DECODERS`. `SkeletonTransform` now owns both
+  `{SKEL_OP, ORN_OP}` and dispatches ORN to `OrnamentDecoder`. `ORN_OP` added to
+  `is_melody_pitch_atom` (pitch-ornament content). `SkeletonDecoder` clamps the
+  decoded note to the LUT range.
+
+### Notes
+
+- Content-tier (semitone-snap is the deliberate pitch quantisation); the RESID/VIB
+  raw escapes keep the per-frame freq byte-exact at that floor. On real dumps the
+  skeleton owns essentially all freq content (raw op0 freq SET remaining ≈ 0).
+
 ## [0.31.1]
 
 ### Fixed
