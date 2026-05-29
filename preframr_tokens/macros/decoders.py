@@ -21,8 +21,10 @@ __all__ = [
     "PwmSustainDecoder",
     "WavetableSustainDecoder",
     "CtrlBigramDecoder",
+    "SkeletonDecoder",
 ]
 
+from preframr_tokens.macros.skeleton_pass import LUT as SKEL_LUT
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -74,6 +76,8 @@ from preframr_tokens.stfconstants import (
     RELEASE_UPDATE_OP,
     SET_OP,
     SHIFTED_TO_BASE_OP,
+    SKEL_OP,
+    SKEL_SUBREG_ABS,
     SUBREG_FLUSH_OP,
     TRACK_INTERVAL_RATIOS,
     TRACK_REF_OP,
@@ -650,6 +654,30 @@ class CtrlBigramDecoder(MacroDecoder):
         return list(pre)
 
 
+class SkeletonDecoder(MacroDecoder):
+    """Decode a SKEL atom (op54): one clean held freq note. The note is absolute
+    (subreg=SKEL_SUBREG_ABS) for the first claimed note on a reg, else a signed semitone
+    interval (two's-complement byte) from the prior note on that reg; the decoded freq is
+    LUT[note] (content-tier cents snap)."""
+
+    op_code = SKEL_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        if int(row.subreg) == SKEL_SUBREG_ABS:
+            note = int(row.val)
+        else:
+            v = int(row.val) & 0xFF
+            signed = v if v < 128 else v - 256
+            note = int(state.last_skel_note.get(reg, 0)) + signed
+        state.last_skel_note[reg] = note
+        freq = int(SKEL_LUT[note])
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = freq
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, freq, row.diff, row.description)]
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -674,6 +702,7 @@ DECODERS = {
         ReleaseUpdateDecoder(),
         CtrlUpdateDecoder(),
         CtrlTripleDecoder(),
+        SkeletonDecoder(),
     )
 }
 _PRESET_DECODER = PresetDecoder()

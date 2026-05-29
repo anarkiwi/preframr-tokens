@@ -10,9 +10,11 @@ from preframr_tokens.macros.decoders import (
     PresetDecoder,
     SetDecoder,
     ShiftedDecoder,
+    SkeletonDecoder,
     TransposeDecoder,
 )
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
+from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.loop_pass import LoopPass
 from preframr_tokens.macros.loops import expand_loops
 from preframr_tokens.macros.passes import (
@@ -44,6 +46,7 @@ from preframr_tokens.stfconstants import (
     PWM_PRESET_OP,
     PWM_PRESET_SHIFTED_OP,
     SET_OP,
+    SKEL_OP,
     TRANSPOSE_OP,
 )
 
@@ -64,6 +67,20 @@ class FreqTrajectoryTransform(PassBackedTransform):
     EMITS_NON_SET_REGS = frozenset({0, 2, 21})
     PASS_CLASS = FreqTrajectoryPass
     DECODER_CLASS = FreqTrajectoryDecoder
+
+
+@register("skeleton")
+class SkeletonTransform(PassBackedTransform):
+    TIER = "audio_bit_exact"
+    OP_CODES = frozenset({SKEL_OP})
+    OPERATES_ON_VOICE_REGS = True
+    LOSS_TIER = "content"
+    REQUIRES_ARGS = frozenset({"skeleton_pass"})
+    PROVIDES_OPS = frozenset({SKEL_OP})
+    EMITS_NON_SET_REGS = frozenset({0, 7, 14})
+    PASS_CLASS = SkeletonPass
+    DECODER_CLASS = SkeletonDecoder
+    LOSSY_TOLERANCE = 0.0
 
 
 @register("preset")

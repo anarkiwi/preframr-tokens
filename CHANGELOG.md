@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0]
+
+### Added
+
+- `SkeletonPass` (op `SKEL_OP=54`) + `--skeleton-pass` flag (opt-in; reserves
+  `ORN_OP=55` for the ornament channel): Stage 1 of the unified-pitch
+  skeleton+ornament encoding. Collapses each clean held freq note (single settled
+  value within `CENTS_THRESHOLD` of a semitone) into ONE atomic `SKEL` atom — a
+  note→freq LUT index, absolute for the first claimed note per reg and a small
+  signed semitone interval after — so a note is one token (the per-note-token
+  generation-coherence axis). Notes with intra-note motion or off-semitone held
+  values stay raw `op0` SET (byte-exact pass-through / RESID). When on,
+  `freq_trajectory_pass` and `freq_onset_pass` must be OFF (skeleton owns
+  `FREQ_TRAJ_REGS`). `SkeletonDecoder` decodes `SKEL` to `LUT[note]`
+  (`audio_bit_exact`, `LOSS_TIER="content"`); `SKEL_OP` is a melodic-pitch atom.
+  `combine_reg`-backed; reuses `TrajectoryAnchorPass` segmentation.
+  `test_skeleton_pass` covers the round-trip; additive (default pipeline byte-exact).
+
 ## [0.30.0]
 
 ### Added
