@@ -25,14 +25,22 @@ __all__ = [
     "OrnamentDecoder",
 ]
 
-from preframr_tokens.macros.skeleton_pass import LUT as SKEL_LUT
+from preframr_tokens.macros.skeleton_pass import (
+    LUT as SKEL_LUT,
+    cycle_frame_offsets,
+    slide_frame_offsets,
+    vib_frame_offsets,
+)
 from preframr_tokens.stfconstants import (
     ORN_OP,
     ORN_SUBREG_P1,
     ORN_SUBREG_P2,
     ORN_SUBREG_TYPE,
+    ORN_TYPE_ARP,
+    ORN_TYPE_OCTAVE,
     ORN_TYPE_PLAIN,
     ORN_TYPE_RESID,
+    ORN_TYPE_SLIDE,
     ORN_TYPE_VIB,
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
@@ -689,11 +697,12 @@ class SkeletonDecoder(MacroDecoder):
 
 
 class OrnamentDecoder(MacroDecoder):
-    """Decode an ORN atom (op55): replay one note's pitch ornament onto the skeleton freq. A
-    TYPE atom selects the primitive, a P2 count gives the replay length, then per-frame params
-    follow (OCTAVE/ARP/SLIDE: signed P1 offset -> LUT[skel_note+off]; VIB/RESID: raw 16-bit
-    P1 hi + P2 lo). Values queue into pending_set_writes after a leading base re-assert, one
-    draining per frame tick over the note (the SKEL owns the onset frame)."""
+    """Decode an ORN atom (op55): replay one note's driver-native pitch ornament onto the
+    skeleton freq at the semitone floor. TYPE selects the primitive; PLAIN replays nothing;
+    OCTAVE/ARP/SLIDE/VIB carry a small signed-P1 param list (cycle period / slide target+rate
+    / vib depth+rate) terminated by a P2 length; RESID is a P2 count then one P1 offset/frame.
+    Each offset becomes LUT[skel_note+off], queued after a base re-assert, one per frame tick.
+    """
 
     op_code = ORN_OP
 
@@ -702,60 +711,53 @@ class OrnamentDecoder(MacroDecoder):
         subreg = int(row.subreg)
         val = int(row.val) & 0xFF
         if subreg == ORN_SUBREG_TYPE:
-            state.pending_orn = {
-                "reg": reg,
-                "type": val,
-                "count": None,
-                "vals": [],
-                "hi": None,
-            }
+            state.pending_orn = {"reg": reg, "type": val, "params": [], "length": None}
+            if val == ORN_TYPE_PLAIN:
+                state.pending_orn = None
             return None
         orn = state.pending_orn
         if orn is None or orn["reg"] != reg:
             return None
-        if orn["count"] is None and subreg == ORN_SUBREG_P2:
-            orn["count"] = (int(row.val) & 0xFFFF) if int(row.val) >= 0 else 0
-            return self._maybe_finish(state, orn)
-        self._collect(orn, subreg, val)
-        return self._maybe_finish(state, orn)
+        if orn["type"] == ORN_TYPE_RESID:
+            return self._resid(state, orn, subreg, val, int(row.val))
+        if subreg == ORN_SUBREG_P1:
+            orn["params"].append(val if val < 128 else val - 256)
+            return None
+        orn["length"] = int(row.val) & 0xFFFF
+        return self._queue(state, orn, self._offsets(orn))
+
+    def _resid(self, state, orn, subreg, val, raw):
+        if orn["length"] is None and subreg == ORN_SUBREG_P2:
+            orn["length"] = raw & 0xFFFF
+            if orn["length"] == 0:
+                state.pending_orn = None
+            return None
+        if subreg == ORN_SUBREG_P1:
+            orn["params"].append(val if val < 128 else val - 256)
+            if len(orn["params"]) >= (orn["length"] or 0):
+                return self._queue(state, orn, list(orn["params"]))
+        return None
 
     @staticmethod
-    def _collect(orn, subreg, val):
-        if orn["type"] in (ORN_TYPE_VIB, ORN_TYPE_RESID):
-            if subreg == ORN_SUBREG_P1:
-                orn["hi"] = val
-            elif subreg == ORN_SUBREG_P2 and orn["hi"] is not None:
-                orn["vals"].append((orn["hi"] << 8) | val)
-                orn["hi"] = None
-        elif subreg == ORN_SUBREG_P1:
-            orn["vals"].append(val if val < 128 else val - 256)
-
-    def _maybe_finish(self, state, orn):
-        count = orn["count"]
-        if count is None:
-            return None
-        if orn["type"] == ORN_TYPE_PLAIN or count == 0:
-            state.pending_orn = None
-            return None
-        if len(orn["vals"]) < count:
-            return None
-        return self._queue(state, orn)
+    def _offsets(orn):
+        t, params, length = orn["type"], orn["params"], orn["length"] or 0
+        if t in (ORN_TYPE_OCTAVE, ORN_TYPE_ARP):
+            return cycle_frame_offsets(params, length)
+        if t == ORN_TYPE_SLIDE and len(params) >= 2:
+            return slide_frame_offsets(params[0], params[1], length)
+        if t == ORN_TYPE_VIB and len(params) >= 2:
+            return vib_frame_offsets(params[0], params[1], length)
+        return [0] * length
 
     @staticmethod
-    def _queue(state, orn):
+    def _queue(state, orn, offsets):
         reg = orn["reg"]
         state.pending_orn = None
         note = int(state.last_skel_note.get(reg, 0))
-        base = int(SKEL_LUT[max(0, min(127, note))])
         queue = state.pending_set_writes[reg]
-        queue.append(base)
-        if orn["type"] in (ORN_TYPE_VIB, ORN_TYPE_RESID):
-            for fn in orn["vals"]:
-                queue.append(int(fn) & 0xFFFF)
-        else:
-            for off in orn["vals"]:
-                idx = max(0, min(127, note + int(off)))
-                queue.append(int(SKEL_LUT[idx]))
+        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
+        for off in offsets:
+            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
         return None
 
 

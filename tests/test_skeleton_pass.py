@@ -1,7 +1,7 @@
 """SkeletonPass + ornament channel (op54 SKEL / op55 ORN) unit + round-trip tests on
-synthetic dfs (no HVSC). Each note segments (semitone-run + MIN_HOLD UNION gate-on) to one
-SKEL atom plus one ORN descriptor that collapses its intra-note arps/vibrato/slide; the
-encode+decode per-frame register state is byte-exact via the public expand_ops oracle;
+synthetic dfs (no HVSC). Each note -> one SKEL atom plus one driver-native constant-size ORN
+descriptor (PLAIN / OCTAVE+ARP period+length / SLIDE target+rate / VIB depth+rate / RESID
+raw-offset escape); encode+decode per-frame freq matches the content-tier semitone floor;
 skeleton_pass OFF is a no-op. PLAIN dominates a held-note stream."""
 
 from collections import Counter
@@ -11,14 +11,22 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
-from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass, midi_to_fn
+from preframr_tokens.macros.skeleton_pass import (
+    LUT,
+    SkeletonPass,
+    fn_to_note_resid,
+    midi_to_fn,
+)
+from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     ORN_OP,
+    ORN_SUBREG_P1,
     ORN_SUBREG_TYPE,
     ORN_TYPE_ARP,
     ORN_TYPE_OCTAVE,
     ORN_TYPE_PLAIN,
+    ORN_TYPE_RESID,
     ORN_TYPE_SLIDE,
     ORN_TYPE_VIB,
     SET_OP,
@@ -26,6 +34,22 @@ from preframr_tokens.stfconstants import (
     SKEL_SUBREG_ABS,
     SKEL_SUBREG_INTERVAL,
 )
+
+_FREQ_REGS = set(int(r) for r in FREQ_REGS_BY_VOICE)
+
+
+def _snap_freq_floor(state):
+    """Snap each freq-reg column to its nearest LUT semitone (the content-tier floor the ORN
+    channel reconstructs to); other registers pass through unchanged."""
+    snapped = state.copy()
+    for reg in _FREQ_REGS:
+        col = snapped[:, reg]
+        for i, fn in enumerate(col):
+            res = fn_to_note_resid(int(fn))
+            if res is not None:
+                col[i] = LUT[max(0, min(127, res[0]))]
+    return snapped
+
 
 _IRQ = 19656
 _GATE_REG = 4
@@ -126,12 +150,32 @@ def _orn_types(enc):
 
 
 def _roundtrip_exact(raw):
+    """Encode then decode and assert the per-frame register state matches the content-tier
+    semitone floor (freq regs snapped to LUT; all other regs byte-exact)."""
     enc = SkeletonPass().apply(raw.copy(), args=_args())
     rs = register_state(raw)
     es = register_state(enc)
     assert rs.shape == es.shape, (rs.shape, es.shape)
-    assert np.array_equal(rs, es)
+    assert np.array_equal(_snap_freq_floor(rs), es)
     return enc
+
+
+def _orn_runs(enc):
+    """Each note's ORN descriptor as (type, atom_count), a run from a TYPE atom to the next."""
+    runs = []
+    for _, r in enc[enc["op"] == ORN_OP].iterrows():
+        if int(r["subreg"]) == ORN_SUBREG_TYPE:
+            runs.append([int(r["val"]), 1])
+        elif runs:
+            runs[-1][1] += 1
+    return runs
+
+
+def _orn_atoms_for_type(enc, orn_type):
+    """Atom count of the (single) note whose ORN descriptor has type ``orn_type``."""
+    sized = [n for t, n in _orn_runs(enc) if t == orn_type]
+    assert len(sized) == 1, sized
+    return sized[0]
 
 
 def test_skeleton_emits_one_skel_and_one_orn_per_note():
@@ -171,46 +215,65 @@ def test_plain_dominates_held_stream():
     assert sum(types.values()) == 4
 
 
-def test_arp_classified_and_byte_exact():
-    """An intra-note offset cycle classifies as ARP and round-trips byte-exactly."""
-    raw = _StreamBuilder().note(_held(48)).note(_arp(60, [0, 3, 7], reps=3)).df()
+def test_arp_classified_parametric_and_floor_exact():
+    """An intra-note offset cycle classifies as ARP, round-trips at the floor, and encodes as
+    a constant-size descriptor (TYPE + the 3-offset period + length), not one atom per frame.
+    """
+    raw = _StreamBuilder().note(_held(48)).note(_arp(60, [0, 3, 7], reps=4)).df()
     enc = _roundtrip_exact(raw)
     assert _orn_types(enc)[ORN_TYPE_ARP] == 1
     assert int(((enc["op"] == SET_OP) & (enc["reg"] == _FREQ_REG)).sum()) == 0
+    assert _orn_atoms_for_type(enc, ORN_TYPE_ARP) == 5
 
 
-def test_octave_classified_and_byte_exact():
-    """A note/note+12 alternation classifies as OCTAVE and round-trips byte-exactly."""
-    raw = _StreamBuilder().note(_held(48)).note(_octave(60, 6)).df()
+def test_octave_classified_parametric_and_floor_exact():
+    """A note/note+12 alternation classifies as OCTAVE and encodes as a constant-size
+    descriptor (TYPE + 2-offset period + length)."""
+    raw = _StreamBuilder().note(_held(48)).note(_octave(60, 8)).df()
     enc = _roundtrip_exact(raw)
     assert _orn_types(enc)[ORN_TYPE_OCTAVE] == 1
+    assert _orn_atoms_for_type(enc, ORN_TYPE_OCTAVE) == 4
 
 
-def test_slide_classified_and_byte_exact():
-    """A monotone intra-note ramp classifies as SLIDE and round-trips byte-exactly."""
-    raw = _StreamBuilder().note(_held(48)).note(_slide(55, 4, 6)).df()
+def test_slide_classified_parametric_and_floor_exact():
+    """A monotone intra-note ramp classifies as SLIDE and encodes as TYPE + target + rate +
+    length (4 atoms), independent of the ramp length."""
+    raw = _StreamBuilder().note(_held(48)).note(_slide(55, 4, 8)).df()
     enc = _roundtrip_exact(raw)
     assert _orn_types(enc)[ORN_TYPE_SLIDE] == 1
+    assert _orn_atoms_for_type(enc, ORN_TYPE_SLIDE) == 4
 
 
-def test_vibrato_classified_and_byte_exact():
-    """A sub-semitone cents wobble on one semitone classifies as VIB and round-trips
-    byte-exactly (raw per-frame freq escape preserves the wobble)."""
+def test_vibrato_classified_parametric_and_floor_exact():
+    """A sub-semitone cents wobble on one semitone classifies as VIB and encodes as TYPE +
+    depth + rate + length (4 atoms); at the content-tier floor it reconstructs to the held
+    semitone (the wobble is below the floor), not one raw freq per frame."""
     wobble = [_fn_cents(60, c) for c in (0, 25, -25, 20, -20, 25)]
     raw = _StreamBuilder().note(_held(48)).note(wobble).df()
     enc = _roundtrip_exact(raw)
     assert _orn_types(enc)[ORN_TYPE_VIB] == 1
+    assert _orn_atoms_for_type(enc, ORN_TYPE_VIB) == 4
 
 
-def test_mixed_stream_byte_exact_and_no_raw_freq():
+def test_arp_constant_size_independent_of_duration():
+    """The ARP descriptor size depends only on the period, not the note duration: a long
+    repeat encodes in the same atom count as a short one."""
+    short = _StreamBuilder().note(_held(48)).note(_arp(60, [0, 4, 7], reps=3)).df()
+    long = _StreamBuilder().note(_held(48)).note(_arp(60, [0, 4, 7], reps=12)).df()
+    es = _orn_atoms_for_type(SkeletonPass().apply(short, args=_args()), ORN_TYPE_ARP)
+    el = _orn_atoms_for_type(SkeletonPass().apply(long, args=_args()), ORN_TYPE_ARP)
+    assert es == el
+
+
+def test_mixed_stream_floor_exact_and_no_raw_freq():
     """A mixed PLAIN/ARP/OCTAVE/SLIDE stream collapses every freq write to SKEL+ORN
-    (zero residual raw op0 freq SET) and round-trips byte-exactly."""
+    (zero residual raw op0 freq SET) and round-trips at the floor."""
     raw = (
         _StreamBuilder()
         .note(_held(60))
-        .note(_arp(64, [0, 3, 7], reps=2))
-        .note(_octave(67, 4))
-        .note(_slide(55, 3, 4))
+        .note(_arp(64, [0, 3, 7], reps=3))
+        .note(_octave(67, 6))
+        .note(_slide(55, 3, 5))
         .note(_held(62))
         .df()
     )
@@ -223,12 +286,15 @@ def test_mixed_stream_byte_exact_and_no_raw_freq():
     assert types[ORN_TYPE_SLIDE] == 1
 
 
-def test_resid_escape_byte_exact():
-    """An intra-note motion that fits no primitive falls back to a raw per-frame escape
-    and still round-trips byte-exactly."""
+def test_resid_escape_offset_floor_exact():
+    """An intra-note motion that fits no primitive falls back to a raw signed-offset-per-frame
+    escape (semitone floor) and round-trips at the floor."""
     chaotic = [midi_to_fn(60 + o) for o in (0, 1, -7, 9, 2, -11, 5, -3)]
     raw = _StreamBuilder().note(_held(48)).note(chaotic).df()
-    _roundtrip_exact(raw)
+    enc = _roundtrip_exact(raw)
+    assert _orn_types(enc)[ORN_TYPE_RESID] == 1
+    resid = enc[(enc["op"] == ORN_OP) & (enc["subreg"] == ORN_SUBREG_P1)]
+    assert len(resid) > 0
 
 
 def test_skeleton_off_is_noop():

@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0]
+
+### Changed
+
+- **Driver-native parametric ornament channel** (`ORN_OP=55`). The 0.32.0 ORN stored
+  ornament params **inline per-frame** (one signed offset per frame for OCTAVE/ARP/SLIDE,
+  a raw 16-bit freq per frame for VIB/RESID), which flooded op55 to ~13–55:1 over op54
+  SKEL and starved the skeleton. `fit_descriptor` / `_orn_rows` (`macros/skeleton_pass.py`)
+  and `OrnamentDecoder` (`macros/decoders.py`) now emit a **constant-size-per-note**
+  descriptor independent of note duration, in the SID driver's own domain (no mined
+  codebook / no top-N LUT / no per-composer banks / no mining step):
+  - **PLAIN** — `TYPE` only.
+  - **OCTAVE / ARP** — `TYPE` + the **canonical ordered offset cycle** (the minimal period
+    that genuinely repeats, ≤`ARP_MAX_PERIOD`=8 signed note-relative semitone atoms) + a
+    **length** atom; decode replays `LUT[note + period[k % period_len]]` per frame. A
+    non-repeating one-shot run is residual, not a spurious whole-sequence "period".
+  - **SLIDE** — `TYPE` + **target-interval** + **rate** + length; decode ramps one
+    semitone per `rate` frames toward the target, clamped.
+  - **VIB** — `TYPE` + **depth-bucket** + **rate** + length; a sub-semitone oscillator that
+    reconstructs to the held semitone at the content-tier floor (the wobble is below the
+    floor), carrying a learnable depth/rate signal, not one raw freq per frame.
+  - **RESID** — minimized raw escape (one signed note-relative offset per frame, at the
+    semitone floor) reserved for genuinely-unfittable notes; a parametric fit that does not
+    reconstruct the floor exactly falls back to RESID.
+
 ## [0.32.0]
 
 ### Added
