@@ -1,8 +1,8 @@
 """SkeletonPass + ornament channel (Stage 1+2 unified pitch): segment each freq reg into
 NOTES (semitone-run + ``MIN_HOLD`` UNION gate-on), emit one ``SKEL`` atom per note (LUT
-index; abs first per reg, signed interval after) plus one ``ORN`` descriptor collapsing the
-note's intra-note arps/vibrato/slide into a classified primitive (PLAIN/OCTAVE/ARP/SLIDE/
-VIB/RESID, inline params). Opt-in; ported from audit.unified_pitch (validated)."""
+index; abs first per reg, signed interval after) plus one driver-native, constant-size-per-note
+``ORN`` descriptor (PLAIN / OCTAVE+ARP period-cycle+length / SLIDE target+rate / VIB depth+rate
+/ RESID raw-offset escape). Content-tier (semitone floor); opt-in."""
 
 __all__ = [
     "SkeletonPass",
@@ -13,6 +13,9 @@ __all__ = [
     "CENTS_THRESHOLD",
     "MIN_HOLD",
     "fit_descriptor",
+    "vib_frame_offsets",
+    "slide_frame_offsets",
+    "cycle_frame_offsets",
 ]
 
 import math
@@ -50,7 +53,10 @@ CENTS_THRESHOLD = 8.0
 MIN_HOLD = 3
 VIB_MIN_CENTS = 8.0
 ARP_MAX_DISTINCT = 4
+ARP_MAX_PERIOD = 8
 _OFFSET_LIMIT = 24
+_VIB_DEPTH_HEAVY_CENTS = 30.0
+_VIB_RATE_DEFAULT = 6
 _CTRL_FOR_FREQ = {
     int(reg): int(VOICE_CTRL_REG[reg // VOICE_REG_SIZE]) for reg in FREQ_TRAJ_REGS
 }
@@ -90,39 +96,93 @@ def _vib_depth(resids):
     if len(near) < 3:
         return 0
     amp = (max(near) - min(near)) / 2.0
-    return 0 if amp < VIB_MIN_CENTS else (1 if amp <= 30 else 2)
+    return 0 if amp < VIB_MIN_CENTS else (1 if amp <= _VIB_DEPTH_HEAVY_CENTS else 2)
+
+
+def cycle_frame_offsets(period, length):
+    """Replay a note-relative offset CYCLE: ``period[k % len(period)]`` for ``length`` frames
+    (OCTAVE/ARP). The minimal repeating period makes this constant-size, not per-frame.
+    """
+    if not period or length <= 0:
+        return []
+    return [int(period[k % len(period)]) for k in range(length)]
+
+
+def slide_frame_offsets(target, rate, length):
+    """Replay a portamento as a per-frame note-relative offset ramp: one semitone step per
+    ``rate`` frames toward ``target``, clamped, for ``length`` frames (target+rate, not per
+    frame)."""
+    if length <= 0 or rate <= 0:
+        return []
+    sign = 1 if target >= 0 else -1
+    mag = abs(int(target))
+    return [sign * min(mag, (k + 1) // rate) for k in range(length)]
+
+
+def vib_frame_offsets(depth, rate, length):
+    """Replay vibrato at the semitone floor: a depth/rate oscillator that stays within a
+    semitone, so its per-frame note-relative offset is 0 (the content-tier floor drops the
+    sub-semitone wobble). ``depth``/``rate`` carry the learnable wobble signal, not bytes.
+    """
+    del depth, rate
+    if length <= 0:
+        return []
+    return [0] * length
+
+
+def _minimal_period(offs):
+    """Shortest prefix (<= ARP_MAX_PERIOD) that genuinely REPEATS to reproduce ``offs`` (a
+    constant offset, or a cycle seen at least twice), or None — so a one-shot non-repeating run
+    is residual, not a spurious whole-sequence 'period'."""
+    n = len(offs)
+    for p in range(1, min(ARP_MAX_PERIOD, n) + 1):
+        if (p == 1 or n >= 2 * p) and all(offs[i] == offs[i % p] for i in range(n)):
+            return offs[:p]
+    return None
+
+
+def _slide_rate(offs, target):
+    """Frames-per-semitone-step that reproduces a monotone ramp toward ``target``, or None."""
+    length = len(offs)
+    for rate in range(1, length + 1):
+        if slide_frame_offsets(target, rate, length) == offs:
+            return rate
+    return None
 
 
 def fit_descriptor(base, seg_fns):
-    """Classify a note's intra-note freq writes (16-bit, in frame order) into one ornament
-    primitive. ``base`` = the note's semitone; ``seg_fns`` = settled freqs AFTER the onset.
-    Returns (orn_type, offsets) where offsets is the ordered per-frame note-relative semitone
-    cycle (ARP/OCTAVE/SLIDE), () for PLAIN, depth bucket carried in VIB, raw deltas in RESID.
-    """
+    """Classify a note's intra-note freq writes (16-bit, frame order) into one driver-native,
+    constant-size ornament. ``base`` = the note semitone, ``seg_fns`` = settled freqs after the
+    onset. Returns (orn_type, params) where params is the canonical small atom tuple a cycle
+    period / slide target+rate / vib depth+rate / raw offset escape decodes from."""
     if not seg_fns:
         return ORN_TYPE_PLAIN, ()
     resolved = [fn_to_note_resid(fn) for fn in seg_fns]
     if any(r is None for r in resolved):
-        return ORN_TYPE_RESID, ()
-    notes = [r[0] for r in resolved]
+        return ORN_TYPE_RESID, tuple(0 for _ in seg_fns)
+    offs = [r[0] - base for r in resolved]
     resids = [r[1] for r in resolved]
-    offs = [n - base for n in notes]
     nonzero = [o for o in offs if o != 0]
     if not nonzero:
         depth = _vib_depth(resids)
-        return (ORN_TYPE_VIB, (depth,)) if depth else (ORN_TYPE_PLAIN, ())
+        return (
+            (ORN_TYPE_VIB, (depth, _VIB_RATE_DEFAULT))
+            if depth
+            else (ORN_TYPE_PLAIN, ())
+        )
     if any(abs(o) > _OFFSET_LIMIT for o in offs):
-        return ORN_TYPE_RESID, ()
-    distinct = sorted(set(offs))
-    if set(distinct) <= {0, 12} or set(distinct) <= {0, -12}:
-        return ORN_TYPE_OCTAVE, tuple(offs)
+        return ORN_TYPE_RESID, tuple(offs)
     diffs = [b - a for a, b in zip(offs, offs[1:])]
     monotone = all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)
     if monotone and abs(offs[-1] - offs[0]) >= 2:
-        return ORN_TYPE_SLIDE, tuple(offs)
-    if len(distinct) <= ARP_MAX_DISTINCT:
-        return ORN_TYPE_ARP, tuple(offs)
-    return ORN_TYPE_RESID, ()
+        rate = _slide_rate(offs, offs[-1])
+        if rate is not None:
+            return ORN_TYPE_SLIDE, (offs[-1], rate)
+    period = _minimal_period(offs)
+    if period is not None:
+        is_octave = set(period) <= {0, 12} or set(period) <= {0, -12}
+        return (ORN_TYPE_OCTAVE if is_octave else ORN_TYPE_ARP), tuple(period)
+    return ORN_TYPE_RESID, tuple(offs)
 
 
 def _row(reg, op, subreg, val, diff, irq):
@@ -219,9 +279,9 @@ class SkeletonPass(MacroPass):
                 continue
             seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
             per_frame = self._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
-            orn_type, _ = fit_descriptor(note, [s[2] for s in seg])
+            orn_type, params = fit_descriptor(note, per_frame)
             claimed = self._emit_note(
-                reg, note, anchor, per_frame, orn_type, prev_note, irq, new_rows
+                reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
             )
             if not claimed:
                 continue
@@ -275,7 +335,7 @@ class SkeletonPass(MacroPass):
         return sorted(onsets.items())
 
     def _emit_note(
-        self, reg, note, anchor, per_frame, orn_type, prev_note, irq, new_rows
+        self, reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
     ):
         """Emit the SKEL atom (abs/interval) for one note followed by its ORN descriptor.
         Returns False (claim nothing) if the skeleton interval overflows a signed byte.
@@ -283,7 +343,7 @@ class SkeletonPass(MacroPass):
         skel = self._skel_row(reg, note, anchor, prev_note, irq)
         if skel is None:
             return False
-        orn = self._orn_rows(reg, note, per_frame, orn_type, anchor[3], irq)
+        orn = self._orn_rows(reg, note, per_frame, orn_type, params, anchor[3], irq)
         skel["__pos"] = anchor[1]
         new_rows.append(skel)
         for row in orn:
@@ -301,30 +361,61 @@ class SkeletonPass(MacroPass):
         return _row(reg, SKEL_OP, SKEL_SUBREG_INTERVAL, interval & 0xFF, anchor[3], irq)
 
     @staticmethod
-    def _orn_rows(reg, note, per_frame, orn_type, diff, irq):
-        """Build the ORN descriptor: a TYPE atom then inline per-frame params. Semitone types
-        (OCTAVE/ARP/SLIDE) store one signed P1 offset per frame (decoded LUT[note+off],
-        audio-exact at the semitone floor); VIB/RESID store the raw 16-bit freq per frame as a
-        P1 hi + P2 lo pair (byte-exact, the escape that keeps the wobble/unstructured tail).
-        PLAIN carries no params (the SKEL value holds)."""
-        count = 0 if orn_type == ORN_TYPE_PLAIN else len(per_frame)
-        count = min(count, 0xFFFF)
-        rows = [
-            _row(reg, ORN_OP, ORN_SUBREG_TYPE, orn_type, diff, irq),
-            _row(reg, ORN_OP, ORN_SUBREG_P2, count, diff, irq),
-        ]
-        if count == 0:
-            return rows
-        if orn_type in (ORN_TYPE_VIB, ORN_TYPE_RESID):
-            for fn in per_frame[:count]:
-                u = int(fn) & 0xFFFF
-                rows.append(
-                    _row(reg, ORN_OP, ORN_SUBREG_P1, (u >> 8) & 0xFF, diff, irq)
-                )
-                rows.append(_row(reg, ORN_OP, ORN_SUBREG_P2, u & 0xFF, diff, irq))
-            return rows
-        for fn in per_frame[:count]:
+    def _snap_offsets(note, per_frame):
+        """Per-frame note-relative semitone offset (content-tier floor) for the held frames,
+        clamped to a signed byte. Unresolvable (silent/out-of-range) frames hold the note.
+        """
+        out = []
+        for fn in per_frame:
             res = fn_to_note_resid(int(fn))
             off = (res[0] - note) if res is not None else 0
-            rows.append(_row(reg, ORN_OP, ORN_SUBREG_P1, int(off) & 0xFF, diff, irq))
+            out.append(max(-128, min(127, int(off))))
+        return out
+
+    @classmethod
+    def _orn_rows(cls, reg, note, per_frame, orn_type, params, diff, irq):
+        """Build the driver-native constant-size ORN descriptor: a TYPE atom, then this type's
+        small parameter list as signed P1 atoms (cycle period / slide target+rate / vib
+        depth+rate), terminated by a P2 length atom. RESID escapes to one signed P1 offset per
+        frame (semitone floor) after a P2 count. Verifies parametric replay matches the floor;
+        else RESID."""
+        length = min(len(per_frame), 0xFFFF)
+        target = cls._snap_offsets(note, per_frame)
+        if (
+            orn_type != ORN_TYPE_RESID
+            and cls._reconstruct(orn_type, params, length) != target
+        ):
+            orn_type, params = ORN_TYPE_RESID, tuple(target)
+        if orn_type == ORN_TYPE_PLAIN:
+            return [_row(reg, ORN_OP, ORN_SUBREG_TYPE, ORN_TYPE_PLAIN, diff, irq)]
+        if orn_type == ORN_TYPE_RESID:
+            rows = [
+                _row(reg, ORN_OP, ORN_SUBREG_TYPE, ORN_TYPE_RESID, diff, irq),
+                _row(reg, ORN_OP, ORN_SUBREG_P2, length, diff, irq),
+            ]
+            rows.extend(
+                _row(reg, ORN_OP, ORN_SUBREG_P1, int(off) & 0xFF, diff, irq)
+                for off in target[:length]
+            )
+            return rows
+        rows = [_row(reg, ORN_OP, ORN_SUBREG_TYPE, orn_type, diff, irq)]
+        rows.extend(
+            _row(reg, ORN_OP, ORN_SUBREG_P1, int(p) & 0xFF, diff, irq) for p in params
+        )
+        rows.append(_row(reg, ORN_OP, ORN_SUBREG_P2, length, diff, irq))
         return rows
+
+    @staticmethod
+    def _reconstruct(orn_type, params, length):
+        """Per-frame note-relative offsets a non-RESID descriptor replays, for verification
+        against the semitone floor at encode time (the same math OrnamentDecoder runs).
+        """
+        if orn_type == ORN_TYPE_PLAIN:
+            return [0] * length
+        if orn_type in (ORN_TYPE_OCTAVE, ORN_TYPE_ARP):
+            return cycle_frame_offsets(params, length)
+        if orn_type == ORN_TYPE_SLIDE:
+            return slide_frame_offsets(params[0], params[1], length)
+        if orn_type == ORN_TYPE_VIB:
+            return vib_frame_offsets(params[0], params[1], length)
+        return None
