@@ -17,6 +17,7 @@ from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
+from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
@@ -913,6 +914,7 @@ class RegLogParser:
         df = self._squeeze_frame_regs(df)
         df = VoiceTrackPass().apply(df, args=self.args)
         df = TrajectoryAnchorPass().apply(df, args=self.args)
+        df = SkeletonPass().apply(df, args=self.args)
         df = FreqTrajectoryPass().apply(df, args=self.args)
         df = FreqOnsetPass().apply(df, args=self.args)
         df = PresetPass().apply(df, args=self.args)

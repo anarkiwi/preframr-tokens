@@ -155,6 +155,7 @@ class DecodeState:
         self.pending_nudge_fields = {}
         self.pending_ft = None
         self.last_freq_v0 = {}
+        self.last_skel_note = {}
         self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
