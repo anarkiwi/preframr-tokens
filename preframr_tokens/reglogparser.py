@@ -316,6 +316,45 @@ def _apply_optional_transforms(xdf, args):
     return xdf
 
 
+def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
+    """Coalesce ``reg_range`` consecutive little-endian byte registers starting at
+    ``reg`` into one wide value in ``val`` (each byte forward-filled so a partial
+    update reads its last settled byte), re-keyed to ``reg``. The per-byte masked
+    assignment leaves NA on non-matching rows, so each byte is coerced to int
+    (a plain-int caller upcasts to float there) before the shift.
+    """
+    origcols = reg_df.columns
+    for i in range(reg_range):
+        reg_df[str(i)] = reg_df[reg_df["reg"] == (reg + i)]["val"]
+        reg_df[str(i)] = reg_df[str(i)].ffill().fillna(0).astype("int64")
+        reg_df[str(i)] = np.left_shift(reg_df[str(i)].values, int(lobits * i))
+    reg_df["val"] = 0
+    reg_df["reg"] = reg
+    for i in range(reg_range):
+        reg_df["val"] = reg_df["val"].astype(dtype) + reg_df[str(i)]
+    return reg_df[origcols]
+
+
+def combine_reg(orig_df, reg, diffmax=512, bits=0, lobits=8):
+    """Settle the 16-bit value spanning ``reg`` (lo) and ``reg+1`` (hi): forward-fill
+    both bytes and keep the last settled value per ``clock // diffmax`` bucket, so a
+    coordinated lo+hi update is read as one value and a half-updated pair is never
+    seen. Non-``reg`` rows pass through. ``bits`` masks off low bits of the result.
+    The canonical SID freq/PW/filter combine, shared by the parser and freq audits.
+    """
+    cond = (orig_df["reg"] == reg) | (orig_df["reg"] == (reg + 1))
+    reg_df = orig_df[cond].sort_values("clock", kind="stable").copy()
+    non_reg_df = orig_df[~cond]
+    reg_df["dclock"] = reg_df["clock"].floordiv(diffmax)
+    reg_df = combine_val(reg_df, reg, 2, lobits=lobits)
+    reg_df = reg_df.drop_duplicates(["dclock"], keep="last")
+    if bits:
+        reg_df["val"] = np.left_shift(np.right_shift(reg_df["val"], bits), bits)
+    df = pd.concat([non_reg_df, reg_df[orig_df.columns]], ignore_index=True)
+    df = df.astype(orig_df.dtypes)
+    return df
+
+
 class RegLogParser:
     def __init__(self, args=None, logger=logging, cluster_table=None):
         self.args = args
@@ -409,29 +448,10 @@ class RegLogParser:
         return df.loc[mask, cols].reset_index(drop=True)
 
     def _combine_val(self, reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
-        origcols = reg_df.columns
-        for i in range(reg_range):
-            reg_df[str(i)] = reg_df[reg_df["reg"] == (reg + i)]["val"]
-            reg_df[str(i)] = reg_df[str(i)].ffill().fillna(0)
-            reg_df[str(i)] = np.left_shift(reg_df[str(i)].values, int(lobits * i))
-        reg_df["val"] = 0
-        reg_df["reg"] = reg
-        for i in range(reg_range):
-            reg_df["val"] = reg_df["val"].astype(dtype) + reg_df[str(i)]
-        return reg_df[origcols]
+        return combine_val(reg_df, reg, reg_range, dtype=dtype, lobits=lobits)
 
     def _combine_reg(self, orig_df, reg, diffmax=512, bits=0, lobits=8):
-        cond = (orig_df["reg"] == reg) | (orig_df["reg"] == (reg + 1))
-        reg_df = orig_df[cond].sort_values("clock", kind="stable").copy()
-        non_reg_df = orig_df[~cond]
-        reg_df["dclock"] = reg_df["clock"].floordiv(diffmax)
-        reg_df = self._combine_val(reg_df, reg, 2, lobits=lobits)
-        reg_df = reg_df.drop_duplicates(["dclock"], keep="last")
-        if bits:
-            reg_df["val"] = np.left_shift(np.right_shift(reg_df["val"], bits), bits)
-        df = pd.concat([non_reg_df, reg_df[orig_df.columns]], ignore_index=True)
-        df = df.astype(orig_df.dtypes)
-        return df
+        return combine_reg(orig_df, reg, diffmax=diffmax, bits=bits, lobits=lobits)
 
     def _rotate_filter(self, df, r):
         m = df["reg"] == FILTER_REG
