@@ -902,7 +902,8 @@ class RegLogParser:
         df = self._combine_regs(df)
         if self._anchor_enabled():
             df = self._stash_freq_unq(df)
-        df = self._quantize_freq_to_cents(df)
+        if not getattr(self.args, "skeleton_pass", False):
+            df = self._quantize_freq_to_cents(df)
         df = self._simplify_ctrl(df)
         df = self._simplify_pcm(df)
         df = self._squeeze_changes(df)

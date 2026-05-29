@@ -135,17 +135,19 @@ class SkeletonPass(MacroPass):
 
     @staticmethod
     def _claim_chunk(reg, chunk, prev_note, irq, drop_idx, new_rows):
-        """Claim a single-held-value semitone-clean note chunk as one SKEL atom; leave
-        any other chunk untouched as raw op0 SET (byte-exact pass-through)."""
-        distinct = {c[2] for c in chunk}
-        if len(distinct) != 1:
-            return
-        val = chunk[0][2]
-        res = fn_to_note_resid(val)
-        if res is None:
-            return
-        note, cents = res
-        if abs(cents) > CENTS_THRESHOLD:
+        """Claim a note chunk whose every freq value sits on ONE semitone within
+        CENTS_THRESHOLD (tolerates held-note jitter; rejects vibrato/slide/multi-
+        semitone to RESID) as one SKEL atom; leave any other chunk as raw op0 SET."""
+        note = None
+        for c in chunk:
+            res = fn_to_note_resid(c[2])
+            if res is None or abs(res[1]) > CENTS_THRESHOLD:
+                return
+            if note is None:
+                note = res[0]
+            elif res[0] != note:
+                return
+        if note is None:
             return
         first = chunk[0]
         if prev_note[0] is None:

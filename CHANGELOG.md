@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.1]
+
+### Fixed
+
+- `SkeletonPass` produced **no** `SKEL` atoms on real parsed dumps (0.31.0 was a
+  no-op on real data): it read the `val` column, but `_quantize_freq_to_cents`
+  had remapped freq `val` to a small cent-index (the 16-bit freq survives in
+  `freq_unq`), so every value looked silent and nothing was claimed. Fixed by
+  **skipping cent-quantization when `skeleton_pass` is on** (the skeleton is the
+  freq quantisation — to semitones — so freq stays raw 16-bit and is not
+  double-quantised). Also relaxed the PLAIN claim from exact single-value to
+  "all values within `CENTS_THRESHOLD` of one semitone" (real held notes jitter a
+  few cents). Regression test `test_skeleton_claims_jittery_within_semitone_note`.
+
 ## [0.31.0]
 
 ### Added
