@@ -83,6 +83,24 @@ def test_skeleton_round_trip_byte_exact():
     assert np.array_equal(raw_state, enc_state)
 
 
+def test_skeleton_claims_jittery_within_semitone_note():
+    """A held note that jitters a few cents within ONE semitone (multiple distinct
+    raw values, all within CENTS_THRESHOLD) still collapses to a single SKEL atom --
+    real held notes are never a single exact value, so a strict equality rule would
+    claim nothing."""
+    base = LUT[60]
+    rows = [_row(4, 0x41)]
+    for f, jit in enumerate((0, 2, -1, 1, -2)):
+        rows.append(_row(FRAME_REG, 0))
+        rows.append(_row(0, base + jit, anchor=(f == 0)))
+    rows.append(_row(FRAME_REG, 0))
+    out = SkeletonPass().apply(pd.DataFrame(rows), args=_args())
+    skel = out[out["op"] == SKEL_OP]
+    assert len(skel) == 1
+    assert int(skel["subreg"].to_numpy()[0]) == SKEL_SUBREG_ABS
+    assert not (out["op"] == SET_OP)[out["reg"] == 0].any()
+
+
 def test_skeleton_off_is_noop():
     """skeleton_pass OFF leaves the df unchanged."""
     raw = _note_stream()
