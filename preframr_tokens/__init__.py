@@ -80,6 +80,7 @@ from preframr_tokens.regtokenizer import (
 )
 from preframr_tokens.reglogparser import (
     RegLogParser,
+    combine_reg,
     prepare_df_for_audio,
     read_initial_irq,
     remove_voice_reg,
@@ -127,6 +128,7 @@ __all__ = [
     "prepare_df_for_audio",
     "remove_voice_reg",
     "read_initial_irq",
+    "combine_reg",
     "reg_class",
     "to_int64_arrays",
     "frame_marker_count",

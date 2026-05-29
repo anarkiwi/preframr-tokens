@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.30.0]
+
+### Added
+
+- Public `combine_reg` (and `combine_val`) in `preframr_tokens.reglogparser`,
+  exported from the package root. These are the canonical lo+hi byte-coalescing
+  the parser already used internally (`RegLogParser._combine_reg`/`_combine_val`
+  now delegate to them, unchanged behaviour): forward-fill both bytes and keep
+  the settled value per `clock // diffmax` bucket, so a coordinated lo+hi update
+  is read as one 16-bit value and a half-updated pair is never seen. Exposed so
+  the frequency audits reuse the parser's combine instead of re-deriving settled
+  freq from raw lo/hi bytes (`test_combine_reg`).
+
 ## [0.20.0]
 
 ### Added
