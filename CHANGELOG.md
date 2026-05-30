@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.0]
+
+### Changed
+
+- **Skeleton segmentation: fold fast-melodic-runs into notes (#13).** A held-gate fast melodic
+  line (each pitch held < `MIN_HOLD`, no re-gate, not a periodic arp) previously collapsed into
+  one note whose non-periodic offsets leaked to RESID — the dominant shared real-tune RESID
+  source. `SkeletonPass._resegment_fast_run` now splits such a note (gated on `fit_descriptor`
+  returning RESID, so genuine ARP/SLIDE/VIB/OCTAVE ornaments are untouched) into one SKEL note
+  per semitone step. Measured RESID note-share: Trap 0.44→0.01, Camerock 0.17→0.06, Baggis
+  0.66→0.26, Commando 0.25→0.24; the fast-melodic-run frame-fraction drops to ~0 (Trap) / 0.009
+  (Baggis). Baggis's remainder is a *distinct* wide/aperiodic primitive (span 51–71 semitones),
+  not the fast-run mechanism. Skeleton-mode token stream changes (more SKEL notes) — re-cut
+  skeleton corpora. New `is_fast_melodic_run` helper; `test_driver_coverage` updates the Trap gap
+  to a passing test, re-reasons the Baggis xfail, and adds a fast-run-closed regression guard.
+
 ## [0.34.0]
 
 ### Removed

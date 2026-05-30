@@ -184,20 +184,20 @@ class TestRealDriverResidGap(unittest.TestCase):
         self.assertGreater(summary["orn"], 0, summary)
         return summary["resid"] / summary["orn"], summary
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RESID gap (Trap/Daglish): fast-melodic-run under-segmentation dominates "
-        "the leak (recoverable as notes), not legit glissando -- unmodelled segmentation "
-        "mechanism, tracking; do NOT raise RESID_MAX to pass",
-    )
     def test_trap_resid_gap(self):
+        """Trap/Daglish: CLOSED by the fast-melodic-run de-merge (#13) -- 0.44 -> 0.01 note-share,
+        the under-segmented run folded into SKEL notes; residual is a thin aperiodic tail.
+        """
         share, summary = self._resid_note_share("trap")
         self.assertLessEqual(share, RESID_MAX, summary)
 
     @pytest.mark.xfail(
         strict=True,
-        reason="RESID gap (Baggis/Goto80): fast-melodic-run under-segmentation with a "
-        "glissando/noise tail -- unmodelled, tracking; do NOT raise RESID_MAX to pass",
+        reason="RESID gap (Baggis/Goto80): the fast-melodic-run portion is CLOSED by #13 "
+        "(0.66 -> 0.26 note-share); the remainder is WIDE APERIODIC content (span 51-71 semitones, "
+        "<=8 distinct -- octave-jump wavetable effects / noise), a DISTINCT primitive, not the "
+        "fast-run mechanism. Tracking separately; do NOT raise RESID_MAX or widen the run-split "
+        "(would forge spurious giant-interval notes)",
     )
     def test_baggis_resid_gap(self):
         share, summary = self._resid_note_share("baggis")
@@ -205,17 +205,21 @@ class TestRealDriverResidGap(unittest.TestCase):
 
 
 class TestResidCharacterization(unittest.TestCase):
-    """Report (not a pass/fail threshold) the Trap/Baggis RESID composition so the gap is
-    explicit in CI logs: fast-melodic-run (fixable under-segmentation) vs long-glissando
-    (legit) vs aperiodic-noise. Asserts only that the dominant frame-share leak is the
-    fixable fast-melodic-run bucket (the actual characterization finding)."""
+    """Regression guard for the fast-melodic-run de-merge (#13). Pre-fix, the Trap/Baggis RESID
+    was DOMINATED by the fast-melodic-run bucket (Trap ~0.93, Baggis ~0.76 of RESID frames) --
+    the dominant shared under-segmentation. The fix folds those runs into SKEL notes, so the
+    fast-melodic-run frame-fraction must now be SMALL; reverting the fix sends it back up and
+    fails this test. The residual leak is the wide/aperiodic primitive (a separate gap).
+    """
+
+    FAST_RUN_FRAC_MAX = 0.05
 
     @classmethod
     def setUpClass(cls):
         if not _fixture_cache_present():
             raise unittest.SkipTest(_NO_CACHE_MSG)
 
-    def test_characterize_known_gap(self):
+    def test_fast_run_gap_closed(self):
         for name in ("trap", "baggis"):
             try:
                 dump = str(ensure_driver_fixture(name))
@@ -224,12 +228,12 @@ class TestResidCharacterization(unittest.TestCase):
                     f"fixture cache present but {name} dump unavailable: {err}"
                 ) from err
             breakdown = resid_breakdown(dump, _skeleton_args())
-            self.assertGreater(breakdown["resid_frame_share"], 0.0, (name, breakdown))
             by_frame = breakdown["by_frame"]
-            self.assertIn("fast-melodic-run", by_frame, (name, breakdown))
-            fixable = by_frame.get("fast-melodic-run", 0)
             total = sum(by_frame.values())
-            self.assertGreater(fixable / max(total, 1), 0.10, (name, breakdown))
+            fast_run_frac = by_frame.get("fast-melodic-run", 0) / max(total, 1)
+            self.assertLessEqual(
+                fast_run_frac, self.FAST_RUN_FRAC_MAX, (name, breakdown)
+            )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ __all__ = [
     "CLOCK_RATE",
     "CENTS_THRESHOLD",
     "MIN_HOLD",
+    "is_fast_melodic_run",
     "fit_descriptor",
     "vib_frame_offsets",
     "slide_frame_offsets",
@@ -150,6 +151,31 @@ def _slide_rate(offs, target):
     return None
 
 
+def is_fast_melodic_run(offs):
+    """True when a would-be RESID note's note-relative offsets are a short (distinct<6, span<12),
+    non-periodic, non-monotone run of distinct semitones -- under-segmented constituent notes
+    recoverable by splitting, NOT a wide glissando, long-period arp, or aperiodic noise. The
+    action-side mirror of the parse-probe ``classify_resid`` 'fast-melodic-run' bucket, the
+    dominant real-tune RESID source (#13)."""
+    n = len(offs)
+    if n == 0:
+        return False
+    distinct = len(set(offs))
+    if distinct < 2:
+        return False
+    span = max(offs) - min(offs)
+    diffs = [b - a for a, b in zip(offs, offs[1:])]
+    monotone = bool(diffs) and (
+        all(d >= 0 for d in diffs) or all(d <= 0 for d in diffs)
+    )
+    if monotone and span >= 3 and n >= 4:
+        return False
+    for period in range(ARP_MAX_PERIOD + 1, n // 2 + 1):
+        if all(offs[i] == offs[i % period] for i in range(n)):
+            return False
+    return distinct < 6 and span < 12
+
+
 def fit_descriptor(base, seg_fns):
     """Classify a note's intra-note freq writes (16-bit, frame order) into one driver-native,
     constant-size ornament. ``base`` = the note semitone, ``seg_fns`` = settled freqs after the
@@ -266,6 +292,7 @@ class SkeletonPass(MacroPass):
         by_frame = {s[0]: s for s in sets}
         onsets = self._segment_notes(sets, gate_on[int(reg)])
         onsets = self._resegment_holdgate(onsets, sets, by_frame)
+        onsets = self._resegment_fast_run(onsets, sets, by_frame)
         if len(onsets) < 2:
             return
         onset_frames = [fr for fr, _ in onsets]
@@ -391,6 +418,66 @@ class SkeletonPass(MacroPass):
             return 0
         del params
         return hold
+
+    @classmethod
+    def _resegment_fast_run(cls, onsets, sets, by_frame):
+        """Fast-melodic-run de-merge (#13): a note that ``fit_descriptor`` would leak to RESID and
+        whose frames are a non-periodic run of distinct clean semitones (each held < MIN_HOLD, so
+        ``_segment_notes`` missed it) is split into one note per semitone step. Genuine ornaments
+        (ARP/SLIDE/VIB/OCTAVE), glissandi and wide/aperiodic noise are left untouched.
+        Onsets [(frame, note)] -> refined list."""
+        if len(onsets) < 1:
+            return onsets
+        end_frame = max(s[0] for s in sets) + 1
+        result = []
+        queue = list(onsets)
+        while queue:
+            onset_fr, note = queue.pop(0)
+            nxt_fr = queue[0][0] if queue else end_frame
+            anchor = by_frame.get(onset_fr)
+            if anchor is None:
+                result.append((onset_fr, note))
+                continue
+            seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
+            per_frame = cls._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            orn_type, _ = fit_descriptor(note, per_frame)
+            if orn_type != ORN_TYPE_RESID:
+                result.append((onset_fr, note))
+                continue
+            resolved = [fn_to_note_resid(int(fn)) for fn in per_frame]
+            if not resolved or any(r is None for r in resolved):
+                result.append((onset_fr, note))
+                continue
+            if not is_fast_melodic_run([r[0] - note for r in resolved]):
+                result.append((onset_fr, note))
+                continue
+            splits = cls._run_split_onsets(onset_fr, note, seg)
+            if len(splits) < 2:
+                result.append((onset_fr, note))
+                continue
+            result.append(splits[0])
+            for extra in reversed(splits[1:]):
+                queue.insert(0, extra)
+        return sorted(set(result))
+
+    @staticmethod
+    def _run_split_onsets(onset_fr, note, seg):
+        """Onsets at each real SET frame in ``seg`` where the settled semitone changes, starting
+        from the existing ``(onset_fr, note)``. Last write wins per frame; unresolvable writes
+        are skipped (they carry no clean semitone to anchor a note on)."""
+        by_fr = {}
+        for s in sorted(seg):
+            by_fr[int(s[0])] = int(s[2])
+        onsets = [(onset_fr, note)]
+        cur = note
+        for fr in sorted(by_fr):
+            res = fn_to_note_resid(by_fr[fr])
+            if res is None:
+                continue
+            if res[0] != cur:
+                onsets.append((fr, res[0]))
+                cur = res[0]
+        return onsets
 
     def _emit_note(
         self, reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
