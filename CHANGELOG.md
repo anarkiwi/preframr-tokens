@@ -28,6 +28,19 @@ All notable changes to this project will be documented in this file.
   - **RESID** — minimized raw escape (one signed note-relative offset per frame, at the
     semitone floor) reserved for genuinely-unfittable notes; a parametric fit that does not
     reconstruct the floor exactly falls back to RESID.
+- **Held-gate re-segmentation** (`SkeletonPass._resegment_holdgate` /
+  `_split_holdgate_resid`, `macros/skeleton_pass.py`). On held-gate / legato drivers a
+  sustained gate spans several melodic notes plus their connecting slides, so a phrase that
+  opened with a stable `≥MIN_HOLD` plateau but then moved on (with no gate retrigger —
+  Hubbard note-flag bit6 "appended, no attack") was read as ONE note whose internal melody
+  could not be a parametric ornament and dumped to a long `RESID`. A RESID note that opens
+  with such a plateau is now split at its first post-plateau moving frame into the held note
+  + the trailing melody as its own note, recursively, de-merging the phrase into its
+  constituent notes (the connecting motion becomes each note's ornament). Fast (`<MIN_HOLD`)
+  arp/vibrato steps that never settle are NOT turned into notes (the fast-step ornament guard
+  is kept), so clean tunes are unaffected. Decode stays floor-exact. This sharply cuts the
+  op55:op54 ratio and RESID-note count on held-gate tunes (e.g. Camerock 10.1→4.7:1, RESID
+  344→173) while clean tunes hold (Commando ~3:1).
 
 ## [0.32.0]
 
