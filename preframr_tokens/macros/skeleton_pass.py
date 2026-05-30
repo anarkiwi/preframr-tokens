@@ -20,6 +20,7 @@ __all__ = [
 ]
 
 import math
+from collections import Counter
 
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
@@ -52,9 +53,11 @@ CLOCK_RATE = 985248
 MIDI_LO, MIDI_HI = 16, 112
 CENTS_THRESHOLD = 8.0
 MIN_HOLD = 3
+LEVELCHANGE_CAP = 12
+LEVELCHANGE_HOLD = 2
 VIB_MIN_CENTS = 8.0
 ARP_MAX_DISTINCT = 4
-ARP_MAX_PERIOD = 8
+ARP_MAX_PERIOD = 16
 _OFFSET_LIMIT = 24
 _VIB_DEPTH_HEAVY_CENTS = 30.0
 _VIB_RATE_DEFAULT = 6
@@ -232,6 +235,11 @@ class SkeletonPass(MacroPass):
 
     GATE_FLAGS = frozenset({"skeleton_pass"})
 
+    _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
+    _df_sink = (
+        None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
+    )
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "skeleton_pass", False):
             return df
@@ -243,6 +251,8 @@ class SkeletonPass(MacroPass):
         if "traj_anchor" in df.columns:
             df = df.drop(columns=["traj_anchor"])
         ctx = self._context(df)
+        if SkeletonPass._df_sink is not None:
+            SkeletonPass._df_sink.append(df.assign(_fr=_frame_index(df)))
         irq = _first_irq(df)
         drop_idx = []
         new_rows = []
@@ -254,8 +264,11 @@ class SkeletonPass(MacroPass):
 
     @staticmethod
     def _context(df):
-        """Per-row arrays + per-reg ordered (frame, row_index, val, diff) freq SETs and per-voice
-        gate-on rising-edge frames (ctrl bit0)."""
+        """Per-row arrays + per-reg ordered (frame, row_index, val, diff) freq SETs, per-voice
+        gate-on rising-edge frames (ctrl bit0), and per-voice ordered ctrl writes (frame, ctrl_val)
+        so each freq frame's waveform/test/gate state is recoverable -- noise (bit7) and test (bit3)
+        mark a frame's freq as timbre/transient, not melodic pitch (control-aware encoding).
+        """
         f_idx = _frame_index(df).to_numpy()
         regs = df["reg"].to_numpy()
         ops = df["op"].to_numpy()
@@ -264,6 +277,7 @@ class SkeletonPass(MacroPass):
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
         freq_sets = {int(reg): [] for reg in FREQ_TRAJ_REGS}
         gate_on = {int(reg): set() for reg in FREQ_TRAJ_REGS}
+        ctrl_writes = {int(reg): [] for reg in FREQ_TRAJ_REGS}
         gate_state = {int(c): 0 for c in _CTRL_FOR_FREQ.values()}
         ctrl_to_freq = {int(c): int(f) for f, c in _CTRL_FOR_FREQ.items()}
         for i in range(len(df)):
@@ -278,14 +292,40 @@ class SkeletonPass(MacroPass):
                     )
                 )
             elif reg in gate_state and int(ops[i]) == SET_OP and int(subregs[i]) == -1:
-                g = int(vals[i]) & 1
+                v = int(vals[i])
+                ctrl_writes[ctrl_to_freq[reg]].append((int(f_idx[i]), v))
+                g = v & 1
                 if g and not gate_state[reg]:
                     gate_on[ctrl_to_freq[reg]].add(int(f_idx[i]))
                 gate_state[reg] = g
-        return freq_sets, gate_on
+        return freq_sets, gate_on, ctrl_writes
+
+    @staticmethod
+    def _ctrl_at(ctrl_writes, frame):
+        """Forward-filled ctrl byte in effect at ``frame`` (last write at or before it), or None."""
+        cur = None
+        for fr, val in ctrl_writes:
+            if fr > frame:
+                break
+            cur = val
+        return cur
+
+    @classmethod
+    def _is_pitched_frame(cls, ctrl_writes, frame):
+        """A frame carries a melodic PITCH only if its ctrl is a pitched waveform (tri/saw/pulse,
+        bits 4-6) with the TEST bit (3) clear. Noise (bit7) is timbre; test/HR frames are transient;
+        an unknown (pre-first-ctrl) frame is treated as pitched (no evidence against).
+        """
+        ctrl = cls._ctrl_at(ctrl_writes, frame)
+        if ctrl is None:
+            return True
+        if ctrl & 0x08:
+            return False
+        return bool(ctrl & 0x70) and not (ctrl & 0x80)
 
     def _claim_reg(self, reg, ctx, irq, drop_idx, new_rows):
-        freq_sets, gate_on = ctx
+        freq_sets, gate_on, ctrl_writes = ctx
+        cwrites = ctrl_writes[int(reg)]
         sets = freq_sets[int(reg)]
         if not sets:
             return
@@ -293,6 +333,7 @@ class SkeletonPass(MacroPass):
         onsets = self._segment_notes(sets, gate_on[int(reg)])
         onsets = self._resegment_holdgate(onsets, sets, by_frame)
         onsets = self._resegment_fast_run(onsets, sets, by_frame)
+        onsets = self._resegment_levelchange(onsets, sets, by_frame, cwrites)
         if len(onsets) < 2:
             return
         onset_frames = [fr for fr, _ in onsets]
@@ -305,12 +346,35 @@ class SkeletonPass(MacroPass):
                 continue
             seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
             per_frame = self._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            note = self._rebased_note(note, anchor, per_frame, onset_fr, cwrites)
             orn_type, params = fit_descriptor(note, per_frame)
             claimed = self._emit_note(
                 reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
             )
             if not claimed:
                 continue
+            if SkeletonPass._resid_diag is not None:
+                is_resid = orn_type == ORN_TYPE_RESID
+                rec = None
+                if is_resid:
+                    rec = []
+                    for k, fn in enumerate(per_frame):
+                        res = fn_to_note_resid(int(fn))
+                        if res is None:
+                            continue
+                        fr = onset_fr + 1 + k
+                        ctrl = self._ctrl_at(cwrites, fr)
+                        rec.append(
+                            (
+                                res[0] - note,
+                                -1 if ctrl is None else int(ctrl),
+                                self._is_pitched_frame(cwrites, fr),
+                                int(fn),
+                            )
+                        )
+                SkeletonPass._resid_diag.append(
+                    (int(reg), is_resid, int(note), int(onset_fr), rec)
+                )
             prev_note = note
             drop_idx.append(anchor[1])
             drop_idx.extend(s[1] for s in seg)
@@ -352,6 +416,33 @@ class SkeletonPass(MacroPass):
             result.append((onset_fr, note))
             queue.insert(0, (split_fr, res[0]))
         return sorted(set(result))
+
+    @classmethod
+    def _rebased_note(cls, note, anchor, per_frame, onset_fr, ctrl_writes):
+        """Base the note on its sustained PITCHED pitch (control-aware): count semitones only over
+        pitched frames (noise = timbre, test/HR = transient -- not a melodic pitch, e.g. Facemorph's
+        onset noise-tik at freq~note107), and re-base when the onset semitone is a rare outlier (<=2
+        pitched frames) yet another is a >=50% majority of the pitched span. Folds base-misassignment
+        into the right note; the ``<=2`` guard leaves clean arps (many onset-pitch frames) untouched.
+        """
+        counts = Counter()
+        for k, fn in enumerate([anchor[2], *per_frame]):
+            if not cls._is_pitched_frame(ctrl_writes, onset_fr + k):
+                continue
+            res = fn_to_note_resid(int(fn))
+            if res is not None:
+                counts[res[0]] += 1
+        if not counts:
+            return note
+        dom, dom_n = counts.most_common(1)[0]
+        if (
+            dom != note
+            and counts.get(note, 0) <= 2
+            and dom_n > counts.get(note, 0)
+            and dom_n * 2 >= sum(counts.values())
+        ):
+            return dom
+        return note
 
     @staticmethod
     def _per_frame_fns(note, anchor, seg, onset_fr, nxt_fr):
@@ -479,6 +570,92 @@ class SkeletonPass(MacroPass):
                 cur = res[0]
         return onsets
 
+    @classmethod
+    def _resegment_levelchange(cls, onsets, sets, by_frame, ctrl_writes):
+        """Control-aware held-level-change de-merge: a held-gate RESID note merging several
+        SUSTAINED constituent notes (each holds >= LEVELCHANGE_HOLD pitched frames, within
+        LEVELCHANGE_CAP of its predecessor) splits at those held pitched changes -- noise/test
+        transparent (not snapped), committed only when it cuts RESID. Recovers held-gate
+        compound phrases without splitting glissandi/fast-arps or forging giant intervals (#13).
+        """
+        if len(onsets) < 1:
+            return onsets
+        end_frame = max(s[0] for s in sets) + 1
+        result = []
+        queue = list(onsets)
+        while queue:
+            onset_fr, note = queue.pop(0)
+            nxt_fr = queue[0][0] if queue else end_frame
+            anchor = by_frame.get(onset_fr)
+            if anchor is None:
+                result.append((onset_fr, note))
+                continue
+            seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
+            per_frame = cls._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            orn_type, _ = fit_descriptor(note, per_frame)
+            if orn_type != ORN_TYPE_RESID:
+                result.append((onset_fr, note))
+                continue
+            splits = cls._levelchange_onsets(onset_fr, note, seg, ctrl_writes)
+            if len(splits) < 2 or not cls._split_cuts_resid(
+                splits, sets, by_frame, nxt_fr, len(per_frame)
+            ):
+                result.append((onset_fr, note))
+                continue
+            result.append(splits[0])
+            for extra in reversed(splits[1:]):
+                queue.insert(0, extra)
+        return sorted(set(result))
+
+    @classmethod
+    def _levelchange_onsets(cls, onset_fr, note, seg, ctrl_writes):
+        """Onsets at HELD pitched-semitone changes within LEVELCHANGE_CAP of the running base
+        (the change frame plus the next LEVELCHANGE_HOLD-1 pitched frames all settle on the new
+        level); noise/test frames are transparent. Starts from the existing (onset_fr, note).
+        """
+        by_fr = {int(s[0]): int(s[2]) for s in sorted(seg)}
+        psem = {}
+        for fr in sorted(by_fr):
+            if cls._is_pitched_frame(ctrl_writes, fr):
+                r = fn_to_note_resid(by_fr[fr])
+                psem[fr] = r[0] if r is not None else None
+            else:
+                psem[fr] = None
+        pframes = [fr for fr in sorted(by_fr) if psem[fr] is not None]
+        onsets = [(onset_fr, note)]
+        cur = note
+        for idx, fr in enumerate(pframes):
+            level = psem[fr]
+            if level == cur or abs(level - cur) > LEVELCHANGE_CAP:
+                continue
+            fut = [psem[f] for f in pframes[idx : idx + LEVELCHANGE_HOLD]]
+            if len(fut) >= LEVELCHANGE_HOLD and all(s == level for s in fut):
+                onsets.append((fr, level))
+                cur = level
+        return onsets
+
+    @classmethod
+    def _split_cuts_resid(cls, splits, sets, by_frame, final_nxt, orig_frames):
+        """Re-fit each candidate piece; commit only when the split recovers >=1 clean note and
+        leaves at most ONE RESID piece, so the RESID note-share can only improve (one RESID note
+        -> clean notes + <=1 RESID fragment, count never rises while ORN rises) -- never trading
+        a giant RESID note for several smaller RESID fragments."""
+        del orig_frames
+        bounds = [fr for fr, _ in splits] + [final_nxt]
+        resid_pieces = clean_pieces = 0
+        for i, (ofr, note) in enumerate(splits):
+            anchor = by_frame.get(ofr)
+            if anchor is None:
+                return False
+            seg = [s for s in sets if ofr < s[0] < bounds[i + 1]]
+            per_frame = cls._per_frame_fns(note, anchor, seg, ofr, bounds[i + 1])
+            orn_type, _ = fit_descriptor(note, per_frame)
+            if orn_type == ORN_TYPE_RESID:
+                resid_pieces += 1
+            else:
+                clean_pieces += 1
+        return clean_pieces >= 1 and resid_pieces <= 1
+
     def _emit_note(
         self, reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
     ):
@@ -506,6 +683,24 @@ class SkeletonPass(MacroPass):
         return _row(reg, SKEL_OP, SKEL_SUBREG_INTERVAL, interval & 0xFF, anchor[3], irq)
 
     @staticmethod
+    def _is_transient_blip(target):
+        """A held note (>=4 frames) at its base with <=2 ISOLATED non-zero outlier frames (each
+        flanked by base frames) is a clean note + a brief attack/grace transient (#16). The content
+        floor absorbs the blip -> PLAIN, instead of leaking the whole note to RESID. Isolation
+        (neighbours == base) keeps a >=2-frame ornament (arp/slide start) from being mistaken for a
+        transient."""
+        n = len(target)
+        if n < 4:
+            return False
+        nz = [i for i, t in enumerate(target) if t != 0]
+        if not nz or len(nz) > 2:
+            return False
+        return all(
+            (i == 0 or target[i - 1] == 0) and (i == n - 1 or target[i + 1] == 0)
+            for i in nz
+        )
+
+    @staticmethod
     def _snap_offsets(note, per_frame):
         """Per-frame note-relative semitone offset (content-tier floor) for the held frames,
         clamped to a signed byte. Unresolvable (silent/out-of-range) frames hold the note.
@@ -526,7 +721,9 @@ class SkeletonPass(MacroPass):
         else RESID."""
         length = min(len(per_frame), 0xFFFF)
         target = cls._snap_offsets(note, per_frame)
-        if (
+        if cls._is_transient_blip(target):
+            orn_type, params = ORN_TYPE_PLAIN, ()
+        elif (
             orn_type != ORN_TYPE_RESID
             and cls._reconstruct(orn_type, params, length) != target
         ):
