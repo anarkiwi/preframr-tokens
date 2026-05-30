@@ -6,7 +6,6 @@ __all__ = [
     "SetDecoder",
     "DiffDecoder",
     "FlipDecoder",
-    "Flip2Decoder",
     "TransposeDecoder",
     "HardRestartDecoder",
     "FreqTrajectoryDecoder",
@@ -55,7 +54,6 @@ from preframr_tokens.stfconstants import (
     DIFF_OP,
     FC_LO_REG,
     FC_PRESET_TABLE,
-    FLIP2_OP,
     FLIP_OP,
     FREQ_NUDGE_DELTA_ESCAPE,
     FREQ_NUDGE_MODE_ABSOLUTE,
@@ -175,27 +173,6 @@ class FlipDecoder(MacroDecoder):
             )
         state.last_flip[row.reg] = row.val
         state.active_flip_regs.add(row.reg)
-        return pre or None
-
-
-class Flip2Decoder(MacroDecoder):
-    """Asymmetric ±a/±b alternation across N frames."""
-
-    op_code = FLIP2_OP
-
-    def expand(self, row, state):
-        pre = state.maybe_flush_for(row.reg, -1)
-        length = int(row.subreg)
-        assert length >= 2, row
-        a = (int(row.val) >> 8) & 0xFF
-        b = int(row.val) & 0xFF
-        if a >= 128:
-            a -= 256
-        if b >= 128:
-            b -= 256
-        state.last_diff[row.reg] = row.diff
-        for k in range(length):
-            state.pending_diffs[row.reg].append(a if k % 2 == 0 else b)
         return pre or None
 
 
@@ -768,7 +745,6 @@ DECODERS = {
         DiffDecoder(),
         FlipDecoder(),
         TransposeDecoder(),
-        Flip2Decoder(),
         SubregFlushDecoder(),
         HardRestartDecoder(),
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_2),

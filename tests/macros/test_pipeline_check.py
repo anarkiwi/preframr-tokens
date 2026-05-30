@@ -124,11 +124,6 @@ class TestMultipleErrorsReported(unittest.TestCase):
 
 class TestRegistryInvariants(unittest.TestCase):
     def test_registry_passes_global_invariants(self):
-        from preframr_tokens.macros import (  # noqa: F401
-            transforms_set_to_diff,
-            transforms_superframe,
-            transforms_voice_trajectory,
-        )
         from preframr_tokens.macros.pipeline_check import validate_registry
 
         self.assertEqual(validate_registry(), [])
@@ -136,10 +131,6 @@ class TestRegistryInvariants(unittest.TestCase):
 
 class TestDecoderAvailability(unittest.TestCase):
     def test_all_registered_op_codes_have_decoders(self):
-        from preframr_tokens.macros import (  # noqa: F401
-            transforms_set_to_diff,
-            transforms_voice_trajectory,
-        )
         from preframr_tokens.macros.decoders import DECODERS
         from preframr_tokens.macros.transform import _REGISTRY
 
@@ -152,25 +143,6 @@ class TestDecoderAvailability(unittest.TestCase):
                     DECODERS,
                     msg=f"transform {name!r} declares op_code {int(op)} but DECODERS has no entry",
                 )
-
-
-class TestParamValidators(unittest.TestCase):
-    def test_invalid_voice_trajectory_window_errors(self):
-        from preframr_tokens.macros import (  # noqa: F401
-            transforms_voice_trajectory,
-        )
-
-        spec = {
-            "transforms": [
-                {"name": "voice_block_order"},
-                {"name": "voice_trajectory", "params": {"window": 0}},
-            ]
-        }
-        errors = validate_pipeline_spec(spec, args=_args(voice_trajectory_pass=True))
-        self.assertTrue(
-            any("PARAM_VALIDATORS" in e for e in errors),
-            msg=f"expected PARAM_VALIDATORS error, got {errors}",
-        )
 
 
 class TestDefaultPipelineSpec(unittest.TestCase):
@@ -235,10 +207,6 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
 
         import pandas as pd
 
-        from preframr_tokens.macros import (  # noqa: F401
-            transforms_set_to_diff,
-            transforms_voice_trajectory,
-        )
         from preframr_tokens.macros.transform import _REGISTRY
         from preframr_tokens.stfconstants import FRAME_REG, SET_OP, VOICE_REG
 
@@ -264,9 +232,7 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
             ]
         )
         all_args = argparse.Namespace(
-            voice_trajectory_pass=True,
             voice_canonical_block_order=True,
-            set_to_diff_pass=True,
             hard_restart_pass=True,
             ctrl_bigram_pass=True,
             freq_trajectory_pass=True,
@@ -339,39 +305,7 @@ class TestHardcodedPassesSeedAccumulator(unittest.TestCase):
 
 
 class TestRegisterStateContract(unittest.TestCase):
-    def test_set_to_diff_handles_motion_regs_after_slope(self):
-        from preframr_tokens.macros import transforms_set_to_diff  # noqa: F401
-
-        spec = {
-            "transforms": [
-                {"name": "freq_traj"},
-                {"name": "preset"},
-                {"name": "voice_block_order"},
-                {"name": "set_to_diff"},
-            ]
-        }
-        errors = validate_pipeline_spec(
-            spec,
-            args=_args(
-                freq_trajectory_pass=True, preset_pass=True, set_to_diff_pass=True
-            ),
-        )
-        self.assertEqual(errors, [])
-
-    def test_set_to_diff_after_voice_block_order_no_state_errors(self):
-        from preframr_tokens.macros import transforms_set_to_diff  # noqa: F401
-
-        spec = {
-            "transforms": [
-                {"name": "voice_block_order"},
-                {"name": "set_to_diff"},
-            ]
-        }
-        errors = validate_pipeline_spec(spec, args=_args(set_to_diff_pass=True))
-        self.assertEqual(errors, [])
-
     def test_unhandled_non_set_state_reports_error(self):
-        from preframr_tokens.macros import transforms_set_to_diff  # noqa: F401
         from preframr_tokens.macros.transform import Transform, register
 
         @register("_test_motion_consumer")

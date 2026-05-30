@@ -6,7 +6,6 @@ import pandas as pd
 
 from preframr_tokens.macros import (
     DecodeState,
-    Flip2Pass,
     HardRestartPass,
     LoopPass,
     OVERLAY_BODY_FREQ_DELTA,
@@ -26,7 +25,6 @@ from preframr_tokens.stfconstants import (
     BACK_REF_OP,
     DIFF_OP,
     DO_LOOP_OP,
-    FLIP2_OP,
     FRAME_REG,
     HARD_RESTART_OP,
     _MIN_DIFF,
@@ -260,58 +258,6 @@ class TestTransposePass(unittest.TestCase):
             ]
         )
         encoded = TransposePass().apply(df.copy(), args=FakeArgs(transpose_pass=True))
-        _assert_round_trip(self, df, encoded)
-
-
-class TestFlip2Pass(unittest.TestCase):
-    def test_encode_asymmetric_run(self):
-        df = pd.DataFrame(
-            [
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -3, op=DIFF_OP),
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -3, op=DIFF_OP),
-            ]
-        )
-        result = Flip2Pass().apply(df, args=FakeArgs(flip2_pass=True))
-        flips = result[result["op"] == FLIP2_OP]
-        self.assertEqual(len(flips), 1)
-        self.assertEqual(int(flips.iloc[0]["subreg"]), 4)
-
-    def test_skips_symmetric(self):
-        df = pd.DataFrame(
-            [
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -5, op=DIFF_OP),
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -5, op=DIFF_OP),
-            ]
-        )
-        result = Flip2Pass().apply(df, args=FakeArgs(flip2_pass=True))
-        self.assertEqual(len(result[result["op"] == FLIP2_OP]), 0)
-
-    def test_round_trip(self):
-        df = pd.DataFrame(
-            [
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -3, op=DIFF_OP),
-                _frame(),
-                _row(2, 5, op=DIFF_OP),
-                _frame(),
-                _row(2, -3, op=DIFF_OP),
-            ]
-        )
-        encoded = Flip2Pass().apply(df.copy(), args=FakeArgs(flip2_pass=True))
         _assert_round_trip(self, df, encoded)
 
 
@@ -703,7 +649,7 @@ class TestBuildLastDiffFallback(unittest.TestCase):
     def test_decoder_only_reg_falls_back_to_min_diff(self):
         df = pd.DataFrame(
             [
-                _row(0, 0x10, op=FLIP2_OP, diff=50, subreg=4),
+                _row(0, 0x10, op=HARD_RESTART_OP, diff=50, subreg=4),
             ]
         )
         last_diff = _build_last_diff(df)

@@ -16,7 +16,6 @@ from preframr_tokens.stfconstants import (
     DELAY_REG,
     DIFF_OP,
     FILTER_REG,
-    FLIP2_OP,
     FLIP_OP,
     FRAME_REG,
     FREQ_TRAJ_OP,
@@ -29,7 +28,6 @@ TRAJECTORY_ANCHOR_WINDOW = 5
 _TRAJECTORY_ANCHOR_OPS = {
     FREQ_TRAJ_OP,
     FLIP_OP,
-    FLIP2_OP,
     TRANSPOSE_OP,
 }
 

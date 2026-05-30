@@ -94,54 +94,6 @@ class _FakeArgs:
             setattr(self, k, v)
 
 
-class TestDecodedCtrlVal(unittest.TestCase):
-    """Direct unit tests for ``transforms_set_to_diff._decoded_ctrl_val`` decoder dispatch."""
-
-    def test_set_op_returns_low_byte(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import SET_OP
-
-        self.assertEqual(_decoded_ctrl_val(int(SET_OP), 0x123), 0x23)
-
-    def test_hard_restart_returns_low_byte(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import HARD_RESTART_OP
-
-        self.assertEqual(_decoded_ctrl_val(int(HARD_RESTART_OP), 0xFE), 0xFE)
-
-    def test_legato_nibble_op_shifts_nibble(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import LEGATO_OP_CLUSTER_2
-
-        self.assertEqual(_decoded_ctrl_val(int(LEGATO_OP_CLUSTER_2), 0x05), 0x50)
-
-    def test_legato_cluster_7_returns_low_byte(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import LEGATO_OP_CLUSTER_7
-
-        self.assertEqual(_decoded_ctrl_val(int(LEGATO_OP_CLUSTER_7), 0xAB), 0xAB)
-
-    def test_ctrl_bigram_op_returns_cur_byte(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import CTRL_BIGRAM_OP, CTRL_BIGRAM_TABLE
-
-        _prev, cur = CTRL_BIGRAM_TABLE[0]
-        self.assertEqual(_decoded_ctrl_val(int(CTRL_BIGRAM_OP), 0), int(cur))
-
-    def test_ctrl_bigram_out_of_range_returns_none(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-        from preframr_tokens.stfconstants import CTRL_BIGRAM_OP, CTRL_BIGRAM_TABLE
-
-        self.assertIsNone(
-            _decoded_ctrl_val(int(CTRL_BIGRAM_OP), len(CTRL_BIGRAM_TABLE) + 100)
-        )
-
-    def test_unknown_op_returns_none(self):
-        from preframr_tokens.macros.transforms_set_to_diff import _decoded_ctrl_val
-
-        self.assertIsNone(_decoded_ctrl_val(999, 0xAA))
-
-
 class TestSnapGroup(unittest.TestCase):
     def test_empty_sorted_vals_passes_through(self):
         from preframr_tokens.alphabet_projection import _snap_group

@@ -60,7 +60,6 @@ from preframr_tokens.stfconstants import (
     VOICES,
     VOICE_REG,
     VOICE_REG_SIZE,
-    VOICE_TRAJ_REG,
     WAVETABLE_SUSTAIN_OP,
 )
 
@@ -72,7 +71,6 @@ __all__ = [
 ]
 
 _SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP), int(WAVETABLE_SUSTAIN_OP)}
-_VOICE_TRAJ_REG_INT = int(VOICE_TRAJ_REG)
 
 FRAME_DTYPES = {
     "reg": REG_PDTYPE,
@@ -220,9 +218,7 @@ def remove_voice_reg(orig_df, reg_widths):
     df["f"] = 0
     df.loc[df["reg"] == FRAME_REG, "f"] = 1
     df["f"] = df["f"].cumsum()
-    m = df["reg"].isin({FRAME_REG, VOICE_REG, _VOICE_TRAJ_REG_INT}) | df["op"].isin(
-        _SUSTAIN_MARKER_OPS
-    )
+    m = df["reg"].isin({FRAME_REG, VOICE_REG}) | df["op"].isin(_SUSTAIN_MARKER_OPS)
     df.loc[m, "fn"] = 1
     df["fn"] = df.groupby("f")["fn"].cumsum()
     df["fn"] -= 1
@@ -239,7 +235,7 @@ def remove_voice_reg(orig_df, reg_widths):
     reg_at_m = df.loc[m, "reg"].astype(np.int64).to_numpy()
     v_at_m = df.loc[m, "v"].fillna(0).astype(np.int64).to_numpy()
     df.loc[m, "reg"] = reg_at_m + v_at_m * VOICE_REG_SIZE
-    df = df[(df["reg"] != VOICE_REG) & (df["reg"] != _VOICE_TRAJ_REG_INT)]
+    df = df[df["reg"] != VOICE_REG]
     df = df[orig_df.columns].astype(orig_df.dtypes).reset_index(drop=True)
     if orig_df.attrs:
         df.attrs.update(orig_df.attrs)
@@ -269,52 +265,6 @@ def prepare_df_for_audio(orig_df, reg_widths, irq, sidq, strict=False, prompt_le
     df = expand_ops(df, strict=strict)
     df = reset_diffs(df, irq, sidq)
     return df, reg_widths
-
-
-_OPTIONAL_TRANSFORMS = (
-    (
-        "voice_trajectory_pass",
-        "preframr_tokens.macros.transforms_voice_trajectory",
-        "VoiceTrajectoryTransform",
-        "voice_trajectory_window",
-        8,
-    ),
-    (
-        "voice_trajectory_distributed_pass",
-        "preframr_tokens.macros.transforms_voice_trajectory_distributed",
-        "VoiceTrajectoryDistributedTransform",
-        "voice_trajectory_window",
-        8,
-    ),
-    (
-        "set_to_diff_pass",
-        "preframr_tokens.macros.transforms_set_to_diff",
-        "SetToDiffTransform",
-        None,
-        None,
-    ),
-)
-
-
-def _apply_optional_transforms(xdf, args):
-    """Apply each opt-in Transform listed in ``_OPTIONAL_TRANSFORMS`` whose args-flag is truthy. Lazy-imports the transform module on first use."""
-    import importlib
-
-    for (
-        flag,
-        module_name,
-        class_name,
-        window_arg,
-        window_default,
-    ) in _OPTIONAL_TRANSFORMS:
-        if not getattr(args, flag, False):
-            continue
-        klass = getattr(importlib.import_module(module_name), class_name)
-        kwargs = {}
-        if window_arg is not None:
-            kwargs["window"] = int(getattr(args, window_arg, window_default))
-        xdf = klass(**kwargs).forward(xdf, args=args)
-    return xdf
 
 
 def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
@@ -959,7 +909,6 @@ class RegLogParser:
             xdf = self._norm_pr_order(xdf)
             xdf = macros.run_post_norm_pre_voice_passes(xdf, args=self.args)
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
-            xdf = _apply_optional_transforms(xdf, self.args)
             xdf = FreqNudgePass().apply(xdf, args=self.args)
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)

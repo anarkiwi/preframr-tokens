@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.34.0]
+
+### Removed
+
+- **BREAKING: op-code/vocab change, re-cut corpora/checkpoints, no metric transfer.**
+  Removed refuted/dead-wood transforms and their full 3-layer (pass + decoder + transform)
+  wiring. All removed work is refuted, so nothing to lose; any existing corpus/checkpoint
+  cut before this release must be re-cut (the op alphabet shifts). Removed:
+  - `flip2` — `Flip2Pass` (was in the default `PASSES`), `Flip2Transform`, `Flip2Decoder`.
+    Frees op `7` (now `RESERVED_OP_7`).
+  - `motif` — `MotifPass` / `MotifTransform` / `MotifDict` / `mine_motifs` /
+    `get_motif_dict` (`macros/motif_pass.py`) and `mine_dict_from_dumps`
+    (`motif_mine.py`), plus the `blocks.py` apply-site and the `vocab_signature`
+    `MOTIF_ARG` tier branch. Frees ops `52`/`53` (now `RESERVED_OP_52`/`RESERVED_OP_53`).
+  - `voice_trajectory` + `voice_trajectory_distributed` — both transforms and the
+    `voice_trajectory_window` param. Frees reg `-123` (now `RESERVED_REG_NEG123`).
+  - `super_frame` — `SuperFrameTransform` (the N>=2 pack was never implemented). Frees reg
+    `-124` (now `RESERVED_REG_NEG124`).
+  - `set_to_diff` — `SetToDiffTransform` and the `_OPTIONAL_TRANSFORMS` opt-in registry in
+    `reglogparser.py`. Reused `DIFF_OP=1`, so frees no op.
+  - Survivors are NOT renumbered; each freed op/reg number is held by a `RESERVED_*`
+    sentinel constant in `stfconstants.py`. `ctrl_update` (`CTRL_UPDATE_OP=51`, live via
+    `--lonely-catch-all`) and `TRACK_REF_OP=46` (live `VoiceTrackPass`) were verified
+    in-use and **kept**.
+
 ## [0.33.0]
 
 ### Changed
