@@ -53,6 +53,8 @@ CLOCK_RATE = 985248
 MIDI_LO, MIDI_HI = 16, 112
 CENTS_THRESHOLD = 8.0
 MIN_HOLD = 3
+LEVELCHANGE_CAP = 12
+LEVELCHANGE_HOLD = 2
 VIB_MIN_CENTS = 8.0
 ARP_MAX_DISTINCT = 4
 ARP_MAX_PERIOD = 8
@@ -324,6 +326,7 @@ class SkeletonPass(MacroPass):
         onsets = self._segment_notes(sets, gate_on[int(reg)])
         onsets = self._resegment_holdgate(onsets, sets, by_frame)
         onsets = self._resegment_fast_run(onsets, sets, by_frame)
+        onsets = self._resegment_levelchange(onsets, sets, by_frame, cwrites)
         if len(onsets) < 2:
             return
         onset_frames = [fr for fr, _ in onsets]
@@ -537,6 +540,92 @@ class SkeletonPass(MacroPass):
                 onsets.append((fr, res[0]))
                 cur = res[0]
         return onsets
+
+    @classmethod
+    def _resegment_levelchange(cls, onsets, sets, by_frame, ctrl_writes):
+        """Control-aware held-level-change de-merge: a held-gate RESID note merging several
+        SUSTAINED constituent notes (each holds >= LEVELCHANGE_HOLD pitched frames, within
+        LEVELCHANGE_CAP of its predecessor) splits at those held pitched changes -- noise/test
+        transparent (not snapped), committed only when it cuts RESID. Recovers held-gate
+        compound phrases without splitting glissandi/fast-arps or forging giant intervals (#13).
+        """
+        if len(onsets) < 1:
+            return onsets
+        end_frame = max(s[0] for s in sets) + 1
+        result = []
+        queue = list(onsets)
+        while queue:
+            onset_fr, note = queue.pop(0)
+            nxt_fr = queue[0][0] if queue else end_frame
+            anchor = by_frame.get(onset_fr)
+            if anchor is None:
+                result.append((onset_fr, note))
+                continue
+            seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
+            per_frame = cls._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            orn_type, _ = fit_descriptor(note, per_frame)
+            if orn_type != ORN_TYPE_RESID:
+                result.append((onset_fr, note))
+                continue
+            splits = cls._levelchange_onsets(onset_fr, note, seg, ctrl_writes)
+            if len(splits) < 2 or not cls._split_cuts_resid(
+                splits, sets, by_frame, nxt_fr, len(per_frame)
+            ):
+                result.append((onset_fr, note))
+                continue
+            result.append(splits[0])
+            for extra in reversed(splits[1:]):
+                queue.insert(0, extra)
+        return sorted(set(result))
+
+    @classmethod
+    def _levelchange_onsets(cls, onset_fr, note, seg, ctrl_writes):
+        """Onsets at HELD pitched-semitone changes within LEVELCHANGE_CAP of the running base
+        (the change frame plus the next LEVELCHANGE_HOLD-1 pitched frames all settle on the new
+        level); noise/test frames are transparent. Starts from the existing (onset_fr, note).
+        """
+        by_fr = {int(s[0]): int(s[2]) for s in sorted(seg)}
+        psem = {}
+        for fr in sorted(by_fr):
+            if cls._is_pitched_frame(ctrl_writes, fr):
+                r = fn_to_note_resid(by_fr[fr])
+                psem[fr] = r[0] if r is not None else None
+            else:
+                psem[fr] = None
+        pframes = [fr for fr in sorted(by_fr) if psem[fr] is not None]
+        onsets = [(onset_fr, note)]
+        cur = note
+        for idx, fr in enumerate(pframes):
+            level = psem[fr]
+            if level == cur or abs(level - cur) > LEVELCHANGE_CAP:
+                continue
+            fut = [psem[f] for f in pframes[idx : idx + LEVELCHANGE_HOLD]]
+            if len(fut) >= LEVELCHANGE_HOLD and all(s == level for s in fut):
+                onsets.append((fr, level))
+                cur = level
+        return onsets
+
+    @classmethod
+    def _split_cuts_resid(cls, splits, sets, by_frame, final_nxt, orig_frames):
+        """Re-fit each candidate piece; commit only when the split recovers >=1 clean note and
+        leaves at most ONE RESID piece, so the RESID note-share can only improve (one RESID note
+        -> clean notes + <=1 RESID fragment, count never rises while ORN rises) -- never trading
+        a giant RESID note for several smaller RESID fragments."""
+        del orig_frames
+        bounds = [fr for fr, _ in splits] + [final_nxt]
+        resid_pieces = clean_pieces = 0
+        for i, (ofr, note) in enumerate(splits):
+            anchor = by_frame.get(ofr)
+            if anchor is None:
+                return False
+            seg = [s for s in sets if ofr < s[0] < bounds[i + 1]]
+            per_frame = cls._per_frame_fns(note, anchor, seg, ofr, bounds[i + 1])
+            orn_type, _ = fit_descriptor(note, per_frame)
+            if orn_type == ORN_TYPE_RESID:
+                resid_pieces += 1
+            else:
+                clean_pieces += 1
+        return clean_pieces >= 1 and resid_pieces <= 1
 
     def _emit_note(
         self, reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
