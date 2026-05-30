@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from preframr_tokens.macros.decoders import (
     DiffDecoder,
-    Flip2Decoder,
     FlipDecoder,
     FreqTrajectoryDecoder,
     OrnamentDecoder,
@@ -20,7 +19,6 @@ from preframr_tokens.macros.loop_pass import LoopPass
 from preframr_tokens.macros.loops import expand_loops
 from preframr_tokens.macros.passes import (
     DedupSetPass,
-    Flip2Pass,
     TransposePass,
 )
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
@@ -38,7 +36,6 @@ from preframr_tokens.stfconstants import (
     DO_LOOP_OP,
     FC_PRESET_OP,
     FLIP_OP,
-    FLIP2_OP,
     FREQ_TRAJ_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
@@ -143,19 +140,6 @@ class TransposeTransform(PassBackedTransform):
     EMITS_NON_SET_REGS = frozenset({0})
     PASS_CLASS = TransposePass
     DECODER_CLASS = TransposeDecoder
-
-
-@register("flip2")
-class Flip2Transform(PassBackedTransform):
-    TIER = "bit_exact"
-    OP_CODES = frozenset({FLIP2_OP})
-    SUBSTITUTABLE_OPS = frozenset({FLIP2_OP})
-    OPERATES_ON_VOICE_REGS = True
-    LOSS_TIER = "content"
-    PROVIDES_OPS = frozenset({FLIP2_OP})
-    EMITS_NON_SET_REGS = frozenset({0, 2})
-    PASS_CLASS = Flip2Pass
-    DECODER_CLASS = Flip2Decoder
 
 
 @register("dedup_set")

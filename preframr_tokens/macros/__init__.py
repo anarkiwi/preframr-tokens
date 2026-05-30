@@ -8,7 +8,6 @@ from preframr_tokens.macros.blocks import (
 from preframr_tokens.macros.loop_pass import LoopPass
 from preframr_tokens.macros.passes import (
     DedupSetPass,
-    Flip2Pass,
     HardRestartPass,
     LegatoPerClusterPass,
     SubregPass,
@@ -54,7 +53,6 @@ FREQ_BLOCK_PASSES = [
 PASSES = [
     PresetPass(),
     GateSlopeShiftPass(),
-    Flip2Pass(),
     TransposePass(),
     DedupSetPass(),
     DedupSetPass(),

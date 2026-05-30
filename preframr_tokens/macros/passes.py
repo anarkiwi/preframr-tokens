@@ -5,7 +5,6 @@ import pandas as pd
 
 __all__ = [
     "TransposePass",
-    "Flip2Pass",
     "HardRestartPass",
     "LegatoPerClusterPass",
     "SubregPass",
@@ -31,7 +30,6 @@ from preframr_tokens.macros.walker import FrameWalker
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     DIFF_OP,
-    FLIP2_OP,
     FRAME_REG,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
@@ -91,69 +89,6 @@ class TransposePass(MacroPass):
                     "__pos": int(grp_idx.min()),
                 }
             )
-        return _splice_rows(df, drop_idx, new_rows)
-
-
-class Flip2Pass(MacroPass):
-    """Asymmetric ±a/±b alternation across consecutive frames per (reg, voice)."""
-
-    min_run = 3
-
-    def apply(self, df, args=None):
-        if "op" not in df.columns or not df["op"].eq(DIFF_OP).any():
-            return df
-        df = df.reset_index(drop=True).copy()
-        f_idx = _frame_index(df)
-        df["mf"] = f_idx
-
-        drop_idx = []
-        new_rows = []
-        diff_rows = df[(df["op"] == DIFF_OP) & (df["reg"] >= 0)]
-        for reg, sub in diff_rows.groupby("reg"):
-            indices = sub.index.tolist()
-            frames = sub["mf"].tolist()
-            vals = sub["val"].tolist()
-            diffs = sub["diff"].tolist()
-            i = 0
-            n = len(indices)
-            while i < n - 1:
-                a = vals[i]
-                b = vals[i + 1]
-                if (
-                    a == 0
-                    or b == 0
-                    or a == b
-                    or abs(a) == abs(b)
-                    or frames[i + 1] != frames[i] + 1
-                ):
-                    i += 1
-                    continue
-                j = i + 2
-                while (
-                    j < n
-                    and frames[j] == frames[j - 1] + 1
-                    and vals[j] == (a if (j - i) % 2 == 0 else b)
-                ):
-                    j += 1
-                run_len = j - i
-                if run_len >= self.min_run:
-                    drop_idx.extend(indices[i:j])
-                    packed = ((a & 0xFF) << 8) | (b & 0xFF)
-                    new_rows.append(
-                        {
-                            "reg": int(reg),
-                            "val": int(packed),
-                            "diff": int(diffs[i]),
-                            "op": int(FLIP2_OP),
-                            "subreg": int(run_len),
-                            "__pos": int(indices[i]),
-                        }
-                    )
-                    i = j
-                else:
-                    i += 1
-
-        df = df.drop(columns=["mf"])
         return _splice_rows(df, drop_idx, new_rows)
 
 

@@ -41,12 +41,19 @@ class TestFlagRegistry(unittest.TestCase):
             "gate_slope_shift_pass",
             "voice_track_pass",
             "strict_lonely",
-            "super_frame_pass",
         ):
             self.assertIn(flag, MACRO_FLAGS, flag)
 
     def test_dead_flags_absent(self):
-        for flag in ("mode_vol_flip_pass", "legato_pass_c3"):
+        for flag in (
+            "mode_vol_flip_pass",
+            "legato_pass_c3",
+            "super_frame_pass",
+            "voice_trajectory_pass",
+            "voice_trajectory_distributed_pass",
+            "set_to_diff_pass",
+            "motif_pass",
+        ):
             self.assertNotIn(flag, MACRO_FLAGS, flag)
 
     def test_no_undeclared_gating_flag(self):

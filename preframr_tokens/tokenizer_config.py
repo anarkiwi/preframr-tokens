@@ -26,7 +26,6 @@ PARSER_DEFAULTS = {
     "diffq": 4,
     "loop_lookahead": 3,
     "coarsen_min_len": 16,
-    "voice_trajectory_window": 8,
     "pipeline_spec": "",
     "meta_exclude_digi": False,
     "meta_irq_lo": 0,

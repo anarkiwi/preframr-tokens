@@ -40,9 +40,6 @@ _PIPELINE_NAME_TO_FLAG = {
     "hard_restart": "hard_restart_pass",
     "ctrl_bigram": "ctrl_bigram_pass",
     "voice_block_order": "voice_canonical_block_order",
-    "voice_trajectory": "voice_trajectory_pass",
-    "voice_trajectory_distributed": "voice_trajectory_distributed_pass",
-    "set_to_diff": "set_to_diff_pass",
     "freq_trajectory": "freq_trajectory_pass",
     "preset": "preset_pass",
     "loop": "loop_pass",
@@ -59,7 +56,6 @@ _BASE_PARSE_ARGS = dict(
     diffq=4,
     loop_lookahead=3,
     coarsen_min_len=16,
-    voice_trajectory_window=8,
     pipeline_spec="",
     meta_exclude_digi=False,
     meta_irq_lo=0,
@@ -233,8 +229,6 @@ class Tracer:
         for attr in _PARSER_STAGE_METHODS:
             if hasattr(reglogparser.RegLogParser, attr):
                 self._wrap_method(reglogparser.RegLogParser, attr, "parser")
-        if hasattr(reglogparser, "_apply_optional_transforms"):
-            self._wrap_method(reglogparser, "_apply_optional_transforms", "opt")
         return self
 
     def __exit__(self, *exc):
@@ -270,8 +264,6 @@ def build_args(spec, cargs, overrides):
                 if attr not in known:
                     unknown_flags.append(attr)
             continue
-        if name == "voice_trajectory" and params.get("window") is not None:
-            args.voice_trajectory_window = int(params["window"])
         flag = _PIPELINE_NAME_TO_FLAG.get(name)
         if flag is None:
             unknown_names.append(name)
