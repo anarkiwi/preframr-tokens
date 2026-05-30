@@ -57,7 +57,7 @@ LEVELCHANGE_CAP = 12
 LEVELCHANGE_HOLD = 2
 VIB_MIN_CENTS = 8.0
 ARP_MAX_DISTINCT = 4
-ARP_MAX_PERIOD = 8
+ARP_MAX_PERIOD = 16
 _OFFSET_LIMIT = 24
 _VIB_DEPTH_HEAVY_CENTS = 30.0
 _VIB_RATE_DEFAULT = 6
@@ -235,6 +235,11 @@ class SkeletonPass(MacroPass):
 
     GATE_FLAGS = frozenset({"skeleton_pass"})
 
+    _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
+    _df_sink = (
+        None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
+    )
+
     def apply(self, df, args=None):
         if args is None or not getattr(args, "skeleton_pass", False):
             return df
@@ -246,6 +251,8 @@ class SkeletonPass(MacroPass):
         if "traj_anchor" in df.columns:
             df = df.drop(columns=["traj_anchor"])
         ctx = self._context(df)
+        if SkeletonPass._df_sink is not None:
+            SkeletonPass._df_sink.append(df.assign(_fr=_frame_index(df)))
         irq = _first_irq(df)
         drop_idx = []
         new_rows = []
@@ -346,6 +353,28 @@ class SkeletonPass(MacroPass):
             )
             if not claimed:
                 continue
+            if SkeletonPass._resid_diag is not None:
+                is_resid = orn_type == ORN_TYPE_RESID
+                rec = None
+                if is_resid:
+                    rec = []
+                    for k, fn in enumerate(per_frame):
+                        res = fn_to_note_resid(int(fn))
+                        if res is None:
+                            continue
+                        fr = onset_fr + 1 + k
+                        ctrl = self._ctrl_at(cwrites, fr)
+                        rec.append(
+                            (
+                                res[0] - note,
+                                -1 if ctrl is None else int(ctrl),
+                                self._is_pitched_frame(cwrites, fr),
+                                int(fn),
+                            )
+                        )
+                SkeletonPass._resid_diag.append(
+                    (int(reg), is_resid, int(note), int(onset_fr), rec)
+                )
             prev_note = note
             drop_idx.append(anchor[1])
             drop_idx.extend(s[1] for s in seg)
