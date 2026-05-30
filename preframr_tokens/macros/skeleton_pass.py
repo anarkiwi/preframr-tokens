@@ -198,10 +198,11 @@ def _row(reg, op, subreg, val, diff, irq):
 
 
 class SkeletonPass(MacroPass):
-    """Dense skeleton + ornament: segment each freq reg into notes (semitone-run + MIN_HOLD
-    UNION gate-on), emit one SKEL atom per note and one ORN descriptor collapsing its
-    intra-note arps/vibrato/slide. Requires ``freq_trajectory_pass`` / ``freq_onset_pass``
-    OFF (skeleton owns the freq channel)."""
+    """Dense skeleton + ornament: segment each freq reg into notes (semitone-run + MIN_HOLD UNION
+    gate-on, then held-gate de-merge of giant-RESID phrases into their constituent notes), emit one
+    SKEL atom per note and one ORN descriptor collapsing its intra-note arps/vibrato/slide.
+    Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
+    """
 
     GATE_FLAGS = frozenset({"skeleton_pass"})
 
@@ -262,18 +263,16 @@ class SkeletonPass(MacroPass):
         sets = freq_sets[int(reg)]
         if not sets:
             return
+        by_frame = {s[0]: s for s in sets}
         onsets = self._segment_notes(sets, gate_on[int(reg)])
+        onsets = self._resegment_holdgate(onsets, sets, by_frame)
         if len(onsets) < 2:
             return
-        by_frame = {s[0]: s for s in sets}
         onset_frames = [fr for fr, _ in onsets]
+        end_frame = max(s[0] for s in sets) + 1
         prev_note = None
         for k, (onset_fr, note) in enumerate(onsets):
-            nxt_fr = (
-                onset_frames[k + 1]
-                if k + 1 < len(onset_frames)
-                else max(s[0] for s in sets) + 1
-            )
+            nxt_fr = onset_frames[k + 1] if k + 1 < len(onset_frames) else end_frame
             anchor = by_frame.get(onset_fr)
             if anchor is None:
                 continue
@@ -288,6 +287,44 @@ class SkeletonPass(MacroPass):
             prev_note = note
             drop_idx.append(anchor[1])
             drop_idx.extend(s[1] for s in seg)
+
+    @classmethod
+    def _resegment_holdgate(cls, onsets, sets, by_frame):
+        """Held-gate re-segmentation: a giant RESID note (a held >= MIN_HOLD plateau followed by a
+        melody that was not re-gated) is split at its first post-plateau moving frame into the
+        plateau note + the trailing melody as its own note, recursively, so a held-gate phrase
+        de-merges into its constituent notes. Onsets list of (frame, note) -> refined list.
+        """
+        if len(onsets) < 1:
+            return onsets
+        end_frame = max(s[0] for s in sets) + 1
+        result = []
+        queue = list(onsets)
+        while queue:
+            onset_fr, note = queue.pop(0)
+            nxt_fr = queue[0][0] if queue else end_frame
+            anchor = by_frame.get(onset_fr)
+            if anchor is None:
+                result.append((onset_fr, note))
+                continue
+            seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
+            per_frame = cls._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
+            hold = cls._split_holdgate_resid(note, per_frame)
+            if hold <= 0:
+                result.append((onset_fr, note))
+                continue
+            split_fr = onset_fr + hold + 1
+            split_anchor = by_frame.get(split_fr)
+            if split_anchor is None:
+                result.append((onset_fr, note))
+                continue
+            res = fn_to_note_resid(int(split_anchor[2]))
+            if res is None:
+                result.append((onset_fr, note))
+                continue
+            result.append((onset_fr, note))
+            queue.insert(0, (split_fr, res[0]))
+        return sorted(set(result))
 
     @staticmethod
     def _per_frame_fns(note, anchor, seg, onset_fr, nxt_fr):
@@ -333,6 +370,27 @@ class SkeletonPass(MacroPass):
             if fr in fn_at:
                 onsets.setdefault(fr, fn_at[fr])
         return sorted(onsets.items())
+
+    @staticmethod
+    def _split_holdgate_resid(note, per_frame):
+        """Held-gate de-merge: a RESID note that opens with a stable >= MIN_HOLD plateau on its own
+        semitone is a clean held note followed by a SEPARATE note that was not re-gated (Hubbard
+        note-flag bit6 "appended, no attack"); return the plateau length so the caller cuts a new
+        onset at the first moving frame, else 0 (clean ornament / no leading plateau / no tail).
+        """
+        hold = 0
+        for fn in per_frame:
+            res = fn_to_note_resid(int(fn))
+            if res is None or res[0] != note:
+                break
+            hold += 1
+        if hold < MIN_HOLD or hold >= len(per_frame):
+            return 0
+        orn_type, params = fit_descriptor(note, list(per_frame))
+        if orn_type != ORN_TYPE_RESID:
+            return 0
+        del params
+        return hold
 
     def _emit_note(
         self, reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows

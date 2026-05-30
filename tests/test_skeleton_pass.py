@@ -297,6 +297,86 @@ def test_resid_escape_offset_floor_exact():
     assert len(resid) > 0
 
 
+class _HeldGateBuilder:
+    """Build a single-gate (legato) phrase: gate on once, then per-frame freqs with NO further
+    gate retrigger -- a held-gate phrase whose internal note changes have no attack (Hubbard
+    note-flag bit6). Used to exercise held-gate re-segmentation."""
+
+    def __init__(self):
+        self.rows = [_row(_GATE_REG, 0x40), _row(_GATE_REG, 0x41)]
+        self._last_fn = None
+
+    def frames(self, per_frame_fns):
+        for fn in per_frame_fns:
+            self.rows.append(_row(FRAME_REG, 0))
+            if fn != self._last_fn:
+                self.rows.append(_row(_FREQ_REG, fn))
+                self._last_fn = fn
+        return self
+
+    def df(self):
+        self.rows.append(_row(FRAME_REG, 0))
+        return pd.DataFrame(self.rows)
+
+
+def _slide_between(a, b, steps):
+    """Per-frame freqs sliding from semitone a to b over ``steps`` connecting frames."""
+    return [LUT[a + (1 if b > a else -1) * s] for s in range(1, steps + 1)]
+
+
+def _skel_notes(enc):
+    """Decode the absolute semitone of each SKEL atom (abs first, signed intervals after)."""
+    notes = []
+    cur = 0
+    for _, r in enc[enc["op"] == SKEL_OP].iterrows():
+        if int(r["subreg"]) == SKEL_SUBREG_ABS:
+            cur = int(r["val"])
+        else:
+            v = int(r["val"])
+            cur += v if v < 128 else v - 256
+        notes.append(cur)
+    return notes
+
+
+def test_held_gate_phrase_splits_into_notes():
+    """A held-gate phrase A ... B ... C (one gate-on; three stable >= MIN_HOLD semitone plateaus,
+    no re-gate) de-merges into its constituent notes -- A, B and C each appear as a SKEL note --
+    instead of collapsing to ONE note with a giant RESID, and the phrase round-trips at the
+    semitone floor (the connecting motion becomes ornament, not raw freq)."""
+    a, b, c = 60, 64, 67
+    per_frame = (
+        _held(a)
+        + _slide_between(a, b, 2)
+        + _held(b)
+        + _slide_between(b, c, 2)
+        + _held(c)
+    )
+    raw = _HeldGateBuilder().frames(per_frame).df()
+    enc = _roundtrip_exact(raw)
+    notes = _skel_notes(enc)
+    assert len(notes) >= 3, notes
+    assert {a, b, c} <= set(notes), notes
+    assert int(((enc["op"] == SET_OP) & (enc["reg"] == _FREQ_REG)).sum()) == 0
+    assert not _orn_types(enc)[
+        ORN_TYPE_RESID
+    ], "held-gate phrase must not leave a RESID"
+
+
+def test_fast_arp_under_held_gate_stays_ornament():
+    """A held plateau followed by a fast (< MIN_HOLD) arp under one held gate de-merges into the
+    plateau note + ONE arp note -- the arp steps are NOT each turned into a note (the < MIN_HOLD
+    fast-step ornament guard is kept) -- and the arp becomes a parametric ARP ornament.
+    """
+    base = 60
+    per_frame = _held(base) + _arp(base, [0, 4, 7], reps=6)
+    raw = _HeldGateBuilder().frames(per_frame).df()
+    enc = _roundtrip_exact(raw)
+    skel = enc[enc["op"] == SKEL_OP]
+    assert len(skel) <= 3, (len(skel), "arp steps must NOT each become a note")
+    assert _orn_types(enc)[ORN_TYPE_ARP] >= 1
+    assert not _orn_types(enc)[ORN_TYPE_RESID]
+
+
 def test_skeleton_off_is_noop():
     """skeleton_pass OFF leaves the df unchanged."""
     raw = _StreamBuilder().note(_held(60)).note(_held(62)).df()
