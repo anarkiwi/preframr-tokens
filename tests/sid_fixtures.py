@@ -20,7 +20,10 @@ __all__ = [
     "FixtureUnavailable",
     "SidDumpSpec",
     "GRID_RUNNER",
+    "DRIVER_FIXTURES",
+    "cache_dir",
     "ensure_dumps",
+    "ensure_driver_fixture",
     "grid_runner_dumps",
 ]
 
@@ -83,6 +86,22 @@ GRID_RUNNER = SidDumpSpec(
     slug="grid_runner",
     hvsc_path="MUSICIANS/J/Jammer/Grid_Runner.sid",
 )
+
+DRIVER_FIXTURES = {
+    "commando": SidDumpSpec(
+        slug="commando", hvsc_path="MUSICIANS/H/Hubbard_Rob/Commando.sid", tune=1
+    ),
+    "camerock": SidDumpSpec(
+        slug="camerock", hvsc_path="MUSICIANS/D/DRAX/Camerock.sid", tune=1
+    ),
+    "trap": SidDumpSpec(
+        slug="trap", hvsc_path="MUSICIANS/D/Daglish_Ben/Trap.sid", tune=1
+    ),
+    "baggis": SidDumpSpec(
+        slug="baggis", hvsc_path="MUSICIANS/G/Goto80/Baggis.sid", tune=1
+    ),
+}
+LOCAL_HVSC_ROOTS = (Path("/scratch/preframr/hvsc"),)
 
 
 def cache_dir() -> Path:
@@ -286,3 +305,47 @@ def ensure_dumps(spec: SidDumpSpec = GRID_RUNNER) -> tuple[Path, Path]:
 def grid_runner_dumps() -> tuple[Path, Path]:
     """Convenience accessor for the Grid Runner ``(head, 26s)`` dumps."""
     return ensure_dumps(GRID_RUNNER)
+
+
+def _local_rendered_dump(spec: SidDumpSpec) -> Path | None:
+    """Pre-rendered ``<song>.<tune>.dump.parquet`` under a local HVSC tree, if one of
+    ``LOCAL_HVSC_ROOTS`` holds it (the dumps are not committed, only resolved here)."""
+    rel = spec.hvsc_path.rsplit(".sid", 1)[0]
+    for root in LOCAL_HVSC_ROOTS:
+        cand = root / f"{rel}.{spec.tune}.dump.parquet"
+        if _is_valid_dump(cand):
+            return cand
+    return None
+
+
+def ensure_driver_fixture(
+    name: str, skip_seconds: int = 20, window_seconds: int = 20
+) -> Path:
+    """Return a cached driver-tune dump for ``name`` (commando/camerock/trap/baggis),
+    sliced to the ``[skip_seconds, skip_seconds+window_seconds)`` PAL-clock window (past
+    the silent intro, bounded so parse stays fast). Resolves a pre-rendered local HVSC
+    dump if present else regenerates via vsid; raises :class:`FixtureUnavailable` if
+    neither is possible (never silently skips). Song data is cached, never committed."""
+    if name not in DRIVER_FIXTURES:
+        raise KeyError(
+            f"unknown driver fixture {name!r}; known: {sorted(DRIVER_FIXTURES)}"
+        )
+    spec = DRIVER_FIXTURES[name]
+    cache = cache_dir()
+    slug = f"{spec.slug}_{skip_seconds}_{window_seconds}s.dump.parquet"
+    slice_path = cache / slug
+    if _is_valid_dump(slice_path):
+        return slice_path
+    local = _local_rendered_dump(spec)
+    if local is not None:
+        wide = pd.read_parquet(local)
+    else:
+        _head, wide_path = ensure_dumps(spec)
+        wide = pd.read_parquet(wide_path)
+    lo = skip_seconds * PAL_PHI
+    hi = (skip_seconds + window_seconds) * PAL_PHI
+    sliced = wide[(wide["clock"] >= lo) & (wide["clock"] < hi)].reset_index(drop=True)
+    if sliced.empty:
+        sliced = wide.reset_index(drop=True)
+    sliced.to_parquet(slice_path, compression="zstd")
+    return slice_path

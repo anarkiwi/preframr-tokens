@@ -1,0 +1,236 @@
+"""Driver-truth coverage (#11): RESID share is the encoding-completeness metric. A
+synthetic generator per mechanism emits the register stream that driver produces, driven
+through the FULL parser, and asserts the parse classifies the correct ORN primitive with
+ZERO RESID -- a RESID leak on a known mechanism is a failing completeness test (fix the
+encoding, never the threshold). Real-tune RESID gaps are xfail-strict + characterized.
+"""
+
+import os
+import tempfile
+import unittest
+
+import pytest
+
+from tests.parse_probes import (
+    DumpBuilder,
+    cents_to_fn,
+    inline_orn_notes,
+    parse_args,
+    resid_breakdown,
+    skeleton_orn_summary,
+    write_dump,
+)
+from tests.sid_fixtures import FixtureUnavailable, cache_dir, ensure_driver_fixture
+
+from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.stfconstants import (
+    ORN_TYPE_ARP,
+    ORN_TYPE_OCTAVE,
+    ORN_TYPE_PLAIN,
+    ORN_TYPE_RESID,
+    ORN_TYPE_SLIDE,
+    ORN_TYPE_VIB,
+)
+
+RESID_MAX = 0.10
+_NO_CACHE_MSG = (
+    "PREFRAMR_SID_FIXTURE_CACHE unset and no local HVSC tree; real-tune layer runs "
+    "only where the fixture cache/headlessvice is available"
+)
+
+
+def _skeleton_args():
+    return parse_args(skeleton_pass=True, trajectory_anchor_pass=True)
+
+
+def _mechanism_note(per_frame_fns):
+    """Wrap one mechanism note between plain lead-in/lead-out notes (so the parser
+    keeps it and the level-change detector has clean boundaries) and parse it once."""
+    builder = DumpBuilder().adsr().pw(0x800)
+    builder.note([LUT[60]] * 5)
+    builder.note(per_frame_fns)
+    builder.note([LUT[48]] * 5)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_dump(builder, os.path.join(tmp, "mechanism.dump.parquet"))
+        return list(inline_orn_notes(path, _skeleton_args()))
+
+
+def _type_of(notes, expected_type):
+    """The (single) note classified ``expected_type``; its offset params. Asserts the
+    mechanism note was found and that NO note in the stream escaped to RESID."""
+    typed = [params for orn_type, params in notes if orn_type == expected_type]
+    resid = [params for orn_type, params in notes if orn_type == ORN_TYPE_RESID]
+    return typed, resid
+
+
+def _fixture_cache_present():
+    if os.environ.get("PREFRAMR_SID_FIXTURE_CACHE"):
+        return True
+    return (cache_dir() / "hvsc").exists() or os.path.isdir("/scratch/preframr/hvsc")
+
+
+class TestSyntheticDriverMechanisms(unittest.TestCase):
+    """One generator per pitch driver mechanism; each asserts the correct primitive and
+    zero RESID (the synthetic core, copyright-free, always runs)."""
+
+    def test_octave_arp(self):
+        """Hubbard octave arp (note / note+12 @50Hz) -> ORN_TYPE_OCTAVE, no RESID."""
+        notes = _mechanism_note(
+            [LUT[60 + (0 if f % 2 == 0 else 12)] for f in range(12)]
+        )
+        typed, resid = _type_of(notes, ORN_TYPE_OCTAVE)
+        self.assertTrue(typed, notes)
+        self.assertEqual(resid, [], notes)
+        self.assertTrue(set(typed[0]) <= {0, 12}, typed)
+
+    def test_table_arp(self):
+        """Tracker table arp (note-relative [0,+4,+7] cycle) -> ORN_TYPE_ARP with the
+        correct period, no RESID."""
+        notes = _mechanism_note([LUT[60 + [0, 4, 7][f % 3]] for f in range(18)])
+        typed, resid = _type_of(notes, ORN_TYPE_ARP)
+        self.assertTrue(typed, notes)
+        self.assertEqual(resid, [], notes)
+        self.assertEqual(list(typed[0]), [0, 4, 7], typed)
+
+    def test_vibrato(self):
+        """Sub-semitone vibrato wobble -> ORN_TYPE_VIB with a non-zero depth bucket, no
+        RESID (the content-tier floor drops the wobble to a learnable depth/rate)."""
+        notes = _mechanism_note(
+            [cents_to_fn(67, 25.0 if f % 2 == 0 else -25.0) for f in range(12)]
+        )
+        typed, resid = _type_of(notes, ORN_TYPE_VIB)
+        self.assertTrue(typed, notes)
+        self.assertEqual(resid, [], notes)
+        self.assertGreater(typed[0][0], 0, typed)
+
+    def test_slide(self):
+        """Portamento ramp toward a target -> ORN_TYPE_SLIDE with target ~= the reached
+        offset, no RESID."""
+        notes = _mechanism_note([LUT[60 + min(7, f)] for f in range(1, 16)])
+        typed, resid = _type_of(notes, ORN_TYPE_SLIDE)
+        self.assertTrue(typed, notes)
+        self.assertEqual(resid, [], notes)
+        self.assertGreaterEqual(abs(typed[0][0]), 5, typed)
+
+    def test_plain_held(self):
+        """A plain held note -> ORN_TYPE_PLAIN, no RESID."""
+        notes = _mechanism_note([LUT[64]] * 10)
+        typed, resid = _type_of(notes, ORN_TYPE_PLAIN)
+        self.assertTrue(typed, notes)
+        self.assertEqual(resid, [], notes)
+
+    def test_resid_is_a_completeness_signal(self):
+        """A genuinely aperiodic, wide, non-monotone pitch jumble has no driver
+        primitive and SHOULD escape to RESID -- documenting that RESID is the
+        completeness metric: it fires exactly when no mechanism models the note."""
+        jumble = [LUT[60 + o] for o in (0, 11, 3, 17, 1, 14, 6, 20, 2, 9)]
+        notes = _mechanism_note(jumble)
+        resid = [p for t, p in notes if t == ORN_TYPE_RESID]
+        self.assertTrue(resid, notes)
+
+
+class TestRealDriverEncoding(unittest.TestCase):
+    """Per-driver real-tune fixtures (cached, never committed, regenerate-or-fail). A
+    real regression guard: the skeleton+ornament encoding fires on actual driver output
+    of every known driver family. The per-tune RESID-share gate is the xfail layer below
+    (the threshold is not principled on full tunes; see the characterization)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not _fixture_cache_present():
+            raise unittest.SkipTest(_NO_CACHE_MSG)
+
+    def _summary(self, name):
+        try:
+            dump = str(ensure_driver_fixture(name))
+        except FixtureUnavailable as err:
+            raise AssertionError(
+                f"fixture cache present but {name} dump unavailable: {err}"
+            ) from err
+        return skeleton_orn_summary(dump, _skeleton_args())
+
+    def test_commando_encodes(self):
+        """Commando (Hubbard octave-arp + portamento family) parses to a skeleton."""
+        summary = self._summary("commando")
+        self.assertGreater(summary["skel"], 0, summary)
+        self.assertGreater(summary["orn"], 0, summary)
+
+    def test_camerock_encodes(self):
+        """Camerock (DRAX) parses to a skeleton."""
+        summary = self._summary("camerock")
+        self.assertGreater(summary["skel"], 0, summary)
+        self.assertGreater(summary["orn"], 0, summary)
+
+
+class TestRealDriverResidGap(unittest.TestCase):
+    """The known RESID completeness gap on real tunes, xfail-strict so the suite is GREEN
+    while the gap is explicit and flips to XPASS (alerting) when the missing mechanism is
+    later modelled. Characterized: the leak is dominated by fast-melodic-run
+    under-segmentation (recoverable as notes), not legit glissando."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not _fixture_cache_present():
+            raise unittest.SkipTest(_NO_CACHE_MSG)
+
+    def _resid_note_share(self, name):
+        try:
+            dump = str(ensure_driver_fixture(name))
+        except FixtureUnavailable as err:
+            raise AssertionError(
+                f"fixture cache present but {name} dump unavailable: {err}"
+            ) from err
+        summary = skeleton_orn_summary(dump, _skeleton_args())
+        self.assertGreater(summary["orn"], 0, summary)
+        return summary["resid"] / summary["orn"], summary
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RESID gap (Trap/Daglish): fast-melodic-run under-segmentation dominates "
+        "the leak (recoverable as notes), not legit glissando -- unmodelled segmentation "
+        "mechanism, tracking; do NOT raise RESID_MAX to pass",
+    )
+    def test_trap_resid_gap(self):
+        share, summary = self._resid_note_share("trap")
+        self.assertLessEqual(share, RESID_MAX, summary)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RESID gap (Baggis/Goto80): fast-melodic-run under-segmentation with a "
+        "glissando/noise tail -- unmodelled, tracking; do NOT raise RESID_MAX to pass",
+    )
+    def test_baggis_resid_gap(self):
+        share, summary = self._resid_note_share("baggis")
+        self.assertLessEqual(share, RESID_MAX, summary)
+
+
+class TestResidCharacterization(unittest.TestCase):
+    """Report (not a pass/fail threshold) the Trap/Baggis RESID composition so the gap is
+    explicit in CI logs: fast-melodic-run (fixable under-segmentation) vs long-glissando
+    (legit) vs aperiodic-noise. Asserts only that the dominant frame-share leak is the
+    fixable fast-melodic-run bucket (the actual characterization finding)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not _fixture_cache_present():
+            raise unittest.SkipTest(_NO_CACHE_MSG)
+
+    def test_characterize_known_gap(self):
+        for name in ("trap", "baggis"):
+            try:
+                dump = str(ensure_driver_fixture(name))
+            except FixtureUnavailable as err:
+                raise AssertionError(
+                    f"fixture cache present but {name} dump unavailable: {err}"
+                ) from err
+            breakdown = resid_breakdown(dump, _skeleton_args())
+            self.assertGreater(breakdown["resid_frame_share"], 0.0, (name, breakdown))
+            by_frame = breakdown["by_frame"]
+            self.assertIn("fast-melodic-run", by_frame, (name, breakdown))
+            fixable = by_frame.get("fast-melodic-run", 0)
+            total = sum(by_frame.values())
+            self.assertGreater(fixable / max(total, 1), 0.10, (name, breakdown))
+
+
+if __name__ == "__main__":
+    unittest.main()

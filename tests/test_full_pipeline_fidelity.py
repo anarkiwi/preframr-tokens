@@ -4,9 +4,10 @@ matches the no-macro baseline. Single-pass round-trip tests compare value
 sequences and miss frame-placement bugs (right values, wrong frames) that break
 pitch/waveform; divergence is reported per register-class to localise them."""
 
+import os
 import unittest
 
-from tests.sid_fixtures import FixtureUnavailable, grid_runner_dumps
+from tests.sid_fixtures import FixtureUnavailable, cache_dir, grid_runner_dumps
 
 from preframr_tokens.audit_primitives import register_state as _per_frame_state
 from preframr_tokens.macros.state import (
@@ -56,11 +57,21 @@ def _divergence(ref, st):
 class TestFullPipelineFidelity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        """Source the Grid Runner dump via the HVSC-regenerating helper (no
-        copyrighted SID data is committed); skip when it can't be built."""
+        """Source the Grid Runner dump via the HVSC-regenerating helper (no copyrighted
+        SID data is committed). Where a fixture cache is present this env should run the
+        real-tune layer, so a failed regeneration FAILS rather than silently skips;
+        elsewhere it skips."""
+        cache_present = (
+            bool(os.environ.get("PREFRAMR_SID_FIXTURE_CACHE"))
+            or (cache_dir() / "hvsc").exists()
+        )
         try:
             head, wide = grid_runner_dumps()
         except FixtureUnavailable as err:
+            if cache_present:
+                raise AssertionError(
+                    f"fixture cache present but Grid Runner dump unavailable: {err}"
+                ) from err
             raise unittest.SkipTest(f"Grid Runner dump unavailable: {err}")
         cls.fixture_head = str(head)
         cls.fixture_wide = str(wide)
