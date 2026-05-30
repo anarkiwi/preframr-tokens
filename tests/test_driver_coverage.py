@@ -14,6 +14,7 @@ import pytest
 from tests.parse_probes import (
     DumpBuilder,
     cents_to_fn,
+    inline_note_signature,
     inline_orn_notes,
     parse_args,
     resid_breakdown,
@@ -234,6 +235,62 @@ class TestResidCharacterization(unittest.TestCase):
             self.assertLessEqual(
                 fast_run_frac, self.FAST_RUN_FRAC_MAX, (name, breakdown)
             )
+
+
+class TestProvenanceInvariance(unittest.TestCase):
+    """P7 / universal driver (#11.4): the SAME musical gesture must encode to the SAME tokens
+    regardless of register-level provenance. The deterministic guarantee that the encoder is
+    provenance-agnostic (no per-driver / per-pitch branching): ORN is transposition- and
+    duration-invariant; the content-tier semitone floor is invariant to driver tuning.
+    """
+
+    def _sig(self, notes):
+        builder = DumpBuilder().adsr().pw(0x800)
+        for per_frame_fns in notes:
+            builder.note(per_frame_fns)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_dump(builder, os.path.join(tmp, "prov.dump.parquet"))
+            return inline_note_signature(path, _skeleton_args())
+
+    @staticmethod
+    def _orn_seq(sig):
+        return [(orn_type, offs) for _, orn_type, offs in sig]
+
+    def test_transposition_invariant_ornament(self):
+        """An arp `[0,+4,+7]` encodes to the SAME ORN whether based at C4 or C5 -- the ornament
+        is note-relative, so transposing the whole phrase leaves the ORN token stream unchanged.
+        """
+
+        def phrase(base):
+            arp = [LUT[base + [0, 4, 7][f % 3]] for f in range(18)]
+            return self._sig([[LUT[base - 5]] * 5, arp, [LUT[base - 12]] * 5])
+
+        low, high = phrase(60), phrase(72)
+        self.assertIn(ORN_TYPE_ARP, [t for t, _ in self._orn_seq(low)], low)
+        self.assertEqual(self._orn_seq(low), self._orn_seq(high))
+
+    def test_tuning_invariant_skeleton(self):
+        """A melody at exact tuning vs a constant sub-semitone detune (a different driver's
+        tuning) encodes to the IDENTICAL SKEL+ORN tokens -- the content-tier floor absorbs the
+        cents, so provenance tuning does not change the melody the model sees."""
+        mel = (60, 64, 67)
+        exact = self._sig([[LUT[n]] * 6 for n in mel])
+        detuned = self._sig([[cents_to_fn(n, 15.0)] * 6 for n in mel])
+        self.assertTrue(exact)
+        self.assertEqual(exact, detuned)
+
+    def test_duration_invariant_ornament(self):
+        """The same arp cycle over 12 vs 18 frames encodes to the SAME (constant-size) ORN --
+        ornament tokens describe the cycle, not its length, so note duration is not provenance.
+        """
+
+        def arp_phrase(frames):
+            arp = [LUT[60 + [0, 4, 7][f % 3]] for f in range(frames)]
+            return self._orn_seq(self._sig([[LUT[55]] * 5, arp, [LUT[48]] * 5]))
+
+        short, long = arp_phrase(12), arp_phrase(18)
+        self.assertIn(ORN_TYPE_ARP, [t for t, _ in short], short)
+        self.assertEqual(short, long)
 
 
 if __name__ == "__main__":

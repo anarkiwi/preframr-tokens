@@ -144,6 +144,45 @@ def inline_orn_notes(path, args):
     yield from _iter_orn_notes(parsed)
 
 
+def inline_note_signature(path, args):
+    """Per-note ``((skel_subreg, skel_val), orn_type, offsets)`` from the single-encode inline
+    stream -- the provenance-invariance comparison key (#11.4): the exact SKEL+ORN tokens a note
+    encodes to, so two register renderings of one gesture can be asserted identical."""
+    parsed = next(
+        RegLogParser(args=args).parse(path, max_perm=1, require_pq=False, reparse=True),
+        None,
+    )
+    if parsed is None or "op" not in parsed.columns:
+        return []
+    ops = parsed["op"].to_numpy()
+    subs = parsed["subreg"].to_numpy()
+    vals = parsed["val"].to_numpy()
+    n = len(parsed)
+    out = []
+    pending = None
+    i = 0
+    while i < n:
+        if int(ops[i]) == SKEL_OP:
+            pending = (int(subs[i]), int(vals[i]))
+            i += 1
+            continue
+        if int(ops[i]) == ORN_OP and int(subs[i]) == ORN_SUBREG_TYPE:
+            orn_type = int(vals[i])
+            offs = []
+            j = i + 1
+            while j < n and int(ops[j]) == ORN_OP and int(subs[j]) != ORN_SUBREG_TYPE:
+                if int(subs[j]) == ORN_SUBREG_P1:
+                    v = int(vals[j])
+                    offs.append(v - 256 if v > 127 else v)
+                j += 1
+            out.append((pending, orn_type, tuple(offs)))
+            pending = None
+            i = j
+            continue
+        i += 1
+    return out
+
+
 def _iter_orn_notes(block):
     """Yield ``(orn_type, offsets)`` per note in one block: each ORN descriptor is a
     TYPE atom followed by its P1/P2 parameter atoms (RESID carries one signed P1

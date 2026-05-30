@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Provenance-invariance tests (#11.4, principle P7).** Test-only: `TestProvenanceInvariance`
+  asserts the universal-driver property — the same musical gesture encodes to the SAME SKEL+ORN
+  tokens regardless of register-level provenance: ORN is transposition- and duration-invariant, and
+  the content-tier semitone floor is invariant to driver tuning (constant sub-semitone detune). New
+  `inline_note_signature` probe helper. No library/vocab change.
+
 ## [0.35.0]
 
 ### Changed
