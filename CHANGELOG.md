@@ -42,6 +42,31 @@ All notable changes to this project will be documented in this file.
   op55:op54 ratio and RESID-note count on held-gate tunes (e.g. Camerock 10.1→4.7:1, RESID
   344→173) while clean tunes hold (Commando ~3:1).
 
+### Added
+
+- **Deterministic pre-training encoding test suite** — catches unmodelled-encoding /
+  implementation errors deterministically before any training run. All synthetic checks
+  are copyright-free and always run in the standard docker gate; real-tune layers
+  regenerate-or-fail from a local cache (never `skipTest`, never commit a `.sid`/dump).
+  - `tests/parse_probes.py` — torch-free parse-side helpers: a `DumpBuilder` that emits a
+    raw `clock,irq,chipno,reg,val` dump with **separate lo+hi byte writes + per-frame freq
+    writes**, so tests run the FULL `RegLogParser.parse` (`_combine_regs` +
+    `_quantize_freq_to_cents`) instead of a hand-built `Pass.apply` df (the path that hid
+    the cent-index no-op). Op counting over the deployed block stream, single-encode inline
+    ORN classification, and a RESID-note classifier (fast-melodic-run / glissando / noise).
+  - `tests/test_parse_pipeline_smoke.py` (#10) — per-config op matrix (skeleton →
+    `op54>0,op55>0,op45==0,op48==0`; default → `op45>0`; freq_onset → `op48>0`), a skeleton
+    round-trip onto the LUT semitone floor, and an `op55:op54 <= 6` channel-balance bound
+    (catches channel-drowning). These FAIL if reverted onto the 0.31.0 cent-index no-op.
+  - `tests/test_driver_coverage.py` (#11) — one synthetic generator per driver mechanism
+    (octave arp → `ORN_TYPE_OCTAVE`, table arp → `ORN_TYPE_ARP` period, vibrato →
+    `ORN_TYPE_VIB` depth, slide → `ORN_TYPE_SLIDE` target, held → `ORN_TYPE_PLAIN`), each
+    asserting the correct primitive AND zero RESID; RESID is the completeness metric. The
+    known real-tune RESID gap (Trap/Daglish, Baggis/Goto80) is `xfail(strict=True)` so the
+    suite stays green and flips to XPASS when the missing segmentation mechanism lands; the
+    gap is characterized (dominated by fast-melodic-run under-segmentation, not legit
+    glissando). Real-driver fixtures resolve via `tests/sid_fixtures.py:ensure_driver_fixture`.
+
 ## [0.32.0]
 
 ### Added
