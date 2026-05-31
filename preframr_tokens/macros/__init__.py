@@ -26,6 +26,7 @@ from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
+from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
@@ -48,6 +49,7 @@ FREQ_BLOCK_PASSES = [
     StampPass(),
     SweepPass(),
     SkeletonPass(),
+    WavetablePass(),
     FreqTrajectoryPass(),
     FreqOnsetPass(),
     PerRegBurstPass(),

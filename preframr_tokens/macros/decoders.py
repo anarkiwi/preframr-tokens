@@ -25,6 +25,7 @@ __all__ = [
     "StampDecoder",
     "PatchDecoder",
     "SweepDecoder",
+    "WavetableDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -131,8 +132,21 @@ from preframr_tokens.stfconstants import (
     TRACK_REF_SUBREG_LEAD,
     TRANSPOSE_OP,
     VOICES,
+    WAVETABLE_DEF_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_REF_OP,
+    WAVETABLE_STEP_OP,
     WAVETABLE_SUSTAIN_OP,
+    WT_REF_SUBREG_ID,
+    WT_REF_SUBREG_LEAD,
+    WT_REF_SUBREG_LEADOFF,
+    WT_REF_SUBREG_LEN_HI,
+    WT_REF_SUBREG_LEN_LO,
+    WT_STEP_SUBREG_HOLD,
+    WT_STEP_SUBREG_LOOP,
+    WT_STEP_SUBREG_OFFSET,
 )
+from preframr_tokens.macros.wavetable import unroll as wt_unroll
 
 
 class MacroDecoder:
@@ -968,6 +982,96 @@ class SweepDecoder(MacroDecoder):
         return pre or None
 
 
+class WavetableDecoder(MacroDecoder):
+    """Decode the inline-redefinable wavetable codebook ops (design/wavetable_codebook_encoding):
+    DEF/STEP/END buffer a note-relative offset program into a live id->program table (a later DEF id
+    rebinds); REF (reg=voice freq reg) unrolls the program to LEN frames after the per-hit onset-strip
+    LEAD and replays base + LUT[note+off] per frame onto last_skel_note via pending_set_writes,
+    byte-identical to the OrnamentDecoder RESID queue it replaces."""
+
+    op_code = -1
+
+    def expand(self, row, state):
+        op = int(row.op)
+        if op == WAVETABLE_DEF_OP:
+            state.pending_wavetable_def = {"id": int(row.val), "steps": [], "loop": 0}
+            return None
+        if op == WAVETABLE_STEP_OP:
+            self._step(row, state)
+            return None
+        if op == WAVETABLE_END_OP:
+            wt = state.pending_wavetable_def
+            if wt is not None:
+                state.wavetable_table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
+                state.pending_wavetable_def = None
+            return None
+        return self._ref(row, state)
+
+    @staticmethod
+    def _step(row, state):
+        wt = state.pending_wavetable_def
+        if wt is None:
+            return
+        subreg = int(row.subreg)
+        if subreg == WT_STEP_SUBREG_OFFSET:
+            v = int(row.val) & 0xFF
+            wt["steps"].append([v if v < 128 else v - 256, 1])
+        elif subreg == WT_STEP_SUBREG_HOLD:
+            if wt["steps"]:
+                wt["steps"][-1][1] = int(row.val) & 0xFFFF
+        elif subreg == WT_STEP_SUBREG_LOOP:
+            wt["loop"] = int(row.val) & 0xFFFF
+
+    def _ref(self, row, state):
+        subreg = int(row.subreg)
+        if subreg == WT_REF_SUBREG_ID:
+            state.pending_wavetable_ref = {
+                "id": int(row.val),
+                "reg": int(row.reg),
+                "len": 0,
+                "lead": [],
+                "lead_n": 0,
+            }
+            return None
+        pend = state.pending_wavetable_ref
+        if pend is None:
+            return None
+        if subreg == WT_REF_SUBREG_LEN_HI:
+            pend["len"] |= (int(row.val) & 0xFF) << 8
+            return None
+        if subreg == WT_REF_SUBREG_LEN_LO:
+            pend["len"] |= int(row.val) & 0xFF
+            return None
+        if subreg == WT_REF_SUBREG_LEAD:
+            pend["lead_n"] = int(row.val) & 0xFFFF
+            if pend["lead_n"] == 0:
+                return self._replay(pend, state)
+            return None
+        if subreg == WT_REF_SUBREG_LEADOFF:
+            v = int(row.val) & 0xFF
+            pend["lead"].append(v if v < 128 else v - 256)
+            if len(pend["lead"]) >= pend["lead_n"]:
+                return self._replay(pend, state)
+            return None
+        return None
+
+    @staticmethod
+    def _replay(pend, state):
+        state.pending_wavetable_ref = None
+        program = state.wavetable_table.get(int(pend["id"]))
+        if program is None:
+            return None
+        steps, loop = program
+        reg = int(pend["reg"])
+        note = int(state.last_skel_note.get(reg, 0))
+        offsets = wt_unroll(steps, loop, int(pend["len"]), pend["lead"])
+        queue = state.pending_set_writes[reg]
+        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
+        for off in offsets:
+            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
+        return None
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -1008,6 +1112,14 @@ for _op in (
 _PATCH_DECODER = PatchDecoder()
 for _op in (PATCH_DEF_OP, PATCH_STEP_OP, PATCH_SET_OP):
     DECODERS[_op] = _PATCH_DECODER
+_WAVETABLE_DECODER = WavetableDecoder()
+for _op in (
+    WAVETABLE_DEF_OP,
+    WAVETABLE_STEP_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_REF_OP,
+):
+    DECODERS[_op] = _WAVETABLE_DECODER
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:
     DECODERS[_op] = _PRESET_DECODER
