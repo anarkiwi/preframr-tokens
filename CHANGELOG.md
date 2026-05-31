@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **W4 — route wide monotone ramps to SLIDE (`slide_wide`, default OFF).** A constant note-relative delta
+  ramp (the SWEEP/monotone tail class) wider than `_OFFSET_LIMIT` currently leaks straight to RESID before
+  the SLIDE check; with `slide_wide` on, `fit_descriptor` routes it to `ORN_TYPE_SLIDE` when the rate-only
+  form reproduces it exactly and the target fits a signed byte (`_slide_descriptor`). This keeps a genuine
+  glissando a real primitive rather than a W3 one-shot dumping ground, and makes it **provenance-invariant**
+  — the same ramp shape encodes to the same SLIDE tokens at any base. Byte-exact: the existing `_orn_rows`
+  reconstruct-verify reverts to RESID if `slide_frame_offsets` does not reproduce the floor, so a mismatch
+  can never ship. Gate threaded only to the emit-site `fit_descriptor` call (resegmentation classification
+  is unchanged). New parse-level guard `tests/test_slide_wide.py` (routes a wide ramp to SLIDE through the
+  full `RegLogParser.parse`, asserts the isolation oracle and provenance-invariance). The PERIOD-survivor
+  onset-strip alignment (a codebook-catch compression refinement, not a RESID=0 requirement — the W3
+  one-shot already gives those notes a byte-exact home) is left for the survey-gated W5.
+
 - **W3 — inline one-shot, the RESID=0 backstop (`wt_oneshot`, default OFF).** A dedicated self-contained
   `WAVETABLE_ONESHOT_OP` (op 69) that inlines a verbatim offset program at the note position with **no
   codebook id** (no DEF/REF indirection, no single-use id pollution): LEN_HI/LO then RLE OFFSET(/HOLD)
