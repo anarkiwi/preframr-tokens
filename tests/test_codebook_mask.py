@@ -26,10 +26,15 @@ from preframr_tokens.stfconstants import (
     STAMP_DEF_OP,
     STAMP_END_OP,
     STAMP_REF_OP,
+    WAVETABLE_DEF_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_REF_OP,
+    WT_REF_SUBREG_ID,
 )
 
 PAD, FRAME, STAMP_DEF3, STAMP_END3, STAMP_REF3, STAMP_REF7 = 0, 1, 2, 3, 4, 5
 PATCH_DEF5, PATCH_AD, PATCH_SR, PATCH_SET5 = 6, 7, 8, 9
+WT_DEF9, WT_END9, WT_REF9 = 10, 11, 12
 
 _ROWS = [
     {"op": SET_OP, "reg": PAD_REG, "subreg": -1, "val": 0},
@@ -42,6 +47,9 @@ _ROWS = [
     {"op": PATCH_STEP_OP, "reg": 0, "subreg": PATCH_SUBREG_AD, "val": 30},
     {"op": PATCH_STEP_OP, "reg": 0, "subreg": PATCH_SUBREG_SR, "val": 40},
     {"op": PATCH_SET_OP, "reg": 0, "subreg": -1, "val": 5},
+    {"op": WAVETABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": WAVETABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": WAVETABLE_REF_OP, "reg": 0, "subreg": WT_REF_SUBREG_ID, "val": 9},
 ]
 
 
@@ -102,6 +110,25 @@ class TestCodebookMask(unittest.TestCase):
 
 def _df(*token_ids):
     return pd.DataFrame([_ROWS[t] for t in token_ids])
+
+
+class TestWavetableCodebookMask(unittest.TestCase):
+    def test_wavetable_ref_liveness(self):
+        state = _state()
+        self.assertTrue(_masked(state, WT_REF9), "ref illegal before def+commit")
+        state.update(WT_DEF9)
+        self.assertTrue(_masked(state, WT_REF9), "ref illegal before commit")
+        state.update(WT_END9)
+        self.assertFalse(_masked(state, WT_REF9), "ref legal after WAVETABLE_END")
+
+    def test_wavetable_validation(self):
+        self.assertTrue(validate_codebook_refs(_df(WT_DEF9, WT_END9, WT_REF9)))
+        with self.assertRaises(AssertionError):
+            validate_codebook_refs(_df(WT_REF9))
+
+    def test_wavetable_live_ids_table_index(self):
+        live = codebook_live_ids(_df(WT_DEF9, WT_END9))
+        self.assertEqual(live[2], {9}, "wavetable is table index 2")
 
 
 class TestCodebookValidation(unittest.TestCase):

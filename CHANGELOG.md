@@ -4,8 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.38.0]
+
 ### Added
 
+- **WAVETABLE codebook primitive (RESID_ZERO_PHASE3 §2, #41).** The pitched twin of STAMP:
+  `WavetablePass` (after `SkeletonPass`, gate `wavetable_pass`, default OFF) mines the skeleton
+  ORN-RESID note-relative offset dumps into an inline-redefinable `WAVETABLE_DEF`/`WAVETABLE_REF`
+  codebook (ops 65–68) — held-ARP generalised to a cross-note loop — or an inline-structured one-shot.
+  Onset-strip, noise-inclusive detection, RLE+loop factorisation, recurrence codebook (`WT_MINREP=2`)
+  + verify-match; byte-identical to the content-floor RESID it replaces (isolation oracle) or falls
+  back to RESID. New `macros/wavetable.py` (`factorise`/`unroll`/`program_key`), `WavetableDecoder`,
+  `DecodeState.wavetable_table`. Shared `macros/rle.py` run-length codec dedupes `skeleton_pass._rle`.
+- **Constrained-decode OpContract registry + codebook inference safety (RESID_ZERO_PHASE3 §4 B0–B4,
+  #42).** One `macros/op_contracts.py` `OP_CONTRACTS` registry (one contract per emittable op) with a
+  completeness test that fails at unit-test time if any op lacks a contract. The atomic sampling mask
+  (`precompute_vocab_arrays` structural arrays + the `StreamState` slot tables) is now generated from
+  `STRUCTURAL_SUBREGS`, byte-identical (golden-master regression lock). Inline-codebook DEF→REF
+  backrefs (STAMP/PATCH/WAVETABLE) are made inference-safe: the mask forbids a REF to a non-live id, a
+  DEF/COMMIT make ids live, `expand_ops(codebook_seed=…)` / `StreamState(init_codebook_ids=…)` /
+  `validate_stream(live_ids=…)` / `codebook_live_ids()` materialize out-of-window refs, and
+  `validate_codebook_refs` replays legality. Cross-repo API extended additively only.
 - **Provenance-invariance tests (#11.4, principle P7).** Test-only: `TestProvenanceInvariance`
   asserts the universal-driver property — the same musical gesture encodes to the SAME SKEL+ORN
   tokens regardless of register-level provenance: ORN is transposition- and duration-invariant, and
