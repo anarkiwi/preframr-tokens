@@ -33,6 +33,7 @@ from preframr_tokens.macros.skeleton_pass import (
     cycle_frame_offsets,
     held_cycle_offsets,
     slide_frame_offsets,
+    slide2_frame_offsets,
     vib_frame_offsets,
 )
 from preframr_tokens.stfconstants import (
@@ -47,6 +48,7 @@ from preframr_tokens.stfconstants import (
     ORN_TYPE_PLAIN,
     ORN_TYPE_RESID,
     ORN_TYPE_SLIDE,
+    ORN_TYPE_SLIDE2,
     ORN_TYPE_VIB,
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
@@ -781,6 +783,8 @@ class OrnamentDecoder(MacroDecoder):
             return cycle_frame_offsets(params, length)
         if t == ORN_TYPE_SLIDE and len(params) >= 2:
             return slide_frame_offsets(params[0], params[1], length)
+        if t == ORN_TYPE_SLIDE2 and len(params) >= 2:
+            return slide2_frame_offsets(params[0], params[1], length)
         if t == ORN_TYPE_VIB and len(params) >= 2:
             return vib_frame_offsets(params[0], params[1], length)
         return [0] * length

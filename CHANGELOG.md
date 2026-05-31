@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (continued)
+
+- **W5.1 — exact-landing SLIDE2 primitive (`slide_landing`, default OFF).** The rate-only SLIDE only
+  expresses unit steps (±1 per `rate` frames), so a constant per-frame delta ≠ 1 (e.g. a +2/frame ramp
+  `[2,4,6,8]`) leaks to RESID even with W4's wide SLIDE on. A new `ORN_TYPE_SLIDE2` (op stays `ORN_OP`, so
+  no new contract) carries `(target, duration)` and replays a linear ramp that reaches `target` after
+  `duration` frames then holds (`slide2_frame_offsets`), landing exactly on any reachable target. With
+  `slide_landing` on, `fit_descriptor` routes both narrow and wide constant-delta ramps the rate-only form
+  misses to SLIDE2 (`_slide2_descriptor` derives the duration as the landing frame and verifies once;
+  target/duration each bounded to a signed byte). Byte-exact via the `_orn_rows` reconstruct-verify and
+  provenance-invariant (same shape → same SLIDE2 tokens at any base). Built without the corpus survey at
+  the author's direction; the other §5 candidates (VIB delay+length, SWEEP loop-period, PERC) remain
+  survey-gated. New parse-level guard `tests/test_slide_landing.py`.
+
 ### Changed
 
 - **Hot-loop performance (no output change).** Four output-preserving speedups on the encode path:
