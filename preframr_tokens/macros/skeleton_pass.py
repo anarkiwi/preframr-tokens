@@ -30,12 +30,16 @@ from preframr_tokens.macros.passes_base import (
     MacroPass,
 )
 from preframr_tokens.stfconstants import (
+    ARP_CYCLE_MAX_STEPS,
+    ARP_CYCLE_MIN_REPEAT,
     FREQ_TRAJ_REGS,
     ORN_OP,
+    ORN_SUBREG_HOLD,
     ORN_SUBREG_P1,
     ORN_SUBREG_P2,
     ORN_SUBREG_TYPE,
     ORN_TYPE_ARP,
+    ORN_TYPE_HELD_ARP,
     ORN_TYPE_OCTAVE,
     ORN_TYPE_PLAIN,
     ORN_TYPE_RESID,
@@ -146,6 +150,44 @@ def _minimal_period(offs):
     return None
 
 
+def _rle(seq):
+    """Run-length encode a sequence into (values, holds) of consecutive duplicates."""
+    vals, holds = [], []
+    for x in seq:
+        if vals and vals[-1] == x:
+            holds[-1] += 1
+        else:
+            vals.append(x)
+            holds.append(1)
+    return vals, holds
+
+
+def held_cycle(target):
+    """A held-step wavetable arp at the content floor: RLE-collapse the per-frame offset ``target``,
+    find the smallest VALUE period (2..ARP_CYCLE_MAX_STEPS, repeated >= ARP_CYCLE_MIN_REPEAT times);
+    holds need not be periodic (a note tail extends its last step), so they are carried per-step.
+    Returns (period_offsets, holds) -- replaying period[k%p] held holds[k] reproduces ``target``
+    exactly -- or None. Lets the cycle survive holds that blow past ARP_MAX_PERIOD in frame space.
+    """
+    vals, holds = _rle(target)
+    if holds and max(holds) > 255:
+        return None
+    n = len(vals)
+    for p in range(2, min(ARP_CYCLE_MAX_STEPS, n // ARP_CYCLE_MIN_REPEAT) + 1):
+        if all(vals[k] == vals[k % p] for k in range(n)):
+            return tuple(vals[:p]), tuple(holds)
+    return None
+
+
+def held_cycle_offsets(period, holds):
+    """Expand a held-ARP (period offsets, per-step holds) back to one offset per frame."""
+    out = []
+    p = len(period)
+    for k, hold in enumerate(holds):
+        out.extend([period[k % p]] * int(hold))
+    return out
+
+
 def _slide_rate(offs, target):
     """Frames-per-semitone-step that reproduces a monotone ramp toward ``target``, or None."""
     length = len(offs)
@@ -234,8 +276,9 @@ class SkeletonPass(MacroPass):
     Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
     """
 
-    GATE_FLAGS = frozenset({"skeleton_pass"})
+    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp"})
 
+    _held_arp = False  # noqa: per-parse args.held_arp gate (set in apply)
     _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
     _df_sink = (
         None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
@@ -246,6 +289,7 @@ class SkeletonPass(MacroPass):
             return df
         if df is None or len(df) == 0:
             return df
+        SkeletonPass._held_arp = bool(getattr(args, "held_arp", False))
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
@@ -739,6 +783,22 @@ class SkeletonPass(MacroPass):
             and cls._reconstruct(orn_type, params, length) != target
         ):
             orn_type, params = ORN_TYPE_RESID, tuple(target)
+        if orn_type == ORN_TYPE_RESID and cls._held_arp:
+            hc = held_cycle(target)
+            if hc is not None and held_cycle_offsets(hc[0], hc[1]) == target:
+                orn_type, params = ORN_TYPE_HELD_ARP, hc
+        if orn_type == ORN_TYPE_HELD_ARP:
+            period, holds = params
+            rows = [_row(reg, ORN_OP, ORN_SUBREG_TYPE, ORN_TYPE_HELD_ARP, diff, irq)]
+            rows.extend(
+                _row(reg, ORN_OP, ORN_SUBREG_P1, int(o) & 0xFF, diff, irq)
+                for o in period
+            )
+            rows.extend(
+                _row(reg, ORN_OP, ORN_SUBREG_HOLD, int(h), diff, irq) for h in holds
+            )
+            rows.append(_row(reg, ORN_OP, ORN_SUBREG_P2, length, diff, irq))
+            return rows
         if orn_type == ORN_TYPE_PLAIN:
             return [_row(reg, ORN_OP, ORN_SUBREG_TYPE, ORN_TYPE_PLAIN, diff, irq)]
         if orn_type == ORN_TYPE_RESID:
@@ -767,6 +827,8 @@ class SkeletonPass(MacroPass):
             return [0] * length
         if orn_type in (ORN_TYPE_OCTAVE, ORN_TYPE_ARP):
             return cycle_frame_offsets(params, length)
+        if orn_type == ORN_TYPE_HELD_ARP:
+            return held_cycle_offsets(params[0], params[1])
         if orn_type == ORN_TYPE_SLIDE:
             return slide_frame_offsets(params[0], params[1], length)
         if orn_type == ORN_TYPE_VIB:
