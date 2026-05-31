@@ -22,11 +22,11 @@ __all__ = [
 import math
 from collections import Counter
 
+from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
     _frame_index,
-    _splice_rows,
     MacroPass,
 )
 from preframr_tokens.stfconstants import (
@@ -61,6 +61,7 @@ ARP_MAX_PERIOD = 16
 _OFFSET_LIMIT = 24
 _VIB_DEPTH_HEAVY_CENTS = 30.0
 _VIB_RATE_DEFAULT = 6
+_SKELETON_PRIORITY = 0
 _CTRL_FOR_FREQ = {
     int(reg): int(VOICE_CTRL_REG[reg // VOICE_REG_SIZE]) for reg in FREQ_TRAJ_REGS
 }
@@ -260,7 +261,17 @@ class SkeletonPass(MacroPass):
             self._claim_reg(reg, ctx, irq, drop_idx, new_rows)
         if not new_rows:
             return df
-        return _splice_rows(df, drop_idx, new_rows)
+        return arbitrate(
+            df,
+            [
+                Claim(
+                    writes=tuple(drop_idx),
+                    tokens=new_rows,
+                    priority=_SKELETON_PRIORITY,
+                    label="skeleton",
+                )
+            ],
+        )
 
     @staticmethod
     def _context(df):
