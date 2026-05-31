@@ -23,6 +23,7 @@ __all__ = [
     "SkeletonDecoder",
     "OrnamentDecoder",
     "StampDecoder",
+    "PatchDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -85,6 +86,13 @@ from preframr_tokens.stfconstants import (
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
+    PATCH_AD_OFFSET,
+    PATCH_DEF_OP,
+    PATCH_SET_OP,
+    PATCH_SR_OFFSET,
+    PATCH_STEP_OP,
+    PATCH_SUBREG_AD,
+    PATCH_SUBREG_SR,
     PRESET_OPS,
     PRESET_SHIFTED_OPS,
     PWM_PRESET_OP,
@@ -796,6 +804,63 @@ class StampDecoder(MacroDecoder):
         return pre or None
 
 
+class PatchDecoder(MacroDecoder):
+    """Decode the inline melodic-instrument patch ops (design/patch_preamble_encoding.md):
+    PATCH_DEF + two PATCH_STEP rows buffer a full (AD,SR) envelope into a live id->state table (a
+    later DEF id rebinds), emitting both register writes on the def's voice; PATCH_SET (val=id)
+    re-emits a defined patch's AD/SR on the ref's voice -- reproducing the exact envelope writes.
+    """
+
+    op_code = -1
+
+    def expand(self, row, state):
+        op = int(row.op)
+        if op == PATCH_DEF_OP:
+            state.pending_patch_def = {
+                "id": int(row.val),
+                "freq_reg": int(row.reg),
+                "ad": None,
+                "sr": None,
+            }
+            return None
+        if op == PATCH_STEP_OP:
+            return self._step(row, state)
+        return self._ref(row, state)
+
+    def _step(self, row, state):
+        pend = state.pending_patch_def
+        if pend is None:
+            return None
+        if int(row.subreg) == PATCH_SUBREG_AD:
+            pend["ad"] = int(row.val)
+        elif int(row.subreg) == PATCH_SUBREG_SR:
+            pend["sr"] = int(row.val)
+        if pend["ad"] is None or pend["sr"] is None:
+            return None
+        state.pending_patch_def = None
+        state.patch_table[int(pend["id"])] = (int(pend["ad"]), int(pend["sr"]))
+        return self._emit(int(pend["freq_reg"]), pend["ad"], pend["sr"], row, state)
+
+    def _ref(self, row, state):
+        patch = state.patch_table.get(int(row.val))
+        if patch is None:
+            return None
+        return self._emit(int(row.reg), patch[0], patch[1], row, state)
+
+    @staticmethod
+    def _emit(freq_reg, ad, sr, row, state):
+        writes = []
+        for reg, val in (
+            (freq_reg + PATCH_AD_OFFSET, int(ad)),
+            (freq_reg + PATCH_SR_OFFSET, int(sr)),
+        ):
+            writes.extend(state.maybe_flush_for(reg, -1))
+            state.last_val[reg] = val
+            state.last_diff[reg] = row.diff
+            writes.append((reg, val, row.diff, row.description))
+        return writes
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -826,6 +891,9 @@ DECODERS = {
 _STAMP_DECODER = StampDecoder()
 for _op in (STAMP_DEF_OP, STAMP_STEP_OP, STAMP_END_OP, STAMP_REF_OP):
     DECODERS[_op] = _STAMP_DECODER
+_PATCH_DECODER = PatchDecoder()
+for _op in (PATCH_DEF_OP, PATCH_STEP_OP, PATCH_SET_OP):
+    DECODERS[_op] = _PATCH_DECODER
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:
     DECODERS[_op] = _PRESET_DECODER
