@@ -30,15 +30,18 @@ __all__ = [
 from preframr_tokens.macros.skeleton_pass import (
     LUT as SKEL_LUT,
     cycle_frame_offsets,
+    held_cycle_offsets,
     slide_frame_offsets,
     vib_frame_offsets,
 )
 from preframr_tokens.stfconstants import (
     ORN_OP,
+    ORN_SUBREG_HOLD,
     ORN_SUBREG_P1,
     ORN_SUBREG_P2,
     ORN_SUBREG_TYPE,
     ORN_TYPE_ARP,
+    ORN_TYPE_HELD_ARP,
     ORN_TYPE_OCTAVE,
     ORN_TYPE_PLAIN,
     ORN_TYPE_RESID,
@@ -713,7 +716,13 @@ class OrnamentDecoder(MacroDecoder):
         subreg = int(row.subreg)
         val = int(row.val) & 0xFF
         if subreg == ORN_SUBREG_TYPE:
-            state.pending_orn = {"reg": reg, "type": val, "params": [], "length": None}
+            state.pending_orn = {
+                "reg": reg,
+                "type": val,
+                "params": [],
+                "holds": [],
+                "length": None,
+            }
             if val == ORN_TYPE_PLAIN:
                 state.pending_orn = None
             return None
@@ -724,6 +733,9 @@ class OrnamentDecoder(MacroDecoder):
             return self._resid(state, orn, subreg, val, int(row.val))
         if subreg == ORN_SUBREG_P1:
             orn["params"].append(val if val < 128 else val - 256)
+            return None
+        if subreg == ORN_SUBREG_HOLD:
+            orn["holds"].append(int(row.val) & 0xFF)
             return None
         orn["length"] = int(row.val) & 0xFFFF
         return self._queue(state, orn, self._offsets(orn))
@@ -743,6 +755,8 @@ class OrnamentDecoder(MacroDecoder):
     @staticmethod
     def _offsets(orn):
         t, params, length = orn["type"], orn["params"], orn["length"] or 0
+        if t == ORN_TYPE_HELD_ARP and params and orn["holds"]:
+            return held_cycle_offsets(params, orn["holds"])
         if t in (ORN_TYPE_OCTAVE, ORN_TYPE_ARP):
             return cycle_frame_offsets(params, length)
         if t == ORN_TYPE_SLIDE and len(params) >= 2:
