@@ -10,7 +10,7 @@ import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
 from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
-from preframr_tokens.macros.wavetable import factorise, program_key, rle, unroll
+from preframr_tokens.macros.wavetable import factorise, program_key, unroll
 from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.stfconstants import (
     FRAME_REG,
@@ -119,7 +119,6 @@ def test_program_key_length_invariant():
 def test_unroll_lead_byte_exact():
     steps, loop = factorise([0, 7, 0, 7, 0, 7])
     assert unroll(steps, loop, 8, lead=[-3, -1]) == [-3, -1, 0, 7, 0, 7, 0, 7]
-    assert rle([3, 3, 1, 1, 1, 2]) == [(3, 2), (1, 3), (2, 1)]
 
 
 def test_recurring_resid_drains_to_codebook():

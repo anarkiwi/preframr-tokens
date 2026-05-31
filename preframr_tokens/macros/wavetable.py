@@ -4,19 +4,9 @@ mines the smallest looping unit and ``unroll`` replays it to a frame length afte
 lead, shared by the encoder verify and ``WavetableDecoder`` so they cannot disagree (offsets stored
 exactly -> byte-identical to the RESID replaced)."""
 
-__all__ = ["rle", "factorise", "unroll", "program_key"]
+from preframr_tokens.macros.rle import run_length_encode
 
-
-def rle(seq):
-    """Run-length encode a per-frame sequence into ``[(value, hold)]`` of consecutive duplicates."""
-    steps = []
-    for x in seq:
-        x = int(x)
-        if steps and steps[-1][0] == x:
-            steps[-1] = (x, steps[-1][1] + 1)
-        else:
-            steps.append((x, 1))
-    return steps
+__all__ = ["factorise", "unroll", "program_key"]
 
 
 def _step_period(steps, p, b):
@@ -30,7 +20,7 @@ def factorise(core):
     prefix (``loop=len(steps)``)."""
     if not core:
         return [], 0
-    steps = rle(core)
+    steps = run_length_encode(core)
     m = len(steps)
     for b in range(1, m // 2 + 1):
         for p in range(0, m - 2 * b + 1):

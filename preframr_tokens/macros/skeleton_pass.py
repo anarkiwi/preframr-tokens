@@ -29,6 +29,7 @@ from preframr_tokens.macros.passes_base import (
     _frame_index,
     MacroPass,
 )
+from preframr_tokens.macros.rle import run_length_encode
 from preframr_tokens.stfconstants import (
     ARP_CYCLE_MAX_STEPS,
     ARP_CYCLE_MIN_REPEAT,
@@ -152,14 +153,8 @@ def _minimal_period(offs):
 
 def _rle(seq):
     """Run-length encode a sequence into (values, holds) of consecutive duplicates."""
-    vals, holds = [], []
-    for x in seq:
-        if vals and vals[-1] == x:
-            holds[-1] += 1
-        else:
-            vals.append(x)
-            holds.append(1)
-    return vals, holds
+    pairs = run_length_encode(seq)
+    return [v for v, _ in pairs], [h for _, h in pairs]
 
 
 def held_cycle(target):
