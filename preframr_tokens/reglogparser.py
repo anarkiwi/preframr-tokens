@@ -21,6 +21,7 @@ from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
+from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
@@ -871,6 +872,7 @@ class RegLogParser:
         df = StampPass().apply(df, args=self.args)
         df = SweepPass().apply(df, args=self.args)
         df = SkeletonPass().apply(df, args=self.args)
+        df = WavetablePass().apply(df, args=self.args)
         df = FreqTrajectoryPass().apply(df, args=self.args)
         df = FreqOnsetPass().apply(df, args=self.args)
         df = PresetPass().apply(df, args=self.args)
