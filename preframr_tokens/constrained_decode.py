@@ -770,65 +770,73 @@ class PendingSlot(IntEnum):
     SLOPE_RUNTIME = 7
 
 
-_ATOMIC_SLOT_GATE = {
-    PendingSlot.BACK_REF_DIST_LO: ("is_back_ref_dist_lo", "distance"),
-    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", "distance"),
-    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", None),
-    PendingSlot.PR_LEN: ("is_pattern_replay_len", None),
-    PendingSlot.PR_OV_COUNT: ("is_pattern_replay_ov_count", "overlay_cap"),
-    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", None),
-    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", None),
+_FLAG_TO_PENDING = {
+    "is_back_ref_dist_lo": PendingSlot.BACK_REF_DIST_LO,
+    "is_back_ref_len": PendingSlot.BACK_REF_LEN,
+    "is_pattern_replay_dist_lo": PendingSlot.PR_DIST_LO,
+    "is_pattern_replay_len": PendingSlot.PR_LEN,
+    "is_pattern_replay_ov_count": PendingSlot.PR_OV_COUNT,
 }
 
-_SUBTOKEN_SLOT_GATE = {
-    PendingSlot.BACK_REF_DIST_LO: ("consumes_back_ref_dist_lo_gate", "distance"),
-    PendingSlot.PR_DIST_LO: ("consumes_pr_dist_lo_gate", "distance"),
-    PendingSlot.BACK_REF_LEN: ("consumes_back_ref_len_gate", None),
-    PendingSlot.PR_LEN: ("consumes_pr_len_gate", None),
-    PendingSlot.PR_OV_COUNT: ("consumes_pr_ov_count_gate", "overlay_cap"),
-}
 
-_ATOMIC_OVERLAY_GATES = (
-    "is_pattern_overlay_frame_offset",
-    "is_pattern_overlay_target_reg",
-    "is_pattern_overlay_new_val",
-)
+def _slot_check(slot):
+    if slot.value_array == "dist_lo_val":
+        return "distance"
+    if slot.value_array == "overlay_count":
+        return "overlay_cap"
+    return None
 
-_SUBTOKEN_OVERLAY_GATES = (
-    "consumes_overlay_slot_0_gate",
-    "consumes_overlay_slot_1_gate",
-    "consumes_overlay_slot_2_gate",
-)
+
+def _build_slot_tables():
+    """Build the StreamState slot state machine (atomic + sub-token gates, the pending transition table,
+    and the overlay gate tuples) by iterating ``STRUCTURAL_SUBREGS`` -- the slot sequence lives once in
+    the registry, not hand-copied across the mask. The dead SLOPE entries are dropped (their flags are
+    all-False, so they never fire); the golden master confirms the mask is unchanged."""
+    atomic_gate, subtoken_gate, transition, new_pending = {}, {}, {}, []
+    atomic_overlay = subtoken_overlay = ()
+    for specs in STRUCTURAL_SUBREGS.values():
+        if specs[0].value_array != "dist_hi_val":
+            atomic_overlay = tuple(s.flag for s in specs)
+            subtoken_overlay = tuple(s.consumes_gate for s in specs)
+            continue
+        new_pending.append((specs[0].flag, _FLAG_TO_PENDING[specs[1].flag]))
+        for i in range(1, len(specs)):
+            slot = specs[i]
+            pend = _FLAG_TO_PENDING[slot.flag]
+            check = _slot_check(slot)
+            atomic_gate[pend] = (slot.flag, check)
+            subtoken_gate[pend] = (slot.consumes_gate, check)
+            nxt = (
+                _FLAG_TO_PENDING[specs[i + 1].flag]
+                if i + 1 < len(specs)
+                else PendingSlot.NONE
+            )
+            action = "seed_overlays" if slot.value_array == "overlay_count" else None
+            transition[pend] = (slot.flag, nxt, action)
+    return (
+        atomic_gate,
+        subtoken_gate,
+        transition,
+        tuple(new_pending),
+        atomic_overlay,
+        subtoken_overlay,
+    )
+
+
+(
+    _ATOMIC_SLOT_GATE,
+    _SUBTOKEN_SLOT_GATE,
+    _ATOMIC_SLOT_TRANSITION,
+    _ATOMIC_NEW_PENDING,
+    _ATOMIC_OVERLAY_GATES,
+    _SUBTOKEN_OVERLAY_GATES,
+) = _build_slot_tables()
 
 _OVERLAY_SLOT_INDEX = {
     OverlaySlot.FRAME_OFFSET: 0,
     OverlaySlot.TARGET_REG: 1,
     OverlaySlot.NEW_VAL: 2,
 }
-
-_ATOMIC_SLOT_TRANSITION = {
-    PendingSlot.BACK_REF_DIST_LO: (
-        "is_back_ref_dist_lo",
-        PendingSlot.BACK_REF_LEN,
-        None,
-    ),
-    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", PendingSlot.PR_LEN, None),
-    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", PendingSlot.NONE, None),
-    PendingSlot.PR_LEN: ("is_pattern_replay_len", PendingSlot.PR_OV_COUNT, None),
-    PendingSlot.PR_OV_COUNT: (
-        "is_pattern_replay_ov_count",
-        PendingSlot.NONE,
-        "seed_overlays",
-    ),
-    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", PendingSlot.SLOPE_RUNTIME, None),
-    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", PendingSlot.NONE, None),
-}
-
-_ATOMIC_NEW_PENDING = (
-    ("is_back_ref_dist_hi", PendingSlot.BACK_REF_DIST_LO),
-    ("is_pattern_replay_dist_hi", PendingSlot.PR_DIST_LO),
-    ("is_slope_term_hi", PendingSlot.SLOPE_TERM_LO),
-)
 
 
 def _make_slot_property(slot: PendingSlot):

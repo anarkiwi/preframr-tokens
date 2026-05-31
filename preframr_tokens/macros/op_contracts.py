@@ -161,36 +161,67 @@ class StructuralSubreg:
     subreg: int
     flag: str
     value_array: str | None = None
+    consumes_gate: str | None = None
 
 
 STRUCTURAL_SUBREGS: dict[int, tuple[StructuralSubreg, ...]] = {
     BACK_REF_OP: (
         StructuralSubreg(BACK_REF_SUBREG_DIST_HI, "is_back_ref_dist_hi", "dist_hi_val"),
-        StructuralSubreg(BACK_REF_SUBREG_DIST_LO, "is_back_ref_dist_lo", "dist_lo_val"),
-        StructuralSubreg(BACK_REF_SUBREG_LEN, "is_back_ref_len", "length"),
+        StructuralSubreg(
+            BACK_REF_SUBREG_DIST_LO,
+            "is_back_ref_dist_lo",
+            "dist_lo_val",
+            "consumes_back_ref_dist_lo_gate",
+        ),
+        StructuralSubreg(
+            BACK_REF_SUBREG_LEN,
+            "is_back_ref_len",
+            "length",
+            "consumes_back_ref_len_gate",
+        ),
     ),
     PATTERN_REPLAY_OP: (
         StructuralSubreg(
             PATTERN_REPLAY_SUBREG_DIST_HI, "is_pattern_replay_dist_hi", "dist_hi_val"
         ),
         StructuralSubreg(
-            PATTERN_REPLAY_SUBREG_DIST_LO, "is_pattern_replay_dist_lo", "dist_lo_val"
+            PATTERN_REPLAY_SUBREG_DIST_LO,
+            "is_pattern_replay_dist_lo",
+            "dist_lo_val",
+            "consumes_pr_dist_lo_gate",
         ),
-        StructuralSubreg(PATTERN_REPLAY_SUBREG_LEN, "is_pattern_replay_len", "length"),
+        StructuralSubreg(
+            PATTERN_REPLAY_SUBREG_LEN,
+            "is_pattern_replay_len",
+            "length",
+            "consumes_pr_len_gate",
+        ),
         StructuralSubreg(
             PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
             "is_pattern_replay_ov_count",
             "overlay_count",
+            "consumes_pr_ov_count_gate",
         ),
     ),
     PATTERN_OVERLAY_OP: (
         StructuralSubreg(
-            PATTERN_OVERLAY_SUBREG_FRAME_OFFSET, "is_pattern_overlay_frame_offset"
+            PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
+            "is_pattern_overlay_frame_offset",
+            None,
+            "consumes_overlay_slot_0_gate",
         ),
         StructuralSubreg(
-            PATTERN_OVERLAY_SUBREG_TARGET_REG, "is_pattern_overlay_target_reg"
+            PATTERN_OVERLAY_SUBREG_TARGET_REG,
+            "is_pattern_overlay_target_reg",
+            None,
+            "consumes_overlay_slot_1_gate",
         ),
-        StructuralSubreg(PATTERN_OVERLAY_SUBREG_NEW_VAL, "is_pattern_overlay_new_val"),
+        StructuralSubreg(
+            PATTERN_OVERLAY_SUBREG_NEW_VAL,
+            "is_pattern_overlay_new_val",
+            None,
+            "consumes_overlay_slot_2_gate",
+        ),
     ),
 }
 

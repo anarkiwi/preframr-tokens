@@ -172,7 +172,10 @@ _SUBTOKEN_STREAMS = {
         [10, 11, 12, 13, 14, 15, 16],
     ),
     "sub_br_hi_then_lo": ({"init_frame_count": 10, "irq": 100}, [17, 9]),
-    "sub_pr_lo_through_ovc": ({"init_frame_count": 10, "irq": 100}, [10, 22, 14, 15, 16]),
+    "sub_pr_lo_through_ovc": (
+        {"init_frame_count": 10, "irq": 100},
+        [10, 22, 14, 15, 16],
+    ),
     "sub_overlay_target_newval": ({"init_frame_count": 10, "irq": 100}, [4, 14, 24]),
     "sub_budget": ({"init_frame_count": 5, "irq": 100, "init_budget": 80}, [1, 1, 1]),
 }
