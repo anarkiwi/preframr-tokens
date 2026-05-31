@@ -61,7 +61,12 @@ from preframr_tokens.stfconstants import (
     SWEEP_OP,
     TRACK_REF_OP,
     TRANSPOSE_OP,
+    WAVETABLE_DEF_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_REF_OP,
+    WAVETABLE_STEP_OP,
     WAVETABLE_SUSTAIN_OP,
+    WT_REF_SUBREG_ID,
 )
 
 __all__ = [
@@ -146,6 +151,10 @@ _CONTRACT_LIST = (
     OpContract(PATCH_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(PATCH_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(PATCH_SET_OP, MaskRole.CODEBOOK_REF),
+    OpContract(WAVETABLE_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(WAVETABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(WAVETABLE_END_OP, MaskRole.CODEBOOK_END),
+    OpContract(WAVETABLE_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(BACK_REF_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_REPLAY_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_OVERLAY_OP, MaskRole.OVERLAY),
@@ -237,7 +246,7 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
     "overlay_count",
 )
 
-CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch")
+CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch", "wavetable")
 
 
 @dataclass(frozen=True)
@@ -263,6 +272,11 @@ CODEBOOK_SPECS: dict[int, CodebookSpec] = {
     PATCH_DEF_OP: CodebookSpec(PATCH_DEF_OP, "patch", "def"),
     PATCH_STEP_OP: CodebookSpec(PATCH_STEP_OP, "patch", "commit", PATCH_SUBREG_SR),
     PATCH_SET_OP: CodebookSpec(PATCH_SET_OP, "patch", "ref"),
+    WAVETABLE_DEF_OP: CodebookSpec(WAVETABLE_DEF_OP, "wavetable", "def"),
+    WAVETABLE_END_OP: CodebookSpec(WAVETABLE_END_OP, "wavetable", "commit"),
+    WAVETABLE_REF_OP: CodebookSpec(
+        WAVETABLE_REF_OP, "wavetable", "ref", WT_REF_SUBREG_ID
+    ),
 }
 
 
