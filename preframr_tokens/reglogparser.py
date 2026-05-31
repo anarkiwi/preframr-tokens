@@ -19,6 +19,7 @@ from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
+from preframr_tokens.macros.sweep_pass import SweepPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.patch_pass import PatchPass
@@ -868,6 +869,7 @@ class RegLogParser:
         df = VoiceTrackPass().apply(df, args=self.args)
         df = TrajectoryAnchorPass().apply(df, args=self.args)
         df = StampPass().apply(df, args=self.args)
+        df = SweepPass().apply(df, args=self.args)
         df = SkeletonPass().apply(df, args=self.args)
         df = FreqTrajectoryPass().apply(df, args=self.args)
         df = FreqOnsetPass().apply(df, args=self.args)

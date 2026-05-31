@@ -24,6 +24,7 @@ __all__ = [
     "OrnamentDecoder",
     "StampDecoder",
     "PatchDecoder",
+    "SweepDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -113,6 +114,12 @@ from preframr_tokens.stfconstants import (
     STAMP_STEP_OP,
     STAMP_SUBREG_FRAME,
     SUBREG_FLUSH_OP,
+    SWEEP_OP,
+    SWEEP_SUBREG_DELTA_HI,
+    SWEEP_SUBREG_DELTA_LO,
+    SWEEP_SUBREG_LEN,
+    SWEEP_SUBREG_START_HI,
+    SWEEP_SUBREG_START_LO,
     TRACK_INTERVAL_RATIOS,
     TRACK_REF_OP,
     TRACK_REF_SUBREG_DETUNE,
@@ -913,6 +920,40 @@ class PatchDecoder(MacroDecoder):
         return writes
 
 
+class SweepDecoder(MacroDecoder):
+    """Decode a SWEEP atom (design SoundMonitor/skydive): START_HI/LO, signed-16 DELTA_HI/LO, LEN
+    buffer a constant-raw-freq-delta ramp; on LEN the per-frame freqs (start + k*delta) queue into
+    pending_set_writes for the reg -- one drained per song frame, reproducing the exact ramp.
+    """
+
+    op_code = SWEEP_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == SWEEP_SUBREG_START_HI:
+            state.pending_sweep = {"reg": int(row.reg), "fields": {}}
+        pend = state.pending_sweep
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != SWEEP_SUBREG_LEN:
+            return None
+        state.pending_sweep = None
+        f = pend["fields"]
+        start = ((f.get(SWEEP_SUBREG_START_HI, 0) & 0xFF) << 8) | (
+            f.get(SWEEP_SUBREG_START_LO, 0) & 0xFF
+        )
+        raw = ((f.get(SWEEP_SUBREG_DELTA_HI, 0) & 0xFF) << 8) | (
+            f.get(SWEEP_SUBREG_DELTA_LO, 0) & 0xFF
+        )
+        delta = raw if raw < 0x8000 else raw - 0x10000
+        reg = int(pend["reg"])
+        pre = state.maybe_flush_for(reg, -1)
+        for k in range(int(f.get(SWEEP_SUBREG_LEN, 0))):
+            state.pending_set_writes[reg].append((start + k * delta) & 0xFFFF)
+        return pre or None
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -938,6 +979,7 @@ DECODERS = {
         CtrlTripleDecoder(),
         SkeletonDecoder(),
         OrnamentDecoder(),
+        SweepDecoder(),
     )
 }
 _STAMP_DECODER = StampDecoder()
