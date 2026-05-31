@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.38.3]
+
 ### Added (continued)
 
 - **W5.3 — SWEEP loop-period (`sweep_loop`, default OFF).** A looping freq-domain arp (constant
