@@ -9,6 +9,7 @@ import unittest
 import pandas as pd
 
 from preframr_tokens.constrained_decode import StreamState, precompute_vocab_arrays
+from preframr_tokens.macros.validators import validate_codebook_refs, validate_stream
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     PAD_REG,
@@ -93,6 +94,39 @@ class TestCodebookMask(unittest.TestCase):
         state.update(STAMP_END3)
         self.assertFalse(_masked(state, STAMP_REF3))
         self.assertEqual(state.codebook_live[0], {3})
+
+
+def _df(*token_ids):
+    return pd.DataFrame([_ROWS[t] for t in token_ids])
+
+
+class TestCodebookValidation(unittest.TestCase):
+    def test_accepts_def_commit_ref(self):
+        self.assertTrue(validate_codebook_refs(_df(STAMP_DEF3, STAMP_END3, STAMP_REF3)))
+        self.assertTrue(
+            validate_stream(_df(STAMP_DEF3, STAMP_END3, STAMP_REF3, STAMP_REF3))
+        )
+
+    def test_rejects_ref_to_undefined(self):
+        with self.assertRaises(AssertionError):
+            validate_codebook_refs(_df(STAMP_REF3))
+        with self.assertRaises(AssertionError):
+            validate_stream(_df(STAMP_REF3))
+
+    def test_rejects_ref_before_commit(self):
+        with self.assertRaises(AssertionError):
+            validate_codebook_refs(_df(STAMP_DEF3, STAMP_REF3))
+
+    def test_patch_def_commit_set(self):
+        self.assertTrue(
+            validate_codebook_refs(_df(PATCH_DEF5, PATCH_AD, PATCH_SR, PATCH_SET5))
+        )
+        with self.assertRaises(AssertionError):
+            validate_codebook_refs(_df(PATCH_DEF5, PATCH_AD, PATCH_SET5))
+
+    def test_seeded_live_id_accepts_ref(self):
+        self.assertTrue(validate_codebook_refs(_df(STAMP_REF3), live_ids={0: {3}}))
+        self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={0: {3}}))
 
 
 if __name__ == "__main__":

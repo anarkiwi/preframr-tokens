@@ -61,6 +61,7 @@ from preframr_tokens.macros.transform import (
 )
 from preframr_tokens.macros import (
     validate_back_refs,
+    validate_codebook_refs,
     validate_pattern_overlays,
     validate_stream,
 )
@@ -146,6 +147,7 @@ __all__ = [
     "slope_subreg_role",
     "frame_weight_role",
     "validate_back_refs",
+    "validate_codebook_refs",
     "validate_pattern_overlays",
     "validate_stream",
     "classify_carveout",
