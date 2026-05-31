@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **WAVETABLE pass was dead in the real parse path (RESID_ZERO_PHASE3 §2 follow-up).** `WavetablePass`
+  (0.38.0, #41) was registered in `macros.FREQ_BLOCK_PASSES` but never inserted into the parallel
+  hand-listed freq-pass sequence inside `RegLogParser.parse`, so `wavetable_pass=True` was a no-op for
+  every real parse — the codebook never materialised and recurring ORN-RESID never drained. The 8
+  direct-apply unit tests stayed green because they call `WavetablePass().apply()` straight, never
+  through `parse()`. Wired the pass in after `SkeletonPass` (mirroring `FREQ_BLOCK_PASSES` order) and
+  added `tests/test_wavetable_parse_wiring.py`, a parse-level guard that drives a recurring RESID
+  program through the full `RegLogParser.parse` and asserts the WAVETABLE_DEF/REF codebook appears
+  byte-exactly (`register_state` OFF==ON) while default/OFF stays a no-op. Default golden stream
+  unchanged (pass gated OFF). Measured post-fix byte-exact drain (3 tunes/engine): GoatTracker 83%,
+  JCH 76%, DMC 72%, SidWizard 67%.
+
 ## [0.38.0]
 
 ### Added
