@@ -135,11 +135,20 @@ _BUNDLE_REGS_FLAT = frozenset(
 class DecodeState:
     """Per-stream state shared by all ``MacroDecoder`` invocations."""
 
+    _SEED_TABLE_KEYS = (
+        "stamp_table",
+        "patch_table",
+        "wavetable_table",
+        "last_skel_note",
+        "last_freq_v0",
+    )
+
     def __init__(
         self,
         frame_diff,
         last_diff=None,
         strict=False,
+        seed=None,
     ):
         self.frame_diff = frame_diff
         self.last_val = np.zeros(MAX_REG + 1, dtype=np.int64)
@@ -172,6 +181,18 @@ class DecodeState:
         self.pending_filter_triple_lo = 0
         self.pending_deferred_pre_unroll = []
         self.pending_deferred_post_marker = []
+        if seed:
+            self._apply_seed(seed)
+
+    def _apply_seed(self, seed):
+        """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
+        §4 B3): a STAMP/PATCH/WAVETABLE REF whose DEF preceded the window resolves from the snapshot
+        instead of silently dropping. Only tables this build defines are seeded."""
+        for key in self._SEED_TABLE_KEYS:
+            if key in seed and hasattr(self, key):
+                getattr(self, key).update(seed[key])
+        for reg, val in seed.get("last_val", {}).items():
+            self.last_val[int(reg)] = int(val)
 
     def diff_for(self, reg):
         return self.last_diff.get(reg, _MIN_DIFF)
@@ -275,7 +296,7 @@ def _build_last_diff(df):
     return last_diff
 
 
-def _build_decode_state(df, strict=False):
+def _build_decode_state(df, strict=False, seed=None):
     """Construct a ``DecodeState`` seeded the same way ``expand_ops`` does:
     ``frame_diff`` from the first FRAME_REG row with a positive ``diff`` (a
     degenerate leading frame can carry diff 0, which would zero every
@@ -292,4 +313,5 @@ def _build_decode_state(df, strict=False):
         frame_diff,
         last_diff=last_diff,
         strict=strict,
+        seed=seed,
     )

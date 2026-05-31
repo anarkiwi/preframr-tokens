@@ -11,11 +11,13 @@ from preframr_tokens.macros.walker import FrameWalker
 from preframr_tokens.stfconstants import MODEL_PDTYPE
 
 
-def expand_ops(orig_df, strict=False):
-    """Walk an encoded token DataFrame back to literal writes."""
+def expand_ops(orig_df, strict=False, codebook_seed=None):
+    """Walk an encoded token DataFrame back to literal writes. ``codebook_seed`` (RESID_ZERO_PHASE3 §4 B3)
+    pre-populates the live STAMP/PATCH/WAVETABLE tables + carry-state so a mid-song window renders a REF
+    whose DEF preceded it instead of silently dropping."""
     df = expand_loops(orig_df.copy())
 
-    state = _build_decode_state(df, strict=strict)
+    state = _build_decode_state(df, strict=strict, seed=codebook_seed)
 
     class _ExpandOpsWalker(FrameWalker):
         emit_synthetic_frame_marker = True

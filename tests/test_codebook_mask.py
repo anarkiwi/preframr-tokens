@@ -129,5 +129,24 @@ class TestCodebookValidation(unittest.TestCase):
         self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={0: {3}}))
 
 
+class TestDecoderSnapshotSeed(unittest.TestCase):
+    def test_seed_renders_out_of_window_ref(self):
+        from preframr_tokens.macros.decode import expand_ops
+
+        rows = [
+            {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
+            {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 3, "diff": 100},
+            {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
+            {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
+        ]
+        df = pd.DataFrame(rows)
+        unseeded = expand_ops(df)
+        seeded = expand_ops(df, codebook_seed={"stamp_table": {3: [{0: 100}]}})
+        self.assertEqual(int((unseeded["reg"] == 0).sum()), 0, "ref drops without seed")
+        seeded_reg0 = seeded[seeded["reg"] == 0]
+        self.assertGreater(len(seeded_reg0), 0, "ref renders with seed")
+        self.assertEqual(int(seeded_reg0["val"].iloc[0]), 100)
+
+
 if __name__ == "__main__":
     unittest.main()
