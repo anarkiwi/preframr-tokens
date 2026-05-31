@@ -137,6 +137,28 @@ _SUB_ATOMICS = [
     [BR_HI],
     [BR_LO1],
     [VOICE],
+    [BR_LEN],
+    [PR_HI],
+    [PR_LO],
+    [PR_LEN],
+    [PR_OV],
+    [PO_FO],
+    [PO_TR],
+    [PO_NV],
+    [BR_HI, BR_LO1],
+    [BR_LO1, BR_LEN],
+    [PR_HI, PR_LO],
+    [PR_HI, PR_LO, PR_LEN],
+    [PR_LO, PR_LEN],
+    [PR_LO, PR_LEN, PR_OV],
+    [PR_LEN, PR_OV],
+    [PO_TR, PO_NV],
+    [BR_LEN, SET_R0],
+    [SET_R0, BR_LO1],
+    [DELAY],
+    [BR_HI, FRAME11],
+    [PR_HI, PR_LO, PR_LEN, PR_OV, PO_FO, PO_TR, PO_NV],
+    [SET_R0, VOICE, VOICE, FRAME11, SET_R0],
 ]
 
 _SUBTOKEN_STREAMS = {
@@ -144,6 +166,15 @@ _SUBTOKEN_STREAMS = {
     "sub_macro": ({"init_frame_count": 10, "irq": 100}, [3]),
     "sub_pr_overlay": ({"init_frame_count": 10, "irq": 100}, [4, 5, 5]),
     "sub_pending": ({"init_frame_count": 10, "irq": 100}, [6, 7]),
+    "sub_br_singleton_chain": ({"init_frame_count": 10, "irq": 100}, [6, 7, 9]),
+    "sub_pr_singleton_chain": (
+        {"init_frame_count": 10, "irq": 100},
+        [10, 11, 12, 13, 14, 15, 16],
+    ),
+    "sub_br_hi_then_lo": ({"init_frame_count": 10, "irq": 100}, [17, 9]),
+    "sub_pr_lo_through_ovc": ({"init_frame_count": 10, "irq": 100}, [10, 22, 14, 15, 16]),
+    "sub_overlay_target_newval": ({"init_frame_count": 10, "irq": 100}, [4, 14, 24]),
+    "sub_budget": ({"init_frame_count": 5, "irq": 100, "init_budget": 80}, [1, 1, 1]),
 }
 
 _VALIDATOR_STREAMS = {
