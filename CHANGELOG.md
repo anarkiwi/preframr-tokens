@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.38.1]
+
 ### Fixed
 
 - **WAVETABLE pass was dead in the real parse path (RESID_ZERO_PHASE3 §2 follow-up).** `WavetablePass`
