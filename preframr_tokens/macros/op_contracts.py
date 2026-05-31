@@ -50,10 +50,12 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SKEL_OP,
     ORN_OP,
+    PATCH_SUBREG_SR,
     STAMP_DEF_OP,
     STAMP_END_OP,
     STAMP_REF_OP,
     STAMP_REL_REF_OP,
+    STAMP_REL_SUBREG_ID,
     STAMP_STEP_OP,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
@@ -70,6 +72,9 @@ __all__ = [
     "StructuralSubreg",
     "STRUCTURAL_SUBREGS",
     "STRUCTURAL_VALUE_ARRAYS",
+    "CodebookSpec",
+    "CODEBOOK_SPECS",
+    "CODEBOOK_TABLES",
     "contract_emit_ops",
     "missing_contracts",
 ]
@@ -231,6 +236,34 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
     "length",
     "overlay_count",
 )
+
+CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch")
+
+
+@dataclass(frozen=True)
+class CodebookSpec:
+    """How constrained decode treats one inline-codebook op (RESID_ZERO_PHASE3 §4 B2): which ``table``
+    its id lives in, its ``kind`` (``def`` opens an id, ``commit`` makes the pending id live, ``ref``
+    replays an id and is legal iff that id is live), and the ``subreg`` carrying the id (a ``ref``) or
+    triggering the commit (``None`` = the op's own row / always)."""
+
+    op_code: int
+    table: str
+    kind: str
+    subreg: int | None = None
+
+
+CODEBOOK_SPECS: dict[int, CodebookSpec] = {
+    STAMP_DEF_OP: CodebookSpec(STAMP_DEF_OP, "stamp", "def"),
+    STAMP_END_OP: CodebookSpec(STAMP_END_OP, "stamp", "commit"),
+    STAMP_REF_OP: CodebookSpec(STAMP_REF_OP, "stamp", "ref"),
+    STAMP_REL_REF_OP: CodebookSpec(
+        STAMP_REL_REF_OP, "stamp", "ref", STAMP_REL_SUBREG_ID
+    ),
+    PATCH_DEF_OP: CodebookSpec(PATCH_DEF_OP, "patch", "def"),
+    PATCH_STEP_OP: CodebookSpec(PATCH_STEP_OP, "patch", "commit", PATCH_SUBREG_SR),
+    PATCH_SET_OP: CodebookSpec(PATCH_SET_OP, "patch", "ref"),
+}
 
 
 def contract_emit_ops() -> set[int]:

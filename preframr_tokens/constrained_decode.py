@@ -30,6 +30,8 @@ from preframr_tokens.stfconstants import (
     VOICE_REG,
 )
 from preframr_tokens.macros.op_contracts import (
+    CODEBOOK_SPECS,
+    CODEBOOK_TABLES,
     STRUCTURAL_SUBREGS,
     STRUCTURAL_VALUE_ARRAYS,
 )
@@ -451,6 +453,47 @@ def _structural_arrays(op, subreg, val, n):
     return flags, values
 
 
+_CODEBOOK_ARRAY_KEYS = (
+    "codebook_ref_table",
+    "codebook_ref_id",
+    "codebook_def_table",
+    "codebook_def_id",
+    "codebook_commit_table",
+)
+
+
+def _empty_codebook_arrays(n):
+    return {
+        "codebook_ref_table": np.full(n, -1, dtype=np.int64),
+        "codebook_ref_id": np.zeros(n, dtype=np.int64),
+        "codebook_def_table": np.full(n, -1, dtype=np.int64),
+        "codebook_def_id": np.zeros(n, dtype=np.int64),
+        "codebook_commit_table": np.full(n, -1, dtype=np.int64),
+    }
+
+
+def _codebook_arrays(op, subreg, val, n):
+    """Per-vocab inline-codebook classification (§4 B2): the table index of each ref / def / commit token
+    and the id a ref/def carries, built by iterating ``CODEBOOK_SPECS`` so a ref is masked iff its id is
+    not yet live and a commit makes the pending def's id live -- the DEF->REF backref that silently
+    vanished at inference is now structurally guarded."""
+    arrays = _empty_codebook_arrays(n)
+    for spec in CODEBOOK_SPECS.values():
+        table = CODEBOOK_TABLES.index(spec.table)
+        op_match = op == spec.op_code
+        if spec.subreg is not None:
+            op_match = op_match & (subreg == spec.subreg)
+        if spec.kind == "ref":
+            arrays["codebook_ref_table"][op_match] = table
+            arrays["codebook_ref_id"][op_match] = val[op_match]
+        elif spec.kind == "def":
+            arrays["codebook_def_table"][op_match] = table
+            arrays["codebook_def_id"][op_match] = val[op_match]
+        else:
+            arrays["codebook_commit_table"][op_match] = table
+    return arrays
+
+
 def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)
@@ -539,6 +582,7 @@ def precompute_vocab_arrays(tokens_df):
             "dist_lo_val": dist_lo_val,
             "length": length,
             "overlay_count": overlay_count,
+            **_codebook_arrays(op, subreg, val, n),
         }
     )
 
@@ -753,6 +797,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             "fn_delta": fn_delta,
             "fn_after_last_strict": fn_after_last_strict,
             "pending_overlays_delta": pending_overlays_delta,
+            **_empty_codebook_arrays(n_sub),
         }
     )
 
@@ -874,9 +919,14 @@ class StreamState:
         remaining_steps=None,
         logger=None,
         disable_resource_masks=False,
+        init_codebook_ids=None,
     ):
         self.arrays = vocab_arrays
         self.frame_count = int(init_frame_count)
+        n_tables = len(CODEBOOK_TABLES)
+        seed = init_codebook_ids or {}
+        self.codebook_live = {t: set(seed.get(t, ())) for t in range(n_tables)}
+        self.codebook_pending_def = {t: None for t in range(n_tables)}
         self.pending_overlays = 0
         self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
         self.pending_slot: PendingSlot = PendingSlot.NONE
@@ -921,7 +971,26 @@ class StreamState:
             self._apply_subtoken_free_mask(invalid, a)
         else:
             self._apply_atomic_free_mask(invalid, a)
+        self._apply_codebook_mask(invalid, a)
         return self._unstick(invalid, a["is_frame_marker"])
+
+    def _apply_codebook_mask(self, invalid, a):
+        """Forbid an inline-codebook REF whose id is not live (defined and committed) -- the §4 fix for
+        the DEF->REF backref that silently vanished when the DEF was out of the prompt window.
+        """
+        ref_table = a.get("codebook_ref_table")
+        if ref_table is None:
+            return
+        ref_id = a["codebook_ref_id"]
+        for table, live in self.codebook_live.items():
+            ref_t = ref_table == table
+            if not ref_t.any():
+                continue
+            if live:
+                not_live = ~np.isin(ref_id, np.fromiter(live, dtype=np.int64))
+            else:
+                not_live = np.ones(len(invalid), dtype=np.bool_)
+            invalid |= ref_t & not_live
 
     def update(self, token_id):
         """Advance state with the just-sampled token."""
@@ -929,6 +998,20 @@ class StreamState:
             self._update_subtoken(int(token_id))
         else:
             self._update_atomic(int(token_id))
+        self._update_codebook(int(token_id))
+
+    def _update_codebook(self, token_id):
+        """A DEF stashes its id as the table's pending def; a COMMIT makes that pending id live so its
+        REFs become legal (a later DEF id rebinds the pending, mirroring the streaming dictionary).
+        """
+        a = self.arrays
+        dt = int(a["codebook_def_table"][token_id])
+        if dt >= 0:
+            self.codebook_pending_def[dt] = int(a["codebook_def_id"][token_id])
+        ct = int(a["codebook_commit_table"][token_id])
+        if ct >= 0 and self.codebook_pending_def[ct] is not None:
+            self.codebook_live[ct].add(self.codebook_pending_def[ct])
+            self.codebook_pending_def[ct] = None
 
     def _apply_pending_slot_mask(self, invalid, a):
         gate_key, check = self._slot_gate[self.pending_slot]
