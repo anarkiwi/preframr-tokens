@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Hot-loop performance (no output change).** Four output-preserving speedups on the encode path:
+  `SkeletonPass._ctrl_at` binary-searches the frame-ascending ctrl writes instead of scanning (the hot
+  per-frame pitched-frame test); `_slide_rate` derives the only candidate rate from the leading-zero run
+  and verifies once (O(n) vs O(n²), now that W4 routes longer ramps through it); `wavetable.factorise`
+  uses a per-period last-mismatch pass (O(m²) vs the cubic position-by-position scan); and
+  `WavetablePass._build_codebook` indexes programs by first-step offset so the fallback verify only
+  visits plausible candidates. `factorise` and `_slide_rate` were differential-checked byte-identical to
+  the brute-force versions over ~100k+ inputs (incl. exhaustive small cases); the suite (golden masters
+  included) stays green.
+
 ### Added
 
 - **W4 — route wide monotone ramps to SLIDE (`slide_wide`, default OFF).** A constant note-relative delta

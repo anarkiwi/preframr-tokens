@@ -20,6 +20,7 @@ __all__ = [
 ]
 
 import math
+from bisect import bisect_right
 from collections import Counter
 
 from preframr_tokens.macros.arbiter import Claim, arbitrate
@@ -184,12 +185,15 @@ def held_cycle_offsets(period, holds):
 
 
 def _slide_rate(offs, target):
-    """Frames-per-semitone-step that reproduces a monotone ramp toward ``target``, or None."""
-    length = len(offs)
-    for rate in range(1, length + 1):
-        if slide_frame_offsets(target, rate, length) == offs:
-            return rate
-    return None
+    """Frames-per-semitone-step that reproduces a monotone ramp toward ``target``, or None. A SLIDE's
+    first nonzero offset is at frame ``rate-1``, so the only candidate rate is fixed by the leading
+    run of zeros -- derive it and verify once (the brute-force smallest-matching rate is identical).
+    """
+    first_nz = next((k for k, o in enumerate(offs) if o != 0), None)
+    if first_nz is None:
+        return 1 if offs and target == 0 else None
+    rate = first_nz + 1
+    return rate if slide_frame_offsets(target, rate, len(offs)) == offs else None
 
 
 def _slide_descriptor(offs):
@@ -376,13 +380,12 @@ class SkeletonPass(MacroPass):
 
     @staticmethod
     def _ctrl_at(ctrl_writes, frame):
-        """Forward-filled ctrl byte in effect at ``frame`` (last write at or before it), or None."""
-        cur = None
-        for fr, val in ctrl_writes:
-            if fr > frame:
-                break
-            cur = val
-        return cur
+        """Forward-filled ctrl byte in effect at ``frame`` (last write at or before it), or None.
+        ``ctrl_writes`` is frame-ascending, so binary-search the split point (the ``inf`` sentinel
+        sorts past any same-frame value) instead of scanning -- the hot per-frame pitched-frame test.
+        """
+        idx = bisect_right(ctrl_writes, (frame, float("inf")))
+        return ctrl_writes[idx - 1][1] if idx else None
 
     @classmethod
     def _is_pitched_frame(cls, ctrl_writes, frame):
