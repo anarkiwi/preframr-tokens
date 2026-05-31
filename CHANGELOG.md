@@ -39,6 +39,15 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`register_state` decode (no output change).** The byte-exact oracle (run on every isolation check and
+  the full-corpus hunt) previously expanded the stream with `expand_ops` into a literal-write DataFrame and
+  then re-reduced it row-by-row into the `(n_frames, 25)` state. It now walks the **same** canonical
+  FrameWalker/DECODERS decode but snapshots the live regs 0-24 (`state.last_val`) once per decoded frame —
+  skipping the DataFrame materialisation/sort/ffill entirely (~18% faster end-to-end; the standalone
+  reduction goes from a 1.4 ms Python loop to a direct accumulation). Output is identical: differential-
+  checked against the old reduction over 20k synthetic frame streams and 30 diverse real parses, and the
+  whole suite (which uses `register_state` as its oracle) stays green.
+
 - **Hot-loop performance (no output change).** Four output-preserving speedups on the encode path:
   `SkeletonPass._ctrl_at` binary-searches the frame-ascending ctrl writes instead of scanning (the hot
   per-frame pitched-frame test); `_slide_rate` derives the only candidate rate from the leading-zero run
