@@ -17,6 +17,7 @@ from preframr_tokens.stfconstants import (
     STAMP_CHAR_HAT,
     STAMP_DEF_OP,
     STAMP_REF_OP,
+    STAMP_REL_REF_OP,
 )
 
 _IRQ = 19656
@@ -143,3 +144,55 @@ def test_classify_hat():
     fns = [2000, 2000, 2000]
     ctrls = [0x81, 0x80, 0x80]
     assert classify_char(fns, ctrls) == STAMP_CHAR_HAT
+
+
+def _gesture(base):
+    """A pitched effect: gate-on sweep up then gate-off, identical freq-DELTA + ctrl shape at any
+    base. Each base is unique (so ABS never reaches MINREP), but the transpose-shape recurs.
+    """
+    return [(base, 0x41), (base + 100, 0x41), (base + 50, 0x40)]
+
+
+def test_transposed_gesture_drains_to_rel_stamp_and_roundtrips():
+    raw = (
+        _Builder()
+        .hit(_gesture(1000))
+        .gap()
+        .hit(_gesture(2000))
+        .gap()
+        .hit(_gesture(3000))
+        .gap()
+        .hit(_gesture(4000))
+        .df()
+    )
+    enc = _roundtrip_exact(raw, _args())
+    assert int((enc["op"] == STAMP_DEF_OP).sum()) == 1, "one REL def for the shape"
+    assert (
+        int((enc["op"] == STAMP_REF_OP).sum()) == 0
+    ), "no exact-ABS hits (each base unique)"
+    assert (
+        int((enc["op"] == STAMP_REL_REF_OP).sum()) == 12
+    ), "3 atoms (id + base hi/lo) per hit x 4 hits"
+    assert int(((enc["op"] == SET_OP) & (enc["reg"] == _FREQ_REG)).sum()) == 0
+
+
+def test_two_transposed_gestures_left_alone():
+    raw = _Builder().hit(_gesture(1000)).gap().hit(_gesture(2000)).df()
+    enc = StampPass().apply(raw.copy(), args=_args())
+    assert int((enc["op"] == STAMP_DEF_OP).sum()) == 0, "below MINREP -> not stamped"
+    assert int((enc["op"] == STAMP_REL_REF_OP).sum()) == 0
+
+
+def test_exact_repeat_prefers_abs_over_rel():
+    raw = (
+        _Builder()
+        .hit(_gesture(1000))
+        .gap()
+        .hit(_gesture(1000))
+        .gap()
+        .hit(_gesture(1000))
+        .df()
+    )
+    enc = _roundtrip_exact(raw, _args())
+    assert int((enc["op"] == STAMP_REF_OP).sum()) == 3, "same base -> exact ABS"
+    assert int((enc["op"] == STAMP_REL_REF_OP).sum()) == 0

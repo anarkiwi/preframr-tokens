@@ -106,6 +106,10 @@ from preframr_tokens.stfconstants import (
     STAMP_DEF_OP,
     STAMP_END_OP,
     STAMP_REF_OP,
+    STAMP_REL_REF_OP,
+    STAMP_REL_SUBREG_BASE_HI,
+    STAMP_REL_SUBREG_BASE_LO,
+    STAMP_REL_SUBREG_ID,
     STAMP_STEP_OP,
     STAMP_SUBREG_FRAME,
     SUBREG_FLUSH_OP,
@@ -775,6 +779,8 @@ class StampDecoder(MacroDecoder):
                 state.stamp_table[int(stamp["id"])] = stamp["frames"]
                 state.pending_stamp_def = None
             return None
+        if op == STAMP_REL_REF_OP:
+            return self._rel_ref(row, state)
         return self._ref(row, state)
 
     @staticmethod
@@ -801,6 +807,52 @@ class StampDecoder(MacroDecoder):
             for off in offsets:
                 if off in cur:
                     state.pending_set_writes[base + off].append(int(cur[off]))
+        return pre or None
+
+    def _rel_ref(self, row, state):
+        """A transpose-relative hit: buffer id + base-freq hi/lo, then replay the stamp adding the
+        (sign-extended) freq delta at offset 0 to the per-hit base, leaving ctrl (offset 4) raw.
+        """
+        subreg = int(row.subreg)
+        if subreg == STAMP_REL_SUBREG_ID:
+            state.pending_stamp_rel = {
+                "id": int(row.val),
+                "reg": int(row.reg),
+                "base": 0,
+            }
+            return None
+        pend = state.pending_stamp_rel
+        if pend is None:
+            return None
+        if subreg == STAMP_REL_SUBREG_BASE_HI:
+            pend["base"] |= (int(row.val) & 0xFF) << 8
+            return None
+        if subreg != STAMP_REL_SUBREG_BASE_LO:
+            return None
+        pend["base"] |= int(row.val) & 0xFF
+        state.pending_stamp_rel = None
+        return self._replay_rel(pend, state)
+
+    @staticmethod
+    def _replay_rel(pend, state):
+        frames = state.stamp_table.get(int(pend["id"]))
+        if not frames:
+            return None
+        base = int(pend["base"])
+        voice = int(pend["reg"])
+        offsets = sorted({o for fr in frames for o in fr})
+        pre = state.maybe_flush_for(voice, -1)
+        cur = {}
+        for fr in frames:
+            cur.update(fr)
+            for off in offsets:
+                if off not in cur:
+                    continue
+                val = int(cur[off])
+                if off == 0:
+                    signed = val if val < 0x8000 else val - 0x10000
+                    val = (base + signed) & 0xFFFF
+                state.pending_set_writes[voice + off].append(val)
         return pre or None
 
 
@@ -889,7 +941,13 @@ DECODERS = {
     )
 }
 _STAMP_DECODER = StampDecoder()
-for _op in (STAMP_DEF_OP, STAMP_STEP_OP, STAMP_END_OP, STAMP_REF_OP):
+for _op in (
+    STAMP_DEF_OP,
+    STAMP_STEP_OP,
+    STAMP_END_OP,
+    STAMP_REF_OP,
+    STAMP_REL_REF_OP,
+):
     DECODERS[_op] = _STAMP_DECODER
 _PATCH_DECODER = PatchDecoder()
 for _op in (PATCH_DEF_OP, PATCH_STEP_OP, PATCH_SET_OP):
