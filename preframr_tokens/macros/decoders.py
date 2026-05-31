@@ -124,6 +124,7 @@ from preframr_tokens.stfconstants import (
     SWEEP_SUBREG_DELTA_HI,
     SWEEP_SUBREG_DELTA_LO,
     SWEEP_SUBREG_LEN,
+    SWEEP_SUBREG_PERIOD,
     SWEEP_SUBREG_START_HI,
     SWEEP_SUBREG_START_LO,
     TRACK_INTERVAL_RATIOS,
@@ -985,10 +986,12 @@ class SweepDecoder(MacroDecoder):
             f.get(SWEEP_SUBREG_DELTA_LO, 0) & 0xFF
         )
         delta = raw if raw < 0x8000 else raw - 0x10000
+        period = int(f.get(SWEEP_SUBREG_PERIOD, 0))
         reg = int(pend["reg"])
         pre = state.maybe_flush_for(reg, -1)
         for k in range(int(f.get(SWEEP_SUBREG_LEN, 0))):
-            state.pending_set_writes[reg].append((start + k * delta) & 0xFFFF)
+            step = (k % period) if period else k
+            state.pending_set_writes[reg].append((start + step * delta) & 0xFFFF)
         return pre or None
 
 

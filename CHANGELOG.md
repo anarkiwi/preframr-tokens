@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 
 ### Added (continued)
 
+- **W5.3 — SWEEP loop-period (`sweep_loop`, default OFF).** A looping freq-domain arp (constant
+  −delta/frame reset every P, SoundMonitor) is shattered by the linear run-finder at each reset jump; with
+  `sweep_loop` on, `SweepPass._loop_runs` mines the periodic sawtooth (`freq[k] = start + ((k−i) % P) ×
+  delta`, ≥2 periods, period ≤ `SWEEP_MAX_SPAN`) and emits looping SWEEP atoms carrying a new
+  `SWEEP_SUBREG_PERIOD` (the decoder replays `start + (k % period) × delta`). SWEEP_OP already has its ATOM
+  contract, so no new op. Byte-exact through the full `RegLogParser.parse`.
+
+### Fixed
+
+- **Long SWEEP runs lost frames through `_cap_delay` (latent base-SWEEP bug).** A single SWEEP atom spanning
+  N frames leaves a `DELAY(N−1)` after it, and `_cap_delay` coarsens delays > 16 to the nearest power of two
+  — so a run longer than ~17 frames dropped playback frames while the atom's `LEN` stayed, overrunning the
+  per-frame replay into the next note (a 22-frame run lost 4 frames; not byte-exact). `SweepPass._emit_run`
+  now splits every run (linear and loop) into chunks of ≤ `SWEEP_MAX_SPAN` (17) frames, each re-anchored at
+  its own first frame so the inter-chunk DELAY stays in `_cap_delay`'s exact (≤16) range; loop chunks split
+  on whole periods so each chunk starts on the program's start phase. Only reachable with `sweep_pass` on
+  (default OFF, no golden masters affected). New `tests/test_sweep_loop.py` guards both the loop drain and
+  the long-run chunking, byte-exact.
+
 - **W5.1 — exact-landing SLIDE2 primitive (`slide_landing`, default OFF).** The rate-only SLIDE only
   expresses unit steps (±1 per `rate` frames), so a constant per-frame delta ≠ 1 (e.g. a +2/frame ramp
   `[2,4,6,8]`) leaks to RESID even with W4's wide SLIDE on. A new `ORN_TYPE_SLIDE2` (op stays `ORN_OP`, so
