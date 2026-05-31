@@ -16,6 +16,7 @@ __all__ = [
     "fit_descriptor",
     "vib_frame_offsets",
     "slide_frame_offsets",
+    "slide2_frame_offsets",
     "cycle_frame_offsets",
 ]
 
@@ -46,7 +47,9 @@ from preframr_tokens.stfconstants import (
     ORN_TYPE_PLAIN,
     ORN_TYPE_RESID,
     ORN_TYPE_SLIDE,
+    ORN_TYPE_SLIDE2,
     ORN_TYPE_VIB,
+    SLIDE2_MAX_DUR,
     SET_OP,
     SKEL_OP,
     SKEL_SUBREG_ABS,
@@ -130,6 +133,16 @@ def slide_frame_offsets(target, rate, length):
     return [sign * min(mag, (k + 1) // rate) for k in range(length)]
 
 
+def slide2_frame_offsets(target, duration, length):
+    """Replay an exact-landing portamento: a linear note-relative ramp that reaches ``target`` after
+    ``duration`` frames (rounded) then holds, for ``length`` frames. Unlike the rate-only SLIDE this
+    lands on any target in a given duration (a non-unit per-frame delta), not just unit steps.
+    """
+    if length <= 0 or duration <= 0:
+        return []
+    return [int(round(target * min(k + 1, duration) / duration)) for k in range(length)]
+
+
 def vib_frame_offsets(depth, rate, length):
     """Replay vibrato at the semitone floor: a depth/rate oscillator that stays within a
     semitone, so its per-frame note-relative offset is 0 (the content-tier floor drops the
@@ -211,6 +224,27 @@ def _slide_descriptor(offs):
     return (offs[-1], rate) if rate is not None else None
 
 
+def _slide2_descriptor(offs):
+    """``(target, duration)`` for a monotone ramp the exact-landing SLIDE reproduces (a constant
+    per-frame delta the rate-only form can't express, e.g. ``[2,4,6,8]``), target/duration each within
+    a signed byte, else None. ``duration`` = the frame the ramp first reaches its final offset.
+    """
+    if len(offs) < 2:
+        return None
+    diffs = [b - a for a, b in zip(offs, offs[1:])]
+    if not (all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)):
+        return None
+    target = offs[-1]
+    if abs(target - offs[0]) < 2 or not -128 <= target <= 127:
+        return None
+    duration = next((k + 1 for k, o in enumerate(offs) if o == target), len(offs))
+    if not 1 <= duration <= SLIDE2_MAX_DUR:
+        return None
+    if slide2_frame_offsets(target, duration, len(offs)) == offs:
+        return (target, duration)
+    return None
+
+
 def is_fast_melodic_run(offs):
     """True when a would-be RESID note's note-relative offsets are a short (distinct<6, span<12),
     non-periodic, non-monotone run of distinct semitones -- under-segmented constituent notes
@@ -236,11 +270,11 @@ def is_fast_melodic_run(offs):
     return distinct < 6 and span < 12
 
 
-def fit_descriptor(base, seg_fns, slide_wide=False):
+def fit_descriptor(base, seg_fns, slide_wide=False, slide_landing=False):
     """Classify a note's intra-note freq writes (16-bit, frame order) into one driver-native,
-    constant-size ornament. ``base`` = the note semitone, ``seg_fns`` = settled freqs after the
-    onset. ``slide_wide`` routes a wide monotone ramp to SLIDE instead of RESID (W4). Returns
-    (orn_type, params), the canonical small atom tuple a cycle/slide/vib/raw escape decodes from.
+    constant-size ornament. ``base`` = the note semitone, ``seg_fns`` = settled freqs after the onset.
+    ``slide_wide`` routes a wide monotone ramp to rate-only SLIDE; ``slide_landing`` routes a constant-
+    delta ramp the rate-only form misses to the exact-landing SLIDE2 (W4/W5). Returns (orn_type, params).
     """
     if not seg_fns:
         return ORN_TYPE_PLAIN, ()
@@ -262,6 +296,10 @@ def fit_descriptor(base, seg_fns, slide_wide=False):
             slide = _slide_descriptor(offs)
             if slide is not None:
                 return ORN_TYPE_SLIDE, slide
+        if slide_landing:
+            slide2 = _slide2_descriptor(offs)
+            if slide2 is not None:
+                return ORN_TYPE_SLIDE2, slide2
         return ORN_TYPE_RESID, tuple(offs)
     diffs = [b - a for a, b in zip(offs, offs[1:])]
     monotone = all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)
@@ -269,6 +307,10 @@ def fit_descriptor(base, seg_fns, slide_wide=False):
         rate = _slide_rate(offs, offs[-1])
         if rate is not None:
             return ORN_TYPE_SLIDE, (offs[-1], rate)
+        if slide_landing:
+            slide2 = _slide2_descriptor(offs)
+            if slide2 is not None:
+                return ORN_TYPE_SLIDE2, slide2
     period = _minimal_period(offs)
     if period is not None:
         is_octave = set(period) <= {0, 12} or set(period) <= {0, -12}
@@ -295,11 +337,14 @@ class SkeletonPass(MacroPass):
     Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
     """
 
-    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp", "zero_plain", "slide_wide"})
+    GATE_FLAGS = frozenset(
+        {"skeleton_pass", "held_arp", "zero_plain", "slide_wide", "slide_landing"}
+    )
 
     _held_arp = False  # noqa: per-parse args.held_arp gate (set in apply)
     _zero_plain = False  # noqa: per-parse args.zero_plain gate (set in apply)
     _slide_wide = False  # noqa: per-parse args.slide_wide gate (set in apply)
+    _slide_landing = False  # noqa: per-parse args.slide_landing gate (set in apply)
     _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
     _df_sink = (
         None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
@@ -313,6 +358,7 @@ class SkeletonPass(MacroPass):
         SkeletonPass._held_arp = bool(getattr(args, "held_arp", False))
         SkeletonPass._zero_plain = bool(getattr(args, "zero_plain", False))
         SkeletonPass._slide_wide = bool(getattr(args, "slide_wide", False))
+        SkeletonPass._slide_landing = bool(getattr(args, "slide_landing", False))
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
@@ -424,7 +470,12 @@ class SkeletonPass(MacroPass):
             seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
             per_frame = self._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
             note = self._rebased_note(note, anchor, per_frame, onset_fr, cwrites)
-            orn_type, params = fit_descriptor(note, per_frame, SkeletonPass._slide_wide)
+            orn_type, params = fit_descriptor(
+                note,
+                per_frame,
+                SkeletonPass._slide_wide,
+                SkeletonPass._slide_landing,
+            )
             claimed = self._emit_note(
                 reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
             )
@@ -860,6 +911,8 @@ class SkeletonPass(MacroPass):
             return held_cycle_offsets(params[0], params[1])
         if orn_type == ORN_TYPE_SLIDE:
             return slide_frame_offsets(params[0], params[1], length)
+        if orn_type == ORN_TYPE_SLIDE2:
+            return slide2_frame_offsets(params[0], params[1], length)
         if orn_type == ORN_TYPE_VIB:
             return vib_frame_offsets(params[0], params[1], length)
         return None
