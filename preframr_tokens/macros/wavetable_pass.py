@@ -28,8 +28,14 @@ from preframr_tokens.stfconstants import (
     ORN_TYPE_RESID,
     WAVETABLE_DEF_OP,
     WAVETABLE_END_OP,
+    WAVETABLE_ONESHOT_OP,
     WAVETABLE_REF_OP,
     WAVETABLE_STEP_OP,
+    WT_ONESHOT_SUBREG_END,
+    WT_ONESHOT_SUBREG_HOLD,
+    WT_ONESHOT_SUBREG_LEN_HI,
+    WT_ONESHOT_SUBREG_LEN_LO,
+    WT_ONESHOT_SUBREG_OFFSET,
     WT_MINREP,
     WT_REF_SUBREG_ID,
     WT_REF_SUBREG_LEAD,
@@ -63,7 +69,7 @@ class WavetablePass(MacroPass):
     with an inline WAVETABLE_DEF + WAVETABLE_REF (or an inline-structured one-shot), consuming the RESID
     atom rows and leaving the SKEL atom. Default OFF."""
 
-    GATE_FLAGS = frozenset({"wavetable_pass", "wt_short"})
+    GATE_FLAGS = frozenset({"wavetable_pass", "wt_short", "wt_oneshot"})
 
     def apply(self, df, args=None):
         if args is None or not getattr(args, "wavetable_pass", False):
@@ -75,11 +81,12 @@ class WavetablePass(MacroPass):
             return df
         irq = _first_irq(df)
         short_max = WT_SHORT_MAX if getattr(args, "wt_short", False) else 0
-        records = self._collect_resid(df, short_max)
+        oneshot = bool(getattr(args, "wt_oneshot", False))
+        records = self._collect_resid(df, short_max, oneshot)
         if not records:
             return df
-        programs = self._build_codebook(records)
-        drop_idx, new_rows = self._emit(records, programs, irq)
+        programs = self._build_codebook(records, oneshot)
+        drop_idx, new_rows = self._emit(records, programs, irq, oneshot)
         if not new_rows:
             return df
         return arbitrate(
@@ -95,10 +102,11 @@ class WavetablePass(MacroPass):
         )
 
     @classmethod
-    def _collect_resid(cls, df, short_max=0):
+    def _collect_resid(cls, df, short_max=0, oneshot=False):
         """Walk the post-skeleton df and pull each contiguous ORN-RESID atom (TYPE/P2/P1*) per freq
         reg into a record with its note-relative offsets, onset frame, and consumed row indices.
-        ``short_max`` > 0 routes residue of that length or less to the literal-tuple short codebook.
+        ``short_max`` routes short residue to the literal codebook; ``oneshot`` keeps every residue
+        note (even with no pitched core) so the inline one-shot can store it verbatim.
         """
         freq_regs = {int(r) for r in FREQ_TRAJ_REGS}
         ctrl_writes = SkeletonPass._context(df)[2]
@@ -138,30 +146,33 @@ class WavetablePass(MacroPass):
             i = j
             if length is None or len(offsets) != length or length < 1:
                 continue
-            rec = cls._make_record(reg, onset_fr, offsets, rows, ctrl_writes, short_max)
+            rec = cls._make_record(
+                reg, onset_fr, offsets, rows, ctrl_writes, short_max, oneshot
+            )
             if rec is not None:
                 records.append(rec)
         return records
 
     @staticmethod
-    def _make_record(reg, onset_fr, offsets, rows, ctrl_writes, short_max=0):
+    def _make_record(
+        reg, onset_fr, offsets, rows, ctrl_writes, short_max=0, oneshot=False
+    ):
         """Onset-strip the leading non-pitched (HR/test/noise) frames into a per-hit lead, leaving the
-        pitched core the codebook keys on; skip notes with no pitched core (StampPass territory).
-        Short residue (``len <= short_max``) keys on the verbatim offsets instead -- no onset-strip,
-        no pitched-core gate -- as a loopless literal program (``unroll`` is the identity).
+        pitched core the codebook keys on. Short residue (``len <= short_max``) keys on the verbatim
+        offsets instead (no strip, no pitched-core gate). A note with no pitched core is kept (codebook
+        ineligible) only when ``oneshot`` -- the inline one-shot stores its offsets verbatim.
         """
+        base = {
+            "reg": reg,
+            "pos": rows[0],
+            "rows": rows,
+            "offsets": offsets,
+            "length": len(offsets),
+            "wt_id": None,
+        }
         if 0 < short_max and len(offsets) <= short_max:
-            return {
-                "reg": reg,
-                "pos": rows[0],
-                "rows": rows,
-                "offsets": offsets,
-                "length": len(offsets),
-                "lead": [],
-                "core": offsets,
-                "wt_id": None,
-                "literal": True,
-            }
+            base.update(lead=[], core=offsets, literal=True, codebook=True)
+            return base
         cw = ctrl_writes.get(reg, [])
         lead = 0
         for k in range(len(offsets)):
@@ -169,28 +180,24 @@ class WavetablePass(MacroPass):
                 break
             lead += 1
         core = offsets[lead:]
-        if len(core) < _MIN_CORE:
-            return None
-        return {
-            "reg": reg,
-            "pos": rows[0],
-            "rows": rows,
-            "offsets": offsets,
-            "length": len(offsets),
-            "lead": offsets[:lead],
-            "core": core,
-            "wt_id": None,
-            "literal": False,
-        }
+        if len(core) >= _MIN_CORE:
+            base.update(lead=offsets[:lead], core=core, literal=False, codebook=True)
+            return base
+        if oneshot:
+            base.update(lead=[], core=offsets, literal=False, codebook=False)
+            return base
+        return None
 
     @classmethod
-    def _build_codebook(cls, records):
-        """Factorise each core, share ids across keys recurring >= WT_MINREP, verify-match the rest
-        against shared programs (short/partial hits), then give structured one-shots an inline id.
-        Literal short records key on their verbatim RLE (loopless), no factorise. Returns
-        ``{id: (steps, loop)}``; assigns ``rec['wt_id']`` byte-exactly (unroll == offsets).
+    def _build_codebook(cls, records, oneshot=False):
+        """Factorise each codebook-eligible core, share ids across keys recurring >= WT_MINREP, then
+        verify-match the rest against shared programs (short/partial hits). Literal short records key
+        on their verbatim RLE (loopless). When ``oneshot`` is off, structured one-shots get an inline
+        single-use id; when on, they fall through to the inline one-shot. Returns ``{id: (steps,
+        loop)}``; assigns ``rec['wt_id']`` byte-exactly (unroll == offsets).
         """
-        for rec in records:
+        cb = [rec for rec in records if rec["codebook"]]
+        for rec in cb:
             if rec["literal"]:
                 steps = run_length_encode(rec["core"])
                 rec["steps"], rec["loop"] = steps, len(steps)
@@ -200,7 +207,7 @@ class WavetablePass(MacroPass):
             rec["steps"], rec["loop"] = steps, loop
             rec["has_body"] = loop < len(steps)
         by_key = defaultdict(list)
-        for rec in records:
+        for rec in cb:
             by_key[program_key(rec["steps"], rec["loop"])].append(rec)
         qualifying = sorted(
             (min(r["pos"] for r in recs), key, recs)
@@ -215,18 +222,20 @@ class WavetablePass(MacroPass):
             programs[next_id] = (rep["steps"], rep["loop"])
             shared[key] = next_id
             next_id += 1
-        for rec in records:
+        for rec in cb:
             wid = shared.get(program_key(rec["steps"], rec["loop"]))
             if wid is not None and cls._verify(rec, programs[wid]):
                 rec["wt_id"] = wid
-        for rec in records:
+        for rec in cb:
             if rec["wt_id"] is not None:
                 continue
             for wid in sorted(programs):
                 if cls._verify(rec, programs[wid]):
                     rec["wt_id"] = wid
                     break
-        for rec in records:
+        if oneshot:
+            return programs
+        for rec in cb:
             if rec["wt_id"] is not None or not rec["has_body"]:
                 continue
             program = (rec["steps"], rec["loop"])
@@ -242,24 +251,78 @@ class WavetablePass(MacroPass):
         return unroll(steps, loop, rec["length"], rec["lead"]) == rec["offsets"]
 
     @classmethod
-    def _emit(cls, records, programs, irq):
+    def _emit(cls, records, programs, irq, oneshot=False):
         drop_idx, new_rows = [], []
         defined = set()
         for rec in sorted(records, key=lambda r: r["pos"]):
             wid = rec["wt_id"]
             if wid is None:
-                continue
-            rows = []
-            if wid not in defined:
-                steps, loop = programs[wid]
-                rows.extend(cls._def_rows(wid, steps, loop, irq))
-                defined.add(wid)
-            rows.extend(cls._ref_rows(rec["reg"], wid, rec["length"], rec["lead"], irq))
+                if not oneshot:
+                    continue
+                rows = cls._oneshot_rows(rec["reg"], rec["offsets"], irq)
+            else:
+                rows = []
+                if wid not in defined:
+                    steps, loop = programs[wid]
+                    rows.extend(cls._def_rows(wid, steps, loop, irq))
+                    defined.add(wid)
+                rows.extend(
+                    cls._ref_rows(rec["reg"], wid, rec["length"], rec["lead"], irq)
+                )
             for r in rows:
                 r["__pos"] = rec["pos"]
                 new_rows.append(r)
             drop_idx.extend(rec["rows"])
         return drop_idx, new_rows
+
+    @staticmethod
+    def _oneshot_rows(reg, offsets, irq):
+        """Self-contained inline one-shot on ``reg``: LEN_HI/LO then the verbatim offsets as RLE
+        OFFSET(/HOLD) atoms, terminated by END -- no codebook id, no DEF/REF indirection.
+        """
+        length = len(offsets) & 0xFFFF
+        rows = [
+            _row(
+                reg,
+                WAVETABLE_ONESHOT_OP,
+                WT_ONESHOT_SUBREG_LEN_HI,
+                (length >> 8) & 0xFF,
+                irq,
+                irq,
+            ),
+            _row(
+                reg,
+                WAVETABLE_ONESHOT_OP,
+                WT_ONESHOT_SUBREG_LEN_LO,
+                length & 0xFF,
+                irq,
+                irq,
+            ),
+        ]
+        for off, hold in run_length_encode(offsets):
+            rows.append(
+                _row(
+                    reg,
+                    WAVETABLE_ONESHOT_OP,
+                    WT_ONESHOT_SUBREG_OFFSET,
+                    int(off) & 0xFF,
+                    irq,
+                    irq,
+                )
+            )
+            if int(hold) != 1:
+                rows.append(
+                    _row(
+                        reg,
+                        WAVETABLE_ONESHOT_OP,
+                        WT_ONESHOT_SUBREG_HOLD,
+                        int(hold) & 0xFFFF,
+                        irq,
+                        irq,
+                    )
+                )
+        rows.append(_row(reg, WAVETABLE_ONESHOT_OP, WT_ONESHOT_SUBREG_END, 0, irq, irq))
+        return rows
 
     @staticmethod
     def _def_rows(wt_id, steps, loop, irq):
