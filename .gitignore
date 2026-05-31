@@ -227,3 +227,4 @@ __marimo__/
 tests/.sid-cache/
 **/*.dump.parquet
 **/*.meta.parquet
+.claude/
