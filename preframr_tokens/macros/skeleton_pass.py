@@ -192,6 +192,21 @@ def _slide_rate(offs, target):
     return None
 
 
+def _slide_descriptor(offs):
+    """``(target, rate)`` for a monotone ramp an exact rate-only SLIDE reproduces, target within a
+    signed byte, else None -- the note-relative SWEEP survivor a wide-ramp SLIDE routes off RESID.
+    """
+    if len(offs) < 2:
+        return None
+    diffs = [b - a for a, b in zip(offs, offs[1:])]
+    if not (all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)):
+        return None
+    if abs(offs[-1] - offs[0]) < 2 or not -128 <= offs[-1] <= 127:
+        return None
+    rate = _slide_rate(offs, offs[-1])
+    return (offs[-1], rate) if rate is not None else None
+
+
 def is_fast_melodic_run(offs):
     """True when a would-be RESID note's note-relative offsets are a short (distinct<6, span<12),
     non-periodic, non-monotone run of distinct semitones -- under-segmented constituent notes
@@ -217,11 +232,12 @@ def is_fast_melodic_run(offs):
     return distinct < 6 and span < 12
 
 
-def fit_descriptor(base, seg_fns):
+def fit_descriptor(base, seg_fns, slide_wide=False):
     """Classify a note's intra-note freq writes (16-bit, frame order) into one driver-native,
     constant-size ornament. ``base`` = the note semitone, ``seg_fns`` = settled freqs after the
-    onset. Returns (orn_type, params) where params is the canonical small atom tuple a cycle
-    period / slide target+rate / vib depth+rate / raw offset escape decodes from."""
+    onset. ``slide_wide`` routes a wide monotone ramp to SLIDE instead of RESID (W4). Returns
+    (orn_type, params), the canonical small atom tuple a cycle/slide/vib/raw escape decodes from.
+    """
     if not seg_fns:
         return ORN_TYPE_PLAIN, ()
     resolved = [fn_to_note_resid(fn) for fn in seg_fns]
@@ -238,6 +254,10 @@ def fit_descriptor(base, seg_fns):
             else (ORN_TYPE_PLAIN, ())
         )
     if any(abs(o) > _OFFSET_LIMIT for o in offs):
+        if slide_wide:
+            slide = _slide_descriptor(offs)
+            if slide is not None:
+                return ORN_TYPE_SLIDE, slide
         return ORN_TYPE_RESID, tuple(offs)
     diffs = [b - a for a, b in zip(offs, offs[1:])]
     monotone = all(x >= 0 for x in diffs) or all(x <= 0 for x in diffs)
@@ -271,10 +291,11 @@ class SkeletonPass(MacroPass):
     Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
     """
 
-    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp", "zero_plain"})
+    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp", "zero_plain", "slide_wide"})
 
     _held_arp = False  # noqa: per-parse args.held_arp gate (set in apply)
     _zero_plain = False  # noqa: per-parse args.zero_plain gate (set in apply)
+    _slide_wide = False  # noqa: per-parse args.slide_wide gate (set in apply)
     _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
     _df_sink = (
         None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
@@ -287,6 +308,7 @@ class SkeletonPass(MacroPass):
             return df
         SkeletonPass._held_arp = bool(getattr(args, "held_arp", False))
         SkeletonPass._zero_plain = bool(getattr(args, "zero_plain", False))
+        SkeletonPass._slide_wide = bool(getattr(args, "slide_wide", False))
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
@@ -399,7 +421,7 @@ class SkeletonPass(MacroPass):
             seg = [s for s in sets if onset_fr < s[0] < nxt_fr]
             per_frame = self._per_frame_fns(note, anchor, seg, onset_fr, nxt_fr)
             note = self._rebased_note(note, anchor, per_frame, onset_fr, cwrites)
-            orn_type, params = fit_descriptor(note, per_frame)
+            orn_type, params = fit_descriptor(note, per_frame, SkeletonPass._slide_wide)
             claimed = self._emit_note(
                 reg, note, anchor, per_frame, orn_type, params, prev_note, irq, new_rows
             )
