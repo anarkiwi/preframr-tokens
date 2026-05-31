@@ -16,6 +16,7 @@ from preframr_tokens.macros.passes_base import (
     _frame_index,
     MacroPass,
 )
+from preframr_tokens.macros.rle import run_length_encode
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.wavetable import factorise, program_key, unroll
 from preframr_tokens.stfconstants import (
@@ -35,6 +36,7 @@ from preframr_tokens.stfconstants import (
     WT_REF_SUBREG_LEADOFF,
     WT_REF_SUBREG_LEN_HI,
     WT_REF_SUBREG_LEN_LO,
+    WT_SHORT_MAX,
     WT_STEP_SUBREG_HOLD,
     WT_STEP_SUBREG_LOOP,
     WT_STEP_SUBREG_OFFSET,
@@ -61,7 +63,7 @@ class WavetablePass(MacroPass):
     with an inline WAVETABLE_DEF + WAVETABLE_REF (or an inline-structured one-shot), consuming the RESID
     atom rows and leaving the SKEL atom. Default OFF."""
 
-    GATE_FLAGS = frozenset({"wavetable_pass"})
+    GATE_FLAGS = frozenset({"wavetable_pass", "wt_short"})
 
     def apply(self, df, args=None):
         if args is None or not getattr(args, "wavetable_pass", False):
@@ -72,7 +74,8 @@ class WavetablePass(MacroPass):
         if "op" not in df.columns:
             return df
         irq = _first_irq(df)
-        records = self._collect_resid(df)
+        short_max = WT_SHORT_MAX if getattr(args, "wt_short", False) else 0
+        records = self._collect_resid(df, short_max)
         if not records:
             return df
         programs = self._build_codebook(records)
@@ -92,9 +95,10 @@ class WavetablePass(MacroPass):
         )
 
     @classmethod
-    def _collect_resid(cls, df):
+    def _collect_resid(cls, df, short_max=0):
         """Walk the post-skeleton df and pull each contiguous ORN-RESID atom (TYPE/P2/P1*) per freq
         reg into a record with its note-relative offsets, onset frame, and consumed row indices.
+        ``short_max`` > 0 routes residue of that length or less to the literal-tuple short codebook.
         """
         freq_regs = {int(r) for r in FREQ_TRAJ_REGS}
         ctrl_writes = SkeletonPass._context(df)[2]
@@ -132,18 +136,32 @@ class WavetablePass(MacroPass):
                     offsets.append(v if v < 128 else v - 256)
                 j += 1
             i = j
-            if length is None or len(offsets) != length or length < _MIN_CORE:
+            if length is None or len(offsets) != length or length < 1:
                 continue
-            rec = cls._make_record(reg, onset_fr, offsets, rows, ctrl_writes)
+            rec = cls._make_record(reg, onset_fr, offsets, rows, ctrl_writes, short_max)
             if rec is not None:
                 records.append(rec)
         return records
 
     @staticmethod
-    def _make_record(reg, onset_fr, offsets, rows, ctrl_writes):
+    def _make_record(reg, onset_fr, offsets, rows, ctrl_writes, short_max=0):
         """Onset-strip the leading non-pitched (HR/test/noise) frames into a per-hit lead, leaving the
         pitched core the codebook keys on; skip notes with no pitched core (StampPass territory).
+        Short residue (``len <= short_max``) keys on the verbatim offsets instead -- no onset-strip,
+        no pitched-core gate -- as a loopless literal program (``unroll`` is the identity).
         """
+        if 0 < short_max and len(offsets) <= short_max:
+            return {
+                "reg": reg,
+                "pos": rows[0],
+                "rows": rows,
+                "offsets": offsets,
+                "length": len(offsets),
+                "lead": [],
+                "core": offsets,
+                "wt_id": None,
+                "literal": True,
+            }
         cw = ctrl_writes.get(reg, [])
         lead = 0
         for k in range(len(offsets)):
@@ -162,15 +180,22 @@ class WavetablePass(MacroPass):
             "lead": offsets[:lead],
             "core": core,
             "wt_id": None,
+            "literal": False,
         }
 
     @classmethod
     def _build_codebook(cls, records):
         """Factorise each core, share ids across keys recurring >= WT_MINREP, verify-match the rest
         against shared programs (short/partial hits), then give structured one-shots an inline id.
-        Returns ``{id: (steps, loop)}``; assigns ``rec['wt_id']`` byte-exactly (unroll == offsets).
+        Literal short records key on their verbatim RLE (loopless), no factorise. Returns
+        ``{id: (steps, loop)}``; assigns ``rec['wt_id']`` byte-exactly (unroll == offsets).
         """
         for rec in records:
+            if rec["literal"]:
+                steps = run_length_encode(rec["core"])
+                rec["steps"], rec["loop"] = steps, len(steps)
+                rec["has_body"] = False
+                continue
             steps, loop = factorise(rec["core"])
             rec["steps"], rec["loop"] = steps, loop
             rec["has_body"] = loop < len(steps)
