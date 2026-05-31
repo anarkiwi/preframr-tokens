@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **W3 — inline one-shot, the RESID=0 backstop (`wt_oneshot`, default OFF).** A dedicated self-contained
+  `WAVETABLE_ONESHOT_OP` (op 69) that inlines a verbatim offset program at the note position with **no
+  codebook id** (no DEF/REF indirection, no single-use id pollution): LEN_HI/LO then RLE OFFSET(/HOLD)
+  atoms, terminated by END, replayed by `WavetableDecoder` as base + `LUT[note+off]` per frame —
+  byte-identical to the ORN RESID queue it replaces. With `wt_oneshot` on, `WavetablePass` becomes **total
+  over all residue**: it keeps every RESID note (dropping the pitched-core gate on the one-shot path —
+  noise-interleaved and otherwise-unkeyable notes included) and any note that matched no codebook id emits
+  a one-shot, so `ORN_TYPE_RESID` can no longer reach the deployed stream. The op is a single op-code (all
+  rows share it), so it is same-frame-block safe without a `_BLOCK_SOP` entry. W6: contracted as a
+  self-contained `MaskRole.ATOM` (absent from `CODEBOOK_SPECS`, unlike the REF path); the completeness
+  test stays green. New parse-level guard `tests/test_wavetable_oneshot.py` drains FLAT and
+  no-pitched-core residue to zero RESID through the full `RegLogParser.parse`, byte-exact.
+
 - **W2 — short literal-tuple WAVETABLE codebook (`wt_short`, default OFF).** The dominant tail lever
   (RECUR+SHORT ≈55% of the post-wavetable residue). The existing codebook keys on `factorise(core)` after
   an onset-strip and a pitched-core gate — a key designed for long looping programs that is *stricter than

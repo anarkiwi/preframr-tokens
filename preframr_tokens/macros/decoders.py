@@ -134,9 +134,15 @@ from preframr_tokens.stfconstants import (
     VOICES,
     WAVETABLE_DEF_OP,
     WAVETABLE_END_OP,
+    WAVETABLE_ONESHOT_OP,
     WAVETABLE_REF_OP,
     WAVETABLE_STEP_OP,
     WAVETABLE_SUSTAIN_OP,
+    WT_ONESHOT_SUBREG_END,
+    WT_ONESHOT_SUBREG_HOLD,
+    WT_ONESHOT_SUBREG_LEN_HI,
+    WT_ONESHOT_SUBREG_LEN_LO,
+    WT_ONESHOT_SUBREG_OFFSET,
     WT_REF_SUBREG_ID,
     WT_REF_SUBREG_LEAD,
     WT_REF_SUBREG_LEADOFF,
@@ -1005,7 +1011,51 @@ class WavetableDecoder(MacroDecoder):
                 state.wavetable_table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
                 state.pending_wavetable_def = None
             return None
+        if op == WAVETABLE_ONESHOT_OP:
+            return self._oneshot(row, state)
         return self._ref(row, state)
+
+    def _oneshot(self, row, state):
+        """Decode the self-contained inline one-shot (no codebook id): LEN_HI opens a pending
+        program on the voice freq reg, OFFSET/HOLD buffer its verbatim RLE steps, END unrolls and
+        replays base + LUT[note+off] per frame -- byte-identical to the ORN RESID queue it replaces.
+        """
+        subreg = int(row.subreg)
+        if subreg == WT_ONESHOT_SUBREG_LEN_HI:
+            state.pending_wavetable_oneshot = {
+                "reg": int(row.reg),
+                "len": (int(row.val) & 0xFF) << 8,
+                "steps": [],
+            }
+            return None
+        pend = state.pending_wavetable_oneshot
+        if pend is None:
+            return None
+        if subreg == WT_ONESHOT_SUBREG_LEN_LO:
+            pend["len"] |= int(row.val) & 0xFF
+            return None
+        if subreg == WT_ONESHOT_SUBREG_OFFSET:
+            v = int(row.val) & 0xFF
+            pend["steps"].append([v if v < 128 else v - 256, 1])
+            return None
+        if subreg == WT_ONESHOT_SUBREG_HOLD:
+            if pend["steps"]:
+                pend["steps"][-1][1] = int(row.val) & 0xFFFF
+            return None
+        return self._replay_oneshot(pend, state)
+
+    @staticmethod
+    def _replay_oneshot(pend, state):
+        state.pending_wavetable_oneshot = None
+        steps = pend["steps"]
+        reg = int(pend["reg"])
+        note = int(state.last_skel_note.get(reg, 0))
+        offsets = wt_unroll(steps, len(steps), int(pend["len"]), [])
+        queue = state.pending_set_writes[reg]
+        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
+        for off in offsets:
+            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
+        return None
 
     @staticmethod
     def _step(row, state):
@@ -1118,6 +1168,7 @@ for _op in (
     WAVETABLE_STEP_OP,
     WAVETABLE_END_OP,
     WAVETABLE_REF_OP,
+    WAVETABLE_ONESHOT_OP,
 ):
     DECODERS[_op] = _WAVETABLE_DECODER
 _PRESET_DECODER = PresetDecoder()
