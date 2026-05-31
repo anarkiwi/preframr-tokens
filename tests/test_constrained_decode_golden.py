@@ -21,6 +21,7 @@ from preframr_tokens.constrained_decode import (
 from preframr_tokens.macros.validators import (
     validate_back_refs,
     validate_pattern_overlays,
+    validate_stream,
 )
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
@@ -261,6 +262,9 @@ def _compute_golden():
                 ),
                 "pattern_overlays_reject": _verdict(
                     validate_pattern_overlays, vocab.iloc[ids].reset_index(drop=True)
+                ),
+                "stream_reject": _verdict(
+                    validate_stream, vocab.iloc[ids].reset_index(drop=True)
                 ),
             }
             for name, ids in _VALIDATOR_STREAMS.items()

@@ -59,7 +59,11 @@ from preframr_tokens.macros.transform import (
     get_transform_class,
     register,
 )
-from preframr_tokens.macros import validate_back_refs, validate_pattern_overlays
+from preframr_tokens.macros import (
+    validate_back_refs,
+    validate_pattern_overlays,
+    validate_stream,
+)
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.preset_pass import PresetPass
@@ -143,6 +147,7 @@ __all__ = [
     "frame_weight_role",
     "validate_back_refs",
     "validate_pattern_overlays",
+    "validate_stream",
     "classify_carveout",
     "load_palettes_attrs",
     "dump_palettes_attrs",

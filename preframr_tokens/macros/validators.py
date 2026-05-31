@@ -1,6 +1,6 @@
 """Stream-level validators for encoded macro DataFrames."""
 
-__all__ = ["validate_pattern_overlays", "validate_back_refs"]
+__all__ = ["validate_pattern_overlays", "validate_back_refs", "validate_stream"]
 
 from dataclasses import dataclass
 from typing import Optional
@@ -201,4 +201,14 @@ def validate_back_refs(df, prompt_frame_count=0):
         f"distance row at row {state.pending_dist_idx} "
         f"(op={state.pending_dist_op}) unfinished at end of df"
     )
+    return True
+
+
+def validate_stream(df, prompt_frame_count=0):
+    """Unified structural validation entry point (RESID_ZERO_PHASE3 §4 B4): every distance-pair resolves
+    in bounds AND every PATTERN_REPLAY is followed by its overlay triples. Composes the per-concern walks
+    (kept as the public shims ``validate_back_refs`` / ``validate_pattern_overlays``); raises the same
+    AssertionError either would on an invalid stream."""
+    validate_back_refs(df, prompt_frame_count=prompt_frame_count)
+    validate_pattern_overlays(df)
     return True

@@ -41,6 +41,7 @@ from preframr_tokens.macros.state import (
 from preframr_tokens.macros.validators import (
     validate_back_refs,
     validate_pattern_overlays,
+    validate_stream,
 )
 
 FREQ_BLOCK_PASSES = [

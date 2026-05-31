@@ -1575,27 +1575,33 @@
   "validator_verdicts": {
     "v_backref_bad_distance": {
       "back_refs_reject": true,
-      "pattern_overlays_reject": false
+      "pattern_overlays_reject": false,
+      "stream_reject": true
     },
     "v_backref_ok": {
       "back_refs_reject": false,
-      "pattern_overlays_reject": false
+      "pattern_overlays_reject": false,
+      "stream_reject": false
     },
     "v_backref_truncated": {
       "back_refs_reject": true,
-      "pattern_overlays_reject": false
+      "pattern_overlays_reject": false,
+      "stream_reject": true
     },
     "v_overlay_ok": {
       "back_refs_reject": true,
-      "pattern_overlays_reject": false
+      "pattern_overlays_reject": false,
+      "stream_reject": true
     },
     "v_overlay_orphan": {
       "back_refs_reject": false,
-      "pattern_overlays_reject": true
+      "pattern_overlays_reject": true,
+      "stream_reject": true
     },
     "v_overlay_truncated": {
       "back_refs_reject": true,
-      "pattern_overlays_reject": true
+      "pattern_overlays_reject": true,
+      "stream_reject": true
     }
   }
 }
