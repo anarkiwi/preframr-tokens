@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **W1 — ZERO→PLAIN (`zero_plain`, default OFF).** A skeleton ORN note held at its base whose freq only
+  moves on unresolvable (silent/noise/test) frames the content floor snaps to 0 is an all-offset-0 RESID
+  escape (the ZERO survivor class, ~8% of the post-wavetable tail). With `zero_plain` on,
+  `SkeletonPass._orn_rows` rewrites such an all-zero-target RESID to `ORN_TYPE_PLAIN` — byte-exact, because
+  PLAIN replays the same held base the all-zero RESID did (`register_state` identical). Gated default-OFF;
+  only fires when every offset in the snapped target is 0 (any non-zero offset stays RESID for W2/W3). New
+  parse-level guard `tests/test_zero_plain_parse_wiring.py` (drains through the full `RegLogParser.parse`,
+  asserts the isolation oracle).
+
 ## [0.38.2]
 
 ### Fixed

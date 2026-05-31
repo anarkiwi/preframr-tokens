@@ -271,9 +271,10 @@ class SkeletonPass(MacroPass):
     Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
     """
 
-    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp"})
+    GATE_FLAGS = frozenset({"skeleton_pass", "held_arp", "zero_plain"})
 
     _held_arp = False  # noqa: per-parse args.held_arp gate (set in apply)
+    _zero_plain = False  # noqa: per-parse args.zero_plain gate (set in apply)
     _resid_diag = None  # noqa: inert RESID-trace sink; None=off (prod). See design/resid_archetype_program.md
     _df_sink = (
         None  # noqa: inert raw-df sink for drum-footprint probes; None=off (prod).
@@ -285,6 +286,7 @@ class SkeletonPass(MacroPass):
         if df is None or len(df) == 0:
             return df
         SkeletonPass._held_arp = bool(getattr(args, "held_arp", False))
+        SkeletonPass._zero_plain = bool(getattr(args, "zero_plain", False))
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
@@ -778,6 +780,13 @@ class SkeletonPass(MacroPass):
             and cls._reconstruct(orn_type, params, length) != target
         ):
             orn_type, params = ORN_TYPE_RESID, tuple(target)
+        if (
+            orn_type == ORN_TYPE_RESID
+            and cls._zero_plain
+            and target
+            and not any(target)
+        ):
+            orn_type, params = ORN_TYPE_PLAIN, ()
         if orn_type == ORN_TYPE_RESID and cls._held_arp:
             hc = held_cycle(target)
             if hc is not None and held_cycle_offsets(hc[0], hc[1]) == target:
