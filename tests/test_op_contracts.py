@@ -10,10 +10,14 @@ from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.macros.op_contracts import (
     LOOP_OPS,
     OP_CONTRACTS,
+    STRUCTURAL_SUBREGS,
+    STRUCTURAL_VALUE_ARRAYS,
     MaskRole,
     contract_emit_ops,
     missing_contracts,
 )
+
+_STRUCTURAL_ROLES = {MaskRole.DISTANCE_PAIR, MaskRole.OVERLAY}
 
 
 class TestOpContractCompleteness(unittest.TestCase):
@@ -43,6 +47,24 @@ class TestOpContractCompleteness(unittest.TestCase):
         self.assertNotIn(dummy_op, OP_CONTRACTS)
         augmented = contract_emit_ops() | {dummy_op}
         self.assertIn(dummy_op, missing_contracts(augmented))
+
+
+class TestStructuralRegistryConsistency(unittest.TestCase):
+    def test_structural_subregs_exactly_cover_structural_role_ops(self):
+        structural_role_ops = {
+            op for op, c in OP_CONTRACTS.items() if c.role in _STRUCTURAL_ROLES
+        }
+        self.assertEqual(set(STRUCTURAL_SUBREGS), structural_role_ops)
+
+    def test_structural_flag_names_unique(self):
+        flags = [sf.flag for specs in STRUCTURAL_SUBREGS.values() for sf in specs]
+        self.assertEqual(len(flags), len(set(flags)), "duplicate structural flag name")
+
+    def test_structural_value_arrays_are_declared(self):
+        for specs in STRUCTURAL_SUBREGS.values():
+            for sf in specs:
+                if sf.value_array is not None:
+                    self.assertIn(sf.value_array, STRUCTURAL_VALUE_ARRAYS)
 
 
 if __name__ == "__main__":

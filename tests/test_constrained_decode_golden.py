@@ -280,6 +280,24 @@ def _maybe_regen(golden):
     _GOLDEN_PATH.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n")
 
 
+class TestMaskDecodeForwardInvariant(unittest.TestCase):
+    def test_mask_never_forbids_structurally_valid_continuation(self):
+        vocab = _vocab_df()
+        arrays = precompute_vocab_arrays(vocab)
+        for name in ("free", "backref_ok", "preplay_overlay"):
+            init, ids = _ATOMIC_STREAMS[name]
+            kwargs = dict(init)
+            kwargs["disable_resource_masks"] = True
+            state = StreamState(arrays, **kwargs)
+            for tok in ids:
+                mask = state.compute_invalid_mask()
+                self.assertFalse(
+                    bool(mask[tok]),
+                    f"{name}: mask forbids decoder-valid token {tok}",
+                )
+                state.update(int(tok))
+
+
 class TestConstrainedDecodeGolden(unittest.TestCase):
     def test_current_code_matches_frozen_golden(self):
         golden = _compute_golden()
