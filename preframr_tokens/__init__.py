@@ -60,6 +60,7 @@ from preframr_tokens.macros.transform import (
     register,
 )
 from preframr_tokens.macros import (
+    codebook_live_ids,
     validate_back_refs,
     validate_codebook_refs,
     validate_pattern_overlays,
@@ -150,6 +151,7 @@ __all__ = [
     "validate_codebook_refs",
     "validate_pattern_overlays",
     "validate_stream",
+    "codebook_live_ids",
     "classify_carveout",
     "load_palettes_attrs",
     "dump_palettes_attrs",

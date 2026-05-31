@@ -5,6 +5,7 @@ __all__ = [
     "validate_back_refs",
     "validate_codebook_refs",
     "validate_stream",
+    "codebook_live_ids",
 ]
 
 from dataclasses import dataclass
@@ -208,6 +209,34 @@ def validate_back_refs(df, prompt_frame_count=0):
         f"(op={state.pending_dist_op}) unfinished at end of df"
     )
     return True
+
+
+def codebook_live_ids(df):
+    """Replay the prior-context ``df`` and return ``{table_index: {live ids}}`` -- the codebook ids that
+    are defined-and-committed by the end of it (RESID_ZERO_PHASE3 §4 B3 materialization). Feeds the mask
+    seed ``StreamState(init_codebook_ids=...)``, the validator seed ``validate_stream(live_ids=...)``, and
+    the decoder seed when paired with the def contents, so a window's out-of-window refs are legal.
+    """
+    live = {t: set() for t in range(len(CODEBOOK_TABLES))}
+    if "op" not in df.columns:
+        return live
+    pending = {t: None for t in range(len(CODEBOOK_TABLES))}
+    for _, row in df.iterrows():
+        op = int(row["op"]) if not pd.isna(row["op"]) else SET_OP
+        spec = CODEBOOK_SPECS.get(op)
+        if spec is None:
+            continue
+        sr_raw = row.get("subreg", -1)
+        sr = int(sr_raw) if not pd.isna(sr_raw) else -1
+        if spec.subreg is not None and sr != spec.subreg:
+            continue
+        table = CODEBOOK_TABLES.index(spec.table)
+        if spec.kind == "def":
+            pending[table] = int(row["val"])
+        elif spec.kind == "commit" and pending[table] is not None:
+            live[table].add(pending[table])
+            pending[table] = None
+    return live
 
 
 def validate_codebook_refs(df, live_ids=None):

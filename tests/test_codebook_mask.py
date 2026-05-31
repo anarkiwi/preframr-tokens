@@ -9,7 +9,11 @@ import unittest
 import pandas as pd
 
 from preframr_tokens.constrained_decode import StreamState, precompute_vocab_arrays
-from preframr_tokens.macros.validators import validate_codebook_refs, validate_stream
+from preframr_tokens.macros.validators import (
+    codebook_live_ids,
+    validate_codebook_refs,
+    validate_stream,
+)
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     PAD_REG,
@@ -127,6 +131,33 @@ class TestCodebookValidation(unittest.TestCase):
     def test_seeded_live_id_accepts_ref(self):
         self.assertTrue(validate_codebook_refs(_df(STAMP_REF3), live_ids={0: {3}}))
         self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={0: {3}}))
+
+
+class TestMaterialization(unittest.TestCase):
+    def test_live_ids_from_prior_context(self):
+        live = codebook_live_ids(
+            _df(STAMP_DEF3, STAMP_END3, PATCH_DEF5, PATCH_AD, PATCH_SR)
+        )
+        self.assertEqual(live[0], {3})
+        self.assertEqual(live[1], {5})
+
+    def test_uncommitted_def_is_not_live(self):
+        self.assertEqual(codebook_live_ids(_df(STAMP_DEF3))[0], set())
+
+    def test_materialized_window_ref_becomes_legal(self):
+        live = codebook_live_ids(_df(STAMP_DEF3, STAMP_END3))
+        window = _df(STAMP_REF3)
+        with self.assertRaises(AssertionError):
+            validate_stream(window)
+        self.assertTrue(validate_stream(window, live_ids=live))
+        state = StreamState(
+            _arrays(),
+            init_frame_count=5,
+            irq=100,
+            disable_resource_masks=True,
+            init_codebook_ids=live,
+        )
+        self.assertFalse(_masked(state, STAMP_REF3))
 
 
 class TestDecoderSnapshotSeed(unittest.TestCase):

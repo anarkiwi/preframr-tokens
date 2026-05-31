@@ -39,6 +39,7 @@ from preframr_tokens.macros.state import (
     _build_last_diff,
 )
 from preframr_tokens.macros.validators import (
+    codebook_live_ids,
     validate_back_refs,
     validate_codebook_refs,
     validate_pattern_overlays,
