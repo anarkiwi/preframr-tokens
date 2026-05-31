@@ -24,11 +24,13 @@ from preframr_tokens.stfconstants import (
     FREQ_TRAJ_REGS,
     ORN_TYPE_RESID,
     SET_OP,
+    SWEEP_MAX_SPAN,
     SWEEP_MIN_LEN,
     SWEEP_OP,
     SWEEP_SUBREG_DELTA_HI,
     SWEEP_SUBREG_DELTA_LO,
     SWEEP_SUBREG_LEN,
+    SWEEP_SUBREG_PERIOD,
     SWEEP_SUBREG_START_HI,
     SWEEP_SUBREG_START_LO,
 )
@@ -52,7 +54,7 @@ class SweepPass(MacroPass):
     """Mine constant-raw-freq-delta ramps and replace each with a byte-exact SWEEP atom, consuming
     the per-frame freq writes. Default OFF."""
 
-    GATE_FLAGS = frozenset({"sweep_pass"})
+    GATE_FLAGS = frozenset({"sweep_pass", "sweep_loop"})
 
     def apply(self, df, args=None):
         if args is None or not getattr(args, "sweep_pass", False):
@@ -63,6 +65,7 @@ class SweepPass(MacroPass):
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
         irq = _first_irq(df)
+        sweep_loop = bool(getattr(args, "sweep_loop", False))
         freq_sets, gate_on = self._freq_sets(df)
         drop_idx, new_rows = [], []
         for reg in FREQ_TRAJ_REGS:
@@ -73,6 +76,7 @@ class SweepPass(MacroPass):
                 irq,
                 drop_idx,
                 new_rows,
+                sweep_loop,
             )
         if not new_rows:
             return df
@@ -123,18 +127,40 @@ class SweepPass(MacroPass):
         return out, gate_on
 
     @classmethod
-    def _claim_reg(cls, reg, sets, gate_on, irq, drop_idx, new_rows):
+    def _claim_reg(cls, reg, sets, gate_on, irq, drop_idx, new_rows, sweep_loop=False):
+        claimed = set()
+        if sweep_loop:
+            for i, j, delta, period in cls._loop_runs(sets, gate_on):
+                if not cls._skeleton_resids(sets, i, j):
+                    continue
+                cls._emit_run(reg, sets, i, j, delta, period, irq, drop_idx, new_rows)
+                claimed.update(range(i, j + 1))
         for i, j, delta in cls._runs(sets, gate_on):
+            if claimed.intersection(range(i, j + 1)):
+                continue
             if not cls._skeleton_resids(sets, i, j):
                 continue
-            start = int(sets[i][2])
-            length = j - i + 1
-            rows = [int(sets[k][1]) for k in range(i, j + 1)]
-            pos = min(rows)
-            for r in cls._sweep_rows(reg, start, delta, length, irq):
-                r["__pos"] = pos
+            cls._emit_run(reg, sets, i, j, delta, 0, irq, drop_idx, new_rows)
+
+    @classmethod
+    def _emit_run(cls, reg, sets, i, j, delta, period, irq, drop_idx, new_rows):
+        """Emit a run as one or more SWEEP atoms each spanning <= SWEEP_MAX_SPAN frames, anchored at
+        its own first frame. A single long atom leaves a > 16-frame DELAY that ``_cap_delay`` coarsens
+        (dropping frames while LEN stays), so the per-frame replay must re-anchor before the cap bites;
+        loop chunks split on whole periods so each chunk's start value is the program's start phase.
+        """
+        length = j - i + 1
+        span = period * (SWEEP_MAX_SPAN // period) if period else SWEEP_MAX_SPAN
+        off = 0
+        while off < length:
+            clen = min(span, length - off)
+            start = int(sets[i + off][2])
+            chunk_pos = int(sets[i + off][1])
+            for r in cls._sweep_rows(reg, start, delta, clen, period, irq):
+                r["__pos"] = chunk_pos
                 new_rows.append(r)
-            drop_idx.extend(rows)
+            off += clen
+        drop_idx.extend(int(sets[k][1]) for k in range(i, j + 1))
 
     @staticmethod
     def _skeleton_resids(sets, i, j):
@@ -192,12 +218,59 @@ class SweepPass(MacroPass):
         return runs
 
     @staticmethod
-    def _sweep_rows(reg, start, delta, length, irq):
+    def _loop_runs(sets, gate_on):
+        """Maximal periodic-sawtooth runs: freq one REAL frame apart with ``freq[k] = start +
+        ((k-i) % P) * delta`` for a period ``2 <= P``, spanning >= 2 full periods and no gate-on
+        retrigger mid-run. The looping freq-domain arp (SoundMonitor: constant -delta/frame, reset
+        every P) the linear run-finder shatters at each reset jump. Returns (i, j, delta, period).
+        """
+        n = len(sets)
+        runs = []
+        i = 0
+        while i < n - 1:
+            start = int(sets[i][2])
+            delta = int(sets[i + 1][2]) - start
+            period = None
+            j = i
+            while j + 1 < n:
+                nxt = sets[j + 1]
+                if int(nxt[0]) != int(sets[j][0]) + 1 or int(nxt[0]) in gate_on:
+                    break
+                pos = j + 1 - i
+                if period is None:
+                    if int(nxt[2]) == start:
+                        period = pos
+                    elif int(nxt[2]) - int(sets[j][2]) != delta:
+                        break
+                    else:
+                        j += 1
+                        continue
+                if (int(nxt[2]) & 0xFFFF) != (
+                    (start + (pos % period) * delta) & 0xFFFF
+                ):
+                    break
+                j += 1
+            if (
+                period is not None
+                and 2 <= period <= SWEEP_MAX_SPAN
+                and (j - i + 1) >= 2 * period
+            ):
+                runs.append((i, j, delta, period))
+                i = j + 1
+            else:
+                i += 1
+        return runs
+
+    @staticmethod
+    def _sweep_rows(reg, start, delta, length, period, irq):
         d = delta & 0xFFFF
-        return [
+        rows = [
             _row(reg, SWEEP_SUBREG_START_HI, (start >> 8) & 0xFF, irq),
             _row(reg, SWEEP_SUBREG_START_LO, start & 0xFF, irq),
             _row(reg, SWEEP_SUBREG_DELTA_HI, (d >> 8) & 0xFF, irq),
             _row(reg, SWEEP_SUBREG_DELTA_LO, d & 0xFF, irq),
-            _row(reg, SWEEP_SUBREG_LEN, length, irq),
         ]
+        if period:
+            rows.append(_row(reg, SWEEP_SUBREG_PERIOD, period & 0xFFFF, irq))
+        rows.append(_row(reg, SWEEP_SUBREG_LEN, length, irq))
+        return rows
