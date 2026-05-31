@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  docker-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -15,19 +15,5 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install package + dev deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-      - name: black --check
-        run: black --check preframr_tokens tests
-      - name: pylint
-        run: pylint preframr_tokens tests
-      - name: pyright
-        run: pyright preframr_tokens
-      - name: pytest + coverage (>= 85%)
-        run: pytest --cov=preframr_tokens --cov-report=term-missing --cov-fail-under=85
+      - name: Build docker image (runs run_tests.sh gate inside build)
+        run: docker build --build-arg PYTHON_VERSION=${{ matrix.python-version }} -t preframr-tokens-test:${{ matrix.python-version }} .
