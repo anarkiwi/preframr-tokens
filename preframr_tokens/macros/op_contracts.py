@@ -1,0 +1,151 @@
+"""Single op-contract registry for constrained decode (RESID_ZERO_PHASE3 §4 B0): one ``OpContract`` per
+op the model can emit -- the atom ops in ``DECODERS`` plus the loop ops ``expand_loops`` consumes -- so
+the sampling mask, the stream validators, and the precompute arrays dispatch on one source of truth
+instead of three hand-kept copies. Each op declares its ``MaskRole`` (how constrained decode treats it);
+the completeness test goes red if any emittable op lacks a contract (the STAMP/PATCH drift, caught).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from preframr_tokens.macros.decoders import DECODERS
+from preframr_tokens.stfconstants import (
+    BACK_REF_OP,
+    CTRL_BIGRAM_OP,
+    CTRL_TRIPLE_OP,
+    CTRL_UPDATE_OP,
+    DIFF_OP,
+    DO_LOOP_OP,
+    FC_PRESET_OP,
+    FLIP_OP,
+    FREQ_NUDGE_OP,
+    FREQ_ONSET_OP,
+    FREQ_TRAJ_OP,
+    HARD_RESTART_OP,
+    LEGATO_OP_CLUSTER_2,
+    LEGATO_OP_CLUSTER_3,
+    LEGATO_OP_CLUSTER_4,
+    LEGATO_OP_CLUSTER_7,
+    PATCH_DEF_OP,
+    PATCH_SET_OP,
+    PATCH_STEP_OP,
+    PATTERN_OVERLAY_OP,
+    PATTERN_REPLAY_OP,
+    PWM_PRESET_OP,
+    PWM_PRESET_SHIFTED_OP,
+    PWM_SUSTAIN_OP,
+    RELEASE_UPDATE_OP,
+    SET_OP,
+    SKEL_OP,
+    ORN_OP,
+    STAMP_DEF_OP,
+    STAMP_END_OP,
+    STAMP_REF_OP,
+    STAMP_REL_REF_OP,
+    STAMP_STEP_OP,
+    SUBREG_FLUSH_OP,
+    SWEEP_OP,
+    TRACK_REF_OP,
+    TRANSPOSE_OP,
+    WAVETABLE_SUSTAIN_OP,
+)
+
+__all__ = [
+    "MaskRole",
+    "OpContract",
+    "OP_CONTRACTS",
+    "LOOP_OPS",
+    "contract_emit_ops",
+    "missing_contracts",
+]
+
+
+class MaskRole(Enum):
+    """How constrained decode treats an op. ATOM = self-contained single emission, transparent to the
+    structural mask/validator (only its reg classification matters); DISTANCE_PAIR / OVERLAY / LOOP_CTRL
+    are the loop-op state machines; CODEBOOK_DEF/STEP/END/REF are the inline-redefinable dictionary ops
+    whose REF is legal iff its id is live (enforced once B2 wires the live id-sets into AbsState).
+    """
+
+    ATOM = "atom"
+    DISTANCE_PAIR = "distance_pair"
+    OVERLAY = "overlay"
+    LOOP_CTRL = "loop_ctrl"
+    CODEBOOK_DEF = "codebook_def"
+    CODEBOOK_STEP = "codebook_step"
+    CODEBOOK_END = "codebook_end"
+    CODEBOOK_REF = "codebook_ref"
+
+
+@dataclass(frozen=True)
+class OpContract:
+    """One op's constrained-decode contract: its ``op_code`` and ``role``. The shape / legal_next /
+    update logic the mask and validator replay is dispatched from ``role`` (filled in as each consumer
+    is moved onto the registry); the registry's job today is to enumerate every emittable op exactly
+    once so a missing implementation fails the completeness test rather than silently shipping.
+    """
+
+    op_code: int
+    role: MaskRole
+
+
+LOOP_OPS = (BACK_REF_OP, PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP, DO_LOOP_OP)
+
+_CONTRACT_LIST = (
+    OpContract(SET_OP, MaskRole.ATOM),
+    OpContract(DIFF_OP, MaskRole.ATOM),
+    OpContract(FLIP_OP, MaskRole.ATOM),
+    OpContract(TRANSPOSE_OP, MaskRole.ATOM),
+    OpContract(SUBREG_FLUSH_OP, MaskRole.ATOM),
+    OpContract(HARD_RESTART_OP, MaskRole.ATOM),
+    OpContract(LEGATO_OP_CLUSTER_2, MaskRole.ATOM),
+    OpContract(LEGATO_OP_CLUSTER_3, MaskRole.ATOM),
+    OpContract(LEGATO_OP_CLUSTER_4, MaskRole.ATOM),
+    OpContract(LEGATO_OP_CLUSTER_7, MaskRole.ATOM),
+    OpContract(PWM_PRESET_OP, MaskRole.ATOM),
+    OpContract(FC_PRESET_OP, MaskRole.ATOM),
+    OpContract(PWM_PRESET_SHIFTED_OP, MaskRole.ATOM),
+    OpContract(CTRL_BIGRAM_OP, MaskRole.ATOM),
+    OpContract(PWM_SUSTAIN_OP, MaskRole.ATOM),
+    OpContract(WAVETABLE_SUSTAIN_OP, MaskRole.ATOM),
+    OpContract(FREQ_TRAJ_OP, MaskRole.ATOM),
+    OpContract(TRACK_REF_OP, MaskRole.ATOM),
+    OpContract(FREQ_NUDGE_OP, MaskRole.ATOM),
+    OpContract(FREQ_ONSET_OP, MaskRole.ATOM),
+    OpContract(RELEASE_UPDATE_OP, MaskRole.ATOM),
+    OpContract(CTRL_TRIPLE_OP, MaskRole.ATOM),
+    OpContract(CTRL_UPDATE_OP, MaskRole.ATOM),
+    OpContract(SKEL_OP, MaskRole.ATOM),
+    OpContract(ORN_OP, MaskRole.ATOM),
+    OpContract(SWEEP_OP, MaskRole.ATOM),
+    OpContract(STAMP_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(STAMP_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(STAMP_END_OP, MaskRole.CODEBOOK_END),
+    OpContract(STAMP_REF_OP, MaskRole.CODEBOOK_REF),
+    OpContract(STAMP_REL_REF_OP, MaskRole.CODEBOOK_REF),
+    OpContract(PATCH_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(PATCH_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(PATCH_SET_OP, MaskRole.CODEBOOK_REF),
+    OpContract(BACK_REF_OP, MaskRole.DISTANCE_PAIR),
+    OpContract(PATTERN_REPLAY_OP, MaskRole.DISTANCE_PAIR),
+    OpContract(PATTERN_OVERLAY_OP, MaskRole.OVERLAY),
+    OpContract(DO_LOOP_OP, MaskRole.LOOP_CTRL),
+)
+
+OP_CONTRACTS: dict[int, OpContract] = {int(c.op_code): c for c in _CONTRACT_LIST}
+
+
+def contract_emit_ops() -> set[int]:
+    """Every op the model can emit and the constrained decoder must therefore contract for: the atom
+    decoders plus the loop ops. Derived programmatically (not a hand list) so a new decoder auto-extends
+    the required set and the completeness test forces its contract."""
+    return {int(op) for op in DECODERS} | {int(op) for op in LOOP_OPS}
+
+
+def missing_contracts(emit_ops: set[int] | None = None) -> set[int]:
+    """Emittable ops with no ``OpContract`` -- the completeness test asserts this is empty, and that a
+    dummy op added to the emit set surfaces here (the registry bites)."""
+    ops = contract_emit_ops() if emit_ops is None else emit_ops
+    return set(ops) - set(OP_CONTRACTS)
