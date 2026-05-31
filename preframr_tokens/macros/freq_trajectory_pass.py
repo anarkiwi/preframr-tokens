@@ -4,12 +4,12 @@ precedence MONOTONE_RAMP -> OSCILLATE -> RUN; isolated writes fall through."""
 
 __all__ = ["FreqTrajectoryPass", "quantise_slope_runtime"]
 
+from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.passes_base import (
     _first_irq,
     MacroPass,
     _ensure_subreg,
     _frame_index,
-    _splice_rows,
 )
 from preframr_tokens.stfconstants import (
     FREQ_TRAJ_OP,
@@ -43,6 +43,7 @@ from preframr_tokens.stfconstants import (
 
 _RUNTIME_BUCKETS = (32, 64, 128, 256)
 SLOPE_MIN_RUN_LEN = 5
+_FREQ_TRAJ_PRIORITY = 10
 
 
 def quantise_slope_runtime(n):
@@ -234,7 +235,17 @@ class FreqTrajectoryPass(MacroPass):
             return df
         if args is not None and getattr(args, "freq_v0_interval", False):
             self._interval_encode_freq_v0(new_rows)
-        return _splice_rows(df, drop_idx, new_rows)
+        return arbitrate(
+            df,
+            [
+                Claim(
+                    writes=tuple(drop_idx),
+                    tokens=new_rows,
+                    priority=_FREQ_TRAJ_PRIORITY,
+                    label="freq_traj",
+                )
+            ],
+        )
 
     @staticmethod
     def _interval_encode_freq_v0(new_rows):
