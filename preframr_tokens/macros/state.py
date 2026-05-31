@@ -159,6 +159,8 @@ class DecodeState:
         self.pending_orn = None
         self.pending_stamp_def = None
         self.stamp_table = {}
+        self.pending_patch_def = None
+        self.patch_table = {}
         self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
