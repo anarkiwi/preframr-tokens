@@ -13,6 +13,9 @@ from enum import Enum
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     BACK_REF_OP,
+    BACK_REF_SUBREG_DIST_HI,
+    BACK_REF_SUBREG_DIST_LO,
+    BACK_REF_SUBREG_LEN,
     CTRL_BIGRAM_OP,
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
@@ -32,7 +35,14 @@ from preframr_tokens.stfconstants import (
     PATCH_SET_OP,
     PATCH_STEP_OP,
     PATTERN_OVERLAY_OP,
+    PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
+    PATTERN_OVERLAY_SUBREG_NEW_VAL,
+    PATTERN_OVERLAY_SUBREG_TARGET_REG,
     PATTERN_REPLAY_OP,
+    PATTERN_REPLAY_SUBREG_DIST_HI,
+    PATTERN_REPLAY_SUBREG_DIST_LO,
+    PATTERN_REPLAY_SUBREG_LEN,
+    PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     PWM_PRESET_OP,
     PWM_PRESET_SHIFTED_OP,
     PWM_SUSTAIN_OP,
@@ -57,6 +67,9 @@ __all__ = [
     "OpContract",
     "OP_CONTRACTS",
     "LOOP_OPS",
+    "StructuralSubreg",
+    "STRUCTURAL_SUBREGS",
+    "STRUCTURAL_VALUE_ARRAYS",
     "contract_emit_ops",
     "missing_contracts",
 ]
@@ -135,6 +148,58 @@ _CONTRACT_LIST = (
 )
 
 OP_CONTRACTS: dict[int, OpContract] = {int(c.op_code): c for c in _CONTRACT_LIST}
+
+
+@dataclass(frozen=True)
+class StructuralSubreg:
+    """One row-slot of a structural loop op for the per-vocab precompute: the ``subreg`` that keys it,
+    the boolean ``flag`` array it sets in ``precompute_vocab_arrays``, and the optional ``value_array``
+    its ``val`` is scattered into. Lets the precompute build the BACK_REF / PATTERN_REPLAY / PATTERN_OVERLAY
+    classification arrays by iterating the registry instead of hand-listing (op, subreg) in three files.
+    """
+
+    subreg: int
+    flag: str
+    value_array: str | None = None
+
+
+STRUCTURAL_SUBREGS: dict[int, tuple[StructuralSubreg, ...]] = {
+    BACK_REF_OP: (
+        StructuralSubreg(BACK_REF_SUBREG_DIST_HI, "is_back_ref_dist_hi", "dist_hi_val"),
+        StructuralSubreg(BACK_REF_SUBREG_DIST_LO, "is_back_ref_dist_lo", "dist_lo_val"),
+        StructuralSubreg(BACK_REF_SUBREG_LEN, "is_back_ref_len", "length"),
+    ),
+    PATTERN_REPLAY_OP: (
+        StructuralSubreg(
+            PATTERN_REPLAY_SUBREG_DIST_HI, "is_pattern_replay_dist_hi", "dist_hi_val"
+        ),
+        StructuralSubreg(
+            PATTERN_REPLAY_SUBREG_DIST_LO, "is_pattern_replay_dist_lo", "dist_lo_val"
+        ),
+        StructuralSubreg(PATTERN_REPLAY_SUBREG_LEN, "is_pattern_replay_len", "length"),
+        StructuralSubreg(
+            PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
+            "is_pattern_replay_ov_count",
+            "overlay_count",
+        ),
+    ),
+    PATTERN_OVERLAY_OP: (
+        StructuralSubreg(
+            PATTERN_OVERLAY_SUBREG_FRAME_OFFSET, "is_pattern_overlay_frame_offset"
+        ),
+        StructuralSubreg(
+            PATTERN_OVERLAY_SUBREG_TARGET_REG, "is_pattern_overlay_target_reg"
+        ),
+        StructuralSubreg(PATTERN_OVERLAY_SUBREG_NEW_VAL, "is_pattern_overlay_new_val"),
+    ),
+}
+
+STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
+    "dist_hi_val",
+    "dist_lo_val",
+    "length",
+    "overlay_count",
+)
 
 
 def contract_emit_ops() -> set[int]:

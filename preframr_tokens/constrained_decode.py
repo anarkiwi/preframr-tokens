@@ -29,6 +29,10 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     VOICE_REG,
 )
+from preframr_tokens.macros.op_contracts import (
+    STRUCTURAL_SUBREGS,
+    STRUCTURAL_VALUE_ARRAYS,
+)
 from preframr_tokens.utils import to_int64_arrays
 
 __all__ = [
@@ -426,6 +430,27 @@ def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
     return int(is_real_reg[tail].sum() * _MIN_DIFF)
 
 
+def _structural_arrays(op, subreg, val, n):
+    """Build the per-vocab BACK_REF / PATTERN_REPLAY / PATTERN_OVERLAY classification + value arrays by
+    iterating ``STRUCTURAL_SUBREGS`` -- one source of truth for which (op, subreg) sets which flag and
+    scatters its ``val``, replacing the hand-listed ``op == BACK_REF_OP & subreg == ...`` chain.
+    """
+    flags = {
+        sf.flag: np.zeros(n, dtype=np.bool_)
+        for specs in STRUCTURAL_SUBREGS.values()
+        for sf in specs
+    }
+    values = {name: np.zeros(n, dtype=np.int64) for name in STRUCTURAL_VALUE_ARRAYS}
+    for op_code, specs in STRUCTURAL_SUBREGS.items():
+        op_match = op == op_code
+        for sf in specs:
+            mask = op_match & (subreg == sf.subreg)
+            flags[sf.flag] = mask
+            if sf.value_array is not None:
+                values[sf.value_array][mask] = val[mask]
+    return flags, values
+
+
 def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)
@@ -444,24 +469,17 @@ def precompute_vocab_arrays(tokens_df):
     is_delay_reg = reg == DELAY_REG
     is_pad = reg == PAD_REG
     is_real_reg = (reg >= 0) & (reg <= MAX_REG)
-    is_back_ref = op == BACK_REF_OP
-    is_pattern_replay = op == PATTERN_REPLAY_OP
-    is_slope_term_hi = np.zeros_like(is_back_ref)
-    is_slope_term_lo = np.zeros_like(is_back_ref)
-    is_slope_runtime = np.zeros_like(is_back_ref)
-    is_back_ref_dist_hi = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_HI)
-    is_back_ref_dist_lo = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_LO)
-    is_back_ref_len = is_back_ref & (subreg == BACK_REF_SUBREG_LEN)
-    is_pattern_replay_dist_hi = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_DIST_HI
-    )
-    is_pattern_replay_dist_lo = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_DIST_LO
-    )
-    is_pattern_replay_len = is_pattern_replay & (subreg == PATTERN_REPLAY_SUBREG_LEN)
-    is_pattern_replay_ov_count = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-    )
+    is_slope_term_hi = np.zeros(n, dtype=np.bool_)
+    is_slope_term_lo = np.zeros(n, dtype=np.bool_)
+    is_slope_runtime = np.zeros(n, dtype=np.bool_)
+    flags, values = _structural_arrays(op, subreg, val, n)
+    is_back_ref_dist_hi = flags["is_back_ref_dist_hi"]
+    is_back_ref_dist_lo = flags["is_back_ref_dist_lo"]
+    is_back_ref_len = flags["is_back_ref_len"]
+    is_pattern_replay_dist_hi = flags["is_pattern_replay_dist_hi"]
+    is_pattern_replay_dist_lo = flags["is_pattern_replay_dist_lo"]
+    is_pattern_replay_len = flags["is_pattern_replay_len"]
+    is_pattern_replay_ov_count = flags["is_pattern_replay_ov_count"]
     is_dist_hi_row = is_back_ref_dist_hi | is_pattern_replay_dist_hi
     is_dist_lo_row = is_back_ref_dist_lo | is_pattern_replay_dist_lo
     is_pair_intermediate = (
@@ -474,26 +492,13 @@ def precompute_vocab_arrays(tokens_df):
         | is_slope_runtime
     )
     is_pattern_overlay = op == PATTERN_OVERLAY_OP
-    is_pattern_overlay_frame_offset = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-    )
-    is_pattern_overlay_target_reg = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_TARGET_REG
-    )
-    is_pattern_overlay_new_val = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_NEW_VAL
-    )
-    dist_hi_val = np.zeros(n, dtype=np.int64)
-    dist_hi_val[is_dist_hi_row] = val[is_dist_hi_row]
-    dist_lo_val = np.zeros(n, dtype=np.int64)
-    dist_lo_val[is_dist_lo_row] = val[is_dist_lo_row]
-
-    length = np.zeros(n, dtype=np.int64)
-    length[is_back_ref_len | is_pattern_replay_len] = val[
-        is_back_ref_len | is_pattern_replay_len
-    ]
-    overlay_count = np.zeros(n, dtype=np.int64)
-    overlay_count[is_pattern_replay_ov_count] = val[is_pattern_replay_ov_count]
+    is_pattern_overlay_frame_offset = flags["is_pattern_overlay_frame_offset"]
+    is_pattern_overlay_target_reg = flags["is_pattern_overlay_target_reg"]
+    is_pattern_overlay_new_val = flags["is_pattern_overlay_new_val"]
+    dist_hi_val = values["dist_hi_val"]
+    dist_lo_val = values["dist_lo_val"]
+    length = values["length"]
+    overlay_count = values["overlay_count"]
 
     frame_sval = np.zeros(n, dtype=np.int64)
     frame_sval[is_frame_reg_strict] = val[is_frame_reg_strict] & 0x3F
