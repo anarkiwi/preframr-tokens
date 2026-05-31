@@ -226,10 +226,20 @@ class WavetablePass(MacroPass):
             wid = shared.get(program_key(rec["steps"], rec["loop"]))
             if wid is not None and cls._verify(rec, programs[wid]):
                 rec["wt_id"] = wid
+        by_first = defaultdict(list)
+        for wid in sorted(programs):
+            steps = programs[wid][0]
+            by_first[steps[0][0] if steps else None].append(wid)
         for rec in cb:
             if rec["wt_id"] is not None:
                 continue
-            for wid in sorted(programs):
+            lead_n = len(rec["lead"])
+            candidates = (
+                by_first.get(rec["offsets"][lead_n], ())
+                if lead_n < rec["length"]
+                else sorted(programs)
+            )
+            for wid in candidates:
                 if cls._verify(rec, programs[wid]):
                     rec["wt_id"] = wid
                     break

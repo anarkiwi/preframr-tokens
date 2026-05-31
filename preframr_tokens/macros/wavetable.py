@@ -9,23 +9,25 @@ from preframr_tokens.macros.rle import run_length_encode
 __all__ = ["factorise", "unroll", "program_key"]
 
 
-def _step_period(steps, p, b):
-    return all(steps[i] == steps[p + (i - p) % b] for i in range(p, len(steps)))
-
-
 def factorise(core):
-    """Mine ``(steps, loop)`` for a per-frame offset ``core``: RLE to steps (a hold is not a loop),
-    then the smallest body period ``b`` (then smallest prefix ``p``) whose step-tail repeats at least
-    twice is a loop -- store prefix + one body period, ``loop=p``; else the whole core is a one-shot
-    prefix (``loop=len(steps)``)."""
+    """Mine ``(steps, loop)`` for a per-frame offset ``core``: RLE to steps, then the smallest body
+    period ``b`` (then smallest prefix ``p``) whose step-tail repeats at least twice is a loop (store
+    prefix + one body period, ``loop=p``); else the whole core is a one-shot prefix. The tail from
+    ``p`` is period-``b`` iff no ``steps[i] != steps[i-b]`` mismatch sits at/after ``p+b``, so the last
+    such mismatch fixes the smallest valid ``p`` in one O(m) pass (O(m^2), vs the cubic scan).
+    """
     if not core:
         return [], 0
     steps = run_length_encode(core)
     m = len(steps)
     for b in range(1, m // 2 + 1):
-        for p in range(0, m - 2 * b + 1):
-            if _step_period(steps, p, b):
-                return steps[: p + b], p
+        bad = -1
+        for i in range(b, m):
+            if steps[i] != steps[i - b]:
+                bad = i
+        p = max(0, bad - b + 1)
+        if p <= m - 2 * b:
+            return steps[: p + b], p
     return steps, m
 
 
