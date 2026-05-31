@@ -23,6 +23,7 @@ from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
+from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
@@ -42,6 +43,7 @@ from preframr_tokens.macros.validators import (
 
 FREQ_BLOCK_PASSES = [
     TrajectoryAnchorPass(),
+    StampPass(),
     SkeletonPass(),
     FreqTrajectoryPass(),
     FreqOnsetPass(),

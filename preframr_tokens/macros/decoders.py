@@ -22,6 +22,7 @@ __all__ = [
     "CtrlBigramDecoder",
     "SkeletonDecoder",
     "OrnamentDecoder",
+    "StampDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -94,6 +95,11 @@ from preframr_tokens.stfconstants import (
     SHIFTED_TO_BASE_OP,
     SKEL_OP,
     SKEL_SUBREG_ABS,
+    STAMP_DEF_OP,
+    STAMP_END_OP,
+    STAMP_REF_OP,
+    STAMP_STEP_OP,
+    STAMP_SUBREG_FRAME,
     SUBREG_FLUSH_OP,
     TRACK_INTERVAL_RATIOS,
     TRACK_REF_OP,
@@ -738,6 +744,58 @@ class OrnamentDecoder(MacroDecoder):
         return None
 
 
+class StampDecoder(MacroDecoder):
+    """Decode the inline-redefinable percussion stamp ops (design/percussion_stamp_encoding.md):
+    STAMP_DEF/STEP/END buffer a voice-relative write-series into a live id->frames table (a later
+    DEF id rebinds), and STAMP_REF (reg=target-voice freq reg, val=id) replays it on that voice via
+    pending_set_writes -- one forward-filled value per song frame -- reproducing the exact series.
+    """
+
+    op_code = -1
+
+    def expand(self, row, state):
+        op = int(row.op)
+        if op == STAMP_DEF_OP:
+            state.pending_stamp_def = {"id": int(row.val), "frames": [{}]}
+            return None
+        if op == STAMP_STEP_OP:
+            self._step(row, state)
+            return None
+        if op == STAMP_END_OP:
+            stamp = state.pending_stamp_def
+            if stamp is not None:
+                state.stamp_table[int(stamp["id"])] = stamp["frames"]
+                state.pending_stamp_def = None
+            return None
+        return self._ref(row, state)
+
+    @staticmethod
+    def _step(row, state):
+        stamp = state.pending_stamp_def
+        if stamp is None:
+            return
+        if int(row.subreg) == STAMP_SUBREG_FRAME:
+            stamp["frames"].append({})
+        else:
+            stamp["frames"][-1][int(row.subreg)] = int(row.val)
+
+    @staticmethod
+    def _ref(row, state):
+        frames = state.stamp_table.get(int(row.val))
+        if not frames:
+            return None
+        base = int(row.reg)
+        offsets = sorted({o for fr in frames for o in fr})
+        pre = state.maybe_flush_for(base, -1)
+        cur = {}
+        for fr in frames:
+            cur.update(fr)
+            for off in offsets:
+                if off in cur:
+                    state.pending_set_writes[base + off].append(int(cur[off]))
+        return pre or None
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -765,6 +823,9 @@ DECODERS = {
         OrnamentDecoder(),
     )
 }
+_STAMP_DECODER = StampDecoder()
+for _op in (STAMP_DEF_OP, STAMP_STEP_OP, STAMP_END_OP, STAMP_REF_OP):
+    DECODERS[_op] = _STAMP_DECODER
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:
     DECODERS[_op] = _PRESET_DECODER
