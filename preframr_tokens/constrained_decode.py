@@ -29,6 +29,12 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     VOICE_REG,
 )
+from preframr_tokens.macros.op_contracts import (
+    CODEBOOK_SPECS,
+    CODEBOOK_TABLES,
+    STRUCTURAL_SUBREGS,
+    STRUCTURAL_VALUE_ARRAYS,
+)
 from preframr_tokens.utils import to_int64_arrays
 
 __all__ = [
@@ -426,6 +432,68 @@ def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
     return int(is_real_reg[tail].sum() * _MIN_DIFF)
 
 
+def _structural_arrays(op, subreg, val, n):
+    """Build the per-vocab BACK_REF / PATTERN_REPLAY / PATTERN_OVERLAY classification + value arrays by
+    iterating ``STRUCTURAL_SUBREGS`` -- one source of truth for which (op, subreg) sets which flag and
+    scatters its ``val``, replacing the hand-listed ``op == BACK_REF_OP & subreg == ...`` chain.
+    """
+    flags = {
+        sf.flag: np.zeros(n, dtype=np.bool_)
+        for specs in STRUCTURAL_SUBREGS.values()
+        for sf in specs
+    }
+    values = {name: np.zeros(n, dtype=np.int64) for name in STRUCTURAL_VALUE_ARRAYS}
+    for op_code, specs in STRUCTURAL_SUBREGS.items():
+        op_match = op == op_code
+        for sf in specs:
+            mask = op_match & (subreg == sf.subreg)
+            flags[sf.flag] = mask
+            if sf.value_array is not None:
+                values[sf.value_array][mask] = val[mask]
+    return flags, values
+
+
+_CODEBOOK_ARRAY_KEYS = (
+    "codebook_ref_table",
+    "codebook_ref_id",
+    "codebook_def_table",
+    "codebook_def_id",
+    "codebook_commit_table",
+)
+
+
+def _empty_codebook_arrays(n):
+    return {
+        "codebook_ref_table": np.full(n, -1, dtype=np.int64),
+        "codebook_ref_id": np.zeros(n, dtype=np.int64),
+        "codebook_def_table": np.full(n, -1, dtype=np.int64),
+        "codebook_def_id": np.zeros(n, dtype=np.int64),
+        "codebook_commit_table": np.full(n, -1, dtype=np.int64),
+    }
+
+
+def _codebook_arrays(op, subreg, val, n):
+    """Per-vocab inline-codebook classification (§4 B2): the table index of each ref / def / commit token
+    and the id a ref/def carries, built by iterating ``CODEBOOK_SPECS`` so a ref is masked iff its id is
+    not yet live and a commit makes the pending def's id live -- the DEF->REF backref that silently
+    vanished at inference is now structurally guarded."""
+    arrays = _empty_codebook_arrays(n)
+    for spec in CODEBOOK_SPECS.values():
+        table = CODEBOOK_TABLES.index(spec.table)
+        op_match = op == spec.op_code
+        if spec.subreg is not None:
+            op_match = op_match & (subreg == spec.subreg)
+        if spec.kind == "ref":
+            arrays["codebook_ref_table"][op_match] = table
+            arrays["codebook_ref_id"][op_match] = val[op_match]
+        elif spec.kind == "def":
+            arrays["codebook_def_table"][op_match] = table
+            arrays["codebook_def_id"][op_match] = val[op_match]
+        else:
+            arrays["codebook_commit_table"][op_match] = table
+    return arrays
+
+
 def precompute_vocab_arrays(tokens_df):
     """Per-vocab-id numpy arrays for the per-step mask. Sized by the atomic alphabet -- correct when the model emits atomic ids (``tkvocab=0``). For Unigram (``tkvocab > 0``) the model emits sub-token ids and ``StreamState`` would index out of bounds; use ``precompute_subtoken_arrays`` instead."""
     n = len(tokens_df)
@@ -444,24 +512,17 @@ def precompute_vocab_arrays(tokens_df):
     is_delay_reg = reg == DELAY_REG
     is_pad = reg == PAD_REG
     is_real_reg = (reg >= 0) & (reg <= MAX_REG)
-    is_back_ref = op == BACK_REF_OP
-    is_pattern_replay = op == PATTERN_REPLAY_OP
-    is_slope_term_hi = np.zeros_like(is_back_ref)
-    is_slope_term_lo = np.zeros_like(is_back_ref)
-    is_slope_runtime = np.zeros_like(is_back_ref)
-    is_back_ref_dist_hi = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_HI)
-    is_back_ref_dist_lo = is_back_ref & (subreg == BACK_REF_SUBREG_DIST_LO)
-    is_back_ref_len = is_back_ref & (subreg == BACK_REF_SUBREG_LEN)
-    is_pattern_replay_dist_hi = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_DIST_HI
-    )
-    is_pattern_replay_dist_lo = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_DIST_LO
-    )
-    is_pattern_replay_len = is_pattern_replay & (subreg == PATTERN_REPLAY_SUBREG_LEN)
-    is_pattern_replay_ov_count = is_pattern_replay & (
-        subreg == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-    )
+    is_slope_term_hi = np.zeros(n, dtype=np.bool_)
+    is_slope_term_lo = np.zeros(n, dtype=np.bool_)
+    is_slope_runtime = np.zeros(n, dtype=np.bool_)
+    flags, values = _structural_arrays(op, subreg, val, n)
+    is_back_ref_dist_hi = flags["is_back_ref_dist_hi"]
+    is_back_ref_dist_lo = flags["is_back_ref_dist_lo"]
+    is_back_ref_len = flags["is_back_ref_len"]
+    is_pattern_replay_dist_hi = flags["is_pattern_replay_dist_hi"]
+    is_pattern_replay_dist_lo = flags["is_pattern_replay_dist_lo"]
+    is_pattern_replay_len = flags["is_pattern_replay_len"]
+    is_pattern_replay_ov_count = flags["is_pattern_replay_ov_count"]
     is_dist_hi_row = is_back_ref_dist_hi | is_pattern_replay_dist_hi
     is_dist_lo_row = is_back_ref_dist_lo | is_pattern_replay_dist_lo
     is_pair_intermediate = (
@@ -474,26 +535,13 @@ def precompute_vocab_arrays(tokens_df):
         | is_slope_runtime
     )
     is_pattern_overlay = op == PATTERN_OVERLAY_OP
-    is_pattern_overlay_frame_offset = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_FRAME_OFFSET
-    )
-    is_pattern_overlay_target_reg = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_TARGET_REG
-    )
-    is_pattern_overlay_new_val = is_pattern_overlay & (
-        subreg == PATTERN_OVERLAY_SUBREG_NEW_VAL
-    )
-    dist_hi_val = np.zeros(n, dtype=np.int64)
-    dist_hi_val[is_dist_hi_row] = val[is_dist_hi_row]
-    dist_lo_val = np.zeros(n, dtype=np.int64)
-    dist_lo_val[is_dist_lo_row] = val[is_dist_lo_row]
-
-    length = np.zeros(n, dtype=np.int64)
-    length[is_back_ref_len | is_pattern_replay_len] = val[
-        is_back_ref_len | is_pattern_replay_len
-    ]
-    overlay_count = np.zeros(n, dtype=np.int64)
-    overlay_count[is_pattern_replay_ov_count] = val[is_pattern_replay_ov_count]
+    is_pattern_overlay_frame_offset = flags["is_pattern_overlay_frame_offset"]
+    is_pattern_overlay_target_reg = flags["is_pattern_overlay_target_reg"]
+    is_pattern_overlay_new_val = flags["is_pattern_overlay_new_val"]
+    dist_hi_val = values["dist_hi_val"]
+    dist_lo_val = values["dist_lo_val"]
+    length = values["length"]
+    overlay_count = values["overlay_count"]
 
     frame_sval = np.zeros(n, dtype=np.int64)
     frame_sval[is_frame_reg_strict] = val[is_frame_reg_strict] & 0x3F
@@ -534,6 +582,7 @@ def precompute_vocab_arrays(tokens_df):
             "dist_lo_val": dist_lo_val,
             "length": length,
             "overlay_count": overlay_count,
+            **_codebook_arrays(op, subreg, val, n),
         }
     )
 
@@ -748,6 +797,7 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             "fn_delta": fn_delta,
             "fn_after_last_strict": fn_after_last_strict,
             "pending_overlays_delta": pending_overlays_delta,
+            **_empty_codebook_arrays(n_sub),
         }
     )
 
@@ -765,65 +815,73 @@ class PendingSlot(IntEnum):
     SLOPE_RUNTIME = 7
 
 
-_ATOMIC_SLOT_GATE = {
-    PendingSlot.BACK_REF_DIST_LO: ("is_back_ref_dist_lo", "distance"),
-    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", "distance"),
-    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", None),
-    PendingSlot.PR_LEN: ("is_pattern_replay_len", None),
-    PendingSlot.PR_OV_COUNT: ("is_pattern_replay_ov_count", "overlay_cap"),
-    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", None),
-    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", None),
+_FLAG_TO_PENDING = {
+    "is_back_ref_dist_lo": PendingSlot.BACK_REF_DIST_LO,
+    "is_back_ref_len": PendingSlot.BACK_REF_LEN,
+    "is_pattern_replay_dist_lo": PendingSlot.PR_DIST_LO,
+    "is_pattern_replay_len": PendingSlot.PR_LEN,
+    "is_pattern_replay_ov_count": PendingSlot.PR_OV_COUNT,
 }
 
-_SUBTOKEN_SLOT_GATE = {
-    PendingSlot.BACK_REF_DIST_LO: ("consumes_back_ref_dist_lo_gate", "distance"),
-    PendingSlot.PR_DIST_LO: ("consumes_pr_dist_lo_gate", "distance"),
-    PendingSlot.BACK_REF_LEN: ("consumes_back_ref_len_gate", None),
-    PendingSlot.PR_LEN: ("consumes_pr_len_gate", None),
-    PendingSlot.PR_OV_COUNT: ("consumes_pr_ov_count_gate", "overlay_cap"),
-}
 
-_ATOMIC_OVERLAY_GATES = (
-    "is_pattern_overlay_frame_offset",
-    "is_pattern_overlay_target_reg",
-    "is_pattern_overlay_new_val",
-)
+def _slot_check(slot):
+    if slot.value_array == "dist_lo_val":
+        return "distance"
+    if slot.value_array == "overlay_count":
+        return "overlay_cap"
+    return None
 
-_SUBTOKEN_OVERLAY_GATES = (
-    "consumes_overlay_slot_0_gate",
-    "consumes_overlay_slot_1_gate",
-    "consumes_overlay_slot_2_gate",
-)
+
+def _build_slot_tables():
+    """Build the StreamState slot state machine (atomic + sub-token gates, the pending transition table,
+    and the overlay gate tuples) by iterating ``STRUCTURAL_SUBREGS`` -- the slot sequence lives once in
+    the registry, not hand-copied across the mask. The dead SLOPE entries are dropped (their flags are
+    all-False, so they never fire); the golden master confirms the mask is unchanged."""
+    atomic_gate, subtoken_gate, transition, new_pending = {}, {}, {}, []
+    atomic_overlay = subtoken_overlay = ()
+    for specs in STRUCTURAL_SUBREGS.values():
+        if specs[0].value_array != "dist_hi_val":
+            atomic_overlay = tuple(s.flag for s in specs)
+            subtoken_overlay = tuple(s.consumes_gate for s in specs)
+            continue
+        new_pending.append((specs[0].flag, _FLAG_TO_PENDING[specs[1].flag]))
+        for i in range(1, len(specs)):
+            slot = specs[i]
+            pend = _FLAG_TO_PENDING[slot.flag]
+            check = _slot_check(slot)
+            atomic_gate[pend] = (slot.flag, check)
+            subtoken_gate[pend] = (slot.consumes_gate, check)
+            nxt = (
+                _FLAG_TO_PENDING[specs[i + 1].flag]
+                if i + 1 < len(specs)
+                else PendingSlot.NONE
+            )
+            action = "seed_overlays" if slot.value_array == "overlay_count" else None
+            transition[pend] = (slot.flag, nxt, action)
+    return (
+        atomic_gate,
+        subtoken_gate,
+        transition,
+        tuple(new_pending),
+        atomic_overlay,
+        subtoken_overlay,
+    )
+
+
+(
+    _ATOMIC_SLOT_GATE,
+    _SUBTOKEN_SLOT_GATE,
+    _ATOMIC_SLOT_TRANSITION,
+    _ATOMIC_NEW_PENDING,
+    _ATOMIC_OVERLAY_GATES,
+    _SUBTOKEN_OVERLAY_GATES,
+) = _build_slot_tables()
 
 _OVERLAY_SLOT_INDEX = {
     OverlaySlot.FRAME_OFFSET: 0,
     OverlaySlot.TARGET_REG: 1,
     OverlaySlot.NEW_VAL: 2,
 }
-
-_ATOMIC_SLOT_TRANSITION = {
-    PendingSlot.BACK_REF_DIST_LO: (
-        "is_back_ref_dist_lo",
-        PendingSlot.BACK_REF_LEN,
-        None,
-    ),
-    PendingSlot.PR_DIST_LO: ("is_pattern_replay_dist_lo", PendingSlot.PR_LEN, None),
-    PendingSlot.BACK_REF_LEN: ("is_back_ref_len", PendingSlot.NONE, None),
-    PendingSlot.PR_LEN: ("is_pattern_replay_len", PendingSlot.PR_OV_COUNT, None),
-    PendingSlot.PR_OV_COUNT: (
-        "is_pattern_replay_ov_count",
-        PendingSlot.NONE,
-        "seed_overlays",
-    ),
-    PendingSlot.SLOPE_TERM_LO: ("is_slope_term_lo", PendingSlot.SLOPE_RUNTIME, None),
-    PendingSlot.SLOPE_RUNTIME: ("is_slope_runtime", PendingSlot.NONE, None),
-}
-
-_ATOMIC_NEW_PENDING = (
-    ("is_back_ref_dist_hi", PendingSlot.BACK_REF_DIST_LO),
-    ("is_pattern_replay_dist_hi", PendingSlot.PR_DIST_LO),
-    ("is_slope_term_hi", PendingSlot.SLOPE_TERM_LO),
-)
 
 
 def _make_slot_property(slot: PendingSlot):
@@ -861,9 +919,14 @@ class StreamState:
         remaining_steps=None,
         logger=None,
         disable_resource_masks=False,
+        init_codebook_ids=None,
     ):
         self.arrays = vocab_arrays
         self.frame_count = int(init_frame_count)
+        n_tables = len(CODEBOOK_TABLES)
+        seed = init_codebook_ids or {}
+        self.codebook_live = {t: set(seed.get(t, ())) for t in range(n_tables)}
+        self.codebook_pending_def = {t: None for t in range(n_tables)}
         self.pending_overlays = 0
         self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
         self.pending_slot: PendingSlot = PendingSlot.NONE
@@ -908,7 +971,26 @@ class StreamState:
             self._apply_subtoken_free_mask(invalid, a)
         else:
             self._apply_atomic_free_mask(invalid, a)
+        self._apply_codebook_mask(invalid, a)
         return self._unstick(invalid, a["is_frame_marker"])
+
+    def _apply_codebook_mask(self, invalid, a):
+        """Forbid an inline-codebook REF whose id is not live (defined and committed) -- the §4 fix for
+        the DEF->REF backref that silently vanished when the DEF was out of the prompt window.
+        """
+        ref_table = a.get("codebook_ref_table")
+        if ref_table is None:
+            return
+        ref_id = a["codebook_ref_id"]
+        for table, live in self.codebook_live.items():
+            ref_t = ref_table == table
+            if not ref_t.any():
+                continue
+            if live:
+                not_live = ~np.isin(ref_id, np.fromiter(live, dtype=np.int64))
+            else:
+                not_live = np.ones(len(invalid), dtype=np.bool_)
+            invalid |= ref_t & not_live
 
     def update(self, token_id):
         """Advance state with the just-sampled token."""
@@ -916,6 +998,20 @@ class StreamState:
             self._update_subtoken(int(token_id))
         else:
             self._update_atomic(int(token_id))
+        self._update_codebook(int(token_id))
+
+    def _update_codebook(self, token_id):
+        """A DEF stashes its id as the table's pending def; a COMMIT makes that pending id live so its
+        REFs become legal (a later DEF id rebinds the pending, mirroring the streaming dictionary).
+        """
+        a = self.arrays
+        dt = int(a["codebook_def_table"][token_id])
+        if dt >= 0:
+            self.codebook_pending_def[dt] = int(a["codebook_def_id"][token_id])
+        ct = int(a["codebook_commit_table"][token_id])
+        if ct >= 0 and self.codebook_pending_def[ct] is not None:
+            self.codebook_live[ct].add(self.codebook_pending_def[ct])
+            self.codebook_pending_def[ct] = None
 
     def _apply_pending_slot_mask(self, invalid, a):
         gate_key, check = self._slot_gate[self.pending_slot]
