@@ -85,34 +85,48 @@ def tier_accuracy(predicted, ground_truth, tier_map):
     }
 
 
+_RS_WALKER_CLS = None
+
+
+def _register_state_walker_cls():
+    """Lazily build the snapshot walker (keeps the heavy decode import off ``import preframr_tokens``):
+    a FrameWalker that records regs 0-24 (``state.last_val``) once per decoded frame, accumulating the
+    ``(n_frames, 25)`` array directly rather than materialising every literal write into a DataFrame.
+    The pre-frame zero row plus one post-tick snapshot per frame (unroll ticks included) reproduce
+    ``expand_ops``'s per-marker state, so the result is identical to the old DataFrame reduction.
+    """
+    global _RS_WALKER_CLS  # pylint: disable=global-statement
+    if _RS_WALKER_CLS is None:
+        from preframr_tokens.macros.walker import FrameWalker
+
+        class _RegisterStateWalker(FrameWalker):
+            def __init__(self, df, state):
+                super().__init__(df, state)
+                self.snaps = [np.zeros(25, dtype=np.int64)]
+
+            def on_unroll_tick(self, tick_writes, marker_desc):
+                self.snaps.append(self.state.last_val[:25].copy())
+
+            def on_frame_end(self):
+                self.snaps.append(self.state.last_val[:25].copy())
+
+        _RS_WALKER_CLS = _RegisterStateWalker
+    return _RS_WALKER_CLS
+
+
 def register_state(xdf):
-    """Decoded per-frame SID register state (regs 0-24) as ``(n_frames, 25)``;
-    the canonical atoms->writes reduction the fidelity oracle and the profiler
-    share, via the public expand_ops path."""
-    from preframr_tokens.macros.decode import expand_ops
+    """Decoded per-frame SID register state (regs 0-24) as ``(n_frames, 25)``; the canonical
+    atoms->writes reduction the fidelity oracle and the profiler share, via the public decode walk.
+    """
+    from preframr_tokens.macros.loops import expand_loops
+    from preframr_tokens.macros.state import _build_decode_state
     from preframr_tokens.reglogparser import remove_voice_reg
-    from preframr_tokens.stfconstants import FRAME_REG
 
     df, _ = remove_voice_reg(xdf.copy(), {})
-    dec = expand_ops(df, strict=False).reset_index(drop=True)
-    regs = dec["reg"].to_numpy()
-    vals = dec["val"].to_numpy()
-    n_frames = int((regs == FRAME_REG).sum()) + 1
-    state = np.zeros((n_frames, 25), dtype=np.int64)
-    cur = np.zeros(25, dtype=np.int64)
-    cf = 0
-    for i in range(len(dec)):
-        reg = int(regs[i])
-        if reg == FRAME_REG:
-            if cf < n_frames:
-                state[cf] = cur
-            cf += 1
-        elif 0 <= reg <= 24:
-            cur[reg] = int(vals[i])
-    while cf < n_frames:
-        state[cf] = cur
-        cf += 1
-    return state
+    df = expand_loops(df.copy())
+    walker = _register_state_walker_cls()(df, _build_decode_state(df, strict=False))
+    walker.walk()
+    return np.stack(walker.snaps)
 
 
 def op_atom_profile(xdf):
