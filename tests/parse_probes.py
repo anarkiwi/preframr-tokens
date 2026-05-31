@@ -83,6 +83,12 @@ class DumpBuilder:
         self._write(_VOICE0_CTRL, 0x41)
         return self
 
+    def ctrl(self, val):
+        """Write the voice-0 control register (waveform/gate/test bits) directly, so a test can
+        place a noise/test frame mid-note."""
+        self._write(_VOICE0_CTRL, val & 0xFF)
+        return self
+
     def adsr(self, ad=0x00, sr=0xF0):
         self._write(_VOICE0_AD, ad)
         self._write(_VOICE0_SR, sr)

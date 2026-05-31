@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **W2 — short literal-tuple WAVETABLE codebook (`wt_short`, default OFF).** The dominant tail lever
+  (RECUR+SHORT ≈55% of the post-wavetable residue). The existing codebook keys on `factorise(core)` after
+  an onset-strip and a pitched-core gate — a key designed for long looping programs that is *stricter than
+  exact-tuple recurrence*, so it misses short transients (length-1 like `[31]`, or noise-onset tuples like
+  `[33,0]` whose non-pitched onset strips the core below `_MIN_CORE`). With `wt_short` on, residue of
+  length ≤ `WT_SHORT_MAX` (4) is routed to a literal path in `WavetablePass`: keyed on the verbatim offset
+  tuple (no factorise, no onset-strip, no pitched-core), stored as a loopless RLE program (`unroll` is the
+  identity), reusing the existing `WAVETABLE_DEF/STEP/END/REF` ops and decoder. A tuple recurring ≥
+  `WT_MINREP` drains to one DEF + N REFs; unique short tuples stay RESID (no single-use ids — W3 absorbs
+  them). Byte-exact (the REF replays the same per-frame freqs the RESID did). New parse-level guard
+  `tests/test_wavetable_short_codebook.py` (drains length-1 and noise-onset transients to a bounded
+  codebook through the full `RegLogParser.parse`, asserts the isolation oracle and bounded vocab).
+
 - **W1 — ZERO→PLAIN (`zero_plain`, default OFF).** A skeleton ORN note held at its base whose freq only
   moves on unresolvable (silent/noise/test) frames the content floor snaps to 0 is an all-offset-0 RESID
   escape (the ZERO survivor class, ~8% of the post-wavetable tail). With `zero_plain` on,
