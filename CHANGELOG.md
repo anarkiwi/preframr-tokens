@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.38.2]
+
+### Fixed
+
+- **Codebook DEF blocks shattered when two share a frame (WAVETABLE/STAMP/PATCH byte-exactness).** The
+  within-frame row sort `_norm_pr_order` (`["f","v","reg","op","n"]`) ordered by op-code, so when two
+  variable-length codebook blocks (`DEF→STEP*→END`) landed in the same frame it grouped all DEFs, then all
+  STEPs, then all ENDs — splitting both blocks so the decoder mis-parsed them and replayed garbage freqs.
+  A full-corpus byte-exact survey (register_state OFF vs `wavetable_pass` ON) measured **~2.5% of tunes
+  diverging**, concentrated in the dense-codebook engines (GoatTracker, DMC, JCH). Fix: each family's
+  STEP/END now collapse to its DEF op for the sort (`_BLOCK_SOP`), so a block stays contiguous in emit
+  order (`n`); a no-op when no codebook ops are present, so non-codebook streams and the golden masters are
+  unchanged. New `tests/test_wavetable_multidef_frame.py` builds a 2-voice dump that puts two
+  WAVETABLE_DEFs in one frame and asserts byte-exact through the full `RegLogParser.parse`. Latent for
+  STAMP/PATCH (rarer per-frame); the wavetable codebook exposed it. Still default-OFF.
+
 ## [0.38.1]
 
 ### Fixed

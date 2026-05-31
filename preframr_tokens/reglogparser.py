@@ -39,6 +39,14 @@ from preframr_tokens.utils import wrapbits
 from preframr_tokens.stfconstants import (
     DEFAULT_IRQ_CYCLES,
     DELAY_REG,
+    PATCH_DEF_OP,
+    PATCH_STEP_OP,
+    STAMP_DEF_OP,
+    STAMP_END_OP,
+    STAMP_STEP_OP,
+    WAVETABLE_DEF_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_STEP_OP,
     DIFF_PDTYPE,
     IRQ_PDTYPE,
     OP_PDTYPE,
@@ -520,11 +528,25 @@ class RegLogParser:
         df.loc[m, "val"] = df[m]["val"].map(self.freq_mapper.fi_map)
         return df
 
+    _BLOCK_SOP = {
+        STAMP_STEP_OP: STAMP_DEF_OP,
+        STAMP_END_OP: STAMP_DEF_OP,
+        PATCH_STEP_OP: PATCH_DEF_OP,
+        WAVETABLE_STEP_OP: WAVETABLE_DEF_OP,
+        WAVETABLE_END_OP: WAVETABLE_DEF_OP,
+    }
+
     def _norm_pr_order(self, orig_df):
-        """Sort rows within each frame by strict numeric voice order."""
+        """Sort rows within each frame by strict numeric voice order. Each codebook family's
+        STEP/END collapse to its DEF op (``_BLOCK_SOP``) so a ``DEF..STEP*..END`` block stays
+        contiguous in emit order (``n``) instead of the op-sort grouping all DEFs then STEPs
+        then ENDs, which shatters two same-frame blocks and corrupts decode; a no-op when no
+        codebook ops are present, so non-codebook streams and the golden masters are unchanged.
+        """
         df = norm_df(orig_df.copy())
         df.loc[df["reg"] < 0, "v"] = df["reg"]
-        df = df.sort_values(["f", "v", "reg", "op", "n"])
+        df["sop"] = df["op"].replace(self._BLOCK_SOP)
+        df = df.sort_values(["f", "v", "reg", "sop", "n"])
         df = df[orig_df.columns].reset_index(drop=True)
         if orig_df.attrs:
             df.attrs.update(orig_df.attrs)
