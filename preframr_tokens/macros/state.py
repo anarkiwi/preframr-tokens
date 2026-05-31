@@ -159,6 +159,7 @@ class DecodeState:
         self.pending_orn = None
         self.pending_stamp_def = None
         self.stamp_table = {}
+        self.pending_stamp_rel = None
         self.pending_patch_def = None
         self.patch_table = {}
         self.pending_ctrl_triple = {}

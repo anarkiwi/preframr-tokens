@@ -32,6 +32,10 @@ from preframr_tokens.stfconstants import (
     STAMP_END_OP,
     STAMP_MINREP,
     STAMP_REF_OP,
+    STAMP_REL_REF_OP,
+    STAMP_REL_SUBREG_BASE_HI,
+    STAMP_REL_SUBREG_BASE_LO,
+    STAMP_REL_SUBREG_ID,
     STAMP_STEP_OP,
     STAMP_SUBREG_FRAME,
     VOICE_REG_SIZE,
@@ -92,6 +96,14 @@ def _row(reg, op, subreg, val, diff, irq):
         "irq": int(irq),
         "description": 0,
     }
+
+
+def _rel_sig(span):
+    """Transpose-invariant signature: per-frame freq DELTA from the span's onset freq, plus the exact
+    ctrl series -- two hits of one gesture at different base freqs share it (byte-exact via raw delta,
+    no semitone snap)."""
+    base = span["fns"][0]
+    return (tuple(fn - base for fn in span["fns"]), tuple(span["ctrls"]))
 
 
 class StampPass(MacroPass):
@@ -230,11 +242,20 @@ class StampPass(MacroPass):
         return cur
 
     def _emit(self, groups, irq):
+        """Two passes: exact ABS first (byte-identical to before), then transpose-relative REL over
+        the spans ABS did not consume -- a pitched gesture played at different base freqs shares one
+        REL def (freq stored as deltas from onset) with per-hit base; drains spans no single exact
+        sig reaches MINREP for."""
         drop_idx, new_rows = [], []
+        consumed = set()
+        next_id = self._emit_abs(groups, irq, drop_idx, new_rows, consumed, 0)
+        self._emit_rel(groups, irq, drop_idx, new_rows, consumed, next_id)
+        return drop_idx, new_rows
+
+    def _emit_abs(self, groups, irq, drop_idx, new_rows, consumed, next_id):
         ordered = sorted(
             groups.items(), key=lambda kv: (min(s["onset"] for s in kv[1]), kv[0][0])
         )
-        next_id = 0
         for (_reg, _sig), occ in ordered:
             if len(occ) < STAMP_MINREP:
                 continue
@@ -252,7 +273,71 @@ class StampPass(MacroPass):
                     r["__pos"] = pos
                     new_rows.append(r)
                 drop_idx.extend(span["rows"])
-        return drop_idx, new_rows
+                consumed.add(id(span))
+        return next_id
+
+    def _emit_rel(self, groups, irq, drop_idx, new_rows, consumed, next_id):
+        rel_groups = defaultdict(list)
+        for occ in groups.values():
+            for span in occ:
+                if id(span) not in consumed:
+                    rel_groups[_rel_sig(span)].append(span)
+        ordered = sorted(
+            rel_groups.items(), key=lambda kv: min(s["onset"] for s in kv[1])
+        )
+        for _relsig, occ in ordered:
+            if len(occ) < STAMP_MINREP:
+                continue
+            stamp_id = next_id
+            next_id += 1
+            occ = sorted(occ, key=lambda s: s["onset"])
+            char = classify_char(occ[0]["fns"], occ[0]["ctrls"])
+            for j, span in enumerate(occ):
+                pos = min(span["rows"])
+                rows = []
+                if j == 0:
+                    rows.extend(self._rel_def_rows(stamp_id, char, span, irq))
+                rows.extend(self._rel_ref_rows(span, stamp_id, irq))
+                for r in rows:
+                    r["__pos"] = pos
+                    new_rows.append(r)
+                drop_idx.extend(span["rows"])
+        return next_id
+
+    @staticmethod
+    def _rel_def_rows(stamp_id, char, span, irq):
+        """Like _def_rows but freq is stored as a signed 16-bit DELTA from the span's onset freq
+        (frame 0 delta = 0), so any transposition of the gesture replays as base + delta.
+        """
+        rows = [_row(0, STAMP_DEF_OP, char, stamp_id, irq, irq)]
+        fns, ctrls = span["fns"], span["ctrls"]
+        base = fns[0]
+        prev_d = prev_ctrl = None
+        for i in range(len(fns)):
+            if i > 0:
+                rows.append(_row(0, STAMP_STEP_OP, STAMP_SUBREG_FRAME, 0, irq, irq))
+            delta = (fns[i] - base) & 0xFFFF
+            if delta != prev_d:
+                rows.append(_row(0, STAMP_STEP_OP, _FREQ_OFFSET, delta, irq, irq))
+                prev_d = delta
+            if ctrls[i] != prev_ctrl:
+                rows.append(_row(0, STAMP_STEP_OP, _CTRL_OFFSET, ctrls[i], irq, irq))
+                prev_ctrl = ctrls[i]
+        rows.append(_row(0, STAMP_END_OP, -1, stamp_id, irq, irq))
+        return rows
+
+    @staticmethod
+    def _rel_ref_rows(span, stamp_id, irq):
+        """A REL hit: the stamp id plus this occurrence's onset (base) freq as hi/lo atoms."""
+        base = int(span["fns"][0]) & 0xFFFF
+        reg = span["reg"]
+        return [
+            _row(reg, STAMP_REL_REF_OP, STAMP_REL_SUBREG_ID, stamp_id, irq, irq),
+            _row(reg, STAMP_REL_REF_OP, STAMP_REL_SUBREG_BASE_HI, base >> 8, irq, irq),
+            _row(
+                reg, STAMP_REL_REF_OP, STAMP_REL_SUBREG_BASE_LO, base & 0xFF, irq, irq
+            ),
+        ]
 
     @staticmethod
     def _def_rows(stamp_id, char, span, irq):
