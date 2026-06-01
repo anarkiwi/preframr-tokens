@@ -74,15 +74,20 @@ def _add_change_reg(df, change_df, minchange, opcodes):
             * 255
         ) + 1
         v_df[["repeat", "flip", "begin", "end"]] = 0
-        for f, c in (("repeat", "val"), ("flip", "aval")):
-            cols = ["cf", c]
-            v_df.loc[
-                (v_df[cols] == v_df[cols].shift(1)).all(axis=1)
-                | (v_df[cols] == v_df[cols].shift(-1)).all(axis=1),
-                f,
-            ] = (
-                v_df["cf"] * v_df[c]
-            )
+        rcols = ["cf", "val"]
+        v_df.loc[
+            (v_df[rcols] == v_df[rcols].shift(1)).all(axis=1)
+            | (v_df[rcols] == v_df[rcols].shift(-1)).all(axis=1),
+            "repeat",
+        ] = (
+            v_df["cf"] * v_df["val"]
+        )
+        same_cf_prev = v_df["cf"] == v_df["cf"].shift(1)
+        same_cf_next = v_df["cf"] == v_df["cf"].shift(-1)
+        alt = (same_cf_prev & (v_df["val"] == -v_df["val"].shift(1))) | (
+            same_cf_next & (v_df["val"] == -v_df["val"].shift(-1))
+        )
+        v_df.loc[alt, "flip"] = v_df["cf"] * v_df["aval"]
         for f, of in (("repeat", "flip"), ("flip", "repeat")):
             m = v_df[f] != 0
             v_df.loc[m & (v_df[f] != v_df[f].shift(1)), "begin"] = v_df["n"]
