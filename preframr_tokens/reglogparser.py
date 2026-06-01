@@ -39,14 +39,6 @@ from preframr_tokens.utils import wrapbits
 from preframr_tokens.stfconstants import (
     DEFAULT_IRQ_CYCLES,
     DELAY_REG,
-    PATCH_DEF_OP,
-    PATCH_STEP_OP,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_STEP_OP,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_STEP_OP,
     DIFF_PDTYPE,
     IRQ_PDTYPE,
     OP_PDTYPE,
@@ -55,6 +47,7 @@ from preframr_tokens.stfconstants import (
     FILTER_BITS,
     FILTER_REG,
     FRAME_REG,
+    FREQ_TRAJ_REGS,
     MAX_REG,
     META_FREQ_BITS,
     _MIN_DIFF,
@@ -259,13 +252,13 @@ def remove_voice_reg(orig_df, reg_widths):
     return df, reg_widths
 
 
-def prepare_df_for_audio(orig_df, reg_widths, irq, sidq, strict=False, prompt_len=None):
-    """Audio-render bootstrap. Take a macro-form df (post-tokenisation
-    or post-prediction) and run the post-encode chain that yields the
-    per-row ``delay`` column the SID renderer consumes:
-    ``remove_voice_reg`` → ``expand_ops`` → ``reset_diffs``. ``prompt_len``
-    splits ``description`` so prompt rows render with description=0
-    """
+def prepare_df_for_audio(
+    orig_df, reg_widths, irq, sidq, strict=False, prompt_len=None, cents=50
+):
+    """Audio-render bootstrap: run the post-encode chain yielding the per-row ``delay`` the SID renderer
+    consumes (``remove_voice_reg`` -> ``expand_ops`` -> ``_freq_to_cent_index`` -> ``reset_diffs``).
+    ``prompt_len`` splits ``description`` so prompt rows render with description=0; ``cents`` sizes the
+    freq cent-index map."""
     if not prompt_len:
         prompt_len = len(orig_df)
     df = orig_df.copy()
@@ -275,8 +268,27 @@ def prepare_df_for_audio(orig_df, reg_widths, irq, sidq, strict=False, prompt_le
         assert len(df[df["description"] == 1])
     df, reg_widths = remove_voice_reg(df, reg_widths)
     df = expand_ops(df, strict=strict)
+    df = _freq_to_cent_index(df, cents)
     df = reset_diffs(df, irq, sidq)
     return df, reg_widths
+
+
+def _freq_to_cent_index(df, cents):
+    """Map raw 16-bit freq words in regs 0/7/14 to the renderer's cent-index domain. ``write_reg`` inverts
+    cent-indices via ``if_map``; a skeleton-owned freq channel decodes to raw words instead, which
+    ``if_map`` would clamp to a constant pitch. A freq value above the largest cent index can only be a
+    word, so detect that domain and map every freq value to its cent-index."""
+    freq_mask = df["reg"].isin([int(r) for r in FREQ_TRAJ_REGS])
+    fv = df.loc[freq_mask, "val"]
+    if fv.empty:
+        return df
+    fm = FreqMapper(cents=cents)
+    if int(fv.max()) <= max(fm.if_map):
+        return df
+    df.loc[freq_mask, "val"] = fv.map(lambda w: fm.fi_map[int(w) & 0xFFFF]).astype(
+        df["val"].dtype
+    )
+    return df
 
 
 def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
@@ -528,25 +540,16 @@ class RegLogParser:
         df.loc[m, "val"] = df[m]["val"].map(self.freq_mapper.fi_map)
         return df
 
-    _BLOCK_SOP = {
-        STAMP_STEP_OP: STAMP_DEF_OP,
-        STAMP_END_OP: STAMP_DEF_OP,
-        PATCH_STEP_OP: PATCH_DEF_OP,
-        WAVETABLE_STEP_OP: WAVETABLE_DEF_OP,
-        WAVETABLE_END_OP: WAVETABLE_DEF_OP,
-    }
-
     def _norm_pr_order(self, orig_df):
-        """Sort rows within each frame by strict numeric voice order. Each codebook family's
-        STEP/END collapse to its DEF op (``_BLOCK_SOP``) so a ``DEF..STEP*..END`` block stays
-        contiguous in emit order (``n``) instead of the op-sort grouping all DEFs then STEPs
-        then ENDs, which shatters two same-frame blocks and corrupts decode; a no-op when no
-        codebook ops are present, so non-codebook streams and the golden masters are unchanged.
+        """Group rows by frame then voice (markers first, then v0/v1/v2, filter) while
+        PRESERVING each voice's input emit order (``n``); never sort by register. Intra-frame
+        write order is audible — the SID ADSR bug makes envelope behaviour order/value
+        dependent (see preframr-audio test_register_canonicalization), so reg-sorting would
+        scramble interleaved ADSR/CTRL; codebook DEF..STEP..END blocks stay contiguous via n.
         """
         df = norm_df(orig_df.copy())
         df.loc[df["reg"] < 0, "v"] = df["reg"]
-        df["sop"] = df["op"].replace(self._BLOCK_SOP)
-        df = df.sort_values(["f", "v", "reg", "sop", "n"])
+        df = df.sort_values(["f", "v", "n"])
         df = df[orig_df.columns].reset_index(drop=True)
         if orig_df.attrs:
             df.attrs.update(orig_df.attrs)

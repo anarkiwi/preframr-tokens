@@ -145,7 +145,9 @@ def main():
     irq = read_initial_irq(df)
     logger.info("loaded %d rows, irq=%d cycles", len(df), irq)
 
-    df, reg_widths = prepare_df_for_audio(df, {}, irq, sidq(), strict=False)
+    df, reg_widths = prepare_df_for_audio(
+        df, {}, irq, sidq(), strict=False, cents=args.cents
+    )
     logger.info("audio-ready df: %d rows", len(df))
 
     use_live_keys = args.animate and not (args.via_wav or args.prerender)

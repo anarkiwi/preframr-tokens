@@ -6,7 +6,89 @@ passes rather than a hand-maintained copy that drifts."""
 
 from __future__ import annotations
 
-__all__ = ["macro_flag_names", "ensure_passes_registered"]
+__all__ = [
+    "macro_flag_names",
+    "ensure_passes_registered",
+    "resolve_flags",
+    "valid_combo",
+    "minimal_configs",
+    "FLAG_REQUIRES",
+    "FLAG_CONFLICTS",
+]
+
+FLAG_REQUIRES = {
+    "wavetable_pass": frozenset({"skeleton_pass"}),
+    "wt_short": frozenset({"wavetable_pass", "skeleton_pass"}),
+    "wt_oneshot": frozenset({"wavetable_pass", "skeleton_pass"}),
+    "zero_plain": frozenset({"skeleton_pass"}),
+    "slide_wide": frozenset({"skeleton_pass"}),
+    "slide_landing": frozenset({"skeleton_pass"}),
+    "held_arp": frozenset({"skeleton_pass"}),
+    "sweep_loop": frozenset({"sweep_pass"}),
+    "strict_lonely": frozenset({"lonely_catch_all"}),
+}
+FLAG_CONFLICTS = {
+    "skeleton_pass": frozenset(
+        {
+            "freq_trajectory_pass",
+            "freq_onset_pass",
+            "freq_nudge_pass",
+            "freq_v0_interval",
+        }
+    ),
+}
+
+
+def resolve_flags(flags):
+    """Expand a set of requested flags with their transitive REQUIRES. Raises ValueError if the closure
+    is internally inconsistent (a required flag conflicts with a requested one)."""
+    out = set(flags)
+    changed = True
+    while changed:
+        changed = False
+        for f in list(out):
+            need = FLAG_REQUIRES.get(f, frozenset())
+            if not need <= out:
+                out |= need
+                changed = True
+    conflict = _conflict_pair(out)
+    if conflict:
+        raise ValueError(
+            f"incompatible pipeline: {conflict[0]} conflicts with {conflict[1]}"
+        )
+    return out
+
+
+def _conflict_pair(flags):
+    """Return a conflicting ``(a, b)`` pair from ``flags`` (symmetric over FLAG_CONFLICTS), else None."""
+    for a, against in FLAG_CONFLICTS.items():
+        if a in flags:
+            for b in against:
+                if b in flags:
+                    return (a, b)
+    for a in flags:
+        for b, against in FLAG_CONFLICTS.items():
+            if a in against and b in flags:
+                return (b, a)
+    return None
+
+
+def valid_combo(flags):
+    """True if ``flags`` (already resolved) has no conflicting pair."""
+    return _conflict_pair(set(flags)) is None
+
+
+def minimal_configs():
+    """One minimal VALID config per gated flag: the flag plus its transitive REQUIRES, conflicts dropped.
+    Used by the combinatorial frame-diff gate so every registered pass is exercised at least once and a
+    newly-added transform is picked up automatically."""
+    configs = {}
+    for f in sorted(macro_flag_names()):
+        try:
+            configs[f] = frozenset(resolve_flags({f}))
+        except ValueError:
+            continue
+    return configs
 
 
 def ensure_passes_registered() -> None:
