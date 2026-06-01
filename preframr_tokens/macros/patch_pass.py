@@ -17,6 +17,7 @@ from preframr_tokens.macros.passes_base import (
     MacroPass,
 )
 from preframr_tokens.stfconstants import (
+    _MIN_DIFF,
     FREQ_TRAJ_REGS,
     PATCH_AD_OFFSET,
     PATCH_DEF_OP,
@@ -37,7 +38,7 @@ def _row(reg, op, subreg, val, irq):
     return {
         "reg": int(reg),
         "val": int(val),
-        "diff": int(irq),
+        "diff": int(_MIN_DIFF),
         "op": int(op),
         "subreg": int(subreg),
         "irq": int(irq),

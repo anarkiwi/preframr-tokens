@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.39.0]
+### Fixed
+- Render fidelity: PRESERVE within-voice register write ORDER. The SID ADSR bug
+  (envelope prescaler equality-compare) makes intra-frame AD/SR/gate order audible, so
+  `_norm_pr_order` now keeps each voice's input emit order instead of sorting by
+  register; reg-sorting scrambled interleaved ADSR/CTRL frames (~17% of single-speed
+  tunes). Proven in preframr-audio `test_register_canonicalization`.
+- `patch_pass` emitted decoded AD/SR writes with `diff=irq` (a whole frame) instead of
+  the nominal `_MIN_DIFF`, driving the per-frame time budget negative and dropping
+  samples (-25% level, cadence break). Now emits `_MIN_DIFF`.
+- skeleton: map skeleton-owned freq words to the renderer's cent-index domain and
+  preserve audible noise-onset freq (the freq-domain render bug).
+### Added
+- `sid_frame_diff` (settled per-frame register diff) + `tests/test_sid_frame_diff.py`.
+- `tests/test_register_order_fidelity.py`: strict register-LEVEL order+timing fidelity
+  gate (decoded CTRL/AD/SR order+values vs the raw dump, plus nominal-`diff`), catching
+  the order/timing classes `register_state` is blind to.
+
 ## [0.38.3]
 
 ### Added (continued)
