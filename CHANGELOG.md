@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.40.0]
+### Fixed
+- Byte-exact tokenizer on the lossless (skeleton/stamp) path: every encoder pass now
+  preserves the decoded per-frame register state, so model training never sees wrong
+  tokens. Root-fixed several silent value-corruption bugs:
+  - PerRegBurst DIFF base is now the DECODER's previous-frame value
+    (`register_state[f-1]`), not the raw SET. The raw base mis-bases on the first frame
+    and on combined multi-byte freq/PWM/filter values, where a large jump looked like a
+    small delta and was wrongly emitted as a DIFF (freq 0->30443 decoded as -21, PWM
+    1824 as 32, PWM 64 as 96 across a carried DELAY gap).
+  - PerRegBurst FLIP fires only on a genuine >=3 contiguous strictly-alternating run
+    (adversarial round-trip fuzz 67/300 -> 0/300).
+  - STAMP: a SET after a consumed STAMP_REF/REL stays absolute; drum intra-frame
+    freq<->ctrl write order preserved (Grid Runner v1 rendered 46 where 86 belonged).
+  - `_cap_delay` chains oversized/non-allowed DELAYs into allowed values summing to the
+    exact total (was power-of-2 quant + >255 truncate); fixed Nic_4 timing drift.
+  - LoopPass transposed loops are emitted only when the body freq delta bins exactly
+    (lossless), else left literal; the binned delta otherwise drifted the replayed pitch.
+  - `validate_back_refs` is now DO_LOOP-aware (counts the loop-expanded timeline), so it
+    no longer false-flags a sound back-ref that reaches past a loop.
+### Added
+- Toggleable parse-time consistency audit (`PREFRAMR_PARSE_AUDIT=raise|warn` /
+  `args.parse_audit`): after each pass (pre- and post-rotation) verifies per-frame
+  `register_state` losslessness, the loop-aware elapsed-frame budget, and forward/back-ref
+  integrity, pinpointing the transform that breaks one.
+- Macro-interaction contracts (`macros/macro_contracts.py`) and elapsed-frame
+  conservation asserted across every transform; adversarial PerRegBurst round-trip fuzz
+  (`tests/test_perregburst_lossless.py`).
+
 ## [0.39.0]
 ### Fixed
 - Render fidelity: PRESERVE within-voice register write ORDER. The SID ADSR bug
