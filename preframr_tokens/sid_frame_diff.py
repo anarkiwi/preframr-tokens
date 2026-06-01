@@ -95,9 +95,9 @@ def best_offset(ref, test, span=24):
 
 def diff_states(ref, test, cents=50, freq_tol=1, skip_init=_SKIP_INIT):
     """Align ref/test by frame then diff per register: EXACT_REGS byte-exact; FREQ_REGS combined to a word,
-    mapped to cent-index, compared within ``freq_tol`` on pitched frames only (gate on, not noise bit7, not
-    test bit3) since freq on noise/test frames is timbre, not pitch. Returns a structured result dict.
-    """
+    mapped to cent-index, compared within ``freq_tol`` on every audible frame. Only a TEST-bit frame
+    (ctrl bit3) is freq-discardable; a noise frame's freq drives the LFSR rate and IS audible, so it must
+    match. Returns a structured result dict."""
     k = best_offset(ref, test)
     if k > 0:
         test = test[k:]
@@ -126,14 +126,14 @@ def diff_states(ref, test, cents=50, freq_tol=1, skip_init=_SKIP_INIT):
         tc = _to_cent_index(_freq_word(test, r), fm)
         delta = np.abs(rc - tc)
         ctrl = ref[:, CTRL_REGS[i]].astype(np.int64)
-        pitched = ((ctrl & 0x01) != 0) & ((ctrl & 0x80) == 0) & ((ctrl & 0x08) == 0)
-        pitched[:skip_init] = False
-        over = int(((delta > freq_tol) & pitched).sum())
-        mx = int(delta[pitched].max()) if pitched.any() else 0
+        audible = (ctrl & 0x08) == 0
+        audible[:skip_init] = False
+        over = int(((delta > freq_tol) & audible).sum())
+        mx = int(delta[audible].max()) if audible.any() else 0
         res["freq"][REG_LABEL[r]] = {
             "over_tol": over,
             "max_delta": mx,
-            "pitched": int(pitched.sum()),
+            "audible": int(audible.sum()),
         }
         if over > 0:
             res["freq_fail"].append(REG_LABEL[r])

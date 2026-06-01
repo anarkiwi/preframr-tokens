@@ -91,8 +91,15 @@ class TestFrameDiffUnit(unittest.TestCase):
         res = diff_states(ref, test)
         self.assertIn("v0.FREQ", res["freq_fail"])
 
-    def test_freq_ignored_on_noise_frames(self):
+    def test_freq_checked_on_noise_frames(self):
         ref = _state(40, freq_word=LUT[60], ctrl=0x81)
+        test = ref.copy()
+        test[:, 0] = LUT[72]
+        res = diff_states(ref, test)
+        self.assertIn("v0.FREQ", res["freq_fail"])
+
+    def test_freq_ignored_on_test_frames(self):
+        ref = _state(40, freq_word=LUT[60], ctrl=0x09)
         test = ref.copy()
         test[:, 0] = LUT[72]
         res = diff_states(ref, test)

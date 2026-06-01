@@ -553,6 +553,9 @@ class SkeletonPass(MacroPass):
         pitched frames) yet another is a >=50% majority of the pitched span. Folds base-misassignment
         into the right note; the ``<=2`` guard leaves clean arps (many onset-pitch frames) untouched.
         """
+        onset_ctrl = cls._ctrl_at(ctrl_writes, onset_fr)
+        if onset_ctrl is not None and (onset_ctrl & 0x80) and not (onset_ctrl & 0x08):
+            return note
         counts = Counter()
         for k, fn in enumerate([anchor[2], *per_frame]):
             if not cls._is_pitched_frame(ctrl_writes, onset_fr + k):
