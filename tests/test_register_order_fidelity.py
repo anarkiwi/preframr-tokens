@@ -130,6 +130,30 @@ class TestRegisterOrderFidelity(unittest.TestCase):
             cells, 0, f"{cells} register_state cells diverge stamp vs baseline"
         )
 
+    def test_parse_audit_silent_through_post_rotation_loops(self):
+        """The byte-exact pipeline must stay lossless END TO END, including the POST-rotation passes
+        where LoopPass (in run_post_norm_pre_voice_passes) mints BACK_REF/DO_LOOP refs. Parse a real
+        loop-heavy tune on the skeleton path with the audit in raise mode: any post-rotation pass that
+        breaks per-frame register_state (expand_loops round-trip) or the loop-expanded frame budget
+        raises here -- the strong loop-soundness check, since validate_stream can't count DO_LOOP.
+        """
+        from preframr_tokens.stfconstants import BACK_REF_OP, DO_LOOP_OP
+
+        parser = RegLogParser(
+            args=default_tokenizer_args(
+                skeleton_pass=True,
+                loop_pass=True,
+                loop_transposed=True,
+                lonely_catch_all=True,
+                parse_audit="raise",
+            )
+        )
+        xdf = next(parser.parse(self.dump, max_perm=1, require_pq=False, reparse=True))
+        loops = int((xdf["op"] == BACK_REF_OP).sum() + (xdf["op"] == DO_LOOP_OP).sum())
+        self.assertGreater(
+            loops, 0, "tune produced no loops -- post-rotation refs unexercised"
+        )
+
     def test_decoded_ctrl_adsr_order_matches_dump(self):
         """Per frame per voice, the decoded CTRL/AD/SR write sequence (order + value)
         must equal the raw dump's, for the no-macro baseline AND the full macro stack.

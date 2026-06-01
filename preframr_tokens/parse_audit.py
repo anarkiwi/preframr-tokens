@@ -14,6 +14,29 @@ __all__ = ["make_pass_audit", "PassAudit"]
 
 _LOSSY_RESETS = frozenset({"SkeletonPass"})
 _FRAME_REBASE = frozenset({"_consolidate_frames"})
+_REF_OPAQUE = frozenset(
+    {
+        "run_post_norm_pre_voice_passes",
+        "_add_voice_reg",
+        "FreqNudgePass",
+        "CtrlUpdatePass",
+        "LonelyWriteValidatorPass",
+    }
+)
+
+
+def _loop_aware_frames(df):
+    """Elapsed-frame budget counted on the loop-EXPANDED stream, so a pass that folds literal frames
+    into BACK_REF/DO_LOOP/PATTERN_REPLAY refs (LoopPass, post-rotation) conserves the budget instead of
+    appearing to lose frames. Pre-loop streams expand to themselves, so this is identical there.
+    """
+    from preframr_tokens.macros.loops import expand_loops
+    from preframr_tokens.reglogparser import elapsed_frames
+
+    try:
+        return elapsed_frames(expand_loops(df.copy()))
+    except Exception:  # noqa: BLE001 pylint: disable=broad-except
+        return elapsed_frames(df)
 
 
 def make_pass_audit(args=None):
@@ -45,20 +68,16 @@ class PassAudit:
         return register_state(df if "op" in df.columns else df.assign(op=int(SET_OP)))
 
     def start(self, df):
-        from preframr_tokens.reglogparser import elapsed_frames
-
         if not self.on:
             return
         self._rs = self._state(df)
-        self._frames = elapsed_frames(df)
+        self._frames = _loop_aware_frames(df)
 
     def after(self, df, label, lossless=True):
-        from preframr_tokens.reglogparser import elapsed_frames
-
         if not self.on:
             return
         problems = []
-        frames = elapsed_frames(df)
+        frames = _loop_aware_frames(df)
         if label in _FRAME_REBASE:
             self._frames = frames
         elif frames != self._frames:
@@ -67,7 +86,8 @@ class PassAudit:
             self._rs = self._state(df)
         elif lossless:
             problems.extend(self._lossless_problems(df))
-        problems.extend(self._ref_problems(df))
+        if label not in _REF_OPAQUE:
+            problems.extend(self._ref_problems(df))
         if problems:
             self._report(label, problems)
 
@@ -86,6 +106,12 @@ class PassAudit:
         ]
 
     def _ref_problems(self, df):
+        """validate_stream checks codebook + back-ref integrity but counts DO_LOOP bodies ONCE
+        (it `continue`s past the repetition) while distances are in EXPANDED frames -- so once LoopPass
+        (in the post-norm-pre-voice passes) mints loops, a SOUND BACK_REF computes a negative target.
+        _REF_OPAQUE skips it from loop-creation on; register_state (expand_loops, which asserts the same
+        bound AND checks decoded values) is the stronger arbiter there.
+        """
         from preframr_tokens.macros.validators import validate_stream
 
         try:

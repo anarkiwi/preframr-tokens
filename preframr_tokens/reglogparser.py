@@ -1001,13 +1001,21 @@ class RegLogParser:
             if not self._filter(pre_passes_voice_preview, name):
                 break
             xdf.attrs["engine_fp_cluster"] = engine_fp_cluster
+            audit.start(xdf)
             xdf = macros.run_passes(xdf, args=self.args)
+            audit.after(xdf, "run_passes")
             xdf = self._norm_pr_order(xdf)
+            audit.after(xdf, "_norm_pr_order(post)")
             xdf = macros.run_post_norm_pre_voice_passes(xdf, args=self.args)
+            audit.after(xdf, "run_post_norm_pre_voice_passes")
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
+            audit.after(xdf, "_add_voice_reg")
             xdf = FreqNudgePass().apply(xdf, args=self.args)
+            audit.after(xdf, "FreqNudgePass")
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
+            audit.after(xdf, "CtrlUpdatePass")
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
+            audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)
             for k in TOKEN_KEYS:
                 if k not in xdf.columns:
