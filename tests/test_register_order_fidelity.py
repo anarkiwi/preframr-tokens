@@ -104,6 +104,32 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         cls.dump = str(wide)
         cls.ref = _dump_frames(cls.dump)
 
+    def _parse(self, flags):
+        parser = RegLogParser(args=default_tokenizer_args(**flags))
+        return next(parser.parse(self.dump, max_perm=1, require_pq=False, reparse=True))
+
+    def test_stamp_byte_exact_register_state_vs_baseline(self):
+        """stamp_pass must be byte-exact lossless: per-frame decoded register_state with stamp must
+        equal the no-macro baseline (freq included). Guards the PerRegBurst rebasing bug where a freq
+        DIFF after a consumed STAMP_REF mis-based against the pre-drum SET (Grid Runner v1 46 vs 86).
+        """
+        from preframr_tokens.audit_primitives import register_state
+        from preframr_tokens.stfconstants import STAMP_REF_OP, STAMP_REL_REF_OP
+
+        sx = self._parse(dict(stamp_pass=True))
+        refs = int(
+            (sx["op"] == STAMP_REF_OP).sum() + (sx["op"] == STAMP_REL_REF_OP).sum()
+        )
+        self.assertGreater(
+            refs, 0, "stamp_pass did not fire (fallback?) -- nothing validated"
+        )
+        base, stamp = register_state(self._parse({})), register_state(sx)
+        n = min(len(base), len(stamp))
+        cells = int((base[:n] != stamp[:n]).sum())
+        self.assertEqual(
+            cells, 0, f"{cells} register_state cells diverge stamp vs baseline"
+        )
+
     def test_decoded_ctrl_adsr_order_matches_dump(self):
         """Per frame per voice, the decoded CTRL/AD/SR write sequence (order + value)
         must equal the raw dump's, for the no-macro baseline AND the full macro stack.

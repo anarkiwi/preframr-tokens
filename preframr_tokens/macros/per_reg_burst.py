@@ -4,6 +4,7 @@ register's value sequence.
 
 __all__ = ["PerRegBurstPass"]
 
+import numpy as np
 import pandas as pd
 
 from preframr_tokens.macros.passes_base import MacroPass
@@ -14,8 +15,36 @@ from preframr_tokens.stfconstants import (
     FLIP_OP,
     MODEL_PDTYPE,
     SET_OP,
+    STAMP_REF_OP,
+    STAMP_REL_REF_OP,
     VOICE_REG_SIZE,
+    VOICES,
 )
+
+_STAMP_REF_OPS = (STAMP_REF_OP, STAMP_REL_REF_OP)
+
+
+def _stamp_barrier_sets(reg, op, frame):
+    """(reg, frame) of voice freq/PWM SETs whose previous write on that voice was a STAMP_REF/REL:
+    the stamp replays its own value at decode, so delta-encoding the SET against the prior literal
+    SET (which the stamp consumed) mis-bases it -- keep these absolute so the value lands exactly.
+    """
+    reg = np.asarray(reg)
+    op = np.asarray(op)
+    frame = np.asarray(frame)
+    barrier = set()
+    for v in range(VOICES):
+        base = v * VOICE_REG_SIZE
+        is_stamp = (reg == base) & np.isin(op, _STAMP_REF_OPS)
+        for off in (0, 2):
+            is_set = (reg == base + off) & (op == SET_OP)
+            idx = np.nonzero(is_stamp | is_set)[0]
+            if idx.size == 0:
+                continue
+            prev_stamp = np.concatenate(([False], is_stamp[idx][:-1]))
+            for i in idx[is_set[idx] & prev_stamp]:
+                barrier.add((base + off, int(frame[i])))
+    return barrier
 
 
 def _add_change_reg(df, change_df, minchange, opcodes):
@@ -117,6 +146,9 @@ class PerRegBurstPass(MacroPass):
         df = norm_df(orig_df)
         if not had_op:
             df["op"] = SET_OP
+        barrier = _stamp_barrier_sets(
+            df["reg"].to_numpy(), df["op"].to_numpy(), df["f"].to_numpy()
+        )
 
         if had_op:
             pivot_src = orig_df[orig_df["op"] == SET_OP].reset_index(drop=True)
@@ -135,6 +167,13 @@ class PerRegBurstPass(MacroPass):
         ):
             df = df.merge(xdf[["reg", "f", "pval"]], how="left", on=["f", "reg"])
             xdf = df[matcher(df) & (df["op"] == SET_OP)].copy()
+            if barrier:
+                xdf = xdf[
+                    [
+                        (int(r), int(fr)) not in barrier
+                        for r, fr in zip(xdf["reg"], xdf["f"])
+                    ]
+                ]
             df, change_dfs = _add_change_reg(
                 df, xdf, minchange=minchange, opcodes=self.opcodes
             )
