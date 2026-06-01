@@ -10,7 +10,7 @@ import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
-from preframr_tokens.stfconstants import FRAME_REG, SET_OP, _MIN_DIFF
+from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP, _MIN_DIFF
 from preframr_tokens.tokenizer_config import default_tokenizer_args
 
 _ARGS = default_tokenizer_args(freq_trajectory_pass=False)
@@ -87,28 +87,38 @@ class TestPerRegBurstFreqLossless(unittest.TestCase):
         self.assertEqual(bad, [], f"DIFF-only lossy on {len(bad)} walks: {bad[:2]}")
 
 
-class TestPerRegBurstFallbackTool(unittest.TestCase):
-    """The opt-in per-register lossless fallback: off by default, and when on it re-encodes only the
-    registers the delta pass could not round-trip (a rare pval mis-base) as literal SET.
+class TestPerRegBurstGapPval(unittest.TestCase):
+    """Regression for the pval mis-base: a DELAY carries a value across elapsed frames (no row at those
+    f-numbers), so a DIFF at the next write must base on the CARRIED value, not 0. The bug encoded
+    delta=val-0 and decoded carried+delta (1394 PWM 64 -> 96); here reg7 45 after a carried 40 must
+    decode to 45, not 85.
     """
 
-    def test_fallback_off_by_default_on_demand_when_set(self):
-        from preframr_tokens.macros.per_reg_burst import _fallback_enabled
+    def test_diff_bases_on_carried_value_across_delay_gap(self):
+        def row(reg, val, diff=_MIN_DIFF):
+            return {
+                "reg": int(reg),
+                "val": int(val),
+                "op": int(SET_OP),
+                "diff": int(diff),
+            }
 
-        self.assertFalse(_fallback_enabled(None))
-
-        class _Args:
-            perreg_lossless_fallback = True
-
-        self.assertTrue(_fallback_enabled(_Args()))
-
-    def test_lossy_regs_flags_only_diverging_registers(self):
-        from preframr_tokens.macros.per_reg_burst import _lossy_regs
-
-        clean = _build([100, 110, 105])
-        diverged = _build([100, 120, 105])
-        self.assertEqual(_lossy_regs(clean, clean, had_op=True), frozenset())
-        self.assertEqual(_lossy_regs(clean, diverged, had_op=True), frozenset({_REG}))
+        df = pd.DataFrame(
+            [
+                row(FRAME_REG, 0, 19000),
+                row(_REG, 40),
+                row(DELAY_REG, 3, 19000),
+                row(_REG, 45),
+                row(FRAME_REG, 0, 19000),
+                row(_REG, 50),
+            ]
+        )
+        out = PerRegBurstPass().apply(df.copy(), args=_ARGS)
+        gt = register_state(df)[:, _REG]
+        dec = register_state(out)[:, _REG]
+        n = min(len(gt), len(dec))
+        bad = [(i, int(gt[i]), int(dec[i])) for i in range(n) if gt[i] != dec[i]]
+        self.assertEqual(bad, [], f"DIFF mis-based across a DELAY-carried gap: {bad}")
 
 
 if __name__ == "__main__":

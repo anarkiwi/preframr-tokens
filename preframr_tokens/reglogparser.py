@@ -187,12 +187,9 @@ def last_reg_val_frame(orig_df, regs):
             .sort_values("f")
         ).reset_index(drop=True)
         sub_df["v"] = sub_df["v"].floordiv(VOICE_REG_SIZE)
-        diff_df = sub_df.copy()
-        diff_df["pval"] = diff_df["val"]
-        diff_df["f"] += 1
-        diff_df = diff_df[["pval", "v", "f"]]
-        sub_df = sub_df.merge(diff_df, how="left", on=["v", "f"])
-        sub_df = sub_df.fillna(0).astype(MODEL_PDTYPE).sort_values(["f", "v"])
+        sub_df = sub_df.sort_values(["v", "f"]).reset_index(drop=True)
+        sub_df["pval"] = sub_df.groupby("v")["val"].shift(1).fillna(0)
+        sub_df = sub_df.astype(MODEL_PDTYPE).sort_values(["f", "v"])
         yield sub_df
 
 

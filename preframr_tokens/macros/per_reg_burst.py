@@ -4,8 +4,6 @@ register's value sequence.
 
 __all__ = ["PerRegBurstPass"]
 
-import os
-
 import numpy as np
 import pandas as pd
 
@@ -80,40 +78,12 @@ def _classify_runs(frames, vals, use_flip):
     return ops, out_vals, drop
 
 
-def _fallback_enabled(args):
-    """The per-register lossless fallback is a tool, enabled on demand (env PREFRAMR_PERREG_FALLBACK or
-    args.perreg_lossless_fallback). Off by default: a register the delta encoder cannot round-trip (a
-    rare pval mis-base) then stays as a low-residual lossy encoding the audit flags; on, it is re-encoded
-    as literal SET so the pass is byte-exact (at a higher residual, since literal freq is uncaptured).
-    """
-    if os.environ.get("PREFRAMR_PERREG_FALLBACK"):
-        return True
-    return bool(args is not None and getattr(args, "perreg_lossless_fallback", False))
-
-
-def _lossy_regs(orig_df, result, had_op):
-    """Registers whose decoded per-frame state the re-encoding failed to reproduce (a rare pval
-    mis-base). PerRegBurst re-encodes only these as literal SET, keeping every other register's delta
-    compression -- a per-register lossless guarantee that doesn't nuke a whole tune's freq encoding.
-    """
-    from preframr_tokens.audit_primitives import register_state
-
-    before = register_state(orig_df if had_op else orig_df.assign(op=int(SET_OP)))
-    after = register_state(result)
-    if before.shape != after.shape:
-        return frozenset(range(int(before.shape[1])))
-    diff = (before != after).any(axis=0)
-    return frozenset(int(r) for r in np.nonzero(diff)[0])
-
-
-def _add_change_reg(df, change_df, minchange, opcodes, skip_regs=frozenset()):
+def _add_change_reg(df, change_df, minchange, opcodes):
     change_dfs = []
     change_df["val"] -= change_df["pval"]
     change_df = change_df.drop("pval", axis=1)
     use_flip = FLIP_OP in opcodes
     for reg in change_df["reg"].unique():
-        if int(reg) in skip_regs:
-            continue
         v_df = change_df[change_df["reg"] == reg].copy()
         v_df = v_df.sort_values(["n", "val"])
         v_df["cpf"] = v_df.groupby("f").transform("size")
@@ -167,14 +137,9 @@ class PerRegBurstPass(MacroPass):
         barrier = _stamp_barrier_sets(
             nd["reg"].to_numpy(), nd["op"].to_numpy(), nd["f"].to_numpy()
         )
-        result = self._encode(orig_df, nd, had_op, cents, barrier, frozenset())
-        if _fallback_enabled(args):
-            lossy = _lossy_regs(orig_df, result, had_op)
-            if lossy:
-                result = self._encode(orig_df, nd, had_op, cents, barrier, lossy)
-        return result
+        return self._encode(orig_df, nd, had_op, cents, barrier)
 
-    def _encode(self, orig_df, nd, had_op, cents, barrier, skip_regs):
+    def _encode(self, orig_df, nd, had_op, cents, barrier):
         from preframr_tokens.reglogparser import last_reg_val_frame
 
         pivot_src = (
@@ -203,7 +168,7 @@ class PerRegBurstPass(MacroPass):
                     ]
                 ]
             df, change_dfs = _add_change_reg(
-                df, cand, minchange=minchange, opcodes=self.opcodes, skip_regs=skip_regs
+                df, cand, minchange=minchange, opcodes=self.opcodes
             )
             all_change_dfs.extend(change_dfs)
         df = (

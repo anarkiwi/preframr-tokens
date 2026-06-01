@@ -299,6 +299,33 @@ class TestRegLogParser(unittest.TestCase):
         result_df = list(last_reg_val_frame(test_df, [0]))[0]
         self.assertTrue(last_df.equals(result_df))
 
+    def test_last_reg_val_frame_carries_pval_across_gap(self):
+        """pval is the decoded PREVIOUS-frame value, which is carried across frames with no write. A
+        DELAY skips f-numbers (no row at the elapsed frames), so pval at the next write must be the last
+        written val, not 0 -- the bug that made PerRegBurst DIFF mis-base (decode carried+delta, wrong).
+        """
+        test_df = pd.DataFrame(
+            [
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 5, "diff": 32},
+                {"reg": DELAY_REG, "val": 3, "diff": 19000},
+                {"reg": 7, "val": 9, "diff": 32},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 11, "diff": 32},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        last_df = pd.DataFrame(
+            [
+                {"f": 1, "v": 1, "val": 5, "pval": 0},
+                {"f": 4, "v": 1, "val": 9, "pval": 5},
+                {"f": 5, "v": 1, "val": 11, "pval": 9},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        result_df = list(last_reg_val_frame(test_df, [0]))[0].reset_index(drop=True)
+        self.assertTrue(last_df.equals(result_df), result_df.to_string())
+
     def test_add_change_regs_flip_only(self):
         test_df = pd.DataFrame(
             [
