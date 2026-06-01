@@ -198,9 +198,9 @@ def last_reg_val_frame(orig_df, regs):
 
 def elapsed_frames(df):
     """Total elapsed time in frames: each FRAME marker is one frame, each DELAY marker is its ``val``
-    frames. Every lossless re-encoder macro must conserve it (RegLogParser.parse asserts this after
-    each to localise a frame-budget defect); _consolidate_frames/_cap_delay deliberately restructure
-    the timeline (collapse empties, quantise delays) and are the only exempt transforms.
+    frames. Every lossless transform must conserve it -- RegLogParser.parse asserts this after each
+    re-encoder pass AND across the now-lossless-chaining _cap_delay, to localise a frame-budget defect.
+    Only _consolidate_frames is exempt (it repacks/trims empty frames).
     """
     reg = df["reg"].to_numpy()
     frames = int((reg == FRAME_REG).sum())
@@ -220,6 +220,23 @@ def assert_elapsed_frames(df, expected, label):
             f"{label} changed elapsed frames {expected} -> {got} "
             f"(a lossless transform must conserve the frame budget)"
         )
+
+
+_CHAIN_DELAYS = (256, 128, 64, 32) + tuple(range(16, 0, -1))
+_ALLOWED_DELAYS = frozenset(_CHAIN_DELAYS)
+
+
+def chain_delay(value):
+    """Decompose a frame-delay into a chain of allowed period values (1-16 exact, 32/64/128/256)
+    summing to the EXACT total -- the lossless representation _cap_delay emits so a long gap keeps its
+    timing instead of being quantised. Greedy largest-first; the 1-16 tail always closes the remainder.
+    """
+    out, remaining = [], int(value)
+    for period in _CHAIN_DELAYS:
+        while remaining >= period:
+            out.append(period)
+            remaining -= period
+    return out
 
 
 def reset_diffs(orig_df, irq, sidq):
@@ -521,21 +538,28 @@ class RegLogParser:
         return irq, df[out_cols]
 
     def _cap_delay(self, df):
-        """Curve C: exact 1..16, nearest power of 2 17..256; chain via adjacent."""
-        m = df["reg"] == DELAY_REG
-        df.loc[m & (df["val"] > 255), "val"] = 255
-
-        def _quant(v):
-            if v <= 16:
-                return v
-            for b in (32, 64, 128, 256):
-                if v <= b:
-                    prev = b // 2
-                    return b if (v - prev) >= (b - v) else prev
-            return 256
-
-        df.loc[m, "val"] = df.loc[m, "val"].map(_quant)
-        return df
+        """Represent each DELAY as a chain of allowed period values summing to its EXACT total
+        (chain_delay) -- lossless timing, so elapsed frames are preserved and a stamp/consolidation that
+        repacks empties cannot drift the timeline. Replaces the old truncate-to-255 + nearest-power-of-2
+        quantisation, which dropped frames and mis-timed long gaps vs the dump."""
+        df = df.reset_index(drop=True)
+        reg = df["reg"].to_numpy()
+        val = df["val"].to_numpy()
+        need = (reg == DELAY_REG) & (val > 0) & ~np.isin(val, list(_ALLOWED_DELAYS))
+        if not need.any():
+            return df
+        pieces, prev = [], 0
+        for idx in np.nonzero(need)[0]:
+            if idx > prev:
+                pieces.append(df.iloc[prev:idx])
+            chain = chain_delay(int(val[idx]))
+            rep = pd.concat([df.iloc[[idx]]] * len(chain), ignore_index=True)
+            rep["val"] = chain
+            pieces.append(rep)
+            prev = idx + 1
+        if prev < len(df):
+            pieces.append(df.iloc[prev:])
+        return pd.concat(pieces, ignore_index=True)
 
     def _split_reg(self, orig_df, reg):
         df = orig_df.copy().reset_index(drop=True)
@@ -942,7 +966,9 @@ class RegLogParser:
             audit.after(df, type(macro_pass).__name__)
         df = self._consolidate_frames(df)
         audit.after(df, "_consolidate_frames")
+        consolidated = elapsed_frames(df)
         df = self._cap_delay(df)
+        assert_elapsed_frames(df, consolidated, "_cap_delay")
         audit.after(df, "_cap_delay")
         delay_val = df[df["reg"] == DELAY_REG]["val"]
         if len(delay_val):

@@ -13,7 +13,7 @@ import numpy as np
 __all__ = ["make_pass_audit", "PassAudit"]
 
 _LOSSY_RESETS = frozenset({"SkeletonPass"})
-_FRAME_REBASE = frozenset({"_consolidate_frames", "_cap_delay"})
+_FRAME_REBASE = frozenset({"_consolidate_frames"})
 
 
 def make_pass_audit(args=None):
