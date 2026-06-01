@@ -1,13 +1,12 @@
 """Adversarial round-trip property test for the PerRegBurst freq delta encoder. PerRegBurst re-encodes
 per-frame freq SETs as DIFF/FLIP runs; decoding must reproduce the input exactly (the RESID=0 goal).
-The FLIP detector over-matches some same-magnitude non-alternating delta runs (and DIFF mis-bases on
-others), so it is currently lossy for ~1/5 of random small-delta walks -- xfail-strict until fixed.
+After the lossless run-detection rewrite (FLIP fires only on genuine >=3 alternation), random
+small-delta walks round-trip exactly -- this guards that, with DIFF-only as the lossless floor.
 """
 
 import unittest
 
 import pandas as pd
-import pytest
 
 from preframr_tokens.audit_primitives import register_state
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
@@ -49,13 +48,6 @@ def _lcg(seed, n):
 
 
 class TestPerRegBurstFreqLossless(unittest.TestCase):
-    @pytest.mark.xfail(
-        strict=True,
-        reason="PerRegBurst._add_change_reg is still lossy on a few % of small-delta walks. The FLIP "
-        "detector now requires genuine alternation (val == -neighbour), which fixed most cases; the "
-        "residual is the begin/end short-run handling (2-row flip runs leave an orphan begin) plus a "
-        "DIFF mis-base on some runs. Needs a lossless run-detection re-write; then drop this xfail.",
-    )
     def test_random_small_delta_walks_round_trip(self):
         fails = []
         for trial in range(300):

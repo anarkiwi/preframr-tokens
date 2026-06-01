@@ -13,6 +13,7 @@ from preframr_tokens.engine_fingerprint import (
 )
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
+from preframr_tokens.parse_audit import make_pass_audit
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
@@ -919,6 +920,8 @@ class RegLogParser:
             return
         df = self._squeeze_frame_regs(df)
         elapsed = elapsed_frames(df)
+        audit = make_pass_audit(self.args)
+        audit.start(df)
         for macro_pass in (
             VoiceTrackPass(),
             TrajectoryAnchorPass(),
@@ -936,8 +939,11 @@ class RegLogParser:
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
+            audit.after(df, type(macro_pass).__name__)
         df = self._consolidate_frames(df)
+        audit.after(df, "_consolidate_frames")
         df = self._cap_delay(df)
+        audit.after(df, "_cap_delay")
         delay_val = df[df["reg"] == DELAY_REG]["val"]
         if len(delay_val):
             delay_max = delay_val.max()

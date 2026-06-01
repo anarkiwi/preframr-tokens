@@ -13,7 +13,6 @@ from preframr_tokens.stfconstants import (
     DIFF_OP,
     FC_LO_REG,
     FLIP_OP,
-    MODEL_PDTYPE,
     SET_OP,
     STAMP_REF_OP,
     STAMP_REL_REF_OP,
@@ -47,10 +46,43 @@ def _stamp_barrier_sets(reg, op, frame):
     return barrier
 
 
+def _classify_runs(frames, vals, use_flip):
+    """Classify a per-reg signed-delta sequence (frames ascending) into DIFF / FLIP. A maximal
+    contiguous-frame strictly-alternating run of length >= 3 (d,-d,d,...) becomes FLIP(d) at its start
+    and FLIP(0) at its end; the intermediate frames auto-flip at decode and are dropped. Every other
+    delta is DIFF. Lossless by construction. Returns (ops, out_vals, drop) aligned to the input rows.
+    """
+    n = len(frames)
+    ops = [int(DIFF_OP)] * n
+    out_vals = [int(v) for v in vals]
+    drop = [False] * n
+    i = 0
+    while i < n:
+        j = i
+        if use_flip:
+            while (
+                j + 1 < n
+                and int(frames[j + 1]) == int(frames[j]) + 1
+                and int(vals[j + 1]) == -int(vals[j])
+            ):
+                j += 1
+        if use_flip and j - i + 1 >= 3:
+            ops[i] = int(FLIP_OP)
+            ops[j] = int(FLIP_OP)
+            out_vals[j] = 0
+            for k in range(i + 1, j):
+                drop[k] = True
+            i = j + 1
+        else:
+            i += 1
+    return ops, out_vals, drop
+
+
 def _add_change_reg(df, change_df, minchange, opcodes):
     change_dfs = []
     change_df["val"] -= change_df["pval"]
     change_df = change_df.drop("pval", axis=1)
+    use_flip = FLIP_OP in opcodes
     for reg in change_df["reg"].unique():
         v_df = change_df[change_df["reg"] == reg].copy()
         v_df = v_df.sort_values(["n", "val"])
@@ -59,64 +91,15 @@ def _add_change_reg(df, change_df, minchange, opcodes):
         v_df = v_df[
             (v_df["aval"] > 0) & (v_df["aval"] <= minchange) & (v_df["cpf"] == 1)
         ]
+        if v_df.empty:
+            continue
         df = df[~df["n"].isin(v_df["n"])]
-        m_df = v_df[v_df["f"].diff().fillna(1) > 1].copy()
-        m_df["op"] = DIFF_OP
-        v_df = v_df[~v_df["n"].isin(m_df["n"])]
-        change_dfs.append(m_df)
-        v_df["cf"] = (
-            (
-                (v_df["f"].diff().fillna(1) > 1)
-                .astype(MODEL_PDTYPE)
-                .cumsum()
-                .astype(MODEL_PDTYPE)
-            )
-            * 255
-        ) + 1
-        v_df[["repeat", "flip", "begin", "end"]] = 0
-        rcols = ["cf", "val"]
-        v_df.loc[
-            (v_df[rcols] == v_df[rcols].shift(1)).all(axis=1)
-            | (v_df[rcols] == v_df[rcols].shift(-1)).all(axis=1),
-            "repeat",
-        ] = (
-            v_df["cf"] * v_df["val"]
+        ops, out_vals, drop = _classify_runs(
+            v_df["f"].to_numpy(), v_df["val"].to_numpy(), use_flip
         )
-        same_cf_prev = v_df["cf"] == v_df["cf"].shift(1)
-        same_cf_next = v_df["cf"] == v_df["cf"].shift(-1)
-        alt = (same_cf_prev & (v_df["val"] == -v_df["val"].shift(1))) | (
-            same_cf_next & (v_df["val"] == -v_df["val"].shift(-1))
-        )
-        v_df.loc[alt, "flip"] = v_df["cf"] * v_df["aval"]
-        for f, of in (("repeat", "flip"), ("flip", "repeat")):
-            m = v_df[f] != 0
-            v_df.loc[m & (v_df[f] != v_df[f].shift(1)), "begin"] = v_df["n"]
-            v_df.loc[m & (v_df[f] != v_df[f].shift(-1)), "end"] = v_df["n"]
-            for shift in (0, 1):
-                v_df.loc[
-                    ((v_df["end"] != 0) & (v_df["begin"].shift(shift) != 0))
-                    | ((v_df["begin"] != 0) & (v_df["end"].shift(-shift) != 0)),
-                    ["begin", "end", f],
-                ] = 0
-            v_df.loc[v_df[f] != 0, of] = 0
-
-        for f, op in (("flip", FLIP_OP),):
-            if op in opcodes:
-                d_df = v_df[
-                    (v_df[f] != 0) & ((v_df["begin"] != 0) | (v_df["end"] != 0))
-                ].copy()
-                v_df = v_df[v_df[f] == 0]
-                if d_df.empty:
-                    continue
-                assert d_df["begin"].iloc[0] != 0, d_df
-                assert d_df["end"].iloc[-1] != 0, d_df
-                d_df.loc[d_df["end"] != 0, "val"] = 0
-                d_df["op"] = op
-                change_dfs.append(d_df.copy())
-
-        v_df["op"] = DIFF_OP
+        v_df = v_df.assign(op=ops, val=out_vals)
+        v_df = v_df[[not d for d in drop]]
         change_dfs.append(v_df)
-
     df = df.drop("pval", axis=1)
     return df, change_dfs
 
