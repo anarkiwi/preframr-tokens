@@ -13,6 +13,7 @@ from preframr_tokens.engine_fingerprint import (
 )
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
+from preframr_tokens.parse_audit import make_pass_audit
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
@@ -186,13 +187,53 @@ def last_reg_val_frame(orig_df, regs):
             .sort_values("f")
         ).reset_index(drop=True)
         sub_df["v"] = sub_df["v"].floordiv(VOICE_REG_SIZE)
-        diff_df = sub_df.copy()
-        diff_df["pval"] = diff_df["val"]
-        diff_df["f"] += 1
-        diff_df = diff_df[["pval", "v", "f"]]
-        sub_df = sub_df.merge(diff_df, how="left", on=["v", "f"])
-        sub_df = sub_df.fillna(0).astype(MODEL_PDTYPE).sort_values(["f", "v"])
+        sub_df = sub_df.sort_values(["v", "f"]).reset_index(drop=True)
+        sub_df["pval"] = sub_df.groupby("v")["val"].shift(1).fillna(0)
+        sub_df = sub_df.astype(MODEL_PDTYPE).sort_values(["f", "v"])
         yield sub_df
+
+
+def elapsed_frames(df):
+    """Total elapsed time in frames: each FRAME marker is one frame, each DELAY marker is its ``val``
+    frames. Every lossless transform must conserve it -- RegLogParser.parse asserts this after each
+    re-encoder pass AND across the now-lossless-chaining _cap_delay, to localise a frame-budget defect.
+    Only _consolidate_frames is exempt (it repacks/trims empty frames).
+    """
+    reg = df["reg"].to_numpy()
+    frames = int((reg == FRAME_REG).sum())
+    delay = df["val"].to_numpy()[reg == DELAY_REG]
+    if delay.size:
+        frames += int(delay.astype(np.int64).sum())
+    return frames
+
+
+def assert_elapsed_frames(df, expected, label):
+    """Enforce elapsed-frame conservation after a transform; raise pinpointing the transform if its
+    output changes the frame budget (the books no longer balance) so the defect is caught here.
+    """
+    got = elapsed_frames(df)
+    if got != expected:
+        raise AssertionError(
+            f"{label} changed elapsed frames {expected} -> {got} "
+            f"(a lossless transform must conserve the frame budget)"
+        )
+
+
+_CHAIN_DELAYS = (256, 128, 64, 32) + tuple(range(16, 0, -1))
+_ALLOWED_DELAYS = frozenset(_CHAIN_DELAYS)
+
+
+def chain_delay(value):
+    """Decompose a frame-delay into a chain of allowed period values (1-16 exact, 32/64/128/256)
+    summing to the EXACT total -- the lossless representation _cap_delay emits so a long gap keeps its
+    timing instead of being quantised. Greedy largest-first; the 1-16 tail always closes the remainder.
+    """
+    out, remaining = [], int(value)
+    for period in _CHAIN_DELAYS:
+        while remaining >= period:
+            out.append(period)
+            remaining -= period
+    return out
 
 
 def reset_diffs(orig_df, irq, sidq):
@@ -494,21 +535,28 @@ class RegLogParser:
         return irq, df[out_cols]
 
     def _cap_delay(self, df):
-        """Curve C: exact 1..16, nearest power of 2 17..256; chain via adjacent."""
-        m = df["reg"] == DELAY_REG
-        df.loc[m & (df["val"] > 255), "val"] = 255
-
-        def _quant(v):
-            if v <= 16:
-                return v
-            for b in (32, 64, 128, 256):
-                if v <= b:
-                    prev = b // 2
-                    return b if (v - prev) >= (b - v) else prev
-            return 256
-
-        df.loc[m, "val"] = df.loc[m, "val"].map(_quant)
-        return df
+        """Represent each DELAY as a chain of allowed period values summing to its EXACT total
+        (chain_delay) -- lossless timing, so elapsed frames are preserved and a stamp/consolidation that
+        repacks empties cannot drift the timeline. Replaces the old truncate-to-255 + nearest-power-of-2
+        quantisation, which dropped frames and mis-timed long gaps vs the dump."""
+        df = df.reset_index(drop=True)
+        reg = df["reg"].to_numpy()
+        val = df["val"].to_numpy()
+        need = (reg == DELAY_REG) & (val > 0) & ~np.isin(val, list(_ALLOWED_DELAYS))
+        if not need.any():
+            return df
+        pieces, prev = [], 0
+        for idx in np.nonzero(need)[0]:
+            if idx > prev:
+                pieces.append(df.iloc[prev:idx])
+            chain = chain_delay(int(val[idx]))
+            rep = pd.concat([df.iloc[[idx]]] * len(chain), ignore_index=True)
+            rep["val"] = chain
+            pieces.append(rep)
+            prev = idx + 1
+        if prev < len(df):
+            pieces.append(df.iloc[prev:])
+        return pd.concat(pieces, ignore_index=True)
 
     def _split_reg(self, orig_df, reg):
         df = orig_df.copy().reset_index(drop=True)
@@ -892,21 +940,33 @@ class RegLogParser:
         if not self._filter(df, name):
             return
         df = self._squeeze_frame_regs(df)
-        df = VoiceTrackPass().apply(df, args=self.args)
-        df = TrajectoryAnchorPass().apply(df, args=self.args)
-        df = StampPass().apply(df, args=self.args)
-        df = SweepPass().apply(df, args=self.args)
-        df = SkeletonPass().apply(df, args=self.args)
-        df = WavetablePass().apply(df, args=self.args)
-        df = FreqTrajectoryPass().apply(df, args=self.args)
-        df = FreqOnsetPass().apply(df, args=self.args)
-        df = PresetPass().apply(df, args=self.args)
-        df = PerRegBurstPass().apply(df, args=self.args)
-        df = GateSlopeShiftPass().apply(df, args=self.args)
-        df = PatchPass().apply(df, args=self.args)
-        df = ReleaseUpdatePass().apply(df, args=self.args)
+        elapsed = elapsed_frames(df)
+        audit = make_pass_audit(self.args)
+        audit.start(df)
+        for macro_pass in (
+            VoiceTrackPass(),
+            TrajectoryAnchorPass(),
+            StampPass(),
+            SweepPass(),
+            SkeletonPass(),
+            WavetablePass(),
+            FreqTrajectoryPass(),
+            FreqOnsetPass(),
+            PresetPass(),
+            PerRegBurstPass(),
+            GateSlopeShiftPass(),
+            PatchPass(),
+            ReleaseUpdatePass(),
+        ):
+            df = macro_pass.apply(df, args=self.args)
+            assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
+            audit.after(df, type(macro_pass).__name__)
         df = self._consolidate_frames(df)
+        audit.after(df, "_consolidate_frames")
+        consolidated = elapsed_frames(df)
         df = self._cap_delay(df)
+        assert_elapsed_frames(df, consolidated, "_cap_delay")
+        audit.after(df, "_cap_delay")
         delay_val = df[df["reg"] == DELAY_REG]["val"]
         if len(delay_val):
             delay_max = delay_val.max()
@@ -938,13 +998,21 @@ class RegLogParser:
             if not self._filter(pre_passes_voice_preview, name):
                 break
             xdf.attrs["engine_fp_cluster"] = engine_fp_cluster
+            audit.start(xdf)
             xdf = macros.run_passes(xdf, args=self.args)
+            audit.after(xdf, "run_passes")
             xdf = self._norm_pr_order(xdf)
+            audit.after(xdf, "_norm_pr_order(post)")
             xdf = macros.run_post_norm_pre_voice_passes(xdf, args=self.args)
+            audit.after(xdf, "run_post_norm_pre_voice_passes")
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
+            audit.after(xdf, "_add_voice_reg")
             xdf = FreqNudgePass().apply(xdf, args=self.args)
+            audit.after(xdf, "FreqNudgePass")
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
+            audit.after(xdf, "CtrlUpdatePass")
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
+            audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)
             for k in TOKEN_KEYS:
                 if k not in xdf.columns:

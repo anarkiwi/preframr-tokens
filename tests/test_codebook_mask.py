@@ -199,7 +199,7 @@ class TestDecoderSnapshotSeed(unittest.TestCase):
         ]
         df = pd.DataFrame(rows)
         unseeded = expand_ops(df)
-        seeded = expand_ops(df, codebook_seed={"stamp_table": {3: [{0: 100}]}})
+        seeded = expand_ops(df, codebook_seed={"stamp_table": {3: [[(0, 100)]]}})
         self.assertEqual(int((unseeded["reg"] == 0).sum()), 0, "ref drops without seed")
         seeded_reg0 = seeded[seeded["reg"] == 0]
         self.assertGreater(len(seeded_reg0), 0, "ref renders with seed")

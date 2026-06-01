@@ -814,7 +814,7 @@ class StampDecoder(MacroDecoder):
     def expand(self, row, state):
         op = int(row.op)
         if op == STAMP_DEF_OP:
-            state.pending_stamp_def = {"id": int(row.val), "frames": [{}]}
+            state.pending_stamp_def = {"id": int(row.val), "frames": [[]]}
             return None
         if op == STAMP_STEP_OP:
             self._step(row, state)
@@ -835,9 +835,22 @@ class StampDecoder(MacroDecoder):
         if stamp is None:
             return
         if int(row.subreg) == STAMP_SUBREG_FRAME:
-            stamp["frames"].append({})
+            stamp["frames"].append([])
         else:
-            stamp["frames"][-1][int(row.subreg)] = int(row.val)
+            stamp["frames"][-1].append((int(row.subreg), int(row.val)))
+
+    @staticmethod
+    def _offsets_in_order(frames):
+        """Voice-relative offsets in first-write order across the buffered frames -- preserves the
+        drum's intra-frame freq<->ctrl order (the per-frame drain in State.tick_frame emits regs in
+        pending_set_writes insertion order, so the first-seen offset writes first)."""
+        offsets, seen = [], set()
+        for fr in frames:
+            for off, _val in fr:
+                if off not in seen:
+                    seen.add(off)
+                    offsets.append(off)
+        return offsets
 
     @staticmethod
     def _ref(row, state):
@@ -845,11 +858,12 @@ class StampDecoder(MacroDecoder):
         if not frames:
             return None
         base = int(row.reg)
-        offsets = sorted({o for fr in frames for o in fr})
+        offsets = StampDecoder._offsets_in_order(frames)
         pre = state.maybe_flush_for(base, -1)
         cur = {}
         for fr in frames:
-            cur.update(fr)
+            for off, val in fr:
+                cur[off] = val
             for off in offsets:
                 if off in cur:
                     state.pending_set_writes[base + off].append(int(cur[off]))
@@ -886,11 +900,12 @@ class StampDecoder(MacroDecoder):
             return None
         base = int(pend["base"])
         voice = int(pend["reg"])
-        offsets = sorted({o for fr in frames for o in fr})
+        offsets = StampDecoder._offsets_in_order(frames)
         pre = state.maybe_flush_for(voice, -1)
         cur = {}
         for fr in frames:
-            cur.update(fr)
+            for off, val in fr:
+                cur[off] = val
             for off in offsets:
                 if off not in cur:
                     continue

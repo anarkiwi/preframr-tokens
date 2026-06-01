@@ -9,6 +9,7 @@ import pandas as pd
 
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
+    OVERLAY_BODY_FREQ_DELTA_BIN,
     _FREQ_REGS_VOICED,
     _back_ref_rows,
     _bin_body_freq_delta,
@@ -232,8 +233,13 @@ def _best_lz_transposed_njit(
     n_frames,
     min_lz_match,
     emit_rows,
+    bin_w,
 ):
-    """Inner loop of LoopPass.best_lz_transposed, JIT-compiled."""
+    """Inner loop of LoopPass.best_lz_transposed, JIT-compiled. Only accepts a run whose uniform freq
+    delta bins EXACTLY (``delta % bin_w == 0``): the emit stores ``_bin_body_freq_delta(delta)`` and the
+    decode replays source+binned, so a delta that doesn't land on a bin would replay the wrong pitch.
+    Lossy-delta runs are left for the literal / non-transposed encoders -- byte-exact over compression.
+    """
     best_save = 0
     best_dist = 0
     best_len = 0
@@ -290,6 +296,8 @@ def _best_lz_transposed_njit(
                 break
             length += 1
         if length < min_lz_match or not delta_set or delta == 0:
+            continue
+        if bin_w > 1 and delta % bin_w != 0:
             continue
         body_rows = sizes_cumsum[i + length] - sizes_cumsum[i]
         save = body_rows - emit_rows
@@ -467,6 +475,7 @@ class LoopPass(MacroPass):
                 n_frames,
                 self.min_lz_match,
                 self.transposed_emit_rows,
+                int(OVERLAY_BODY_FREQ_DELTA_BIN),
             )
 
         def _seed_pair(i):

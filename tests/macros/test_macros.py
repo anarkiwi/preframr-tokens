@@ -1139,6 +1139,47 @@ class TestLoopPass(unittest.TestCase):
                 tuple(int(decoded.iloc[i][c]) for c in cols),
             )
 
+    def _assert_loop_round_trip(self, df, encoded):
+        decoded = expand_loops(encoded)
+        cols = ["reg", "val", "op", "subreg"]
+        self.assertEqual(len(df), len(decoded))
+        for i in range(len(df)):
+            self.assertEqual(
+                tuple(int(df.iloc[i][c]) for c in cols),
+                tuple(int(decoded.iloc[i][c]) for c in cols),
+                f"row {i}",
+            )
+
+    def test_transposed_loop_lossless_only_on_bin_aligned_delta(self):
+        """A transposed loop replays source+_bin_body_freq_delta(delta); a delta that does not land on a
+        bin would replay the wrong pitch. The pass must emit a transposed PATTERN_REPLAY ONLY when the
+        delta bins exactly (lossless) and fall back to literal otherwise -- never a lossy transpose.
+        """
+
+        def _seq(base):
+            rows = []
+            for k in range(5):
+                rows.extend([_frame(), _row(0, base + 10 * k, op=SET_OP)])
+            return rows
+
+        lossy = pd.DataFrame(_seq(100) + _seq(105))
+        enc = LoopPass().apply(lossy.copy())
+        self.assertEqual(
+            int((enc["op"] == PATTERN_REPLAY_OP).sum()),
+            0,
+            "+5 delta is off-bin -- must not become a lossy transposed loop",
+        )
+        self._assert_loop_round_trip(lossy, enc)
+
+        exact = pd.DataFrame(_seq(100) + _seq(116))
+        enc2 = LoopPass().apply(exact.copy())
+        self.assertGreater(
+            int((enc2["op"] == PATTERN_REPLAY_OP).sum()),
+            0,
+            "+16 delta is on-bin -- transposed loop should still be used",
+        )
+        self._assert_loop_round_trip(exact, enc2)
+
 
 class TestValidateBackRefs(unittest.TestCase):
     def test_valid_passes(self):

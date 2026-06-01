@@ -16,6 +16,7 @@ from preframr_tokens.reg_match import (
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.reglogparser import (
     RegLogParser,
+    chain_delay,
     last_reg_val_frame,
     prepare_df_for_audio,
     read_initial_irq,
@@ -297,6 +298,33 @@ class TestRegLogParser(unittest.TestCase):
         )
         result_df = list(last_reg_val_frame(test_df, [0]))[0]
         self.assertTrue(last_df.equals(result_df))
+
+    def test_last_reg_val_frame_carries_pval_across_gap(self):
+        """pval is the decoded PREVIOUS-frame value, which is carried across frames with no write. A
+        DELAY skips f-numbers (no row at the elapsed frames), so pval at the next write must be the last
+        written val, not 0 -- the bug that made PerRegBurst DIFF mis-base (decode carried+delta, wrong).
+        """
+        test_df = pd.DataFrame(
+            [
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 5, "diff": 32},
+                {"reg": DELAY_REG, "val": 3, "diff": 19000},
+                {"reg": 7, "val": 9, "diff": 32},
+                {"reg": FRAME_REG, "val": 0, "diff": 19000},
+                {"reg": 7, "val": 11, "diff": 32},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        last_df = pd.DataFrame(
+            [
+                {"f": 1, "v": 1, "val": 5, "pval": 0},
+                {"f": 4, "v": 1, "val": 9, "pval": 5},
+                {"f": 5, "v": 1, "val": 11, "pval": 9},
+            ],
+            dtype=MODEL_PDTYPE,
+        )
+        result_df = list(last_reg_val_frame(test_df, [0]))[0].reset_index(drop=True)
+        self.assertTrue(last_df.equals(result_df), result_df.to_string())
 
     def test_add_change_regs_flip_only(self):
         test_df = pd.DataFrame(
@@ -990,6 +1018,16 @@ class TestRegLogParser(unittest.TestCase):
         irq, _result_df = loader._add_frame_reg(test_df, 512)
         self.assertEqual(irq, 0)
 
+    def test_chain_delay(self):
+        """chain_delay decomposes a delay into allowed period values summing to the EXACT total."""
+        allowed = set(range(1, 17)) | {32, 64, 128, 256}
+        for v in (5, 30, 100, 255, 256, 257, 1000, 9999):
+            chain = chain_delay(v)
+            self.assertEqual(sum(chain), v)
+            self.assertTrue(all(c in allowed for c in chain), chain)
+        self.assertEqual(chain_delay(5), [5])
+        self.assertEqual(chain_delay(30), [16, 14])
+
     def test_cap_delay(self):
         loader = RegLogParser(FakeArgs())
         test_df = pd.DataFrame(
@@ -1002,10 +1040,12 @@ class TestRegLogParser(unittest.TestCase):
             dtype=MODEL_PDTYPE,
         )
         result = loader._cap_delay(test_df.copy())
-        self.assertEqual(result.iloc[0]["val"], 256)
-        self.assertEqual(result.iloc[1]["val"], 32)
-        self.assertEqual(result.iloc[2]["val"], 5)
-        self.assertEqual(result.iloc[3]["val"], 1000)
+        allowed = set(range(1, 17)) | {32, 64, 128, 256}
+        out = result[result["reg"] == DELAY_REG]["val"]
+        self.assertEqual(int(out.sum()), 1035)
+        self.assertTrue((out <= 256).all())
+        self.assertTrue(out.isin(list(allowed)).all())
+        self.assertEqual(int(result[result["reg"] == 7]["val"].iloc[0]), 1000)
 
     def test_split_reg(self):
         loader = RegLogParser(FakeArgs())
