@@ -195,6 +195,32 @@ def last_reg_val_frame(orig_df, regs):
         yield sub_df
 
 
+def elapsed_frames(df):
+    """Total elapsed time in frames: each FRAME marker is one frame, each DELAY marker is its ``val``
+    frames. Every lossless re-encoder macro must conserve it (RegLogParser.parse asserts this after
+    each to localise a frame-budget defect); _consolidate_frames/_cap_delay deliberately restructure
+    the timeline (collapse empties, quantise delays) and are the only exempt transforms.
+    """
+    reg = df["reg"].to_numpy()
+    frames = int((reg == FRAME_REG).sum())
+    delay = df["val"].to_numpy()[reg == DELAY_REG]
+    if delay.size:
+        frames += int(delay.astype(np.int64).sum())
+    return frames
+
+
+def assert_elapsed_frames(df, expected, label):
+    """Enforce elapsed-frame conservation after a transform; raise pinpointing the transform if its
+    output changes the frame budget (the books no longer balance) so the defect is caught here.
+    """
+    got = elapsed_frames(df)
+    if got != expected:
+        raise AssertionError(
+            f"{label} changed elapsed frames {expected} -> {got} "
+            f"(a lossless transform must conserve the frame budget)"
+        )
+
+
 def reset_diffs(orig_df, irq, sidq):
     df = orig_df.copy().reset_index(drop=True)
     frame_cond = df["reg"] == FRAME_REG
@@ -892,19 +918,24 @@ class RegLogParser:
         if not self._filter(df, name):
             return
         df = self._squeeze_frame_regs(df)
-        df = VoiceTrackPass().apply(df, args=self.args)
-        df = TrajectoryAnchorPass().apply(df, args=self.args)
-        df = StampPass().apply(df, args=self.args)
-        df = SweepPass().apply(df, args=self.args)
-        df = SkeletonPass().apply(df, args=self.args)
-        df = WavetablePass().apply(df, args=self.args)
-        df = FreqTrajectoryPass().apply(df, args=self.args)
-        df = FreqOnsetPass().apply(df, args=self.args)
-        df = PresetPass().apply(df, args=self.args)
-        df = PerRegBurstPass().apply(df, args=self.args)
-        df = GateSlopeShiftPass().apply(df, args=self.args)
-        df = PatchPass().apply(df, args=self.args)
-        df = ReleaseUpdatePass().apply(df, args=self.args)
+        elapsed = elapsed_frames(df)
+        for macro_pass in (
+            VoiceTrackPass(),
+            TrajectoryAnchorPass(),
+            StampPass(),
+            SweepPass(),
+            SkeletonPass(),
+            WavetablePass(),
+            FreqTrajectoryPass(),
+            FreqOnsetPass(),
+            PresetPass(),
+            PerRegBurstPass(),
+            GateSlopeShiftPass(),
+            PatchPass(),
+            ReleaseUpdatePass(),
+        ):
+            df = macro_pass.apply(df, args=self.args)
+            assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
         df = self._consolidate_frames(df)
         df = self._cap_delay(df)
         delay_val = df[df["reg"] == DELAY_REG]["val"]
