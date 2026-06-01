@@ -117,6 +117,11 @@ class StampPass(MacroPass):
             return df
         if df is None or len(df) == 0:
             return df
+        if (
+            "op" in df.columns
+            and df["op"].isin((STAMP_DEF_OP, STAMP_REF_OP, STAMP_REL_REF_OP)).any()
+        ):
+            return df
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
@@ -137,7 +142,7 @@ class StampPass(MacroPass):
         drop_idx, new_rows = self._emit(groups, irq)
         if not new_rows:
             return df
-        return arbitrate(
+        result = arbitrate(
             df,
             [
                 Claim(
@@ -148,6 +153,21 @@ class StampPass(MacroPass):
                 )
             ],
         )
+        if not self._stamp_is_lossless(df, result):
+            return df
+        return result
+
+    @staticmethod
+    def _stamp_is_lossless(df_in, df_out):
+        """Decode both streams and require byte-exact per-frame register_state. A stamp must
+        reproduce the writes it consumes exactly; if the codebook replay diverges (the decoder's
+        per-frame drain can mis-align freq across hits) fall back to the un-stamped stream so the
+        render stays faithful -- the register-level fidelity oracle, not audio."""
+        from preframr_tokens.audit_primitives import register_state
+
+        before = register_state(df_in.copy())
+        after = register_state(df_out.copy())
+        return before.shape == after.shape and not (before != after).any()
 
     @staticmethod
     def _ctrl_rows(df):
@@ -222,6 +242,12 @@ class StampPass(MacroPass):
         rows = [fwrite[fr][0] for fr in fwrite] + [cwrite[fr][0] for fr in cwrite]
         if not rows:
             return None
+        order = (_FREQ_OFFSET, _CTRL_OFFSET)
+        for fr in sorted(write_frames):
+            if fr in fwrite and fr in cwrite:
+                if cwrite[fr][0] < fwrite[fr][0]:
+                    order = (_CTRL_OFFSET, _FREQ_OFFSET)
+                break
         return {
             "reg": reg,
             "onset": onset,
@@ -229,6 +255,7 @@ class StampPass(MacroPass):
             "fns": fns,
             "ctrls": ctrls,
             "rows": rows,
+            "order": order,
         }
 
     @staticmethod
@@ -317,12 +344,15 @@ class StampPass(MacroPass):
             if i > 0:
                 rows.append(_row(0, STAMP_STEP_OP, STAMP_SUBREG_FRAME, 0, irq, irq))
             delta = (fns[i] - base) & 0xFFFF
-            if delta != prev_d:
-                rows.append(_row(0, STAMP_STEP_OP, _FREQ_OFFSET, delta, irq, irq))
-                prev_d = delta
-            if ctrls[i] != prev_ctrl:
-                rows.append(_row(0, STAMP_STEP_OP, _CTRL_OFFSET, ctrls[i], irq, irq))
-                prev_ctrl = ctrls[i]
+            for off in span["order"]:
+                if off == _FREQ_OFFSET and delta != prev_d:
+                    rows.append(_row(0, STAMP_STEP_OP, _FREQ_OFFSET, delta, irq, irq))
+                    prev_d = delta
+                elif off == _CTRL_OFFSET and ctrls[i] != prev_ctrl:
+                    rows.append(
+                        _row(0, STAMP_STEP_OP, _CTRL_OFFSET, ctrls[i], irq, irq)
+                    )
+                    prev_ctrl = ctrls[i]
         rows.append(_row(0, STAMP_END_OP, -1, stamp_id, irq, irq))
         return rows
 
@@ -350,11 +380,14 @@ class StampPass(MacroPass):
         for i in range(len(fns)):
             if i > 0:
                 rows.append(_row(0, STAMP_STEP_OP, STAMP_SUBREG_FRAME, 0, irq, irq))
-            if fns[i] != prev_fn:
-                rows.append(_row(0, STAMP_STEP_OP, _FREQ_OFFSET, fns[i], irq, irq))
-                prev_fn = fns[i]
-            if ctrls[i] != prev_ctrl:
-                rows.append(_row(0, STAMP_STEP_OP, _CTRL_OFFSET, ctrls[i], irq, irq))
-                prev_ctrl = ctrls[i]
+            for off in span["order"]:
+                if off == _FREQ_OFFSET and fns[i] != prev_fn:
+                    rows.append(_row(0, STAMP_STEP_OP, _FREQ_OFFSET, fns[i], irq, irq))
+                    prev_fn = fns[i]
+                elif off == _CTRL_OFFSET and ctrls[i] != prev_ctrl:
+                    rows.append(
+                        _row(0, STAMP_STEP_OP, _CTRL_OFFSET, ctrls[i], irq, irq)
+                    )
+                    prev_ctrl = ctrls[i]
         rows.append(_row(0, STAMP_END_OP, -1, stamp_id, irq, irq))
         return rows
