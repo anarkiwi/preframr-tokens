@@ -78,6 +78,23 @@ def _classify_runs(frames, vals, use_flip):
     return ops, out_vals, drop
 
 
+def _set_decoder_pval(xdf, rs):
+    """Base each DIFF on the DECODER's previous-frame value ``rs[f-1, reg]`` (register_state), not the raw
+    SET val. Decode is prev_decoded + delta, so the base must be what the decoder carries INTO the frame;
+    a raw-val base mis-bases wherever decoded != raw (the first frame, combined multi-byte freq/PWM) and a
+    large jump then looks like a small delta -> a wrong DIFF. Non-circular: DIFF is lossless so
+    register_state(orig) == register_state(result). Frames before the reg's first appearance base on 0.
+    """
+    nf, nr = rs.shape
+    f = xdf["f"].to_numpy().astype(np.int64)
+    reg = xdf["reg"].to_numpy().astype(np.int64)
+    prev = f - 1
+    pv = np.zeros(len(f), dtype=np.int64)
+    ok = (prev >= 0) & (prev < nf) & (reg >= 0) & (reg < nr)
+    pv[ok] = rs[prev[ok], reg[ok]]
+    xdf["pval"] = pv
+
+
 def _add_change_reg(df, change_df, minchange, opcodes):
     change_dfs = []
     change_df["val"] -= change_df["pval"]
@@ -140,6 +157,7 @@ class PerRegBurstPass(MacroPass):
         return self._encode(orig_df, nd, had_op, cents, barrier)
 
     def _encode(self, orig_df, nd, had_op, cents, barrier):
+        from preframr_tokens.audit_primitives import register_state
         from preframr_tokens.reglogparser import last_reg_val_frame
 
         pivot_src = (
@@ -151,6 +169,9 @@ class PerRegBurstPass(MacroPass):
         freq_df["reg"] = freq_df["v"] * VOICE_REG_SIZE
         pcm_df["reg"] = pcm_df["v"] * VOICE_REG_SIZE + 2
         filter_df["reg"] = FC_LO_REG
+        decoded = register_state(orig_df if had_op else orig_df.assign(op=int(SET_OP)))
+        for xdf in (freq_df, pcm_df, filter_df):
+            _set_decoder_pval(xdf, decoded)
         df = nd.copy()
         all_change_dfs = []
         for xdf, matcher, minchange in (
