@@ -87,5 +87,29 @@ class TestPerRegBurstFreqLossless(unittest.TestCase):
         self.assertEqual(bad, [], f"DIFF-only lossy on {len(bad)} walks: {bad[:2]}")
 
 
+class TestPerRegBurstFallbackTool(unittest.TestCase):
+    """The opt-in per-register lossless fallback: off by default, and when on it re-encodes only the
+    registers the delta pass could not round-trip (a rare pval mis-base) as literal SET.
+    """
+
+    def test_fallback_off_by_default_on_demand_when_set(self):
+        from preframr_tokens.macros.per_reg_burst import _fallback_enabled
+
+        self.assertFalse(_fallback_enabled(None))
+
+        class _Args:
+            perreg_lossless_fallback = True
+
+        self.assertTrue(_fallback_enabled(_Args()))
+
+    def test_lossy_regs_flags_only_diverging_registers(self):
+        from preframr_tokens.macros.per_reg_burst import _lossy_regs
+
+        clean = _build([100, 110, 105])
+        diverged = _build([100, 120, 105])
+        self.assertEqual(_lossy_regs(clean, clean, had_op=True), frozenset())
+        self.assertEqual(_lossy_regs(clean, diverged, had_op=True), frozenset({_REG}))
+
+
 if __name__ == "__main__":
     unittest.main()
