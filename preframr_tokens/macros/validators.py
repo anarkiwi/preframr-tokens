@@ -180,30 +180,58 @@ def validate_pattern_overlays(df):
 
 
 def validate_back_refs(df, prompt_frame_count=0):
-    """Walk ``df`` and verify every BACK_REF / PATTERN_REPLAY resolves
-    within bounds.
+    """Verify every BACK_REF / PATTERN_REPLAY distance resolves within bounds, counting frames on the
+    EXPANDED timeline. The walk mirrors ``expand_loops``: a DO_LOOP body re-executes ``n_iter`` times
+    (the jump-back), so ``output_frame_count`` tracks the same frame position the decoder resolves a
+    distance against -- a plain linear walk counted a DO_LOOP body once and made a sound back-ref past a
+    loop look out of range.
     """
     if "op" not in df.columns:
         return True
+    op_arr = df["op"].to_numpy()
+    reg_arr = df["reg"].to_numpy()
+    val_arr = df["val"].to_numpy()
+    subreg_arr = df["subreg"].to_numpy() if "subreg" in df.columns else None
     state = _DistancePairState(output_frame_count=prompt_frame_count)
-    for idx, row in df.iterrows():
-        op = int(row["op"]) if not pd.isna(row["op"]) else SET_OP
+    do_stack = []
+    n = len(df)
+    i = 0
+    while i < n:
+        op_raw = op_arr[i]
+        op = int(op_raw) if not pd.isna(op_raw) else SET_OP
         spec = DISTANCE_PAIR_OPS.get(op)
         if spec is not None:
-            sr_raw = row.get("subreg", -1)
+            sr_raw = subreg_arr[i] if subreg_arr is not None else -1
             sr = int(sr_raw) if not pd.isna(sr_raw) else -1
-            _step_distance_pair(idx, row, sr, op, spec, state)
+            _step_distance_pair(i, {"val": int(val_arr[i])}, sr, op, spec, state)
+            i += 1
             continue
         assert state.pending_dist_op is None, (
-            f"row {idx}: distance row at row {state.pending_dist_idx} "
+            f"row {i}: distance row at row {state.pending_dist_idx} "
             f"(op={state.pending_dist_op}) interrupted with op={op}"
         )
-        if op == PATTERN_OVERLAY_OP:
-            continue
         if op == DO_LOOP_OP:
+            sr_raw = subreg_arr[i] if subreg_arr is not None else -1
+            sr = int(sr_raw) if not pd.isna(sr_raw) else -1
+            if sr == 0:
+                n_iter = int(val_arr[i])
+                assert n_iter >= 1, f"row {i}: DO_LOOP n_iter={n_iter} must be >= 1"
+                do_stack.append([i + 1, n_iter - 1])
+                i += 1
+            elif do_stack and do_stack[-1][1] > 0:
+                do_stack[-1][1] -= 1
+                i = do_stack[-1][0]
+            else:
+                if do_stack:
+                    do_stack.pop()
+                i += 1
             continue
-        if row["reg"] in _FRAME_MARKER_REGS:
+        if op == PATTERN_OVERLAY_OP:
+            i += 1
+            continue
+        if int(reg_arr[i]) in _FRAME_MARKER_REGS:
             state.output_frame_count += 1
+        i += 1
     assert state.pending_dist_op is None, (
         f"distance row at row {state.pending_dist_idx} "
         f"(op={state.pending_dist_op}) unfinished at end of df"

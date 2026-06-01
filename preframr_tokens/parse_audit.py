@@ -14,15 +14,6 @@ __all__ = ["make_pass_audit", "PassAudit"]
 
 _LOSSY_RESETS = frozenset({"SkeletonPass"})
 _FRAME_REBASE = frozenset({"_consolidate_frames"})
-_REF_OPAQUE = frozenset(
-    {
-        "run_post_norm_pre_voice_passes",
-        "_add_voice_reg",
-        "FreqNudgePass",
-        "CtrlUpdatePass",
-        "LonelyWriteValidatorPass",
-    }
-)
 
 
 def _loop_aware_frames(df):
@@ -86,8 +77,7 @@ class PassAudit:
             self._rs = self._state(df)
         elif lossless:
             problems.extend(self._lossless_problems(df))
-        if label not in _REF_OPAQUE:
-            problems.extend(self._ref_problems(df))
+        problems.extend(self._ref_problems(df))
         if problems:
             self._report(label, problems)
 
@@ -106,11 +96,9 @@ class PassAudit:
         ]
 
     def _ref_problems(self, df):
-        """validate_stream checks codebook + back-ref integrity but counts DO_LOOP bodies ONCE
-        (it `continue`s past the repetition) while distances are in EXPANDED frames -- so once LoopPass
-        (in the post-norm-pre-voice passes) mints loops, a SOUND BACK_REF computes a negative target.
-        _REF_OPAQUE skips it from loop-creation on; register_state (expand_loops, which asserts the same
-        bound AND checks decoded values) is the stronger arbiter there.
+        """validate_stream checks codebook + back-ref integrity (every BACK_REF / PATTERN_REPLAY distance
+        resolves in bounds, loop-aware) after every pass, so a malformed ref minted post-rotation by
+        LoopPass is pinpointed at parse time alongside the losslessness check.
         """
         from preframr_tokens.macros.validators import validate_stream
 

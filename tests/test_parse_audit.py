@@ -74,11 +74,10 @@ class TestPassAudit(unittest.TestCase):
         with self.assertRaises(AssertionError):
             audit.after(_stream([100, 130]), "PerRegBurstPass")
 
-    def test_ref_check_runs_at_loop_creation_but_skips_voice_reg_passes(self):
-        """validate_stream is meaningful while the stream is still frame-marker form (run_passes, where
-        loop back-refs are born), but _add_voice_reg / the post-norm-pre-voice passes restructure frames
-        so a sound BACK_REF looks out of range -- _REF_OPAQUE skips the ref check there (losslessness
-        still covers them). Verify the ref check fires for the former label and not the latter.
+    def test_ref_check_runs_after_every_pass(self):
+        """validate_back_refs is loop-aware (counts DO_LOOP-expanded frames), so the audit runs the ref
+        check after EVERY pass -- including the post-rotation passes where LoopPass mints back-refs -- so
+        a malformed loop ref is pinpointed immediately, not only via the losslessness check.
         """
         import preframr_tokens.macros.validators as validators
 
@@ -93,9 +92,7 @@ class TestPassAudit(unittest.TestCase):
             audit.after(_stream([100, 110]), "CtrlUpdatePass")
         finally:
             validators.validate_stream = original
-        self.assertEqual(
-            calls, [1], "ref check should run only at loop-creation labels"
-        )
+        self.assertEqual(calls, [1, 1, 1], "ref check should run after every pass")
 
 
 if __name__ == "__main__":

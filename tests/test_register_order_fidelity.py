@@ -134,8 +134,8 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         """The byte-exact pipeline must stay lossless END TO END, including the POST-rotation passes
         where LoopPass (in run_post_norm_pre_voice_passes) mints BACK_REF/DO_LOOP refs. Parse a real
         loop-heavy tune on the skeleton path with the audit in raise mode: any post-rotation pass that
-        breaks per-frame register_state (expand_loops round-trip) or the loop-expanded frame budget
-        raises here -- the strong loop-soundness check, since validate_stream can't count DO_LOOP.
+        breaks per-frame register_state (expand_loops round-trip), the loop-expanded frame budget, or
+        loop-aware back-ref integrity (validate_stream) raises here.
         """
         from preframr_tokens.stfconstants import BACK_REF_OP, DO_LOOP_OP
 

@@ -12,6 +12,7 @@ from preframr_tokens.stfconstants import (
     BACK_REF_OP,
     BACK_REF_SUBREG_DIST_HI,
     BACK_REF_SUBREG_DIST_LO,
+    BACK_REF_SUBREG_LEN,
     DO_LOOP_OP,
     FRAME_REG,
     PATTERN_OVERLAY_OP,
@@ -191,7 +192,9 @@ class TestValidateBackRefsPatternOverlayAndLoop(unittest.TestCase):
             validate_back_refs(_df(rows))
         self.assertIn("BACK_REF distance=1 reaches before frame 0", str(ctx.exception))
 
-    def test_do_loop_op_skipped_no_frame_counting(self):
+    def test_unmatched_do_loop_end_counts_no_frames(self):
+        """A DO_LOOP-end with no open loop (empty do_stack) adds no frame, so a following BACK_REF with
+        distance 1 still reaches before frame 0."""
         rows = [
             _row(op=DO_LOOP_OP, subreg=-1, val=0, reg=FRAME_REG),
             _row(op=BACK_REF_OP, subreg=BACK_REF_SUBREG_DIST_HI, val=0, reg=FRAME_REG),
@@ -199,6 +202,23 @@ class TestValidateBackRefsPatternOverlayAndLoop(unittest.TestCase):
         ]
         with self.assertRaises(AssertionError):
             validate_back_refs(_df(rows))
+
+    def test_do_loop_body_repeats_extend_expanded_frame_count(self):
+        """A DO_LOOP body re-executes n_iter times; a BACK_REF after the loop whose distance reaches into
+        those EXPANDED frames is in bounds (matches expand_loops). Body=2 frames x 3 iters = 6 expanded
+        frames, so distance=4 resolves to target=2. A linear walk counting the body once (output=2) would
+        wrongly flag distance=4 as reaching before frame 0 -- the false positive this guards against.
+        """
+        rows = [
+            _row(op=DO_LOOP_OP, subreg=0, val=3, reg=FRAME_REG),
+            _row(reg=FRAME_REG),
+            _row(reg=FRAME_REG),
+            _row(op=DO_LOOP_OP, subreg=1, val=0, reg=FRAME_REG),
+            _row(op=BACK_REF_OP, subreg=BACK_REF_SUBREG_DIST_HI, val=0, reg=FRAME_REG),
+            _row(op=BACK_REF_OP, subreg=BACK_REF_SUBREG_DIST_LO, val=4, reg=FRAME_REG),
+            _row(op=BACK_REF_OP, subreg=BACK_REF_SUBREG_LEN, val=1, reg=FRAME_REG),
+        ]
+        self.assertTrue(validate_back_refs(_df(rows)))
 
 
 if __name__ == "__main__":
