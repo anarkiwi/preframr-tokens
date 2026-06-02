@@ -37,11 +37,30 @@ class FrameWalker:
             )
         n_total = len(self.df)
         n_frames = len(self.frame_starts)
+        lead_end = int(self.frame_starts[0]) if n_frames else n_total
+        if lead_end > 0:
+            self._walk_lead(lead_end)
         for fi in range(n_frames):
             start = int(self.frame_starts[fi])
             end = int(self.frame_starts[fi + 1]) if fi + 1 < n_frames else n_total
             self.cur_frame = fi
             self._walk_frame(start, end)
+
+    def _walk_lead(self, end):
+        """Content before the first frame marker is a real frame (a tune's note-on / initial register
+        load): the first marker ENDS it. Render it from row 0 so its writes -- and any atom anchored
+        there (a SWEEP/wavetable consolidated into frame 0) -- are decoded, instead of dropped.
+        """
+        self.f_writes = []
+        self.cur_frame = -1
+        for i in range(0, end):
+            self._dispatch_row(i)
+        self.on_body_end()
+        tick = self.state.tick_frame()
+        self.on_frame_tick(tick)
+        self.f_writes.extend(tick)
+        self.on_pre_observe(self.f_writes)
+        self.on_frame_end()
 
     def _walk_frame(self, start, end):
         self.f_writes = []

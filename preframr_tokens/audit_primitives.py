@@ -108,7 +108,14 @@ def _register_state_walker_cls():
                 self.snaps.append(self.state.last_val[:25].copy())
 
             def on_frame_end(self):
-                self.snaps.append(self.state.last_val[:25].copy())
+                """The lead frame (cur_frame -1, content before the first marker) IS frame_reg frame 0,
+                so its state REPLACES the pre-frame zero placeholder instead of adding a snapshot --
+                keeping the frame budget and every frame_reg-indexed pass aligned (no off-by-one).
+                """
+                if self.cur_frame == -1:
+                    self.snaps[0] = self.state.last_val[:25].copy()
+                else:
+                    self.snaps.append(self.state.last_val[:25].copy())
 
         _RS_WALKER_CLS = _RegisterStateWalker
     return _RS_WALKER_CLS
