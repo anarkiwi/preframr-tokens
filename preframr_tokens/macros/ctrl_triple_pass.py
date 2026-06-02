@@ -7,7 +7,8 @@ __all__ = ["CtrlTriplePass"]
 
 import numpy as np
 
-from preframr_tokens.macros.passes_base import MacroPass, _splice_rows, _first_irq
+from preframr_tokens.macros.arbiter import Claim, arbitrate
+from preframr_tokens.macros.passes_base import MacroPass, _first_irq
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_TRIPLE_OP,
@@ -62,8 +63,7 @@ class CtrlTriplePass(MacroPass):
         if FRAME_REG not in regs:
             return df
 
-        drop_idx = []
-        new_rows = []
+        claims = []
         for ctrl_reg in self.target_regs:
             positions = np.flatnonzero(
                 (regs == ctrl_reg) & (ops == SET_OP) & (subregs == -1)
@@ -86,11 +86,12 @@ class CtrlTriplePass(MacroPass):
                     atom = _triple_rows(ctrl_reg, bytes3, diff, irq_default)
                     for nr in atom:
                         nr["__pos"] = i
-                    new_rows.extend(atom)
-                    drop_idx.extend((i, j, l))
+                    claims.append(
+                        Claim(writes=(i, j, l), tokens=atom, label="ctrl_triple")
+                    )
                     k += 3
                 else:
                     k += 1
-        if not drop_idx:
+        if not claims:
             return df
-        return _splice_rows(df, drop_idx, new_rows)
+        return arbitrate(df, claims)
