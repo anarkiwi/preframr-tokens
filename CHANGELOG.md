@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.41.0]
+### Fixed
+- Byte-exact control/envelope codebooks: register-exact passes now drop any collapse the
+  decoder would not reproduce. A `CTRL_BIGRAM`/`CTRL_TRIPLE` atom drains its byte at the
+  frame TICK, so when another pass's atom writes that control register later in the same
+  frame (e.g. a `StampPass` percussion stamp's offset-4 control byte), the tick-drained
+  value clobbered it (ctrl regs 4/11/18 gate-bit drops; PatchPass AD regs 5/12/19). Fixed
+  via `arbitrate(validate=True)`: the spliced result is decoded and any claim that changes
+  `register_state` is dropped (kept literal), CUMULATIVELY since adjacent collapses interact.
+  Root-fixes the ~8% HVSC dirty rate to ~0.
+- PatchPass emits one Claim per recurring envelope so a single divergent patch drops alone
+  instead of taking the tune's whole codebook.
+### Added
+- Reuse is model-visible: `BACK_REF` consolidated into `PATTERN_REPLAY`, and loop/codebook
+  reference ops re-fire on every self-contained block so the model sees reuse tokens.
+- `arbiter.arbitrate(validate=…)` byte-exact claim validation; `PREFRAMR_ARBITER_STRICT`
+  raises instead of dropping (for the byte-exact corpus sweep).
+- `RegLogParser` pre-load gate (`max_raw_writes`, default 4M) rejects digi/multispeed dumps
+  (millions of raw writes) before loading them, via the `is_digi` meta sidecar + parquet
+  row count.
+### Changed
+- Shared encoder abstractions: `codebook_emit.emit_recurring` (Patch/Stamp DEF-REF mining),
+  `run_collapse.collapse_runs` (CtrlBigram/CtrlTriple), `passes_base.make_row` (row schema),
+  `decoders._SetEquivalentDecoder` (SET-equivalent ops).
+
 ## [0.40.0]
 ### Fixed
 - Byte-exact tokenizer on the lossless (skeleton/stamp) path: every encoder pass now
