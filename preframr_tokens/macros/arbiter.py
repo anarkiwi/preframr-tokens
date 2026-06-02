@@ -68,10 +68,10 @@ def _strict():
 
 def arbitrate(df, claims, validate=False):
     """Select non-overlapping claims greedily in ``_sort_key`` order; write-overlapping lower-ranked
-    claims drop and stay literal. ``validate`` (set by register-exact passes) decodes the result and
-    DROPS any accepted claim that changes the source per-frame register_state -- so a collapse another
-    pass's atom would clobber (a stamp's later same-frame control write) stays literal, not wrong
-    tokens. ``PREFRAMR_ARBITER_STRICT`` RAISES on such a drop instead, flagging the proposing pass.
+    claims drop and stay literal. ``validate`` (register-exact passes) decodes the result and drops any
+    claim that changes the source register_state -- CUMULATIVELY, since claims interact (one ctrl
+    collapse's frame-tick drain can land in another's frame, so independent checks are unsound) -- a
+    clobbered collapse stays literal. ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
     """
     claimed: set = set()
     selected: list = []
@@ -99,7 +99,10 @@ def arbitrate(df, claims, validate=False):
     src_state = _decoded_state(df)
     if _lossless(src_state, out):
         return out
-    accepted = [c for c in selected if _lossless(src_state, _apply([c]))]
+    accepted: list = []
+    for claim in selected:
+        if _lossless(src_state, _apply(accepted + [claim])):
+            accepted.append(claim)
     if strict and len(accepted) != len(selected):
         raise AssertionError(
             f"ARBITER: {len(selected) - len(accepted)} claim(s) not byte-exact; "
