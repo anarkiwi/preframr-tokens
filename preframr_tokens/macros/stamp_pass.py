@@ -10,6 +10,7 @@ import statistics
 from collections import defaultdict
 
 from preframr_tokens.macros.arbiter import Claim, arbitrate
+from preframr_tokens.macros.codebook_emit import emit_recurring
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
@@ -269,67 +270,62 @@ class StampPass(MacroPass):
         return cur
 
     def _emit(self, groups, irq):
-        """Two passes: exact ABS first (byte-identical to before), then transpose-relative REL over
-        the spans ABS did not consume -- a pitched gesture played at different base freqs shares one
-        REL def (freq stored as deltas from onset) with per-hit base; drains spans no single exact
-        sig reaches MINREP for."""
-        drop_idx, new_rows = [], []
+        """Two passes over the shared recurring-codebook skeleton: exact ABS first (byte-identical to
+        before), then transpose-relative REL over the spans ABS did not consume -- a pitched gesture
+        played at different base freqs shares one REL def (freq stored as deltas from onset) with
+        per-hit base; drains spans no single exact sig reaches MINREP for."""
         consumed = set()
-        next_id = self._emit_abs(groups, irq, drop_idx, new_rows, consumed, 0)
-        self._emit_rel(groups, irq, drop_idx, new_rows, consumed, next_id)
-        return drop_idx, new_rows
 
-    def _emit_abs(self, groups, irq, drop_idx, new_rows, consumed, next_id):
-        ordered = sorted(
-            groups.items(), key=lambda kv: (min(s["onset"] for s in kv[1]), kv[0][0])
-        )
-        for (_reg, _sig), occ in ordered:
-            if len(occ) < STAMP_MINREP:
-                continue
-            stamp_id = next_id
-            next_id += 1
-            occ = sorted(occ, key=lambda s: s["onset"])
+        def abs_first(stamp_id, occ):
             char = classify_char(occ[0]["fns"], occ[0]["ctrls"])
-            for j, span in enumerate(occ):
-                pos = min(span["rows"])
-                rows = []
-                if j == 0:
-                    rows.extend(self._def_rows(stamp_id, char, span, irq))
-                rows.append(_row(span["reg"], STAMP_REF_OP, -1, stamp_id, irq, irq))
-                for r in rows:
-                    r["__pos"] = pos
-                    new_rows.append(r)
-                drop_idx.extend(span["rows"])
-                consumed.add(id(span))
-        return next_id
+            return self._def_rows(stamp_id, char, occ[0], irq) + [
+                _row(occ[0]["reg"], STAMP_REF_OP, -1, stamp_id, irq, irq)
+            ]
 
-    def _emit_rel(self, groups, irq, drop_idx, new_rows, consumed, next_id):
+        def abs_ref(stamp_id, span):
+            return [_row(span["reg"], STAMP_REF_OP, -1, stamp_id, irq, irq)]
+
+        drop_idx, new_rows, next_id = emit_recurring(
+            groups,
+            minrep=STAMP_MINREP,
+            group_sort=lambda kv: (min(s["onset"] for s in kv[1]), kv[0][0]),
+            occ_sort=lambda s: s["onset"],
+            pos_of=lambda s: min(s["rows"]),
+            rows_of=lambda s: s["rows"],
+            emit_first=abs_first,
+            emit_ref=abs_ref,
+            consumed=consumed,
+        )
+
         rel_groups = defaultdict(list)
         for occ in groups.values():
             for span in occ:
                 if id(span) not in consumed:
                     rel_groups[_rel_sig(span)].append(span)
-        ordered = sorted(
-            rel_groups.items(), key=lambda kv: min(s["onset"] for s in kv[1])
-        )
-        for _relsig, occ in ordered:
-            if len(occ) < STAMP_MINREP:
-                continue
-            stamp_id = next_id
-            next_id += 1
-            occ = sorted(occ, key=lambda s: s["onset"])
+
+        def rel_first(stamp_id, occ):
             char = classify_char(occ[0]["fns"], occ[0]["ctrls"])
-            for j, span in enumerate(occ):
-                pos = min(span["rows"])
-                rows = []
-                if j == 0:
-                    rows.extend(self._rel_def_rows(stamp_id, char, span, irq))
-                rows.extend(self._rel_ref_rows(span, stamp_id, irq))
-                for r in rows:
-                    r["__pos"] = pos
-                    new_rows.append(r)
-                drop_idx.extend(span["rows"])
-        return next_id
+            return self._rel_def_rows(stamp_id, char, occ[0], irq) + self._rel_ref_rows(
+                occ[0], stamp_id, irq
+            )
+
+        def rel_ref(stamp_id, span):
+            return self._rel_ref_rows(span, stamp_id, irq)
+
+        emit_recurring(
+            rel_groups,
+            minrep=STAMP_MINREP,
+            group_sort=lambda kv: min(s["onset"] for s in kv[1]),
+            occ_sort=lambda s: s["onset"],
+            pos_of=lambda s: min(s["rows"]),
+            rows_of=lambda s: s["rows"],
+            emit_first=rel_first,
+            emit_ref=rel_ref,
+            start_id=next_id,
+            drop_idx=drop_idx,
+            new_rows=new_rows,
+        )
+        return drop_idx, new_rows
 
     @staticmethod
     def _rel_def_rows(stamp_id, char, span, irq):

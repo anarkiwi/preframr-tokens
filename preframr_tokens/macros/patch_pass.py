@@ -10,6 +10,7 @@ __all__ = ["PatchPass"]
 from collections import defaultdict
 
 from preframr_tokens.macros.arbiter import Claim, arbitrate
+from preframr_tokens.macros.codebook_emit import emit_recurring
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
@@ -127,33 +128,32 @@ class PatchPass(MacroPass):
         """Group events by (freq_reg, ad, sr) -- per-voice, so a def and all its PATCH_SET reuses stay in
         one voice and keep def-before-ref under the voice-major _norm_pr_order (a global cross-voice
         codebook let a reuse sort ahead of its def -> "id not live"; trades cross-voice sharing for
-        byte-exactness). Each (ad,sr) recurring >= PATCH_MINREP: earliest occurrence is the PATCH_DEF in
-        DEF-position order, the rest PATCH_SET backrefs whose def precedes them."""
+        byte-exactness). Each (ad,sr) recurring >= PATCH_MINREP becomes a PATCH_DEF on its earliest
+        occurrence and PATCH_SET backrefs after, via the shared recurring-codebook skeleton.
+        """
         groups = defaultdict(list)
         for ev in events:
             groups[(ev["freq_reg"], ev["ad"], ev["sr"])].append(ev)
-        recurring = []
-        for key, occ in groups.items():
-            if len(occ) >= PATCH_MINREP:
-                occ = sorted(occ, key=lambda e: e["pos"])
-                recurring.append((occ[0]["pos"], key, occ))
-        recurring.sort()
-        drop_idx, new_rows = [], []
-        for patch_id, (_pos, (_freq_reg, ad, sr), occ) in enumerate(recurring):
-            for j, ev in enumerate(occ):
-                if j == 0:
-                    rows = [
-                        _row(
-                            ev["freq_reg"], PATCH_DEF_OP, PATCH_SUBREG_ID, patch_id, irq
-                        ),
-                        _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_AD, ad, irq),
-                        _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_SR, sr, irq),
-                    ]
-                else:
-                    rows = [_row(ev["freq_reg"], PATCH_SET_OP, -1, patch_id, irq)]
-                for r in rows:
-                    r["__pos"] = ev["pos"]
-                    new_rows.append(r)
-                drop_idx.append(ev["ad_row"])
-                drop_idx.append(ev["sr_row"])
+
+        def emit_first(cb_id, occ):
+            ev = occ[0]
+            return [
+                _row(ev["freq_reg"], PATCH_DEF_OP, PATCH_SUBREG_ID, cb_id, irq),
+                _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_AD, ev["ad"], irq),
+                _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_SR, ev["sr"], irq),
+            ]
+
+        def emit_ref(cb_id, ev):
+            return [_row(ev["freq_reg"], PATCH_SET_OP, -1, cb_id, irq)]
+
+        drop_idx, new_rows, _ = emit_recurring(
+            groups,
+            minrep=PATCH_MINREP,
+            group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
+            occ_sort=lambda e: e["pos"],
+            pos_of=lambda e: e["pos"],
+            rows_of=lambda e: (e["ad_row"], e["sr_row"]),
+            emit_first=emit_first,
+            emit_ref=emit_ref,
+        )
         return drop_idx, new_rows
