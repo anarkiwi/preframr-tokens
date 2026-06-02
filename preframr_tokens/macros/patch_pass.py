@@ -56,21 +56,10 @@ class PatchPass(MacroPass):
             df["op"] = int(SET_OP)
         irq = _first_irq(df)
         events = self._events(df)
-        drop_idx, new_rows = self._emit(events, irq)
-        if not new_rows:
+        claims = self._emit(events, irq)
+        if not claims:
             return df
-        return arbitrate(
-            df,
-            [
-                Claim(
-                    writes=tuple(drop_idx),
-                    tokens=new_rows,
-                    priority=_PATCH_PRIORITY,
-                    label="patch",
-                )
-            ],
-            validate=True,
-        )
+        return arbitrate(df, claims, validate=True)
 
     @staticmethod
     def _events(df):
@@ -119,12 +108,11 @@ class PatchPass(MacroPass):
 
     @staticmethod
     def _emit(events, irq):
-        """Group events by (freq_reg, ad, sr) -- per-voice, so a def and all its PATCH_SET reuses stay in
-        one voice and keep def-before-ref under the voice-major _norm_pr_order (a global cross-voice
-        codebook let a reuse sort ahead of its def -> "id not live"; trades cross-voice sharing for
-        byte-exactness). Each (ad,sr) recurring >= PATCH_MINREP becomes a PATCH_DEF on its earliest
-        occurrence and PATCH_SET backrefs after, via the shared recurring-codebook skeleton.
-        """
+        """Group events by (freq_reg, ad, sr) -- per-voice, so a def and its PATCH_SET reuses keep
+        def-before-ref under the voice-major _norm_pr_order (a global cross-voice codebook let a reuse
+        sort ahead of its def -> "id not live"). Each group recurring >= PATCH_MINREP is one Claim
+        (PATCH_DEF on the earliest occurrence, PATCH_SET after) so a single divergent patch drops alone
+        under validate, not the tune's whole codebook."""
         groups = defaultdict(list)
         for ev in events:
             groups[(ev["freq_reg"], ev["ad"], ev["sr"])].append(ev)
@@ -140,7 +128,7 @@ class PatchPass(MacroPass):
         def emit_ref(cb_id, ev):
             return [_row(ev["freq_reg"], PATCH_SET_OP, -1, cb_id, irq)]
 
-        drop_idx, new_rows, _ = emit_recurring(
+        grouped, _ = emit_recurring(
             groups,
             minrep=PATCH_MINREP,
             group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
@@ -149,5 +137,14 @@ class PatchPass(MacroPass):
             rows_of=lambda e: (e["ad_row"], e["sr_row"]),
             emit_first=emit_first,
             emit_ref=emit_ref,
+            per_group=True,
         )
-        return drop_idx, new_rows
+        return [
+            Claim(
+                writes=tuple(g_drop),
+                tokens=g_rows,
+                priority=_PATCH_PRIORITY,
+                label="patch",
+            )
+            for g_drop, g_rows in grouped
+        ]
