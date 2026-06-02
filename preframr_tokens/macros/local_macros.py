@@ -54,6 +54,11 @@ class CtrlBigramPass(MacroPass):
                 ) != 1:
                     k += 1
                     continue
+                if k + 2 < len(row_positions):
+                    nxt = int(row_positions[k + 2])
+                    if int((regs[j + 1 : nxt] == FRAME_REG).sum()) == 0:
+                        k += 1
+                        continue
                 pair = (int(vals[i]) & 0xFF, int(vals[j]) & 0xFF)
                 idx = CTRL_BIGRAM_PAIR_TO_IDX.get(pair)
                 if idx is None:

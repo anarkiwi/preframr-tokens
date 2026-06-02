@@ -71,7 +71,16 @@ class CtrlTriplePass(MacroPass):
             k = 0
             while k + 2 < len(positions):
                 i, j, l = (int(positions[k + o]) for o in range(3))
-                if _one_frame_apart(regs, i, j) and _one_frame_apart(regs, j, l):
+                l_frame_final = (
+                    k + 3 >= len(positions)
+                    or int((regs[l + 1 : int(positions[k + 3])] == FRAME_REG).sum())
+                    >= 1
+                )
+                if (
+                    _one_frame_apart(regs, i, j)
+                    and _one_frame_apart(regs, j, l)
+                    and l_frame_final
+                ):
                     diff = int(diffs[i]) if diffs is not None else 0
                     bytes3 = (int(vals[i]), int(vals[j]), int(vals[l]))
                     atom = _triple_rows(ctrl_reg, bytes3, diff, irq_default)
