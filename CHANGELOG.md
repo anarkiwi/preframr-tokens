@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.41.1]
+### Fixed
+- Decode walker now renders the lead frame -- content before the first FRAME marker, which is the
+  tune's note-on / initial register load (master volume + per-voice ADSR + control-with-gate-on +
+  start frequency). It was silently dropped (the walker iterated only from the first marker), so a
+  SweepPass/WavetablePass that consolidates all its per-frame data into that frame had it vanish
+  (reg N -> 0), and a StampPass REF into it found its DEF "not live". The lead-frame snapshot
+  REPLACES the pre-frame zero placeholder rather than appending, so register_state and frame_reg
+  stay aligned (no off-by-one) and every frame_reg-indexed pass stays byte-exact. Closes the last
+  HVSC byte-exact residuals (Helikopter/Racterslam/Jumble).
+
 ## [0.41.0]
 ### Fixed
 - Byte-exact control/envelope codebooks: register-exact passes now drop any collapse the
