@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.macros.state import _build_decode_state
-from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG
+from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP, _MIN_DIFF
 
-__all__ = ["MacroPass", "requires_state"]
+__all__ = ["MacroPass", "make_row", "requires_state"]
 
 
 class MacroPass:
@@ -21,6 +21,21 @@ class MacroPass:
 
     def apply(self, df, args=None):
         raise NotImplementedError
+
+
+def make_row(reg, val, *, op=SET_OP, subreg=-1, diff=_MIN_DIFF, irq=0, description=0):
+    """The canonical encoder row dict -- the 7-field schema (reg, val, diff, op, subreg, irq,
+    description) every pass emits. Per-pass ``_row`` helpers delegate here so the schema lives once.
+    """
+    return {
+        "reg": int(reg),
+        "val": int(val),
+        "diff": int(diff),
+        "op": int(op),
+        "subreg": int(subreg),
+        "irq": int(irq),
+        "description": int(description),
+    }
 
 
 def requires_state(method):

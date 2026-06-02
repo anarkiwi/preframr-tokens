@@ -5,7 +5,7 @@ atom, extending CTRL_BIGRAM by one and run before it so triples win."""
 
 __all__ = ["CtrlTriplePass"]
 
-from preframr_tokens.macros.passes_base import MacroPass, _first_irq
+from preframr_tokens.macros.passes_base import MacroPass, _first_irq, make_row
 from preframr_tokens.macros.run_collapse import collapse_runs
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
@@ -19,15 +19,7 @@ from preframr_tokens.stfconstants import (
 def _triple_rows(reg, bytes3, diff, irq):
     subs = (CTRL_TRIPLE_SUBREG_0, CTRL_TRIPLE_SUBREG_1, CTRL_TRIPLE_SUBREG_2)
     return [
-        {
-            "reg": int(reg),
-            "val": int(b) & 0xFF,
-            "diff": int(diff),
-            "op": int(CTRL_TRIPLE_OP),
-            "subreg": int(sub),
-            "irq": int(irq),
-            "description": 0,
-        }
+        make_row(reg, int(b) & 0xFF, op=CTRL_TRIPLE_OP, subreg=sub, diff=diff, irq=irq)
         for sub, b in zip(subs, bytes3)
     ]
 

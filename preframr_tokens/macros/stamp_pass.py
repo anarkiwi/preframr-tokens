@@ -15,6 +15,7 @@ from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
     _frame_index,
+    make_row,
     MacroPass,
 )
 from preframr_tokens.macros.skeleton_pass import SkeletonPass, fn_to_note_resid
@@ -88,15 +89,7 @@ def classify_char(fns, ctrls):
 
 
 def _row(reg, op, subreg, val, diff, irq):
-    return {
-        "reg": int(reg),
-        "val": int(val),
-        "diff": int(diff),
-        "op": int(op),
-        "subreg": int(subreg),
-        "irq": int(irq),
-        "description": 0,
-    }
+    return make_row(reg, val, op=op, subreg=subreg, diff=diff, irq=irq)
 
 
 def _rel_sig(span):

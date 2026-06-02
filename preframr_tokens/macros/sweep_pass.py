@@ -11,6 +11,7 @@ from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
+    make_row,
     MacroPass,
 )
 from preframr_tokens.macros.skeleton_pass import (
@@ -39,15 +40,7 @@ _SWEEP_PRIORITY = -5
 
 
 def _row(reg, subreg, val, irq):
-    return {
-        "reg": int(reg),
-        "val": int(val),
-        "diff": int(irq),
-        "op": int(SWEEP_OP),
-        "subreg": int(subreg),
-        "irq": int(irq),
-        "description": 0,
-    }
+    return make_row(reg, val, op=SWEEP_OP, subreg=subreg, diff=irq, irq=irq)
 
 
 class SweepPass(MacroPass):

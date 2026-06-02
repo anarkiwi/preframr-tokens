@@ -15,6 +15,7 @@ from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
     _frame_index,
+    make_row,
     MacroPass,
 )
 from preframr_tokens.stfconstants import (
@@ -36,15 +37,7 @@ _PATCH_PRIORITY = -5
 
 
 def _row(reg, op, subreg, val, irq):
-    return {
-        "reg": int(reg),
-        "val": int(val),
-        "diff": int(_MIN_DIFF),
-        "op": int(op),
-        "subreg": int(subreg),
-        "irq": int(irq),
-        "description": 0,
-    }
+    return make_row(reg, val, op=op, subreg=subreg, diff=_MIN_DIFF, irq=irq)
 
 
 class PatchPass(MacroPass):

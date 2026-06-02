@@ -4,7 +4,7 @@ from __future__ import annotations
 
 __all__ = ["CtrlBigramPass"]
 
-from preframr_tokens.macros.passes_base import MacroPass
+from preframr_tokens.macros.passes_base import MacroPass, make_row
 from preframr_tokens.macros.run_collapse import collapse_runs
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import CTRL_BIGRAM_OP, CTRL_BIGRAM_PAIR_TO_IDX
@@ -31,14 +31,14 @@ class CtrlBigramPass(MacroPass):
             if idx is None:
                 return None
             return [
-                {
-                    "reg": int(reg),
-                    "val": int(idx),
-                    "op": int(CTRL_BIGRAM_OP),
-                    "subreg": -1,
-                    "diff": int(diffs[i]) if diffs is not None else 0,
-                    "irq": int(irqs[i]) if irqs is not None else 0,
-                }
+                make_row(
+                    reg,
+                    idx,
+                    op=CTRL_BIGRAM_OP,
+                    subreg=-1,
+                    diff=int(diffs[i]) if diffs is not None else 0,
+                    irq=int(irqs[i]) if irqs is not None else 0,
+                )
             ]
 
         return collapse_runs(
