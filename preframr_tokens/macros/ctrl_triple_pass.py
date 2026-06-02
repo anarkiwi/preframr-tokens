@@ -5,25 +5,15 @@ atom, extending CTRL_BIGRAM by one and run before it so triples win."""
 
 __all__ = ["CtrlTriplePass"]
 
-import numpy as np
-
-from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.passes_base import MacroPass, _first_irq
+from preframr_tokens.macros.run_collapse import collapse_runs
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_TRIPLE_OP,
     CTRL_TRIPLE_SUBREG_0,
     CTRL_TRIPLE_SUBREG_1,
     CTRL_TRIPLE_SUBREG_2,
-    DELAY_REG,
-    FRAME_REG,
-    SET_OP,
 )
-
-
-def _one_frame_apart(regs, i, j):
-    between = regs[i + 1 : j]
-    return not (between == DELAY_REG).any() and int((between == FRAME_REG).sum()) == 1
 
 
 def _triple_rows(reg, bytes3, diff, irq):
@@ -52,46 +42,20 @@ class CtrlTriplePass(MacroPass):
         if "op" not in df.columns or "reg" not in df.columns:
             return df
         df = df.reset_index(drop=True).copy()
-        regs = df["reg"].to_numpy()
-        ops = df["op"].to_numpy()
         vals = df["val"].to_numpy()
         diffs = df["diff"].to_numpy() if "diff" in df.columns else None
-        subregs = (
-            df["subreg"].to_numpy() if "subreg" in df.columns else np.full(len(df), -1)
-        )
         irq_default = _first_irq(df)
-        if FRAME_REG not in regs:
-            return df
 
-        claims = []
-        for ctrl_reg in self.target_regs:
-            positions = np.flatnonzero(
-                (regs == ctrl_reg) & (ops == SET_OP) & (subregs == -1)
-            )
-            k = 0
-            while k + 2 < len(positions):
-                i, j, l = (int(positions[k + o]) for o in range(3))
-                l_frame_final = (
-                    k + 3 >= len(positions)
-                    or int((regs[l + 1 : int(positions[k + 3])] == FRAME_REG).sum())
-                    >= 1
-                )
-                if (
-                    _one_frame_apart(regs, i, j)
-                    and _one_frame_apart(regs, j, l)
-                    and l_frame_final
-                ):
-                    diff = int(diffs[i]) if diffs is not None else 0
-                    bytes3 = (int(vals[i]), int(vals[j]), int(vals[l]))
-                    atom = _triple_rows(ctrl_reg, bytes3, diff, irq_default)
-                    for nr in atom:
-                        nr["__pos"] = i
-                    claims.append(
-                        Claim(writes=(i, j, l), tokens=atom, label="ctrl_triple")
-                    )
-                    k += 3
-                else:
-                    k += 1
-        if not claims:
-            return df
-        return arbitrate(df, claims)
+        def build_atom(reg, idxs):
+            i, j, l = idxs
+            diff = int(diffs[i]) if diffs is not None else 0
+            bytes3 = (int(vals[i]), int(vals[j]), int(vals[l]))
+            return _triple_rows(reg, bytes3, diff, irq_default)
+
+        return collapse_runs(
+            df,
+            run_len=3,
+            target_regs=self.target_regs,
+            build_atom=build_atom,
+            label="ctrl_triple",
+        )
