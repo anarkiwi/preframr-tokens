@@ -90,16 +90,23 @@ class PatchPass(MacroPass):
         ad_regs = {int(reg) + PATCH_AD_OFFSET: int(reg) for reg in FREQ_TRAJ_REGS}
         sr_regs = {int(reg) + PATCH_SR_OFFSET: int(reg) for reg in FREQ_TRAJ_REGS}
         ad_at, sr_at = {}, {}
+        ad_count, sr_count = defaultdict(int), defaultdict(int)
         for i in range(len(df)):
             if int(ops[i]) != SET_OP or int(subregs[i]) != -1:
                 continue
             reg = int(regs[i])
             if reg in ad_regs:
-                ad_at[(ad_regs[reg], int(f_idx[i]))] = (int(i), int(vals[i]))
+                key = (ad_regs[reg], int(f_idx[i]))
+                ad_at[key] = (int(i), int(vals[i]))
+                ad_count[key] += 1
             elif reg in sr_regs:
-                sr_at[(sr_regs[reg], int(f_idx[i]))] = (int(i), int(vals[i]))
+                key = (sr_regs[reg], int(f_idx[i]))
+                sr_at[key] = (int(i), int(vals[i]))
+                sr_count[key] += 1
         events = []
         for key in set(ad_at) & set(sr_at):
+            if ad_count[key] != 1 or sr_count[key] != 1:
+                continue
             freq_reg, _frame = key
             ad_row, ad = ad_at[key]
             sr_row, sr = sr_at[key]
