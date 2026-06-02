@@ -72,4 +72,4 @@ def collapse_runs(df, *, run_len, target_regs, build_atom, label):
             k += 1
     if not claims:
         return df
-    return arbitrate(df, claims)
+    return arbitrate(df, claims, validate=True)

@@ -1,8 +1,8 @@
 """Claim + arbiter: the speculative encoding pipeline core
 (``design/speculative_encoding_pipeline.md``). Passes PROPOSE ``Claim``s over the immutable source;
 ``arbitrate`` accepts a non-overlapping subset maximising the lexicographic score with a deterministic
-tie-break. Under ``PREFRAMR_ARBITER_STRICT`` it raises on any accepted claim that does not decode
-byte-identically (register_state), so a buggy register-exact pass surfaces to be root-fixed.
+tie-break. Register-exact passes pass ``validate=True`` so any claim that changes the decoded
+register_state is dropped (kept literal); ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
 """
 
 from __future__ import annotations
@@ -66,12 +66,13 @@ def _strict():
     return os.environ.get("PREFRAMR_ARBITER_STRICT", "") not in ("", "0")
 
 
-def arbitrate(df, claims):
-    """Select non-overlapping claims greedily in ``_sort_key`` order; conflicting (write-overlapping)
-    lower-ranked claims are dropped and their writes stay literal. A single claim reduces exactly to
-    ``_splice_rows(df, drop_idx, new_rows)`` -- byte-identical to the pre-arbiter passes. Validation is
-    opt-in via ``PREFRAMR_ARBITER_STRICT`` (register-exact passes only; content-tier passes change
-    decoded state by design); when strict, a non-byte-exact accepted claim RAISES."""
+def arbitrate(df, claims, validate=False):
+    """Select non-overlapping claims greedily in ``_sort_key`` order; write-overlapping lower-ranked
+    claims drop and stay literal. ``validate`` (set by register-exact passes) decodes the result and
+    DROPS any accepted claim that changes the source per-frame register_state -- so a collapse another
+    pass's atom would clobber (a stamp's later same-frame control write) stays literal, not wrong
+    tokens. ``PREFRAMR_ARBITER_STRICT`` RAISES on such a drop instead, flagging the proposing pass.
+    """
     claimed: set = set()
     selected: list = []
     for claim in sorted(claims, key=_sort_key):
@@ -92,16 +93,22 @@ def arbitrate(df, claims):
         return _splice_rows(df, drop_idx, new_rows)
 
     out = _apply(selected)
-    if not _strict():
+    strict = _strict()
+    if not (validate or strict):
         return out
     src_state = _decoded_state(df)
     if _lossless(src_state, out):
         return out
+    accepted: list = []
+    dropped: list = []
     for claim in selected:
-        if not _lossless(src_state, _apply([c for c in selected if c is not claim])):
-            continue
+        if _lossless(src_state, _apply(accepted + [claim])):
+            accepted.append(claim)
+        else:
+            dropped.append(claim)
+    if strict and dropped:
         raise AssertionError(
-            f"ARBITER: claim {claim.label or claim.writes} is not byte-exact "
-            f"(decoded register_state diverges); root-fix the proposing pass"
+            f"ARBITER: {len(dropped)} claim(s) not byte-exact (e.g. "
+            f"{dropped[0].label or dropped[0].writes}); root-fix the proposing pass"
         )
-    raise AssertionError("ARBITER: accepted partition is not byte-exact")
+    return _apply(accepted)
