@@ -521,48 +521,42 @@ class FreqTrajectoryDecoder(MacroDecoder):
         return list(pre)
 
 
-class FreqOnsetDecoder(MacroDecoder):
+class _SetEquivalentDecoder(MacroDecoder):
+    """Base for ops that decode exactly like a plain SET on ``row.reg`` (flush pending, update
+    last_val/last_diff, emit the single write) but carry a distinct op so the atom channels as a
+    recognised, non-lonely write. Subclasses set ``op_code`` only."""
+
+    op_code = -1
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, int(row.val), row.diff, row.description)]
+
+
+class FreqOnsetDecoder(_SetEquivalentDecoder):
     """Decode a FREQ_ONSET atom: an isolated TRAJ_REG (freq/PW/filter) write, equivalent to a
     SET on that register but tagged as a melodic/timbral onset (so it lives in the onset
     channel, not op0 SET)."""
 
     op_code = FREQ_ONSET_OP
 
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, int(row.val), row.diff, row.description)]
 
-
-class ReleaseUpdateDecoder(MacroDecoder):
+class ReleaseUpdateDecoder(_SetEquivalentDecoder):
     """Decode a RELEASE_UPDATE atom: a single isolated SR/AD envelope write,
     equivalent to a SET on that register but tagged as a recognised op."""
 
     op_code = RELEASE_UPDATE_OP
 
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, int(row.val), row.diff, row.description)]
 
-
-class CtrlUpdateDecoder(MacroDecoder):
+class CtrlUpdateDecoder(_SetEquivalentDecoder):
     """Decode a CTRL_UPDATE atom: a single residual CTRL write the bigram/triple
     passes did not take, equivalent to a SET on that register but tagged as a
     recognised op so it is not a lonely write."""
 
     op_code = CTRL_UPDATE_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, int(row.val), row.diff, row.description)]
 
 
 class CtrlTripleDecoder(MacroDecoder):

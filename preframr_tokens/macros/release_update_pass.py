@@ -12,6 +12,7 @@ from preframr_tokens.macros.passes_base import (
     _frame_index,
     _frame_isolated,
     _splice_rows,
+    make_row,
 )
 from preframr_tokens.macros.state import AD_REGS_BY_VOICE, SR_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
@@ -59,18 +60,16 @@ class ReleaseUpdatePass(MacroPass):
                 ):
                     continue
                 diff = int(diffs[i]) if diffs is not None else 0
-                new_rows.append(
-                    {
-                        "reg": int(reg),
-                        "val": int(vals[i]),
-                        "diff": diff,
-                        "op": int(RELEASE_UPDATE_OP),
-                        "subreg": -1,
-                        "irq": int(irq_default),
-                        "description": 0,
-                        "__pos": i,
-                    }
+                row = make_row(
+                    int(reg),
+                    int(vals[i]),
+                    op=RELEASE_UPDATE_OP,
+                    subreg=-1,
+                    diff=diff,
+                    irq=int(irq_default),
                 )
+                row["__pos"] = i
+                new_rows.append(row)
                 drop_idx.append(i)
         if not drop_idx:
             return df

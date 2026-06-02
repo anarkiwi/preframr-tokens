@@ -11,6 +11,7 @@ from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _splice_rows,
     _first_irq,
+    make_row,
 )
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import CTRL_UPDATE_OP, SET_OP
@@ -41,18 +42,16 @@ class CtrlUpdatePass(MacroPass):
                 and int(ops[i]) == SET_OP
                 and int(subregs[i]) == -1
             ):
-                new_rows.append(
-                    {
-                        "reg": int(regs[i]),
-                        "val": int(vals[i]),
-                        "diff": int(diffs[i]) if diffs is not None else 0,
-                        "op": int(CTRL_UPDATE_OP),
-                        "subreg": -1,
-                        "irq": int(irq_default),
-                        "description": 0,
-                        "__pos": i,
-                    }
+                row = make_row(
+                    int(regs[i]),
+                    int(vals[i]),
+                    op=CTRL_UPDATE_OP,
+                    subreg=-1,
+                    diff=int(diffs[i]) if diffs is not None else 0,
+                    irq=int(irq_default),
                 )
+                row["__pos"] = i
+                new_rows.append(row)
                 drop_idx.append(i)
         if not drop_idx:
             return df
