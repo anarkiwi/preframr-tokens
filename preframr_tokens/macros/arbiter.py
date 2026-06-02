@@ -99,16 +99,10 @@ def arbitrate(df, claims, validate=False):
     src_state = _decoded_state(df)
     if _lossless(src_state, out):
         return out
-    accepted: list = []
-    dropped: list = []
-    for claim in selected:
-        if _lossless(src_state, _apply(accepted + [claim])):
-            accepted.append(claim)
-        else:
-            dropped.append(claim)
-    if strict and dropped:
+    accepted = [c for c in selected if _lossless(src_state, _apply([c]))]
+    if strict and len(accepted) != len(selected):
         raise AssertionError(
-            f"ARBITER: {len(dropped)} claim(s) not byte-exact (e.g. "
-            f"{dropped[0].label or dropped[0].writes}); root-fix the proposing pass"
+            f"ARBITER: {len(selected) - len(accepted)} claim(s) not byte-exact; "
+            f"root-fix the proposing pass"
         )
     return _apply(accepted)
