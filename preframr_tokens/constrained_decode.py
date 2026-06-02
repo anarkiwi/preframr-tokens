@@ -8,10 +8,6 @@ import numpy as np
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
     BACK_REF_DIST_LO_MASK,
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DELAY_REG,
     FRAME_REG,
     MAX_REG,
@@ -61,34 +57,26 @@ class MacroShape(IntEnum):
 
     NONE = 0
     MALFORMED = 1
-    SINGLETON_BACK_REF_DIST_HI = 2
-    SINGLETON_BACK_REF_DIST_LO = 3
-    SINGLETON_BACK_REF_LEN = 4
-    SINGLETON_PR_DIST_HI = 5
-    SINGLETON_PR_DIST_LO = 6
-    SINGLETON_PR_LEN = 7
-    SINGLETON_PR_OV_COUNT = 8
-    SINGLETON_OVERLAY_FRAME_OFFSET = 9
-    SINGLETON_OVERLAY_TARGET_REG = 10
-    SINGLETON_OVERLAY_NEW_VAL = 11
-    BR_HI_THEN_LO = 12
-    BR_COMPLETE = 13
-    BR_LO_THEN_LEN = 14
-    PR_HI_THEN_LO = 15
-    PR_HI_THROUGH_LEN = 16
-    PR_COMPLETE = 17
-    PR_LO_THEN_LEN = 18
-    PR_LO_THROUGH_OV_COUNT = 19
-    BR_LEN_WITH_TAIL = 20
-    PR_LEN_THEN_OV_COUNT = 21
-    OV_TARGET_THEN_NEW_VAL = 22
+    SINGLETON_PR_DIST_HI = 2
+    SINGLETON_PR_DIST_LO = 3
+    SINGLETON_PR_LEN = 4
+    SINGLETON_PR_OV_COUNT = 5
+    SINGLETON_OVERLAY_FRAME_OFFSET = 6
+    SINGLETON_OVERLAY_TARGET_REG = 7
+    SINGLETON_OVERLAY_NEW_VAL = 8
+    PR_HI_THEN_LO = 9
+    PR_HI_THROUGH_LEN = 10
+    PR_COMPLETE = 11
+    PR_LO_THEN_LEN = 12
+    PR_LO_THROUGH_OV_COUNT = 13
+    PR_LEN_THEN_OV_COUNT = 14
+    PR_LEN_WITH_TAIL = 15
+    OV_TARGET_THEN_NEW_VAL = 16
 
 
 _SHAPES_WITH_DIST_LO_FIRST = frozenset(
     {
-        MacroShape.SINGLETON_BACK_REF_DIST_LO,
         MacroShape.SINGLETON_PR_DIST_LO,
-        MacroShape.BR_LO_THEN_LEN,
         MacroShape.PR_LO_THEN_LEN,
         MacroShape.PR_LO_THROUGH_OV_COUNT,
     }
@@ -96,8 +84,6 @@ _SHAPES_WITH_DIST_LO_FIRST = frozenset(
 
 _SHAPES_WITH_DIST_LO_SECOND = frozenset(
     {
-        MacroShape.BR_HI_THEN_LO,
-        MacroShape.BR_COMPLETE,
         MacroShape.PR_HI_THEN_LO,
         MacroShape.PR_HI_THROUGH_LEN,
         MacroShape.PR_COMPLETE,
@@ -188,8 +174,6 @@ class _ShapeRule:
     val_indices: tuple[int, ...] = ()
 
 
-_BR_LO = (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO)
-_BR_LEN = (BACK_REF_OP, BACK_REF_SUBREG_LEN)
 _PR_LO = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_LO)
 _PR_LEN = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN)
 _PR_OVC = (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_OVERLAY_COUNT)
@@ -197,18 +181,6 @@ _OV_NEW = (PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_NEW_VAL)
 
 
 _HEAD_RULES: dict[tuple[int, int], tuple[_ShapeRule, ...]] = {
-    (BACK_REF_OP, BACK_REF_SUBREG_DIST_HI): (
-        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_DIST_HI, (0,)),
-        _ShapeRule((_BR_LO,), MacroShape.BR_HI_THEN_LO, (0,)),
-        _ShapeRule((_BR_LO, _BR_LEN), MacroShape.BR_COMPLETE, (0,)),
-    ),
-    (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO): (
-        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_DIST_LO, (0,)),
-        _ShapeRule((_BR_LEN,), MacroShape.BR_LO_THEN_LEN),
-    ),
-    (BACK_REF_OP, BACK_REF_SUBREG_LEN): (
-        _ShapeRule((), MacroShape.SINGLETON_BACK_REF_LEN, (0,)),
-    ),
     (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI): (
         _ShapeRule((), MacroShape.SINGLETON_PR_DIST_HI, (0,)),
         _ShapeRule((_PR_LO,), MacroShape.PR_HI_THEN_LO, (0,)),
@@ -244,18 +216,6 @@ _SHAPE_HANDLERS: dict[
     "MacroShape", tuple[tuple[str, ...], tuple[tuple[str, int], ...]]
 ] = {
     MacroShape.MALFORMED: (("is_malformed_macro",), ()),
-    MacroShape.SINGLETON_BACK_REF_DIST_HI: (
-        ("is_singleton_back_ref_dist_hi",),
-        (("distance_hi", 1),),
-    ),
-    MacroShape.SINGLETON_BACK_REF_DIST_LO: (
-        ("is_singleton_back_ref_dist_lo", "consumes_back_ref_dist_lo_gate"),
-        (),
-    ),
-    MacroShape.SINGLETON_BACK_REF_LEN: (
-        ("is_singleton_back_ref_len", "consumes_back_ref_len_gate"),
-        (),
-    ),
     MacroShape.SINGLETON_PR_DIST_HI: (
         ("is_singleton_pr_dist_hi",),
         (("distance_hi", 1),),
@@ -296,22 +256,6 @@ _SHAPE_HANDLERS: dict[
         ),
         (),
     ),
-    MacroShape.BR_HI_THEN_LO: (
-        ("is_singleton_back_ref_dist_hi", "extends_to_back_ref_lo_consumed"),
-        (("distance_hi", 1),),
-    ),
-    MacroShape.BR_COMPLETE: (
-        (
-            "is_singleton_back_ref_dist_hi",
-            "extends_to_back_ref_lo_consumed",
-            "extends_to_back_ref_len_consumed",
-        ),
-        (("distance_hi", 1),),
-    ),
-    MacroShape.BR_LO_THEN_LEN: (
-        ("consumes_back_ref_dist_lo_gate", "extends_to_back_ref_len_consumed"),
-        (),
-    ),
     MacroShape.PR_HI_THEN_LO: (
         ("is_singleton_pr_dist_hi", "extends_to_pr_lo_consumed"),
         (("distance_hi", 1),),
@@ -345,7 +289,7 @@ _SHAPE_HANDLERS: dict[
         ),
         (("overlay_count", 1), ("pending_overlays_delta", 1)),
     ),
-    MacroShape.BR_LEN_WITH_TAIL: (("consumes_back_ref_len_gate",), ()),
+    MacroShape.PR_LEN_WITH_TAIL: (("consumes_pr_len_gate",), ()),
     MacroShape.PR_LEN_THEN_OV_COUNT: (
         ("consumes_pr_len_gate", "extends_to_pr_ov_count_consumed"),
         (("overlay_count", 1), ("pending_overlays_delta", 1)),
@@ -358,7 +302,7 @@ _SHAPE_HANDLERS: dict[
 
 
 def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
-    """Classify a sub-token's macro shape against ``_HEAD_RULES``; returns ``(MacroShape, *extras)``. ``BR_LEN_WITH_TAIL`` is the lone irregular shape, handled out-of-table."""
+    """Classify a sub-token's macro shape against ``_HEAD_RULES``; returns ``(MacroShape, *extras)``. ``PR_LEN_WITH_TAIL`` is the lone irregular shape (a PATTERN_REPLAY LEN that closes a 3-row verbatim copy, carrying trailing literal atoms), handled out-of-table."""
     n = atomic_ids.size
     if n == 0:
         return (MacroShape.NONE,)
@@ -373,11 +317,12 @@ def _classify_macro_shape(atomic_ids, op_a, subreg_a, val_a, is_macro_a):
         return (MacroShape.MALFORMED,)
     first = int(atomic_ids[0])
     head = (int(op_a[first]), int(subreg_a[first]))
-    if head == (BACK_REF_OP, BACK_REF_SUBREG_LEN) and n >= 2:
-        for k in range(1, n):
-            if is_macro_a[int(atomic_ids[k])]:
-                return (MacroShape.MALFORMED,)
-        return (MacroShape.BR_LEN_WITH_TAIL, int(val_a[first]))
+    if (
+        head == (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN)
+        and n >= 2
+        and not any(is_macro_a[int(atomic_ids[k])] for k in range(1, n))
+    ):
+        return (MacroShape.PR_LEN_WITH_TAIL, int(val_a[first]))
     rules = _HEAD_RULES.get(head)
     if rules is None:
         return (MacroShape.MALFORMED,)
@@ -433,9 +378,9 @@ def tail_charge_for_prompt(prompt_ids, vocab_arrays) -> int:
 
 
 def _structural_arrays(op, subreg, val, n):
-    """Build the per-vocab BACK_REF / PATTERN_REPLAY / PATTERN_OVERLAY classification + value arrays by
+    """Build the per-vocab PATTERN_REPLAY / PATTERN_OVERLAY classification + value arrays by
     iterating ``STRUCTURAL_SUBREGS`` -- one source of truth for which (op, subreg) sets which flag and
-    scatters its ``val``, replacing the hand-listed ``op == BACK_REF_OP & subreg == ...`` chain.
+    scatters its ``val``, replacing the hand-listed ``op == ... & subreg == ...`` chain.
     """
     flags = {
         sf.flag: np.zeros(n, dtype=np.bool_)
@@ -516,19 +461,14 @@ def precompute_vocab_arrays(tokens_df):
     is_slope_term_lo = np.zeros(n, dtype=np.bool_)
     is_slope_runtime = np.zeros(n, dtype=np.bool_)
     flags, values = _structural_arrays(op, subreg, val, n)
-    is_back_ref_dist_hi = flags["is_back_ref_dist_hi"]
-    is_back_ref_dist_lo = flags["is_back_ref_dist_lo"]
-    is_back_ref_len = flags["is_back_ref_len"]
     is_pattern_replay_dist_hi = flags["is_pattern_replay_dist_hi"]
     is_pattern_replay_dist_lo = flags["is_pattern_replay_dist_lo"]
     is_pattern_replay_len = flags["is_pattern_replay_len"]
     is_pattern_replay_ov_count = flags["is_pattern_replay_ov_count"]
-    is_dist_hi_row = is_back_ref_dist_hi | is_pattern_replay_dist_hi
-    is_dist_lo_row = is_back_ref_dist_lo | is_pattern_replay_dist_lo
+    is_dist_hi_row = is_pattern_replay_dist_hi
+    is_dist_lo_row = is_pattern_replay_dist_lo
     is_pair_intermediate = (
-        is_back_ref_dist_lo
-        | is_back_ref_len
-        | is_pattern_replay_dist_lo
+        is_pattern_replay_dist_lo
         | is_pattern_replay_len
         | is_pattern_replay_ov_count
         | is_slope_term_lo
@@ -554,9 +494,6 @@ def precompute_vocab_arrays(tokens_df):
             "is_delay_reg": is_delay_reg.astype(np.bool_),
             "is_pad": is_pad.astype(np.bool_),
             "is_real_reg": is_real_reg.astype(np.bool_),
-            "is_back_ref_dist_hi": is_back_ref_dist_hi.astype(np.bool_),
-            "is_back_ref_dist_lo": is_back_ref_dist_lo.astype(np.bool_),
-            "is_back_ref_len": is_back_ref_len.astype(np.bool_),
             "is_slope_term_hi": is_slope_term_hi.astype(np.bool_),
             "is_slope_term_lo": is_slope_term_lo.astype(np.bool_),
             "is_slope_runtime": is_slope_runtime.astype(np.bool_),
@@ -607,15 +544,11 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     is_voice_reg_a = reg_a == VOICE_REG
     is_delay_a = reg_a == DELAY_REG
     is_real_reg_a = (reg_a >= 0) & (reg_a <= MAX_REG)
-    is_back_ref_a = op_a == BACK_REF_OP
     is_pr_a = op_a == PATTERN_REPLAY_OP
     is_overlay_a = op_a == PATTERN_OVERLAY_OP
-    is_macro_a = is_back_ref_a | is_pr_a | is_overlay_a
+    is_macro_a = is_pr_a | is_overlay_a
 
     is_pad = np.zeros(n_sub, dtype=np.bool_)
-    is_singleton_back_ref_dist_hi = np.zeros(n_sub, dtype=np.bool_)
-    is_singleton_back_ref_dist_lo = np.zeros(n_sub, dtype=np.bool_)
-    is_singleton_back_ref_len = np.zeros(n_sub, dtype=np.bool_)
     is_singleton_pr_dist_hi = np.zeros(n_sub, dtype=np.bool_)
     is_singleton_pr_dist_lo = np.zeros(n_sub, dtype=np.bool_)
     is_singleton_pr_len = np.zeros(n_sub, dtype=np.bool_)
@@ -624,16 +557,12 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
     is_singleton_pattern_overlay_frame_offset = np.zeros(n_sub, dtype=np.bool_)
     is_singleton_pattern_overlay_target_reg = np.zeros(n_sub, dtype=np.bool_)
     is_singleton_pattern_overlay_new_val = np.zeros(n_sub, dtype=np.bool_)
-    consumes_back_ref_dist_lo_gate = np.zeros(n_sub, dtype=np.bool_)
-    consumes_back_ref_len_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_pr_dist_lo_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_pr_len_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_pr_ov_count_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_overlay_slot_0_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_overlay_slot_1_gate = np.zeros(n_sub, dtype=np.bool_)
     consumes_overlay_slot_2_gate = np.zeros(n_sub, dtype=np.bool_)
-    extends_to_back_ref_lo_consumed = np.zeros(n_sub, dtype=np.bool_)
-    extends_to_back_ref_len_consumed = np.zeros(n_sub, dtype=np.bool_)
     extends_to_pr_lo_consumed = np.zeros(n_sub, dtype=np.bool_)
     extends_to_pr_len_consumed = np.zeros(n_sub, dtype=np.bool_)
     extends_to_pr_ov_count_consumed = np.zeros(n_sub, dtype=np.bool_)
@@ -655,9 +584,6 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
 
     arrays_by_name = {
         "is_malformed_macro": is_malformed_macro,
-        "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
-        "is_singleton_back_ref_dist_lo": is_singleton_back_ref_dist_lo,
-        "is_singleton_back_ref_len": is_singleton_back_ref_len,
         "is_singleton_pr_dist_hi": is_singleton_pr_dist_hi,
         "is_singleton_pr_dist_lo": is_singleton_pr_dist_lo,
         "is_singleton_pr_len": is_singleton_pr_len,
@@ -666,16 +592,12 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         "is_singleton_pattern_overlay_frame_offset": is_singleton_pattern_overlay_frame_offset,
         "is_singleton_pattern_overlay_target_reg": is_singleton_pattern_overlay_target_reg,
         "is_singleton_pattern_overlay_new_val": is_singleton_pattern_overlay_new_val,
-        "consumes_back_ref_dist_lo_gate": consumes_back_ref_dist_lo_gate,
-        "consumes_back_ref_len_gate": consumes_back_ref_len_gate,
         "consumes_pr_dist_lo_gate": consumes_pr_dist_lo_gate,
         "consumes_pr_len_gate": consumes_pr_len_gate,
         "consumes_pr_ov_count_gate": consumes_pr_ov_count_gate,
         "consumes_overlay_slot_0_gate": consumes_overlay_slot_0_gate,
         "consumes_overlay_slot_1_gate": consumes_overlay_slot_1_gate,
         "consumes_overlay_slot_2_gate": consumes_overlay_slot_2_gate,
-        "extends_to_back_ref_lo_consumed": extends_to_back_ref_lo_consumed,
-        "extends_to_back_ref_len_consumed": extends_to_back_ref_len_consumed,
         "extends_to_pr_lo_consumed": extends_to_pr_lo_consumed,
         "extends_to_pr_len_consumed": extends_to_pr_len_consumed,
         "extends_to_pr_ov_count_consumed": extends_to_pr_ov_count_consumed,
@@ -737,13 +659,9 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
         if agg.contains_delay:
             contains_delay[sub_id] = True
 
-    is_singleton_dist_hi = is_singleton_back_ref_dist_hi | is_singleton_pr_dist_hi
+    is_singleton_dist_hi = is_singleton_pr_dist_hi
     is_singleton_pair_intermediate = (
-        is_singleton_back_ref_dist_lo
-        | is_singleton_back_ref_len
-        | is_singleton_pr_dist_lo
-        | is_singleton_pr_len
-        | is_singleton_pr_ov_count
+        is_singleton_pr_dist_lo | is_singleton_pr_len | is_singleton_pr_ov_count
     )
 
     return VocabArrays(
@@ -752,9 +670,6 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             "subtoken_mode": True,
             "is_frame_marker": (frame_advance > 0),
             "is_pad": is_pad,
-            "is_singleton_back_ref_dist_hi": is_singleton_back_ref_dist_hi,
-            "is_singleton_back_ref_dist_lo": is_singleton_back_ref_dist_lo,
-            "is_singleton_back_ref_len": is_singleton_back_ref_len,
             "is_singleton_pr_dist_hi": is_singleton_pr_dist_hi,
             "is_singleton_pr_dist_lo": is_singleton_pr_dist_lo,
             "is_singleton_pr_len": is_singleton_pr_len,
@@ -770,16 +685,12 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
             ),
             "is_singleton_pattern_overlay_new_val": is_singleton_pattern_overlay_new_val,
             "is_malformed_macro": is_malformed_macro,
-            "consumes_back_ref_len_gate": consumes_back_ref_len_gate,
             "consumes_pr_len_gate": consumes_pr_len_gate,
-            "consumes_back_ref_dist_lo_gate": consumes_back_ref_dist_lo_gate,
             "consumes_pr_dist_lo_gate": consumes_pr_dist_lo_gate,
             "consumes_pr_ov_count_gate": consumes_pr_ov_count_gate,
             "consumes_overlay_slot_0_gate": consumes_overlay_slot_0_gate,
             "consumes_overlay_slot_1_gate": consumes_overlay_slot_1_gate,
             "consumes_overlay_slot_2_gate": consumes_overlay_slot_2_gate,
-            "extends_to_back_ref_lo_consumed": extends_to_back_ref_lo_consumed,
-            "extends_to_back_ref_len_consumed": extends_to_back_ref_len_consumed,
             "extends_to_pr_lo_consumed": extends_to_pr_lo_consumed,
             "extends_to_pr_len_consumed": extends_to_pr_len_consumed,
             "extends_to_pr_ov_count_consumed": extends_to_pr_ov_count_consumed,
@@ -803,21 +714,18 @@ def precompute_subtoken_arrays(tokens_df, regtokenizer, pad_id=0):
 
 
 class PendingSlot(IntEnum):
-    """Which structural slot the next token must fill. The 7 macro mid-walk states are mutually exclusive — the previous implementation tracked them as 7 independent booleans, which made the invariant implicit and the dispatch table long. Overlay-in-flight is tracked separately via ``pending_overlays`` because it's a counter, not a single-shot slot."""
+    """Which structural slot the next token must fill. The mid-walk states are mutually exclusive — the previous implementation tracked them as independent booleans, which made the invariant implicit and the dispatch table long. ``PR_OV_COUNT_OPTIONAL`` is the post-LEN state of a PATTERN_REPLAY: a 3-row verbatim copy may terminate here (any free-choice head) OR continue with an OVERLAY_COUNT row. Overlay-in-flight is tracked separately via ``pending_overlays`` because it's a counter, not a single-shot slot."""
 
     NONE = 0
-    BACK_REF_DIST_LO = 1
-    BACK_REF_LEN = 2
     PR_DIST_LO = 3
     PR_LEN = 4
     PR_OV_COUNT = 5
+    PR_OV_COUNT_OPTIONAL = 8
     SLOPE_TERM_LO = 6
     SLOPE_RUNTIME = 7
 
 
 _FLAG_TO_PENDING = {
-    "is_back_ref_dist_lo": PendingSlot.BACK_REF_DIST_LO,
-    "is_back_ref_len": PendingSlot.BACK_REF_LEN,
     "is_pattern_replay_dist_lo": PendingSlot.PR_DIST_LO,
     "is_pattern_replay_len": PendingSlot.PR_LEN,
     "is_pattern_replay_ov_count": PendingSlot.PR_OV_COUNT,
@@ -851,11 +759,12 @@ def _build_slot_tables():
             check = _slot_check(slot)
             atomic_gate[pend] = (slot.flag, check)
             subtoken_gate[pend] = (slot.consumes_gate, check)
-            nxt = (
-                _FLAG_TO_PENDING[specs[i + 1].flag]
-                if i + 1 < len(specs)
-                else PendingSlot.NONE
-            )
+            if i + 1 < len(specs):
+                nxt = _FLAG_TO_PENDING[specs[i + 1].flag]
+                if specs[i + 1].value_array == "overlay_count":
+                    nxt = PendingSlot.PR_OV_COUNT_OPTIONAL
+            else:
+                nxt = PendingSlot.NONE
             action = "seed_overlays" if slot.value_array == "overlay_count" else None
             transition[pend] = (slot.flag, nxt, action)
     return (
@@ -900,11 +809,10 @@ def _make_slot_property(slot: PendingSlot):
 class StreamState:
     """Per-step structural-validity tracker."""
 
-    pending_back_ref_dist_lo = _make_slot_property(PendingSlot.BACK_REF_DIST_LO)
-    pending_back_ref_len = _make_slot_property(PendingSlot.BACK_REF_LEN)
     pending_pr_dist_lo = _make_slot_property(PendingSlot.PR_DIST_LO)
     pending_pr_len = _make_slot_property(PendingSlot.PR_LEN)
     pending_pr_ov_count = _make_slot_property(PendingSlot.PR_OV_COUNT)
+    pending_pr_ov_count_optional = _make_slot_property(PendingSlot.PR_OV_COUNT_OPTIONAL)
     pending_slope_term_lo = _make_slot_property(PendingSlot.SLOPE_TERM_LO)
     pending_slope_runtime = _make_slot_property(PendingSlot.SLOPE_RUNTIME)
 
@@ -963,7 +871,9 @@ class StreamState:
         invalid |= a["is_pad"]
         if self.subtoken_mode:
             invalid |= a["is_malformed_macro"]
-        if self.pending_slot != PendingSlot.NONE:
+        if self.pending_slot == PendingSlot.PR_OV_COUNT_OPTIONAL:
+            self._apply_pr_ov_count_optional_mask(invalid, a)
+        elif self.pending_slot != PendingSlot.NONE:
             self._apply_pending_slot_mask(invalid, a)
         elif self.pending_overlays > 0:
             self._apply_overlay_slot_mask(invalid, a)
@@ -973,6 +883,20 @@ class StreamState:
             self._apply_atomic_free_mask(invalid, a)
         self._apply_codebook_mask(invalid, a)
         return self._unstick(invalid, a["is_frame_marker"])
+
+    def _apply_pr_ov_count_optional_mask(self, invalid, a):
+        """Post-LEN state of a 3-row PATTERN_REPLAY: a verbatim copy may terminate here (any free-choice head) OR continue with an OVERLAY_COUNT row. Applies the free-choice mask, then re-admits the in-range OVERLAY_COUNT token the free mask would otherwise forbid as a pair-intermediate."""
+        if self.subtoken_mode:
+            self._apply_subtoken_free_mask(invalid, a)
+            ov_count = a["is_singleton_pr_ov_count"]
+        else:
+            self._apply_atomic_free_mask(invalid, a)
+            ov_count = a["is_pattern_replay_ov_count"]
+        admit = ov_count.copy()
+        if self.remaining_steps is not None:
+            cap = max((self.remaining_steps - 1) // 3, 0)
+            admit &= a["overlay_count"] <= cap
+        invalid &= ~admit
 
     def _apply_codebook_mask(self, invalid, a):
         """Forbid an inline-codebook REF whose id is not live (defined and committed) -- the §4 fix for
@@ -1038,11 +962,8 @@ class StreamState:
         else:
             hi_max = self.frame_count >> BACK_REF_DIST_HI_SHIFT
             invalid |= a["is_dist_hi_row"] & (a["dist_hi_val"] > hi_max)
-        if self.remaining_steps is not None:
-            if self.remaining_steps < 3:
-                invalid |= a["is_back_ref_dist_hi"]
-            if self.remaining_steps < 4:
-                invalid |= a["is_pattern_replay_dist_hi"]
+        if self.remaining_steps is not None and self.remaining_steps < 3:
+            invalid |= a["is_pattern_replay_dist_hi"]
         if not self.disable_resource_masks:
             invalid |= a["is_delay_reg"]
             if self.frame_budget < _MIN_DIFF:
@@ -1052,11 +973,7 @@ class StreamState:
         """Sub-token-aware mask for the free-choice branch: each entry summarizes the aggregate effect of a Unigram sub-token's atomic-id decomposition. Voice-dependent masks (GATE_REPLAY / PLAY_INSTRUMENT palettes) are skipped here — the safety net catches palette violations post-decode."""
         invalid |= a["is_singleton_pattern_overlay"]
         invalid |= a["is_singleton_pair_intermediate"]
-        invalid |= (
-            a["consumes_back_ref_dist_lo_gate"] & ~a["is_singleton_back_ref_dist_lo"]
-        )
         invalid |= a["consumes_pr_dist_lo_gate"] & ~a["is_singleton_pr_dist_lo"]
-        invalid |= a["consumes_back_ref_len_gate"] & ~a["is_singleton_back_ref_len"]
         invalid |= a["consumes_pr_len_gate"] & ~a["is_singleton_pr_len"]
         invalid |= (
             a["consumes_overlay_slot_1_gate"]
@@ -1070,11 +987,8 @@ class StreamState:
             invalid |= (a["full_distance"] > 0) & (
                 a["full_distance"] > self.frame_count
             )
-        if self.remaining_steps is not None:
-            if self.remaining_steps < 3:
-                invalid |= a["is_singleton_back_ref_dist_hi"]
-            if self.remaining_steps < 4:
-                invalid |= a["is_singleton_pr_dist_hi"]
+        if self.remaining_steps is not None and self.remaining_steps < 3:
+            invalid |= a["is_singleton_pr_dist_hi"]
         if not self.disable_resource_masks:
             invalid |= a["contains_delay"]
             invalid |= a["charge_first_segment"] > self.frame_budget
@@ -1116,7 +1030,14 @@ class StreamState:
             self.current_fn = 0
         elif a["is_voice_reg"][token_id]:
             self.current_fn += 1
-        if self.pending_slot != PendingSlot.NONE:
+        if self.pending_slot == PendingSlot.PR_OV_COUNT_OPTIONAL:
+            self.pending_slot = PendingSlot.NONE
+            if bool(a["is_pattern_replay_ov_count"][token_id].item()):
+                self.pending_overlays = int(a["overlay_count"][token_id])
+                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+                return
+            self._open_atomic_pending(token_id, a)
+        elif self.pending_slot != PendingSlot.NONE:
             assert_key, next_slot, action = _ATOMIC_SLOT_TRANSITION[self.pending_slot]
             assert a[assert_key][token_id], (
                 f"pending {self.pending_slot.name} but token {token_id} does not "
@@ -1129,15 +1050,16 @@ class StreamState:
         elif self.pending_overlays > 0:
             self._advance_overlay_slot()
         else:
-            for gate_key, next_slot in _ATOMIC_NEW_PENDING:
-                if a[gate_key][token_id]:
-                    self.pending_slot = next_slot
-                    if next_slot in (
-                        PendingSlot.BACK_REF_DIST_LO,
-                        PendingSlot.PR_DIST_LO,
-                    ):
-                        self.current_dist_hi = int(a["dist_hi_val"][token_id])
-                    break
+            self._open_atomic_pending(token_id, a)
+
+    def _open_atomic_pending(self, token_id, a):
+        """Open a new distance-pair slot if ``token_id`` is a DIST_HI head; otherwise leave the state idle. Shared by the idle free-choice branch and the PR_OV_COUNT_OPTIONAL terminal branch (a 3-row PR may be immediately followed by a fresh macro head)."""
+        for gate_key, next_slot in _ATOMIC_NEW_PENDING:
+            if a[gate_key][token_id]:
+                self.pending_slot = next_slot
+                if next_slot == PendingSlot.PR_DIST_LO:
+                    self.current_dist_hi = int(a["dist_hi_val"][token_id])
+                break
 
     def _update_subtoken(self, sub_id):
         a = self.arrays
@@ -1154,54 +1076,52 @@ class StreamState:
             self.current_fn = int(a["fn_after_last_strict"][sub_id])
         else:
             self.current_fn += int(a["fn_delta"][sub_id])
-        if self.pending_back_ref_dist_lo:
-            self.pending_back_ref_dist_lo = False
-            if not bool(a["extends_to_back_ref_len_consumed"][sub_id]):
-                self.pending_back_ref_len = True
-        elif self.pending_pr_dist_lo:
+        if self.pending_pr_dist_lo:
             self.pending_pr_dist_lo = False
             if a["extends_to_pr_ov_count_consumed"][sub_id]:
-                self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+                self._seed_overlays_from(sub_id, a)
             elif bool(a["extends_to_pr_len_consumed"][sub_id]):
-                pass
+                self.pending_pr_ov_count_optional = True
             else:
                 self.pending_pr_len = True
-        elif self.pending_back_ref_len:
-            self.pending_back_ref_len = False
         elif self.pending_pr_len:
             self.pending_pr_len = False
             if a["extends_to_pr_ov_count_consumed"][sub_id]:
-                self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+                self._seed_overlays_from(sub_id, a)
             else:
-                self.pending_pr_ov_count = True
+                self.pending_pr_ov_count_optional = True
         elif self.pending_pr_ov_count:
             self.pending_pr_ov_count = False
-            self.pending_overlays += int(a["overlay_count"][sub_id])
-            self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+            self._seed_overlays_from(sub_id, a)
+        elif self.pending_pr_ov_count_optional:
+            self.pending_pr_ov_count_optional = False
+            if bool(a["is_singleton_pr_ov_count"][sub_id].item()):
+                self._seed_overlays_from(sub_id, a)
+            else:
+                self._open_subtoken_pending(sub_id, a)
         elif self.pending_overlays > 0:
             if a["extends_to_overlay_completed"][sub_id]:
                 self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
                 self.pending_overlays -= 1
             else:
                 self._advance_overlay_slot()
-        elif a["is_singleton_back_ref_dist_hi"][sub_id]:
-            self.current_dist_hi = int(a["distance_hi"][sub_id])
-            if bool(a["extends_to_back_ref_len_consumed"][sub_id]):
-                pass
-            elif bool(a["extends_to_back_ref_lo_consumed"][sub_id]):
-                self.pending_back_ref_len = True
-            else:
-                self.pending_back_ref_dist_lo = True
-        elif a["is_singleton_pr_dist_hi"][sub_id]:
-            self.current_dist_hi = int(a["distance_hi"][sub_id])
-            if bool(a["extends_to_pr_ov_count_consumed"][sub_id]):
-                self.pending_overlays += int(a["overlay_count"][sub_id])
-                self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
-            elif bool(a["extends_to_pr_len_consumed"][sub_id]):
-                self.pending_pr_ov_count = True
-            elif bool(a["extends_to_pr_lo_consumed"][sub_id]):
-                self.pending_pr_len = True
-            else:
-                self.pending_pr_dist_lo = True
+        else:
+            self._open_subtoken_pending(sub_id, a)
+
+    def _seed_overlays_from(self, sub_id, a):
+        self.pending_overlays += int(a["overlay_count"][sub_id])
+        self.pending_overlay_slot = OverlaySlot.FRAME_OFFSET
+
+    def _open_subtoken_pending(self, sub_id, a):
+        """Dispatch a free-choice sub-token: open a PATTERN_REPLAY walk per the sub-token's ``extends_to_*`` reach. A 3-row PR (reach == LEN) lands in PR_OV_COUNT_OPTIONAL so a following OVERLAY_COUNT stays legal without being forced. Shared by the idle branch and the PR_OV_COUNT_OPTIONAL terminal branch."""
+        if not bool(a["is_singleton_pr_dist_hi"][sub_id].item()):
+            return
+        self.current_dist_hi = int(a["distance_hi"][sub_id])
+        if bool(a["extends_to_pr_ov_count_consumed"][sub_id]):
+            self._seed_overlays_from(sub_id, a)
+        elif bool(a["extends_to_pr_len_consumed"][sub_id]):
+            self.pending_pr_ov_count_optional = True
+        elif bool(a["extends_to_pr_lo_consumed"][sub_id]):
+            self.pending_pr_len = True
+        else:
+            self.pending_pr_dist_lo = True

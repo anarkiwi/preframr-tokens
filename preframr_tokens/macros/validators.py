@@ -22,7 +22,6 @@ from preframr_tokens.macros.roles import (
 from preframr_tokens.macros.state import _FRAME_MARKER_REGS
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
-    BACK_REF_OP,
     DO_LOOP_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
@@ -65,9 +64,8 @@ def _step_distance_pair(idx, row, sr, op, spec: DistancePairSpec, state):
         )
         distance = (state.pending_dist_hi << BACK_REF_DIST_HI_SHIFT) | int(row["val"])
         target = state.output_frame_count - distance
-        long_label = "PATTERN_REPLAY" if op == PATTERN_REPLAY_OP else label
         assert target >= 0, (
-            f"row {idx}: {long_label} distance={distance} reaches "
+            f"row {idx}: PATTERN_REPLAY distance={distance} reaches "
             f"before frame 0 (output_frame_count={state.output_frame_count})"
         )
         state.pending_dist_hi = None
@@ -86,7 +84,7 @@ def _step_distance_pair(idx, row, sr, op, spec: DistancePairSpec, state):
         return
     allowed = sorted({spec.dist_hi, spec.dist_lo, spec.length, *spec.extra_subregs})
     raise AssertionError(
-        f"row {idx}: {label if op == BACK_REF_OP else 'PATTERN_REPLAY'} "
+        f"row {idx}: PATTERN_REPLAY "
         f"subreg={sr} not in {{{', '.join(str(s) for s in allowed)}}}"
     )
 
@@ -109,6 +107,12 @@ def validate_pattern_overlays(df):
     for idx, row in df.iterrows():
         op_raw = row["op"]
         op = int(op_raw) if not pd.isna(op_raw) else SET_OP
+        sr_now_raw = row.get("subreg", -1)
+        sr_now = int(sr_now_raw) if not pd.isna(sr_now_raw) else -1
+        if head_expected == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT and not (
+            op == PATTERN_REPLAY_OP and sr_now == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+        ):
+            head_expected = PATTERN_REPLAY_SUBREG_DIST_HI
         if op == PATTERN_REPLAY_OP:
             assert pending == 0, (
                 f"row {idx}: PATTERN_REPLAY at row {pr_idx} expected "
@@ -168,7 +172,10 @@ def validate_pattern_overlays(df):
         f"PATTERN_REPLAY at row {pr_idx} unfinished at end of df: "
         f"{pending} overlays missing"
     )
-    assert head_expected == PATTERN_REPLAY_SUBREG_DIST_HI, (
+    assert head_expected in (
+        PATTERN_REPLAY_SUBREG_DIST_HI,
+        PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
+    ), (
         f"PATTERN_REPLAY at row {pr_idx} unfinished at end of df: "
         f"awaiting subreg={head_expected} row"
     )
@@ -180,7 +187,7 @@ def validate_pattern_overlays(df):
 
 
 def validate_back_refs(df, prompt_frame_count=0):
-    """Verify every BACK_REF / PATTERN_REPLAY distance resolves within bounds, counting frames on the
+    """Verify every PATTERN_REPLAY distance resolves within bounds, counting frames on the
     EXPANDED timeline. The walk mirrors ``expand_loops``: a DO_LOOP body re-executes ``n_iter`` times
     (the jump-back), so ``output_frame_count`` tracks the same frame position the decoder resolves a
     distance against -- a plain linear walk counted a DO_LOOP body once and made a sound back-ref past a

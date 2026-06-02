@@ -6,7 +6,6 @@ import pandas as pd
 
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
     DIFF_OP,
     FRAME_REG,
     LOOP_OP_REG,
@@ -145,9 +144,6 @@ class TestMacroOpsRefuseSubstitution(unittest.TestCase):
         df = _df([missing_row])
         with self.assertRaises(KeyError):
             loader.merge_token_df(tokens, df)
-
-    def test_back_ref_op_refuses(self):
-        self._assert_refuses((BACK_REF_OP, LOOP_OP_REG, -1, 1234))
 
     def test_pattern_replay_op_refuses(self):
         self._assert_refuses((PATTERN_REPLAY_OP, LOOP_OP_REG, 2, 5678))

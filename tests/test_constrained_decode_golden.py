@@ -25,10 +25,6 @@ from preframr_tokens.macros.validators import (
 )
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DELAY_REG,
     FRAME_REG,
     PAD_REG,
@@ -47,6 +43,11 @@ from preframr_tokens.stfconstants import (
 
 _GOLDEN_PATH = Path(__file__).parent / "fixtures" / "constrained_decode_golden.json"
 
+
+def _pr(subreg, val):
+    return {"op": PATTERN_REPLAY_OP, "reg": -125, "subreg": subreg, "val": val}
+
+
 _VOCAB_ROWS = [
     {"op": SET_OP, "reg": PAD_REG, "subreg": -1, "val": 0},
     {"op": SET_OP, "reg": 0, "subreg": -1, "val": 7},
@@ -54,34 +55,11 @@ _VOCAB_ROWS = [
     {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 5},
     {"op": SET_OP, "reg": DELAY_REG, "subreg": -1, "val": 2},
     {"op": SET_OP, "reg": VOICE_REG, "subreg": -1, "val": 0},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 0},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 1},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 5},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_LEN, "val": 1},
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
-        "val": 0,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_DIST_LO,
-        "val": 2,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_LEN,
-        "val": 1,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
-        "val": 2,
-    },
+    _pr(PATTERN_REPLAY_SUBREG_DIST_HI, 0),
+    _pr(PATTERN_REPLAY_SUBREG_DIST_LO, 2),
+    _pr(PATTERN_REPLAY_SUBREG_DIST_LO, 5),
+    _pr(PATTERN_REPLAY_SUBREG_LEN, 1),
+    _pr(PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, 2),
     {
         "op": PATTERN_OVERLAY_OP,
         "reg": -125,
@@ -103,16 +81,18 @@ _VOCAB_ROWS = [
 ]
 
 PAD, SET_R0, FRAME11, FRAME5, DELAY, VOICE = 0, 1, 2, 3, 4, 5
-BR_HI, BR_LO1, BR_LO5, BR_LEN = 6, 7, 8, 9
-PR_HI, PR_LO, PR_LEN, PR_OV = 10, 11, 12, 13
-PO_FO, PO_TR, PO_NV = 14, 15, 16
+PR_HI, PR_LO, PR_LO5, PR_LEN, PR_OV = 6, 7, 8, 9, 10
+PO_FO, PO_TR, PO_NV = 11, 12, 13
 
 _ATOMIC_STREAMS = {
     "free": (
         {"init_frame_count": 5, "irq": 100, "init_budget": 100},
         [SET_R0, FRAME11, SET_R0, VOICE, SET_R0],
     ),
-    "backref_ok": ({"init_frame_count": 10, "irq": 100}, [BR_HI, BR_LO5, BR_LEN]),
+    "preplay_verbatim": (
+        {"init_frame_count": 10, "irq": 100},
+        [PR_HI, PR_LO5, PR_LEN, SET_R0],
+    ),
     "preplay_overlay": (
         {"init_frame_count": 10, "irq": 100},
         [PR_HI, PR_LO, PR_LEN, PR_OV, PO_FO, PO_TR, PO_NV, PO_FO, PO_TR, PO_NV],
@@ -131,68 +111,62 @@ _ATOMIC_STREAMS = {
 _SUB_ATOMICS = [
     [SET_R0],
     [FRAME11],
-    [BR_HI, BR_LO1, BR_LEN],
+    [PR_HI, PR_LO, PR_LEN],
     [PR_HI, PR_LO, PR_LEN, PR_OV],
     [PO_FO, PO_TR, PO_NV],
-    [BR_HI],
-    [BR_LO1],
-    [VOICE],
-    [BR_LEN],
     [PR_HI],
     [PR_LO],
+    [VOICE],
     [PR_LEN],
     [PR_OV],
     [PO_FO],
     [PO_TR],
     [PO_NV],
-    [BR_HI, BR_LO1],
-    [BR_LO1, BR_LEN],
     [PR_HI, PR_LO],
-    [PR_HI, PR_LO, PR_LEN],
     [PR_LO, PR_LEN],
     [PR_LO, PR_LEN, PR_OV],
     [PR_LEN, PR_OV],
     [PO_TR, PO_NV],
-    [BR_LEN, SET_R0],
-    [SET_R0, BR_LO1],
+    [PR_LEN, SET_R0],
+    [SET_R0, PR_LO],
     [DELAY],
-    [BR_HI, FRAME11],
+    [PR_HI, FRAME11],
     [PR_HI, PR_LO, PR_LEN, PR_OV, PO_FO, PO_TR, PO_NV],
     [SET_R0, VOICE, VOICE, FRAME11, SET_R0],
 ]
 
 _SUBTOKEN_STREAMS = {
     "sub_free": ({"init_frame_count": 10, "irq": 100}, [1, 2, 1]),
-    "sub_macro": ({"init_frame_count": 10, "irq": 100}, [3]),
+    "sub_pr_verbatim": ({"init_frame_count": 10, "irq": 100}, [3, 1]),
     "sub_pr_overlay": ({"init_frame_count": 10, "irq": 100}, [4, 5, 5]),
     "sub_pending": ({"init_frame_count": 10, "irq": 100}, [6, 7]),
-    "sub_br_singleton_chain": ({"init_frame_count": 10, "irq": 100}, [6, 7, 9]),
+    "sub_pr_triple_chain": ({"init_frame_count": 10, "irq": 100}, [6, 7, 9, 1]),
     "sub_pr_singleton_chain": (
         {"init_frame_count": 10, "irq": 100},
-        [10, 11, 12, 13, 14, 15, 16],
+        [6, 7, 9, 10, 11, 12, 13],
     ),
-    "sub_br_hi_then_lo": ({"init_frame_count": 10, "irq": 100}, [17, 9]),
+    "sub_pr_hi_then_lo": ({"init_frame_count": 10, "irq": 100}, [14, 9, 1]),
     "sub_pr_lo_through_ovc": (
         {"init_frame_count": 10, "irq": 100},
-        [10, 22, 14, 15, 16],
+        [6, 16, 11, 12, 13],
     ),
-    "sub_overlay_target_newval": ({"init_frame_count": 10, "irq": 100}, [4, 14, 24]),
+    "sub_overlay_target_newval": ({"init_frame_count": 10, "irq": 100}, [4, 11, 18]),
     "sub_budget": ({"init_frame_count": 5, "irq": 100, "init_budget": 80}, [1, 1, 1]),
 }
 
 _VALIDATOR_STREAMS = {
-    "v_backref_ok": [
+    "v_preplay_verbatim_ok": [
         FRAME11,
         FRAME11,
         FRAME11,
         FRAME11,
         FRAME11,
-        BR_HI,
-        BR_LO5,
-        BR_LEN,
+        PR_HI,
+        PR_LO5,
+        PR_LEN,
     ],
-    "v_backref_bad_distance": [BR_HI, BR_LO5, BR_LEN],
-    "v_backref_truncated": [BR_HI, BR_LO5],
+    "v_preplay_bad_distance": [PR_HI, PR_LO5, PR_LEN],
+    "v_preplay_truncated": [PR_HI, PR_LO5],
     "v_overlay_ok": [
         PR_HI,
         PR_LO,
@@ -318,7 +292,7 @@ class TestMaskDecodeForwardInvariant(unittest.TestCase):
     def test_mask_never_forbids_structurally_valid_continuation(self):
         vocab = _vocab_df()
         arrays = precompute_vocab_arrays(vocab)
-        for name in ("free", "backref_ok", "preplay_overlay"):
+        for name in ("free", "preplay_verbatim", "preplay_overlay"):
             init, ids = _ATOMIC_STREAMS[name]
             kwargs = dict(init)
             kwargs["disable_resource_masks"] = True

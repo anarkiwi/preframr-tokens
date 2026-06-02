@@ -12,10 +12,6 @@ from enum import Enum
 
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     CTRL_BIGRAM_OP,
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
@@ -81,6 +77,10 @@ __all__ = [
     "CodebookSpec",
     "CODEBOOK_SPECS",
     "CODEBOOK_TABLES",
+    "OP_PRODUCER",
+    "non_atom_ops",
+    "reference_ops",
+    "reference_op_producers",
     "contract_emit_ops",
     "missing_contracts",
 ]
@@ -115,7 +115,7 @@ class OpContract:
     role: MaskRole
 
 
-LOOP_OPS = (BACK_REF_OP, PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP, DO_LOOP_OP)
+LOOP_OPS = (PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP, DO_LOOP_OP)
 
 _CONTRACT_LIST = (
     OpContract(SET_OP, MaskRole.ATOM),
@@ -157,7 +157,6 @@ _CONTRACT_LIST = (
     OpContract(WAVETABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(WAVETABLE_END_OP, MaskRole.CODEBOOK_END),
     OpContract(WAVETABLE_REF_OP, MaskRole.CODEBOOK_REF),
-    OpContract(BACK_REF_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_REPLAY_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_OVERLAY_OP, MaskRole.OVERLAY),
     OpContract(DO_LOOP_OP, MaskRole.LOOP_CTRL),
@@ -170,7 +169,7 @@ OP_CONTRACTS: dict[int, OpContract] = {int(c.op_code): c for c in _CONTRACT_LIST
 class StructuralSubreg:
     """One row-slot of a structural loop op for the per-vocab precompute: the ``subreg`` that keys it,
     the boolean ``flag`` array it sets in ``precompute_vocab_arrays``, and the optional ``value_array``
-    its ``val`` is scattered into. Lets the precompute build the BACK_REF / PATTERN_REPLAY / PATTERN_OVERLAY
+    its ``val`` is scattered into. Lets the precompute build the PATTERN_REPLAY / PATTERN_OVERLAY
     classification arrays by iterating the registry instead of hand-listing (op, subreg) in three files.
     """
 
@@ -181,21 +180,6 @@ class StructuralSubreg:
 
 
 STRUCTURAL_SUBREGS: dict[int, tuple[StructuralSubreg, ...]] = {
-    BACK_REF_OP: (
-        StructuralSubreg(BACK_REF_SUBREG_DIST_HI, "is_back_ref_dist_hi", "dist_hi_val"),
-        StructuralSubreg(
-            BACK_REF_SUBREG_DIST_LO,
-            "is_back_ref_dist_lo",
-            "dist_lo_val",
-            "consumes_back_ref_dist_lo_gate",
-        ),
-        StructuralSubreg(
-            BACK_REF_SUBREG_LEN,
-            "is_back_ref_len",
-            "length",
-            "consumes_back_ref_len_gate",
-        ),
-    ),
     PATTERN_REPLAY_OP: (
         StructuralSubreg(
             PATTERN_REPLAY_SUBREG_DIST_HI, "is_pattern_replay_dist_hi", "dist_hi_val"
@@ -280,6 +264,59 @@ CODEBOOK_SPECS: dict[int, CodebookSpec] = {
         WAVETABLE_REF_OP, "wavetable", "ref", WT_REF_SUBREG_ID
     ),
 }
+
+
+OP_PRODUCER: dict[int, str] = {
+    PATTERN_REPLAY_OP: "LoopPass",
+    PATTERN_OVERLAY_OP: "LoopPass",
+    DO_LOOP_OP: "LoopPass",
+    STAMP_DEF_OP: "StampPass",
+    STAMP_STEP_OP: "StampPass",
+    STAMP_END_OP: "StampPass",
+    STAMP_REF_OP: "StampPass",
+    STAMP_REL_REF_OP: "StampPass",
+    PATCH_DEF_OP: "PatchPass",
+    PATCH_STEP_OP: "PatchPass",
+    PATCH_SET_OP: "PatchPass",
+    WAVETABLE_DEF_OP: "WavetablePass",
+    WAVETABLE_STEP_OP: "WavetablePass",
+    WAVETABLE_END_OP: "WavetablePass",
+    WAVETABLE_REF_OP: "WavetablePass",
+}
+
+_REFERENCE_ROLES = frozenset(
+    {
+        MaskRole.DISTANCE_PAIR,
+        MaskRole.OVERLAY,
+        MaskRole.LOOP_CTRL,
+        MaskRole.CODEBOOK_REF,
+    }
+)
+
+
+def non_atom_ops() -> set[int]:
+    """Every op whose role is not ATOM: the multi-row structural ops (inline-codebook DEF/STEP/END/REF
+    and the loop distance-pair / overlay / loop-ctrl ops). Their rows are a contiguous, order-load-bearing
+    sequence -- a reorder that splits a DEF..END group or moves a REF before its DEF breaks reference
+    integrity (``VoiceBlockOrderPass`` must leave frames containing one of these unreordered).
+    """
+    return {op for op, c in OP_CONTRACTS.items() if c.role is not MaskRole.ATOM}
+
+
+def reference_ops() -> set[int]:
+    """Ops whose decode resolves against earlier stream state (a back-ref distance, a loop, or an
+    inline-codebook id): the DISTANCE_PAIR / OVERLAY / LOOP_CTRL / CODEBOOK_REF roles. These are the ops
+    the per-block re-fire MUST re-emit so the model sees the reference, not its literal expansion.
+    """
+    return {op for op, c in OP_CONTRACTS.items() if c.role in _REFERENCE_ROLES}
+
+
+def reference_op_producers() -> set[str]:
+    """The MacroPass class names that emit a reference op (the producers the block-decoder contract
+    requires in the per-block re-fire). Raises KeyError via ``OP_PRODUCER`` if a reference op has no
+    declared producer -- a deliberate bite so a new ref op can't be added without wiring its pass.
+    """
+    return {OP_PRODUCER[op] for op in reference_ops()}
 
 
 def contract_emit_ops() -> set[int]:

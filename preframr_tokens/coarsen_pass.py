@@ -1,5 +1,5 @@
 """PatternCoarseningPass — selective materialisation of short-range
-BR / PR invocations.
+PR invocations.
 """
 
 from collections import defaultdict
@@ -10,13 +10,12 @@ from preframr_tokens.macros.loops import OVERLAY_BODY_FREQ_DELTA
 from preframr_tokens.macros.passes_base import MacroPass
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
     DELAY_REG,
     DO_LOOP_OP,
     FRAME_REG,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
+    PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
     VOICE_REG_SIZE,
     VOICES,
@@ -31,34 +30,14 @@ _FRAME_MARKER_REGS = {FRAME_REG, DELAY_REG}
 _FREQ_REGS_VOICED = frozenset(v * VOICE_REG_SIZE + 0 for v in range(VOICES))
 
 
-def _materialise_back_ref(out, output_frame_starts, val_arr, i, append_row):
-    """Materialise the BR (HI, LO, LEN) triple at rows ``i..i+2`` inline."""
+def _materialise_pattern_replay(
+    out, output_frame_starts, val_arr, i, num_overlays, head_rows, append_row
+):
+    """Materialise the PR (HI, LO, LEN, [OV_COUNT, overlays]) block at row ``i``. A 3-row PR (``head_rows==3``, ``num_overlays==0``) is the merged verbatim copy (former BACK_REF)."""
     dist_hi = int(val_arr[i])
     dist_lo = int(val_arr[i + 1])
     distance = (dist_hi << BACK_REF_DIST_HI_SHIFT) | dist_lo
     length = int(val_arr[i + 2])
-    cur_frame = len(output_frame_starts)
-    target = cur_frame - distance
-    if target < 0 or target + length > cur_frame:
-        return None
-    for f in range(target, target + length):
-        src_lo = output_frame_starts[f]
-        src_hi = (
-            output_frame_starts[f + 1] if f + 1 < len(output_frame_starts) else len(out)
-        )
-        for snap_row in list(out[src_lo:src_hi]):
-            append_row(dict(snap_row))
-    return i + 3
-
-
-def _materialise_pattern_replay(out, output_frame_starts, val_arr, i, append_row):
-    """Materialise the PR (HI, LO, LEN, OV_COUNT, [overlays]) block at row ``i``."""
-    dist_hi = int(val_arr[i])
-    dist_lo = int(val_arr[i + 1])
-    distance = (dist_hi << BACK_REF_DIST_HI_SHIFT) | dist_lo
-    length = int(val_arr[i + 2])
-    num_overlays = int(val_arr[i + 3])
-    head_rows = 4
     cur_frame = len(output_frame_starts)
     target = cur_frame - distance
     if target < 0 or target + length > cur_frame:
@@ -107,10 +86,10 @@ def _materialise_pattern_replay(out, output_frame_starts, val_arr, i, append_row
 
 
 def coarsen_pass(df, min_coarse_len=DEFAULT_MIN_COARSE_LEN):
-    """Selectively materialise short-range BR / PR invocations in df."""
+    """Selectively materialise short-range PR invocations in df."""
     if "op" not in df.columns:
         return df
-    has_loops = df["op"].isin([BACK_REF_OP, PATTERN_REPLAY_OP, DO_LOOP_OP]).any()
+    has_loops = df["op"].isin([PATTERN_REPLAY_OP, DO_LOOP_OP]).any()
     if not has_loops:
         return df
 
@@ -137,37 +116,36 @@ def coarsen_pass(df, min_coarse_len=DEFAULT_MIN_COARSE_LEN):
         op_raw = op_arr[i]
         op = int(op_raw) if not pd.isna(op_raw) else SET_OP
 
-        if op == BACK_REF_OP:
-            sr_raw = subreg_arr[i] if subreg_arr is not None else -1
-            sr = int(sr_raw) if not pd.isna(sr_raw) else -1
-            assert sr == BACK_REF_SUBREG_DIST_HI, (i, sr)
-            length = int(val_arr[i + 2])
-            if length < min_coarse_len:
-                ni = _materialise_back_ref(
-                    out, output_frame_starts, val_arr, i, append_row
-                )
-                if ni is not None:
-                    i = ni
-                    continue
-            append_row(_row_to_dict(i))
-            append_row(_row_to_dict(i + 1))
-            append_row(_row_to_dict(i + 2))
-            i += 3
-            continue
-
         if op == PATTERN_REPLAY_OP:
             sr_raw = subreg_arr[i] if subreg_arr is not None else -1
             sr = int(sr_raw) if not pd.isna(sr_raw) else -1
             assert sr == PATTERN_REPLAY_SUBREG_DIST_HI, (i, sr)
             length = int(val_arr[i + 2])
-            num_overlays = int(val_arr[i + 3])
-            head_and_overlays = 4 + num_overlays * 3
+            has_ov_count = False
+            if i + 3 < n:
+                ov_op_raw = op_arr[i + 3]
+                ov_op = int(ov_op_raw) if not pd.isna(ov_op_raw) else SET_OP
+                ov_sr_raw = subreg_arr[i + 3] if subreg_arr is not None else -1
+                ov_sr = int(ov_sr_raw) if not pd.isna(ov_sr_raw) else -1
+                has_ov_count = (
+                    ov_op == PATTERN_REPLAY_OP
+                    and ov_sr == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+                )
+            if has_ov_count:
+                num_overlays = int(val_arr[i + 3])
+                head_rows = 4
+            else:
+                num_overlays = 0
+                head_rows = 3
+            head_and_overlays = head_rows + num_overlays * 3
             if length < min_coarse_len:
                 ni = _materialise_pattern_replay(
                     out,
                     output_frame_starts,
                     val_arr,
                     i,
+                    num_overlays,
+                    head_rows,
                     append_row,
                 )
                 if ni is not None:

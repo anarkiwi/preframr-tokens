@@ -22,7 +22,6 @@ from preframr_tokens.macros import (
 )
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
     DIFF_OP,
     DO_LOOP_OP,
     FRAME_REG,
@@ -30,6 +29,8 @@ from preframr_tokens.stfconstants import (
     _MIN_DIFF,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
+    PATTERN_REPLAY_SUBREG_DIST_HI,
+    PATTERN_REPLAY_SUBREG_LEN,
     LOOP_OP_REG,
     MODEL_PDTYPE,
     SET_OP,
@@ -454,36 +455,36 @@ class TestDecodeState(unittest.TestCase):
 
 
 def _back_ref_row(distance, length, diff=32):
-    """Build the triple-row encoding of one BACK_REF: DIST_HI, DIST_LO, LEN."""
+    """Build the 3-row verbatim PATTERN_REPLAY (the merged former BACK_REF): DIST_HI, DIST_LO, LEN with no OVERLAY_COUNT row."""
     from preframr_tokens.stfconstants import (
-        BACK_REF_SUBREG_DIST_HI,
-        BACK_REF_SUBREG_DIST_LO,
-        BACK_REF_SUBREG_LEN,
+        PATTERN_REPLAY_SUBREG_DIST_HI,
+        PATTERN_REPLAY_SUBREG_DIST_LO,
+        PATTERN_REPLAY_SUBREG_LEN,
     )
 
     return [
         {
             "reg": LOOP_OP_REG,
-            "subreg": BACK_REF_SUBREG_DIST_HI,
+            "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
             "val": (int(distance) >> 8) & 0xFF,
             "diff": diff,
-            "op": BACK_REF_OP,
+            "op": PATTERN_REPLAY_OP,
             "description": 0,
         },
         {
             "reg": LOOP_OP_REG,
-            "subreg": BACK_REF_SUBREG_DIST_LO,
+            "subreg": PATTERN_REPLAY_SUBREG_DIST_LO,
             "val": int(distance) & 0xFF,
             "diff": diff,
-            "op": BACK_REF_OP,
+            "op": PATTERN_REPLAY_OP,
             "description": 0,
         },
         {
             "reg": LOOP_OP_REG,
-            "subreg": BACK_REF_SUBREG_LEN,
+            "subreg": PATTERN_REPLAY_SUBREG_LEN,
             "val": int(length),
             "diff": diff,
-            "op": BACK_REF_OP,
+            "op": PATTERN_REPLAY_OP,
             "description": 0,
         },
     ]
@@ -919,17 +920,15 @@ class TestExpandLoops(unittest.TestCase):
         with self.assertRaises(AssertionError):
             expand_loops(df)
 
-    def test_orphan_back_ref_len_is_skipped(self):
-        from preframr_tokens.stfconstants import BACK_REF_SUBREG_LEN
-
+    def test_orphan_pattern_replay_len_is_skipped(self):
         df = pd.DataFrame(
             [
                 {
                     "reg": LOOP_OP_REG,
-                    "subreg": BACK_REF_SUBREG_LEN,
+                    "subreg": PATTERN_REPLAY_SUBREG_LEN,
                     "val": 4,
                     "diff": 32,
-                    "op": BACK_REF_OP,
+                    "op": PATTERN_REPLAY_OP,
                     "description": 0,
                 },
                 _frame(),
@@ -940,19 +939,17 @@ class TestExpandLoops(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertEqual(int(out.iloc[1]["val"]), 8)
 
-    def test_orphan_back_ref_dist_without_len_is_skipped(self):
-        from preframr_tokens.stfconstants import BACK_REF_SUBREG_DIST_HI
-
+    def test_orphan_pattern_replay_dist_without_len_is_skipped(self):
         df = pd.DataFrame(
             [
                 _frame(),
                 _row(4, 8, op=SET_OP),
                 {
                     "reg": LOOP_OP_REG,
-                    "subreg": BACK_REF_SUBREG_DIST_HI,
+                    "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
                     "val": 0,
                     "diff": 32,
-                    "op": BACK_REF_OP,
+                    "op": PATTERN_REPLAY_OP,
                     "description": 0,
                 },
                 _row(5, 10, op=SET_OP),
@@ -990,8 +987,7 @@ class TestExpandLoops(unittest.TestCase):
         corruption (many orphans, or orphans on a full-song parse
         """
         from preframr_tokens.stfconstants import (
-            BACK_REF_SUBREG_DIST_HI,
-            BACK_REF_SUBREG_LEN,
+            PATTERN_REPLAY_SUBREG_DIST_HI,
             PATTERN_REPLAY_SUBREG_LEN,
         )
 
@@ -999,39 +995,31 @@ class TestExpandLoops(unittest.TestCase):
             [
                 {
                     "reg": LOOP_OP_REG,
-                    "subreg": BACK_REF_SUBREG_LEN,
+                    "subreg": PATTERN_REPLAY_SUBREG_LEN,
                     "val": 2,
                     "diff": 32,
-                    "op": BACK_REF_OP,
+                    "op": PATTERN_REPLAY_OP,
                     "description": 0,
                 },
                 _frame(),
                 _row(4, 8, op=SET_OP),
                 {
                     "reg": LOOP_OP_REG,
-                    "subreg": BACK_REF_SUBREG_DIST_HI,
+                    "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
                     "val": 0,
-                    "diff": 32,
-                    "op": BACK_REF_OP,
-                    "description": 0,
-                },
-                _row(5, 10, op=SET_OP),
-                {
-                    "reg": LOOP_OP_REG,
-                    "subreg": PATTERN_REPLAY_SUBREG_LEN,
-                    "val": 3,
                     "diff": 32,
                     "op": PATTERN_REPLAY_OP,
                     "description": 0,
                 },
+                _row(5, 10, op=SET_OP),
+                _row(6, 12, op=SET_OP),
             ]
         )
         with self.assertLogs("preframr_tokens.macros.loops", level="WARNING") as cm:
             out = expand_loops(df)
         orphans = out.attrs.get("_orphans", {})
-        self.assertEqual(orphans.get("br_continuation_without_dist_hi"), 1)
-        self.assertEqual(orphans.get("br_dist_hi_no_lo_partner"), 1)
         self.assertEqual(orphans.get("pr_continuation_without_dist_hi"), 1)
+        self.assertEqual(orphans.get("pr_dist_hi_no_lo_partner"), 1)
         self.assertTrue(
             any("expand_loops orphans" in r for r in cm.output),
             f"expected expand_loops WARNING; got {cm.output}",
@@ -1069,8 +1057,13 @@ class TestLoopPass(unittest.TestCase):
             ]
         )
         result = LoopPass().apply(df)
-        backrefs = result[result["op"] == BACK_REF_OP]
-        self.assertEqual(len(backrefs), 3)
+        prs = result[result["op"] == PATTERN_REPLAY_OP]
+        self.assertEqual(len(prs), 3)
+        restored = expand_loops(result)
+        self.assertEqual(
+            restored[restored["op"] == SET_OP][["reg", "val"]].values.tolist(),
+            df[df["op"] == SET_OP][["reg", "val"]].values.tolist(),
+        )
 
     def test_do_loop_preferred_for_long_consecutive_runs(self):
         df = pd.DataFrame([_frame(), _row(4, 8, op=SET_OP)] * 4)
@@ -1091,7 +1084,7 @@ class TestLoopPass(unittest.TestCase):
             ]
         )
         result = LoopPass().apply(df)
-        self.assertEqual(int((result["op"] == BACK_REF_OP).sum()), 0)
+        self.assertEqual(int((result["op"] == PATTERN_REPLAY_OP).sum()), 0)
         self.assertEqual(int((result["op"] == DO_LOOP_OP).sum()), 0)
 
     def test_disabled_when_flag_off(self):
@@ -1112,7 +1105,7 @@ class TestLoopPass(unittest.TestCase):
         result = LoopPass().apply(
             df, args=FakeArgs(loop_pass=False, fuzzy_loop_pass=False)
         )
-        self.assertEqual(int((result["op"] == BACK_REF_OP).sum()), 0)
+        self.assertEqual(int((result["op"] == PATTERN_REPLAY_OP).sum()), 0)
         self.assertEqual(int((result["op"] == DO_LOOP_OP).sum()), 0)
         self.assertEqual(len(result), len(df))
 
@@ -1138,6 +1131,64 @@ class TestLoopPass(unittest.TestCase):
                 tuple(int(df.iloc[i][c]) for c in cols),
                 tuple(int(decoded.iloc[i][c]) for c in cols),
             )
+
+    def test_lz77_emits_three_row_verbatim_pattern_replay(self):
+        """A pure repeat compresses to a 3-row verbatim PATTERN_REPLAY (DIST_HI/DIST_LO/LEN, no OVERLAY_COUNT) -- the merged former BACK_REF, budget-neutral at 3 rows."""
+        df = pd.DataFrame(
+            [
+                _frame(),
+                _row(4, 8, op=SET_OP),
+                _frame(),
+                _row(5, 10, op=SET_OP),
+                _frame(),
+                _row(6, 100, op=SET_OP),
+                _frame(),
+                _row(4, 8, op=SET_OP),
+                _frame(),
+                _row(5, 10, op=SET_OP),
+            ]
+        )
+        from preframr_tokens.stfconstants import PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+
+        encoded = LoopPass().apply(df.copy())
+        prs = encoded[encoded["op"] == PATTERN_REPLAY_OP]
+        self.assertEqual(len(prs), 3)
+        self.assertEqual(prs.iloc[0]["subreg"], PATTERN_REPLAY_SUBREG_DIST_HI)
+        self.assertEqual(prs.iloc[2]["subreg"], PATTERN_REPLAY_SUBREG_LEN)
+        self.assertEqual(
+            int((prs["subreg"] == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT).sum()),
+            0,
+            "verbatim replay must not carry an OVERLAY_COUNT row",
+        )
+        self._assert_loop_round_trip(df, encoded)
+
+    def test_three_row_verbatim_replay_round_trips_byte_exact(self):
+        """A hand-built 3-row verbatim PATTERN_REPLAY expands byte-exact to its source frames."""
+        df = pd.DataFrame(
+            [
+                _frame(),
+                _row(4, 8, op=SET_OP),
+                _frame(),
+                _row(5, 10, op=SET_OP),
+                *_back_ref_row(distance=2, length=2),
+            ]
+        )
+        decoded = expand_loops(df.copy())
+        cols = ["reg", "val", "op", "subreg"]
+        expected = [
+            (FRAME_REG, 0, SET_OP, -1),
+            (4, 8, SET_OP, -1),
+            (FRAME_REG, 0, SET_OP, -1),
+            (5, 10, SET_OP, -1),
+            (FRAME_REG, 0, SET_OP, -1),
+            (4, 8, SET_OP, -1),
+            (FRAME_REG, 0, SET_OP, -1),
+            (5, 10, SET_OP, -1),
+        ]
+        got = [
+            tuple(int(decoded.iloc[i][c]) for c in cols) for i in range(len(decoded))
+        ]
+        self.assertEqual(got, expected)
 
     def _assert_loop_round_trip(self, df, encoded):
         decoded = expand_loops(encoded)

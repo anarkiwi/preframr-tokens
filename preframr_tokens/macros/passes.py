@@ -517,11 +517,22 @@ class VoiceBlockOrderPass(MacroPass):
         df_iloc = df.values
         col_index = {c: cols.index(c) for c in cols}
 
+        from preframr_tokens.macros.op_contracts import non_atom_ops
+
+        exempt_ops = non_atom_ops()
         out_rows = []
         for fi in range(n_frames):
             start = int(frame_starts[fi])
             end = int(frame_starts[fi + 1]) if fi + 1 < n_frames else n_total
             out_rows.append({c: df_iloc[start, col_index[c]] for c in cols})
+
+            if any(
+                int(df_iloc[i, col_index["op"]]) in exempt_ops
+                for i in range(start + 1, end)
+            ):
+                for i in range(start + 1, end):
+                    out_rows.append({c: df_iloc[i, col_index[c]] for c in cols})
+                continue
 
             prev_states = snapshots[fi]
             keys = tuple(

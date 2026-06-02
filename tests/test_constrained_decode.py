@@ -17,10 +17,6 @@ from preframr_tokens.constrained_decode import (
 )
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DELAY_REG,
     FRAME_REG,
     _MIN_DIFF,
@@ -38,6 +34,11 @@ from preframr_tokens.stfconstants import (
     VOICE_REG,
 )
 
+
+def _pr(subreg, val):
+    return {"op": PATTERN_REPLAY_OP, "reg": -125, "subreg": subreg, "val": val}
+
+
 VOCAB_ROWS = [
     {"op": SET_OP, "reg": PAD_REG, "subreg": -1, "val": 0},
     {"op": SET_OP, "reg": 0, "subreg": -1, "val": 7},
@@ -45,34 +46,11 @@ VOCAB_ROWS = [
     {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 5},
     {"op": SET_OP, "reg": DELAY_REG, "subreg": -1, "val": 2},
     {"op": SET_OP, "reg": VOICE_REG, "subreg": -1, "val": 0},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 0},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 1},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 5},
-    {"op": BACK_REF_OP, "reg": -125, "subreg": BACK_REF_SUBREG_LEN, "val": 1},
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
-        "val": 0,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_DIST_LO,
-        "val": 2,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_LEN,
-        "val": 1,
-    },
-    {
-        "op": PATTERN_REPLAY_OP,
-        "reg": -125,
-        "subreg": PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
-        "val": 2,
-    },
+    _pr(PATTERN_REPLAY_SUBREG_DIST_HI, 0),
+    _pr(PATTERN_REPLAY_SUBREG_DIST_LO, 2),
+    _pr(PATTERN_REPLAY_SUBREG_DIST_LO, 5),
+    _pr(PATTERN_REPLAY_SUBREG_LEN, 1),
+    _pr(PATTERN_REPLAY_SUBREG_OVERLAY_COUNT, 2),
     {
         "op": PATTERN_OVERLAY_OP,
         "reg": -125,
@@ -99,17 +77,14 @@ FRAME11 = 2
 FRAME5 = 3
 DELAY = 4
 VOICE = 5
-BR_HI = 6
-BR_LO1 = 7
-BR_LO5 = 8
-BR_LEN = 9
-PR_HI = 10
-PR_LO = 11
-PR_LEN = 12
-PR_OV = 13
-PO_FO = 14
-PO_TR = 15
-PO_NV = 16
+PR_HI = 6
+PR_LO = 7
+PR_LO5 = 8
+PR_LEN = 9
+PR_OV = 10
+PO_FO = 11
+PO_TR = 12
+PO_NV = 13
 
 
 def _build_vocab():
@@ -140,9 +115,6 @@ class TestPrecomputeVocabArrays(unittest.TestCase):
             "is_delay_reg",
             "is_pad",
             "is_real_reg",
-            "is_back_ref_dist_hi",
-            "is_back_ref_dist_lo",
-            "is_back_ref_len",
             "is_pattern_replay_dist_hi",
             "is_pattern_replay_dist_lo",
             "is_pattern_replay_len",
@@ -164,33 +136,26 @@ class TestPrecomputeVocabArrays(unittest.TestCase):
     def test_per_subreg_flags(self):
         df = _build_vocab()
         arrs = precompute_vocab_arrays(df)
-        self.assertTrue(bool(arrs["is_back_ref_dist_hi"][BR_HI].item()))
-        self.assertTrue(bool(arrs["is_back_ref_dist_lo"][BR_LO1].item()))
-        self.assertTrue(bool(arrs["is_back_ref_dist_lo"][BR_LO5].item()))
-        self.assertTrue(bool(arrs["is_back_ref_len"][BR_LEN].item()))
         self.assertTrue(bool(arrs["is_pattern_replay_dist_hi"][PR_HI].item()))
         self.assertTrue(bool(arrs["is_pattern_replay_dist_lo"][PR_LO].item()))
+        self.assertTrue(bool(arrs["is_pattern_replay_dist_lo"][PR_LO5].item()))
         self.assertTrue(bool(arrs["is_pattern_replay_len"][PR_LEN].item()))
         self.assertTrue(bool(arrs["is_pattern_replay_ov_count"][PR_OV].item()))
-        self.assertTrue(bool(arrs["is_dist_hi_row"][BR_HI].item()))
         self.assertTrue(bool(arrs["is_dist_hi_row"][PR_HI].item()))
-        self.assertFalse(bool(arrs["is_dist_hi_row"][BR_LO1].item()))
-        self.assertTrue(bool(arrs["is_dist_lo_row"][BR_LO1].item()))
-        self.assertTrue(bool(arrs["is_dist_lo_row"][BR_LO5].item()))
+        self.assertFalse(bool(arrs["is_dist_hi_row"][PR_LO].item()))
         self.assertTrue(bool(arrs["is_dist_lo_row"][PR_LO].item()))
-        self.assertTrue(bool(arrs["is_pair_intermediate"][BR_LO1].item()))
-        self.assertTrue(bool(arrs["is_pair_intermediate"][BR_LEN].item()))
+        self.assertTrue(bool(arrs["is_dist_lo_row"][PR_LO5].item()))
+        self.assertTrue(bool(arrs["is_pair_intermediate"][PR_LO].item()))
         self.assertTrue(bool(arrs["is_pair_intermediate"][PR_LEN].item()))
         self.assertTrue(bool(arrs["is_pair_intermediate"][PR_OV].item()))
-        self.assertFalse(bool(arrs["is_pair_intermediate"][BR_HI].item()))
+        self.assertFalse(bool(arrs["is_pair_intermediate"][PR_HI].item()))
 
     def test_dist_hi_and_lo_val_extraction(self):
         df = _build_vocab()
         arrs = precompute_vocab_arrays(df)
-        self.assertEqual(int(arrs["dist_hi_val"][BR_HI].item()), 0)
-        self.assertEqual(int(arrs["dist_lo_val"][BR_LO1].item()), 1)
-        self.assertEqual(int(arrs["dist_lo_val"][BR_LO5].item()), 5)
+        self.assertEqual(int(arrs["dist_hi_val"][PR_HI].item()), 0)
         self.assertEqual(int(arrs["dist_lo_val"][PR_LO].item()), 2)
+        self.assertEqual(int(arrs["dist_lo_val"][PR_LO5].item()), 5)
         self.assertEqual(int(arrs["overlay_count"][PR_OV].item()), 2)
 
 
@@ -224,47 +189,37 @@ class TestStreamStateMasking(unittest.TestCase):
 
     def test_pair_intermediate_orphan_masked_at_top_level(self):
         m = _mask_bool(self._state(), self.n)
-        self.assertTrue(m[BR_LO1])
-        self.assertTrue(m[BR_LEN])
         self.assertTrue(m[PR_LO])
+        self.assertTrue(m[PR_LO5])
         self.assertTrue(m[PR_LEN])
         self.assertTrue(m[PR_OV])
 
-    def test_back_ref_distance_check_too_far(self):
+    def test_pattern_replay_distance_check_too_far(self):
         m = _mask_bool(self._state(init_frame_count=0), self.n)
-        self.assertTrue(m[BR_HI])
+        self.assertTrue(m[PR_HI])
 
-    def test_back_ref_within_bounds(self):
+    def test_pattern_replay_within_bounds(self):
         m = _mask_bool(self._state(init_frame_count=5), self.n)
-        self.assertFalse(m[BR_HI])
+        self.assertFalse(m[PR_HI])
 
     def test_pending_dist_lo_admits_only_lo_in_range(self):
         state = self._state(init_frame_count=10)
-        state.pending_back_ref_dist_lo = True
+        state.pending_pr_dist_lo = True
         state.current_dist_hi = 0
         m = _mask_bool(state, self.n)
-        self.assertFalse(m[BR_LO1])
-        self.assertFalse(m[BR_LO5])
+        self.assertFalse(m[PR_LO])
+        self.assertFalse(m[PR_LO5])
         for i in range(self.n):
-            if i not in (BR_LO1, BR_LO5):
+            if i not in (PR_LO, PR_LO5):
                 self.assertTrue(m[i])
 
     def test_pending_dist_lo_too_far_masked(self):
         state = self._state(init_frame_count=3)
-        state.pending_back_ref_dist_lo = True
+        state.pending_pr_dist_lo = True
         state.current_dist_hi = 0
         m = _mask_bool(state, self.n)
-        self.assertFalse(m[BR_LO1])
-        self.assertTrue(m[BR_LO5])
-
-    def test_pending_back_ref_len_admits_only_len_row(self):
-        state = self._state()
-        state.pending_back_ref_len = True
-        m = _mask_bool(state, self.n)
-        self.assertFalse(m[BR_LEN])
-        for i in range(self.n):
-            if i != BR_LEN:
-                self.assertTrue(m[i])
+        self.assertFalse(m[PR_LO])
+        self.assertTrue(m[PR_LO5])
 
     def test_pending_pr_len_admits_only_pr_len(self):
         state = self._state()
@@ -280,6 +235,18 @@ class TestStreamStateMasking(unittest.TestCase):
         state.pending_pr_ov_count = True
         m = _mask_bool(state, self.n)
         self.assertFalse(m[PR_OV])
+
+    def test_pr_ov_count_optional_admits_ov_count_and_new_op_heads(self):
+        """After a 3-row PATTERN_REPLAY (DIST_HI->DIST_LO->LEN) the optional state admits BOTH an OVERLAY_COUNT row AND a free-choice new-op head, while orphan pair-intermediates stay masked."""
+        state = self._state()
+        state.pending_pr_ov_count_optional = True
+        m = _mask_bool(state, self.n)
+        self.assertFalse(m[PR_OV])
+        self.assertFalse(m[SET_R0])
+        self.assertFalse(m[FRAME11])
+        self.assertFalse(m[PR_HI])
+        self.assertTrue(m[PR_LO])
+        self.assertTrue(m[PR_LEN])
 
     def test_pattern_overlay_inside_block_walks_slots(self):
         state = self._state()
@@ -301,9 +268,9 @@ class TestStreamStateMasking(unittest.TestCase):
 
     def test_remaining_steps_blocks_pair_open_when_too_few_steps(self):
         m = _mask_bool(self._state(remaining_steps=2, init_frame_count=10), self.n)
-        self.assertTrue(m[BR_HI])
+        self.assertTrue(m[PR_HI])
         m2 = _mask_bool(self._state(remaining_steps=3, init_frame_count=10), self.n)
-        self.assertTrue(m2[PR_HI])
+        self.assertFalse(m2[PR_HI])
 
     def test_all_masked_safety_valve(self):
         m = _mask_bool(self._state(init_frame_count=0, init_budget=0), self.n)
@@ -334,16 +301,21 @@ class TestStreamStateUpdate(unittest.TestCase):
         state.update(VOICE)
         self.assertEqual(state.current_fn, 1)
 
-    def test_back_ref_triple_state_machine(self):
+    def test_pattern_replay_triple_state_machine_terminates(self):
+        """A 3-row PATTERN_REPLAY (the merged former BACK_REF) walks DIST_HI->DIST_LO->LEN, lands in the optional state, and terminates on a free-choice head."""
         state = StreamState(self.arrs, init_frame_count=10, irq=100)
-        state.update(BR_HI)
-        self.assertTrue(state.pending_back_ref_dist_lo)
+        state.update(PR_HI)
+        self.assertTrue(state.pending_pr_dist_lo)
         self.assertEqual(state.current_dist_hi, 0)
-        state.update(BR_LO1)
-        self.assertFalse(state.pending_back_ref_dist_lo)
-        self.assertTrue(state.pending_back_ref_len)
-        state.update(BR_LEN)
-        self.assertFalse(state.pending_back_ref_len)
+        state.update(PR_LO)
+        self.assertFalse(state.pending_pr_dist_lo)
+        self.assertTrue(state.pending_pr_len)
+        state.update(PR_LEN)
+        self.assertFalse(state.pending_pr_len)
+        self.assertTrue(state.pending_pr_ov_count_optional)
+        state.update(SET_R0)
+        self.assertFalse(state.pending_pr_ov_count_optional)
+        self.assertEqual(state.pending_overlays, 0)
 
     def test_pattern_replay_quad_state_machine(self):
         state = StreamState(self.arrs, init_frame_count=10, irq=100)
@@ -354,10 +326,20 @@ class TestStreamStateUpdate(unittest.TestCase):
         self.assertTrue(state.pending_pr_len)
         state.update(PR_LEN)
         self.assertFalse(state.pending_pr_len)
-        self.assertTrue(state.pending_pr_ov_count)
+        self.assertTrue(state.pending_pr_ov_count_optional)
         state.update(PR_OV)
-        self.assertFalse(state.pending_pr_ov_count)
+        self.assertFalse(state.pending_pr_ov_count_optional)
         self.assertEqual(state.pending_overlays, 2)
+
+    def test_pattern_replay_triple_then_fresh_macro_head(self):
+        """After a 3-row PATTERN_REPLAY the optional state may open a fresh PATTERN_REPLAY head (terminate + immediately re-open)."""
+        state = StreamState(self.arrs, init_frame_count=10, irq=100)
+        for tok in (PR_HI, PR_LO, PR_LEN):
+            state.update(tok)
+        self.assertTrue(state.pending_pr_ov_count_optional)
+        state.update(PR_HI)
+        self.assertFalse(state.pending_pr_ov_count_optional)
+        self.assertTrue(state.pending_pr_dist_lo)
 
     def test_overlay_consumed(self):
         state = StreamState(self.arrs, init_frame_count=10, irq=100)
@@ -409,9 +391,6 @@ class TestPrecomputeSubtokenArrays(unittest.TestCase):
     def test_singleton_macro_flags(self):
         tokens = _build_vocab()
         sub_atomics = [
-            [BR_HI],
-            [BR_LO1],
-            [BR_LEN],
             [PR_HI],
             [PR_LO],
             [PR_LEN],
@@ -422,31 +401,30 @@ class TestPrecomputeSubtokenArrays(unittest.TestCase):
         ]
         rtok = _fake_regtokenizer(tokens, sub_atomics)
         arrs = precompute_subtoken_arrays(tokens, rtok)
-        self.assertEqual(arrs["n_vocab"], 11)
+        self.assertEqual(arrs["n_vocab"], 8)
         self.assertTrue(bool(arrs["is_pad"][0].item()))
-        self.assertTrue(bool(arrs["is_singleton_back_ref_dist_hi"][1].item()))
-        self.assertTrue(bool(arrs["is_singleton_back_ref_dist_lo"][2].item()))
-        self.assertTrue(bool(arrs["is_singleton_back_ref_len"][3].item()))
-        self.assertTrue(bool(arrs["is_singleton_pr_dist_hi"][4].item()))
-        self.assertTrue(bool(arrs["is_singleton_pr_dist_lo"][5].item()))
-        self.assertTrue(bool(arrs["is_singleton_pr_len"][6].item()))
-        self.assertTrue(bool(arrs["is_singleton_pr_ov_count"][7].item()))
+        self.assertTrue(bool(arrs["is_singleton_pr_dist_hi"][1].item()))
+        self.assertTrue(bool(arrs["is_singleton_pr_dist_lo"][2].item()))
+        self.assertTrue(bool(arrs["is_singleton_pr_len"][3].item()))
+        self.assertTrue(bool(arrs["is_singleton_pr_ov_count"][4].item()))
 
-    def test_br_hi_then_lo_subtoken(self):
+    def test_pr_hi_then_lo_subtoken(self):
         tokens = _build_vocab()
-        rtok = _fake_regtokenizer(tokens, [[BR_HI, BR_LO1]])
+        rtok = _fake_regtokenizer(tokens, [[PR_HI, PR_LO]])
         arrs = precompute_subtoken_arrays(tokens, rtok)
-        self.assertTrue(bool(arrs["is_singleton_back_ref_dist_hi"][1].item()))
-        self.assertTrue(bool(arrs["extends_to_back_ref_lo_consumed"][1]))
-        self.assertFalse(bool(arrs["extends_to_back_ref_len_consumed"][1]))
+        self.assertTrue(bool(arrs["is_singleton_pr_dist_hi"][1].item()))
+        self.assertTrue(bool(arrs["extends_to_pr_lo_consumed"][1]))
+        self.assertFalse(bool(arrs["extends_to_pr_len_consumed"][1]))
 
-    def test_br_complete_subtoken(self):
+    def test_pr_hi_through_len_subtoken(self):
+        """A 3-row PATTERN_REPLAY packed into one sub-token (the merged former BACK_REF): DIST_HI extends through LEN but NOT through OVERLAY_COUNT."""
         tokens = _build_vocab()
-        rtok = _fake_regtokenizer(tokens, [[BR_HI, BR_LO1, BR_LEN]])
+        rtok = _fake_regtokenizer(tokens, [[PR_HI, PR_LO, PR_LEN]])
         arrs = precompute_subtoken_arrays(tokens, rtok)
-        self.assertTrue(bool(arrs["is_singleton_back_ref_dist_hi"][1].item()))
-        self.assertTrue(bool(arrs["extends_to_back_ref_lo_consumed"][1]))
-        self.assertTrue(bool(arrs["extends_to_back_ref_len_consumed"][1]))
+        self.assertTrue(bool(arrs["is_singleton_pr_dist_hi"][1].item()))
+        self.assertTrue(bool(arrs["extends_to_pr_lo_consumed"][1]))
+        self.assertTrue(bool(arrs["extends_to_pr_len_consumed"][1]))
+        self.assertFalse(bool(arrs["extends_to_pr_ov_count_consumed"][1]))
 
     def test_pr_complete_subtoken(self):
         tokens = _build_vocab()
@@ -460,7 +438,7 @@ class TestPrecomputeSubtokenArrays(unittest.TestCase):
 
     def test_malformed_macro_flag(self):
         tokens = _build_vocab()
-        rtok = _fake_regtokenizer(tokens, [[SET_R0, BR_LO1]])
+        rtok = _fake_regtokenizer(tokens, [[SET_R0, PR_LO]])
         arrs = precompute_subtoken_arrays(tokens, rtok)
         self.assertTrue(bool(arrs["is_malformed_macro"][1].item()))
 
@@ -472,37 +450,43 @@ class TestStreamStateSubtokenMode(unittest.TestCase):
         return precompute_subtoken_arrays(tokens, rtok)
 
     def test_pad_masked(self):
-        arrs = self._arrays([[BR_HI], [SET_R0]])
+        arrs = self._arrays([[PR_HI], [SET_R0]])
         state = StreamState(arrs, init_frame_count=0, irq=10000)
         invalid = state.compute_invalid_mask()
         self.assertTrue(bool(invalid[0]))
 
-    def test_back_ref_triple_state_machine(self):
-        arrs = self._arrays([[BR_HI], [BR_LO1], [BR_LEN]])
+    def test_pattern_replay_triple_state_machine(self):
+        """3-row PATTERN_REPLAY across 3 sub-tokens: DIST_HI->DIST_LO->LEN lands in the optional state, which terminates on a free-choice head."""
+        arrs = self._arrays([[PR_HI], [PR_LO], [PR_LEN], [SET_R0]])
         state = StreamState(arrs, init_frame_count=10, irq=10000)
         state.update(1)
-        self.assertTrue(state.pending_back_ref_dist_lo)
+        self.assertTrue(state.pending_pr_dist_lo)
         state.update(2)
-        self.assertFalse(state.pending_back_ref_dist_lo)
-        self.assertTrue(state.pending_back_ref_len)
+        self.assertFalse(state.pending_pr_dist_lo)
+        self.assertTrue(state.pending_pr_len)
         state.update(3)
-        self.assertFalse(state.pending_back_ref_len)
+        self.assertFalse(state.pending_pr_len)
+        self.assertTrue(state.pending_pr_ov_count_optional)
+        state.update(4)
+        self.assertFalse(state.pending_pr_ov_count_optional)
 
-    def test_br_hi_then_lo_advances_to_len_pending(self):
-        arrs = self._arrays([[BR_HI, BR_LO1], [BR_LEN]])
+    def test_pr_hi_then_lo_advances_to_len_pending(self):
+        arrs = self._arrays([[PR_HI, PR_LO], [PR_LEN]])
         state = StreamState(arrs, init_frame_count=10, irq=10000)
         state.update(1)
-        self.assertFalse(state.pending_back_ref_dist_lo)
-        self.assertTrue(state.pending_back_ref_len)
+        self.assertFalse(state.pending_pr_dist_lo)
+        self.assertTrue(state.pending_pr_len)
         state.update(2)
-        self.assertFalse(state.pending_back_ref_len)
+        self.assertFalse(state.pending_pr_len)
+        self.assertTrue(state.pending_pr_ov_count_optional)
 
-    def test_br_complete_advances_to_idle(self):
-        arrs = self._arrays([[BR_HI, BR_LO1, BR_LEN]])
+    def test_pr_hi_through_len_advances_to_optional(self):
+        arrs = self._arrays([[PR_HI, PR_LO, PR_LEN]])
         state = StreamState(arrs, init_frame_count=10, irq=10000)
         state.update(1)
-        self.assertFalse(state.pending_back_ref_dist_lo)
-        self.assertFalse(state.pending_back_ref_len)
+        self.assertFalse(state.pending_pr_dist_lo)
+        self.assertFalse(state.pending_pr_len)
+        self.assertTrue(state.pending_pr_ov_count_optional)
 
     def test_pr_complete_advances_to_overlays(self):
         arrs = self._arrays([[PR_HI, PR_LO, PR_LEN, PR_OV]])
@@ -511,34 +495,58 @@ class TestStreamStateSubtokenMode(unittest.TestCase):
         self.assertEqual(state.pending_overlays, 2)
 
     def test_packed_full_distance_masked_when_out_of_range(self):
-        arrs = self._arrays([[BR_HI, BR_LO5, BR_LEN]])
+        arrs = self._arrays([[PR_HI, PR_LO5, PR_LEN]])
         self.assertEqual(int(arrs["full_distance"][1]), 5)
         state = StreamState(arrs, init_frame_count=3, irq=10000)
         mask = _mask_bool(state, arrs["n_vocab"])
         self.assertTrue(mask[1])
 
     def test_packed_full_distance_admitted_when_in_range(self):
-        arrs = self._arrays([[BR_HI, BR_LO5, BR_LEN]])
+        arrs = self._arrays([[PR_HI, PR_LO5, PR_LEN]])
         state = StreamState(arrs, init_frame_count=5, irq=10000)
         mask = _mask_bool(state, arrs["n_vocab"])
         self.assertFalse(mask[1])
 
     def test_subtoken_pending_dist_lo_caps_full_distance(self):
-        arrs = self._arrays([[BR_HI], [BR_LO5], [BR_LEN]])
+        arrs = self._arrays([[PR_HI], [PR_LO5], [PR_LEN]])
         state = StreamState(arrs, init_frame_count=3, irq=10000)
         state.update(1)
-        self.assertTrue(state.pending_back_ref_dist_lo)
+        self.assertTrue(state.pending_pr_dist_lo)
         self.assertEqual(int(arrs["dist_lo_val"][2]), 5)
         mask = _mask_bool(state, arrs["n_vocab"])
         self.assertTrue(mask[2])
 
     def test_subtoken_pending_dist_lo_admits_in_range(self):
-        arrs = self._arrays([[BR_HI], [BR_LO1], [BR_LEN]])
+        arrs = self._arrays([[PR_HI], [PR_LO], [PR_LEN]])
         state = StreamState(arrs, init_frame_count=3, irq=10000)
         state.update(1)
-        self.assertEqual(int(arrs["dist_lo_val"][2]), 1)
+        self.assertEqual(int(arrs["dist_lo_val"][2]), 2)
         mask = _mask_bool(state, arrs["n_vocab"])
         self.assertFalse(mask[2])
+
+    def test_subtoken_optional_state_admits_ov_count_and_heads(self):
+        """In sub-token mode, after a 3-row PATTERN_REPLAY the optional state admits both the OVERLAY_COUNT sub-token and a free-choice head, while orphan continuations stay masked."""
+        arrs = self._arrays(
+            [[PR_HI, PR_LO, PR_LEN], [PR_OV], [SET_R0], [PR_HI], [PR_LO]]
+        )
+        state = StreamState(arrs, init_frame_count=10, irq=10000)
+        state.update(1)
+        self.assertTrue(state.pending_pr_ov_count_optional)
+        mask = _mask_bool(state, arrs["n_vocab"])
+        self.assertFalse(mask[2])
+        self.assertFalse(mask[3])
+        self.assertFalse(mask[4])
+        self.assertTrue(mask[5])
+
+    def test_subtoken_optional_state_terminates_then_reopens(self):
+        """Picking a fresh PATTERN_REPLAY head in the optional state terminates the verbatim copy and re-opens a new walk."""
+        arrs = self._arrays([[PR_HI, PR_LO, PR_LEN], [PR_HI]])
+        state = StreamState(arrs, init_frame_count=10, irq=10000)
+        state.update(1)
+        self.assertTrue(state.pending_pr_ov_count_optional)
+        state.update(2)
+        self.assertFalse(state.pending_pr_ov_count_optional)
+        self.assertTrue(state.pending_pr_dist_lo)
 
 
 class TestTailChargeForPrompt(unittest.TestCase):
@@ -582,9 +590,7 @@ class TestClassifyMacroShape(unittest.TestCase):
         val_a = np.array([r["val"] for r in rows], dtype=np.int64)
         is_macro_a = np.isin(
             op_a,
-            np.asarray(
-                [BACK_REF_OP, PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP], dtype=np.int64
-            ),
+            np.asarray([PATTERN_REPLAY_OP, PATTERN_OVERLAY_OP], dtype=np.int64),
         )
         return op_a, subreg_a, val_a, is_macro_a
 
@@ -609,23 +615,19 @@ class TestClassifyMacroShape(unittest.TestCase):
     def test_first_macro_after_non_macro_is_malformed(self):
         rows = [
             {"op": SET_OP, "subreg": -1, "val": 0},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 3},
+            {
+                "op": PATTERN_REPLAY_OP,
+                "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
+                "val": 3,
+            },
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 
-    def test_singleton_back_ref_dist_hi(self):
-        rows = [{"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 5}]
-        self.assertEqual(
-            self._classify(rows), (MacroShape.SINGLETON_BACK_REF_DIST_HI, 5)
-        )
-
-    def test_br_complete(self):
+    def test_singleton_pr_dist_hi(self):
         rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 7},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 3},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 2},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_DIST_HI, "val": 5}
         ]
-        self.assertEqual(self._classify(rows), (MacroShape.BR_COMPLETE, 7))
+        self.assertEqual(self._classify(rows), (MacroShape.SINGLETON_PR_DIST_HI, 5))
 
     def test_pr_complete_carries_overlay_count(self):
         rows = [
@@ -648,36 +650,29 @@ class TestClassifyMacroShape(unittest.TestCase):
         ]
         self.assertEqual(self._classify(rows), (MacroShape.PR_COMPLETE, 4, 2))
 
-    def test_br_len_with_tail_allows_non_macro_atoms(self):
+    def test_pr_len_with_tail_allows_non_macro_atoms(self):
         rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 9},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 9},
             {"op": SET_OP, "subreg": -1, "val": 0},
             {"op": SET_OP, "subreg": -1, "val": 1},
         ]
-        self.assertEqual(self._classify(rows), (MacroShape.BR_LEN_WITH_TAIL, 9))
+        self.assertEqual(self._classify(rows), (MacroShape.PR_LEN_WITH_TAIL, 9))
 
-    def test_br_len_with_tail_rejected_if_tail_has_macro(self):
+    def test_pr_len_with_tail_rejected_if_tail_has_macro(self):
         rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 9},
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 9},
             {"op": SET_OP, "subreg": -1, "val": 0},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 1},
+            {
+                "op": PATTERN_REPLAY_OP,
+                "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
+                "val": 1,
+            },
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 
     def test_all_singleton_shapes(self):
         """One-atom sub-tokens for every (op, subreg) that has a singleton entry."""
         cases = [
-            (
-                BACK_REF_OP,
-                BACK_REF_SUBREG_DIST_HI,
-                MacroShape.SINGLETON_BACK_REF_DIST_HI,
-            ),
-            (
-                BACK_REF_OP,
-                BACK_REF_SUBREG_DIST_LO,
-                MacroShape.SINGLETON_BACK_REF_DIST_LO,
-            ),
-            (BACK_REF_OP, BACK_REF_SUBREG_LEN, MacroShape.SINGLETON_BACK_REF_LEN),
             (
                 PATTERN_REPLAY_OP,
                 PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -714,20 +709,6 @@ class TestClassifyMacroShape(unittest.TestCase):
             with self.subTest(op=op, sr=sr):
                 result = self._classify([{"op": op, "subreg": sr, "val": 11}])
                 self.assertEqual(result, (expected, 11))
-
-    def test_br_hi_then_lo(self):
-        rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 6},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 9},
-        ]
-        self.assertEqual(self._classify(rows), (MacroShape.BR_HI_THEN_LO, 6))
-
-    def test_br_lo_then_len_no_extras(self):
-        rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_LO, "val": 4},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 7},
-        ]
-        self.assertEqual(self._classify(rows), (MacroShape.BR_LO_THEN_LEN,))
 
     def test_pr_hi_then_lo(self):
         rows = [
@@ -839,10 +820,14 @@ class TestClassifyMacroShape(unittest.TestCase):
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 
-    def test_br_dist_hi_n2_with_wrong_trailing_subreg_is_malformed(self):
+    def test_pr_dist_hi_n2_with_wrong_trailing_subreg_is_malformed(self):
         rows = [
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_DIST_HI, "val": 5},
-            {"op": BACK_REF_OP, "subreg": BACK_REF_SUBREG_LEN, "val": 3},
+            {
+                "op": PATTERN_REPLAY_OP,
+                "subreg": PATTERN_REPLAY_SUBREG_DIST_HI,
+                "val": 5,
+            },
+            {"op": PATTERN_REPLAY_OP, "subreg": PATTERN_REPLAY_SUBREG_LEN, "val": 3},
         ]
         self.assertEqual(self._classify(rows), (MacroShape.MALFORMED,))
 

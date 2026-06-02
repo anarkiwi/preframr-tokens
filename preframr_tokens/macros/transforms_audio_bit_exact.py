@@ -29,9 +29,6 @@ from preframr_tokens.macros.transform import (
     register,
 )
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
     DIFF_OP,
     DO_LOOP_OP,
     FC_PRESET_OP,
@@ -189,7 +186,6 @@ class LoopTransform(PassBackedTransform):
     REQUIRES_ARGS = frozenset({"loop_pass"})
     OP_CODES = frozenset(
         {
-            BACK_REF_OP,
             DO_LOOP_OP,
             PATTERN_REPLAY_OP,
             PATTERN_OVERLAY_OP,
@@ -197,7 +193,6 @@ class LoopTransform(PassBackedTransform):
     )
     PROVIDES_OPS = frozenset(
         {
-            BACK_REF_OP,
             DO_LOOP_OP,
             PATTERN_REPLAY_OP,
             PATTERN_OVERLAY_OP,
@@ -206,8 +201,6 @@ class LoopTransform(PassBackedTransform):
     SUBSTITUTABLE_OP_SUBREGS = frozenset(
         {
             (PATTERN_OVERLAY_OP, 2),
-            (BACK_REF_OP, BACK_REF_SUBREG_DIST_HI),
-            (BACK_REF_OP, BACK_REF_SUBREG_DIST_LO),
             (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI),
             (PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_LO),
             (DO_LOOP_OP, 0),
