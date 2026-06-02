@@ -124,12 +124,14 @@ class PatchPass(MacroPass):
 
     @staticmethod
     def _emit(events, irq):
-        """Group events by (ad,sr); for each state recurring >= PATCH_MINREP, the earliest-positioned
-        occurrence becomes the PATCH_DEF and the rest become PATCH_SET backrefs. ids are assigned in
-        DEF-position order so every backref's def precedes it in the row stream."""
+        """Group events by (freq_reg, ad, sr) -- per-voice, so a def and all its PATCH_SET reuses stay in
+        one voice and keep def-before-ref under the voice-major _norm_pr_order (a global cross-voice
+        codebook let a reuse sort ahead of its def -> "id not live"; trades cross-voice sharing for
+        byte-exactness). Each (ad,sr) recurring >= PATCH_MINREP: earliest occurrence is the PATCH_DEF in
+        DEF-position order, the rest PATCH_SET backrefs whose def precedes them."""
         groups = defaultdict(list)
         for ev in events:
-            groups[(ev["ad"], ev["sr"])].append(ev)
+            groups[(ev["freq_reg"], ev["ad"], ev["sr"])].append(ev)
         recurring = []
         for key, occ in groups.items():
             if len(occ) >= PATCH_MINREP:
@@ -137,7 +139,7 @@ class PatchPass(MacroPass):
                 recurring.append((occ[0]["pos"], key, occ))
         recurring.sort()
         drop_idx, new_rows = [], []
-        for patch_id, (_pos, (ad, sr), occ) in enumerate(recurring):
+        for patch_id, (_pos, (_freq_reg, ad, sr), occ) in enumerate(recurring):
             for j, ev in enumerate(occ):
                 if j == 0:
                     rows = [
