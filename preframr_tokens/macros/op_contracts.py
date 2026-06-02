@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+import preframr_tokens.stfconstants as _stfconstants
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -83,6 +84,8 @@ __all__ = [
     "reference_op_producers",
     "contract_emit_ops",
     "missing_contracts",
+    "op_name_by_id",
+    "op_name_tiers",
 ]
 
 
@@ -331,3 +334,36 @@ def missing_contracts(emit_ops: set[int] | None = None) -> set[int]:
     dummy op added to the emit set surfaces here (the registry bites)."""
     ops = contract_emit_ops() if emit_ops is None else emit_ops
     return set(ops) - set(OP_CONTRACTS)
+
+
+def op_name_by_id() -> dict[int, str]:
+    """Canonical ``{op_int: NAME}`` map -- tokens' single source of truth for op naming, so a consumer
+    reads it here instead of re-deriving names by ``dir()``-scanning ``stfconstants`` (which couples it to
+    raw constant *names* a rename silently changes). Scans every non-negative-int ``*_OP`` constant once;
+    ``NAME`` is the constant name with the ``_OP`` token removed (``SET_OP`` -> ``"SET"``,
+    ``LEGATO_OP_CLUSTER_2`` -> ``"LEGATO_CLUSTER_2"``). ``op_name_tiers`` joins this with op->tier.
+    """
+    out: dict[int, str] = {}
+    for name in dir(_stfconstants):
+        if "_OP" not in name:
+            continue
+        val = getattr(_stfconstants, name)
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            continue
+        out[int(val)] = name.replace("_OP", "")
+    return out
+
+
+def op_name_tiers() -> dict[int, tuple[str, str]]:
+    """``{op_int: (name, tier)}`` joining ``op_name_by_id`` (op->name) with
+    ``collect_op_loss_tiers`` (op->tier) over the union of both maps -- name defaults to ``""`` for an op
+    that carries a tier but no ``*_OP`` constant, tier to ``""`` for a named op with no declared tier.
+    """
+    # pylint: disable=import-outside-toplevel
+    from preframr_tokens.macros.transform import collect_op_loss_tiers
+
+    names = op_name_by_id()
+    tiers = collect_op_loss_tiers()
+    return {
+        op: (names.get(op, ""), tiers.get(op, "")) for op in set(names) | set(tiers)
+    }

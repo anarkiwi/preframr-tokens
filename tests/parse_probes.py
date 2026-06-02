@@ -32,6 +32,8 @@ _VOICE0_PW_HI = 3
 _VOICE0_CTRL = 4
 _VOICE0_AD = 5
 _VOICE0_SR = 6
+_FC_LO = 21
+_FC_HI = 22
 
 
 def parse_args(**over):
@@ -97,6 +99,12 @@ class DumpBuilder:
     def pw(self, value):
         self._write(_VOICE0_PW_LO, value & 0xFF)
         self._write(_VOICE0_PW_HI, (value >> 8) & 0x0F)
+        return self
+
+    def fc(self, value):
+        """Write the global filter cutoff lo+hi (reg 21/22), the way a cutoff sweep pokes it."""
+        self._write(_FC_LO, value & 0xFF)
+        self._write(_FC_HI, (value >> 8) & 0xFF)
         return self
 
     def note(self, per_frame_fns, gate=True):

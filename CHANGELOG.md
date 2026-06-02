@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.42.0]
+### Added
+- `SweepPass` now mines PW and filter-cutoff ramps, not just freq. New opt-in sub-flags `pw_sweep`
+  (per-voice pulse width, regs 2/9/16) and `filter_sweep` (the global 11-bit cutoff, reg 21), default
+  OFF, gated under `sweep_pass`. Driver PW and cutoff sweeps PERSIST ACROSS NOTES, so these targets are
+  NOT note-aligned (a gate-on retrigger does not segment the run, unlike a freq sweep where a gate-on is
+  a note boundary) and skip the freq/skeleton RESID gate. A constant-delta ramp that previously decayed
+  to one `PWM_PRESET`/`FC_PRESET`/`SET` per frame now collapses into one byte-exact `SWEEP` atom.
+- Canonical op-name API: `op_name_by_id() -> {op_int: NAME}` (and `op_name_tiers() -> {op_int:
+  (name, tier)}`) in `macros/op_contracts.py`, re-exported from `preframr_tokens`. tokens now owns the
+  op->name mapping (the constant name with the `_OP` token removed) so a downstream consumer reads it
+  here instead of `dir()`-scanning `stfconstants`, which coupled it to raw constant names a rename
+  silently changed. `collect_op_loss_tiers` stays the source of truth for op->tier.
+### Changed
+- `SweepPass` emits one `Claim` per sweep run and arbitrates with `validate=True`, so a tick-drain
+  clobber (another pass's atom writing the same reg later in the frame) drops only the offending run
+  instead of the tune's whole sweep set.
+
 ## [0.41.1]
 ### Fixed
 - Decode walker now renders the lead frame -- content before the first FRAME marker, which is the

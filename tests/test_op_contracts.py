@@ -15,6 +15,16 @@ from preframr_tokens.macros.op_contracts import (
     MaskRole,
     contract_emit_ops,
     missing_contracts,
+    op_name_by_id,
+    op_name_tiers,
+)
+from preframr_tokens.macros.transform import collect_op_loss_tiers
+from preframr_tokens.stfconstants import (
+    LEGATO_OP_CLUSTER_2,
+    LOSS_TIER_NAMES,
+    PATTERN_REPLAY_OP,
+    SET_OP,
+    SWEEP_OP,
 )
 
 _STRUCTURAL_ROLES = {MaskRole.DISTANCE_PAIR, MaskRole.OVERLAY}
@@ -65,6 +75,33 @@ class TestStructuralRegistryConsistency(unittest.TestCase):
             for sf in specs:
                 if sf.value_array is not None:
                     self.assertIn(sf.value_array, STRUCTURAL_VALUE_ARRAYS)
+
+
+class TestOpNameApi(unittest.TestCase):
+    """The canonical op->name API (PW/filter SWEEP brief Part B): tokens owns op->name (the constant
+    name with the ``_OP`` token removed) so a downstream consumer reads it here instead of re-deriving
+    names by ``dir()``-scanning stfconstants."""
+
+    def test_known_op_names(self):
+        names = op_name_by_id()
+        self.assertEqual(names[SET_OP], "SET")
+        self.assertEqual(names[PATTERN_REPLAY_OP], "PATTERN_REPLAY")
+        self.assertEqual(names[SWEEP_OP], "SWEEP")
+        self.assertEqual(names[LEGATO_OP_CLUSTER_2], "LEGATO_CLUSTER_2")
+
+    def test_every_contract_op_has_a_name(self):
+        names = op_name_by_id()
+        missing = [op for op in OP_CONTRACTS if op not in names]
+        self.assertEqual(missing, [], "OP_CONTRACTS ops without a name")
+
+    def test_op_name_tiers_joins_names_and_tiers(self):
+        joined = op_name_tiers()
+        tiers = collect_op_loss_tiers()
+        names = op_name_by_id()
+        self.assertEqual(set(joined), set(names) | set(tiers))
+        for op, tier in tiers.items():
+            self.assertEqual(joined[op], (names.get(op, ""), tier))
+            self.assertTrue(tier == "" or tier in LOSS_TIER_NAMES)
 
 
 if __name__ == "__main__":

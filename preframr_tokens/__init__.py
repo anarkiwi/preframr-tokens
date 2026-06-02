@@ -66,6 +66,7 @@ from preframr_tokens.macros import (
     validate_pattern_overlays,
     validate_stream,
 )
+from preframr_tokens.macros.op_contracts import op_name_by_id, op_name_tiers
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.preset_pass import PresetPass
@@ -163,4 +164,6 @@ __all__ = [
     "LOSS_TIER_NAMES",
     "DISTANCE_PAIR_OPS",
     "CONTENT_TIER",
+    "op_name_by_id",
+    "op_name_tiers",
 ]
