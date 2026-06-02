@@ -887,9 +887,44 @@ class RegLogParser:
         df = df[list(orig_df.columns) + ["subreg"]]
         return df
 
+    def _admit_dump(self, name):
+        """Cheap pre-load gate so a digi / multispeed / extended dump (dense ctrl/vol/freq sample
+        playback, millions of raw writes) is rejected BEFORE ``_read_df`` loads and combines it. Two
+        signals, both avoiding a full data read: the cached ``is_digi`` meta sidecar (semantic), and a
+        parquet row-count cap (``max_raw_writes``, default 4M -- no legit subtune approaches it).
+        """
+        if not name.endswith(DUMP_SUFFIX):
+            return True
+        try:
+            from preframr_tokens.dump_meta import read_meta
+
+            meta = read_meta(name)
+            if meta is not None and not meta.stale and meta.is_digi:
+                self.logger.info("skipped %s, is_digi (meta)", name)
+                return False
+        except Exception:  # noqa: BLE001 pylint: disable=broad-except
+            pass
+        cap = getattr(self.args, "max_raw_writes", 4_000_000)
+        if cap:
+            try:
+                n_rows = ParquetFile(name).metadata.num_rows
+            except Exception:  # noqa: BLE001 pylint: disable=broad-except
+                return True
+            if n_rows > cap:
+                self.logger.info(
+                    "skipped %s, %u raw writes (> %u; digi/multispeed)",
+                    name,
+                    n_rows,
+                    cap,
+                )
+                return False
+        return True
+
     def parse(self, name, max_perm=99, require_pq=False, reparse=False):
         if self._excluded(name):
             self.logger.info("skipped %s, exclude-list", name)
+            return
+        if not self._admit_dump(name):
             return
         if not reparse:
             parquet_glob = glob.glob(name.replace(DUMP_SUFFIX, PARSED_SUFFIX))

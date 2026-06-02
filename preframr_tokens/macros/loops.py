@@ -1,4 +1,4 @@
-"""BACK_REF / PATTERN_REPLAY / DO_LOOP machinery."""
+"""PATTERN_REPLAY / DO_LOOP machinery."""
 
 import logging
 from collections import defaultdict
@@ -13,10 +13,6 @@ from preframr_tokens.macros.state import _FRAME_MARKER_REGS, FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     BACK_REF_DIST_HI_SHIFT,
     BACK_REF_DIST_LO_MASK,
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DO_LOOP_OP,
     LOOP_OP_REG,
     PATTERN_OVERLAY_OP,
@@ -34,49 +30,13 @@ from preframr_tokens.stfconstants import (
 )
 
 
-def _back_ref_rows(distance, length, diff_default, irq_default):
-    assert 1 <= length <= 255, length
-    assert distance >= 1, distance
-    dist_hi = (int(distance) >> BACK_REF_DIST_HI_SHIFT) & BACK_REF_DIST_LO_MASK
-    dist_lo = int(distance) & BACK_REF_DIST_LO_MASK
-    return [
-        {
-            "reg": int(LOOP_OP_REG),
-            "val": dist_hi,
-            "diff": diff_default,
-            "op": int(BACK_REF_OP),
-            "subreg": int(BACK_REF_SUBREG_DIST_HI),
-            "irq": irq_default,
-            "description": 0,
-        },
-        {
-            "reg": int(LOOP_OP_REG),
-            "val": dist_lo,
-            "diff": diff_default,
-            "op": int(BACK_REF_OP),
-            "subreg": int(BACK_REF_SUBREG_DIST_LO),
-            "irq": irq_default,
-            "description": 0,
-        },
-        {
-            "reg": int(LOOP_OP_REG),
-            "val": int(length),
-            "diff": diff_default,
-            "op": int(BACK_REF_OP),
-            "subreg": int(BACK_REF_SUBREG_LEN),
-            "irq": irq_default,
-            "description": 0,
-        },
-    ]
-
-
 def _pattern_replay_rows(distance, length, overlay_count, diff_default, irq_default):
     assert 1 <= length <= 255, length
     assert distance >= 1, distance
     assert 0 <= overlay_count, overlay_count
     dist_hi = (int(distance) >> BACK_REF_DIST_HI_SHIFT) & BACK_REF_DIST_LO_MASK
     dist_lo = int(distance) & BACK_REF_DIST_LO_MASK
-    return [
+    rows = [
         {
             "reg": int(LOOP_OP_REG),
             "val": dist_hi,
@@ -104,16 +64,20 @@ def _pattern_replay_rows(distance, length, overlay_count, diff_default, irq_defa
             "irq": irq_default,
             "description": 0,
         },
-        {
-            "reg": int(LOOP_OP_REG),
-            "val": int(overlay_count),
-            "diff": diff_default,
-            "op": int(PATTERN_REPLAY_OP),
-            "subreg": int(PATTERN_REPLAY_SUBREG_OVERLAY_COUNT),
-            "irq": irq_default,
-            "description": 0,
-        },
     ]
+    if int(overlay_count) > 0:
+        rows.append(
+            {
+                "reg": int(LOOP_OP_REG),
+                "val": int(overlay_count),
+                "diff": diff_default,
+                "op": int(PATTERN_REPLAY_OP),
+                "subreg": int(PATTERN_REPLAY_SUBREG_OVERLAY_COUNT),
+                "irq": irq_default,
+                "description": 0,
+            }
+        )
+    return rows
 
 
 OVERLAY_BODY_FREQ_DELTA = 0xFE
@@ -170,7 +134,6 @@ def _pattern_overlay_rows(frame_offset, target_reg, new_val, diff_default, irq_d
 
 
 MULTI_ROW_MACRO_EMITTERS = (
-    (_back_ref_rows, BACK_REF_OP, BACK_REF_SUBREG_DIST_HI),
     (_pattern_replay_rows, PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI),
     (_pattern_overlay_rows, PATTERN_OVERLAY_OP, PATTERN_OVERLAY_SUBREG_FRAME_OFFSET),
 )
@@ -188,10 +151,10 @@ def _is_frame_marker_row(row):
 
 
 def expand_loops(df):
-    """Materialize BACK_REF and DO_LOOP rows into literal frame copies."""
+    """Materialize PATTERN_REPLAY and DO_LOOP rows into literal frame copies."""
     if "op" not in df.columns:
         return df
-    has_loops = df["op"].isin([BACK_REF_OP, DO_LOOP_OP, PATTERN_REPLAY_OP]).any()
+    has_loops = df["op"].isin([DO_LOOP_OP, PATTERN_REPLAY_OP]).any()
     if not has_loops:
         return df
 
@@ -219,65 +182,6 @@ def expand_loops(df):
     while i < n:
         op_raw = op_arr[i]
         op = int(op_raw) if not pd.isna(op_raw) else SET_OP
-        if op == BACK_REF_OP:
-            sr_raw = subreg_arr[i] if subreg_arr is not None else -1
-            sr = int(sr_raw) if not pd.isna(sr_raw) else -1
-            if sr != BACK_REF_SUBREG_DIST_HI:
-                orphans["br_continuation_without_dist_hi"] += 1
-                i += 1
-                continue
-            dist_hi = int(val_arr[i])
-            j_lo = i + 1
-            if j_lo >= n:
-                orphans["br_dist_hi_at_eof"] += 1
-                i += 1
-                continue
-            lo_op_raw = op_arr[j_lo]
-            lo_op = int(lo_op_raw) if not pd.isna(lo_op_raw) else SET_OP
-            lo_sr_raw = subreg_arr[j_lo] if subreg_arr is not None else -1
-            lo_sr = int(lo_sr_raw) if not pd.isna(lo_sr_raw) else -1
-            if not (lo_op == BACK_REF_OP and lo_sr == BACK_REF_SUBREG_DIST_LO):
-                orphans["br_dist_hi_no_lo_partner"] += 1
-                i += 1
-                continue
-            dist_lo = int(val_arr[j_lo])
-            distance = (dist_hi << BACK_REF_DIST_HI_SHIFT) | dist_lo
-            j = i + 2
-            if j >= n:
-                orphans["br_dist_at_eof"] += 1
-                i += 1
-                continue
-            j_op_raw = op_arr[j]
-            j_op = int(j_op_raw) if not pd.isna(j_op_raw) else SET_OP
-            j_sr_raw = subreg_arr[j] if subreg_arr is not None else -1
-            j_sr = int(j_sr_raw) if not pd.isna(j_sr_raw) else -1
-            if not (j_op == BACK_REF_OP and j_sr == BACK_REF_SUBREG_LEN):
-                orphans["br_dist_no_len_partner"] += 1
-                i += 1
-                continue
-            length = int(val_arr[j])
-            cur_frame = len(output_frame_starts)
-            target = cur_frame - distance
-            assert target >= 0, (
-                f"BACK_REF target frame {target} reaches before output start "
-                f"(cur_frame={cur_frame}, distance={distance})"
-            )
-            assert target + length <= cur_frame, (
-                f"BACK_REF target range [{target},{target+length}) overlaps "
-                f"present frame {cur_frame}"
-            )
-            for f in range(target, target + length):
-                src_lo = output_frame_starts[f]
-                src_hi = (
-                    output_frame_starts[f + 1]
-                    if f + 1 < len(output_frame_starts)
-                    else len(out)
-                )
-                snapshot = list(out[src_lo:src_hi])
-                for snap_row in snapshot:
-                    append_row(dict(snap_row))
-            i += 3
-            continue
         if op == DO_LOOP_OP:
             subreg_raw = subreg_arr[i] if subreg_arr is not None else -1
             subreg = int(subreg_raw) if not pd.isna(subreg_raw) else -1
@@ -304,7 +208,7 @@ def expand_loops(df):
                 i += 1
                 continue
             dist_hi = int(val_arr[i])
-            if i + 3 >= n:
+            if i + 2 >= n:
                 orphans["pr_dist_hi_at_eof"] += 1
                 i += 1
                 continue
@@ -331,23 +235,23 @@ def expand_loops(df):
                 i += 1
                 continue
             length = int(val_arr[i + 2])
-            ov_op_raw = op_arr[i + 3]
-            ov_op_field = int(ov_op_raw) if not pd.isna(ov_op_raw) else SET_OP
-            ov_sr_raw = subreg_arr[i + 3] if subreg_arr is not None else -1
-            ov_sr_field = int(ov_sr_raw) if not pd.isna(ov_sr_raw) else -1
-            if not (
-                ov_op_field == PATTERN_REPLAY_OP
-                and ov_sr_field == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
-            ):
-                orphans["pr_dist_len_no_overlay_count"] += 1
-                i += 1
-                continue
-            num_overlays = int(val_arr[i + 3])
-            if num_overlays < 0:
-                orphans["pr_negative_overlay_count"] += 1
-                i += 1
-                continue
-            head_rows = 4
+            num_overlays = 0
+            head_rows = 3
+            if i + 3 < n:
+                ov_op_raw = op_arr[i + 3]
+                ov_op_field = int(ov_op_raw) if not pd.isna(ov_op_raw) else SET_OP
+                ov_sr_raw = subreg_arr[i + 3] if subreg_arr is not None else -1
+                ov_sr_field = int(ov_sr_raw) if not pd.isna(ov_sr_raw) else -1
+                if (
+                    ov_op_field == PATTERN_REPLAY_OP
+                    and ov_sr_field == PATTERN_REPLAY_SUBREG_OVERLAY_COUNT
+                ):
+                    num_overlays = int(val_arr[i + 3])
+                    if num_overlays < 0:
+                        orphans["pr_negative_overlay_count"] += 1
+                        i += 1
+                        continue
+                    head_rows = 4
             cur_frame = len(output_frame_starts)
             target = cur_frame - distance
             assert target >= 0, (

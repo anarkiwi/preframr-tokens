@@ -53,13 +53,15 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
         from preframr_tokens.stfconstants import (
             FREQ_TRAJ_OP,
             PWM_PRESET_OP,
-            BACK_REF_OP,
-            BACK_REF_SUBREG_DIST_HI,
+            PATTERN_REPLAY_OP,
+            PATTERN_REPLAY_SUBREG_DIST_HI,
         )
 
         self.assertIn((int(FREQ_TRAJ_OP), 0), subregs)
         self.assertIn((int(PWM_PRESET_OP), -1), subregs)
-        self.assertIn((int(BACK_REF_OP), int(BACK_REF_SUBREG_DIST_HI)), subregs)
+        self.assertIn(
+            (int(PATTERN_REPLAY_OP), int(PATTERN_REPLAY_SUBREG_DIST_HI)), subregs
+        )
 
     def test_collects_decomposing_op_codes(self):
         ops = collect_decomposing_op_codes()

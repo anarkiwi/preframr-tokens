@@ -1,11 +1,13 @@
 """Claim + arbiter: the speculative encoding pipeline core
 (``design/speculative_encoding_pipeline.md``). Passes PROPOSE ``Claim``s over the immutable source;
-``arbitrate`` accepts a non-overlapping subset (a lossless write-PARTITION; unclaimed writes stay)
-maximising the lexicographic score with a deterministic tie-break (priority, then source order).
+``arbitrate`` accepts a non-overlapping subset maximising the lexicographic score with a deterministic
+tie-break. Register-exact passes pass ``validate=True`` so any claim that changes the decoded
+register_state is dropped (kept literal); ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from preframr_tokens.macros.passes_base import _splice_rows
@@ -36,20 +38,74 @@ def _sort_key(claim):
     return (tuple(-s for s in claim.score), claim.priority, first)
 
 
-def arbitrate(df, claims):
-    """Select non-overlapping claims greedily in ``_sort_key`` order and apply them as one splice.
-    Conflicting (write-overlapping) lower-ranked claims are dropped; unclaimed writes remain in
-    ``df`` (lossless fallback). A single claim reduces exactly to
-    ``_splice_rows(df, drop_idx, new_rows)`` -- byte-identical to the pre-arbiter passes.
+def _decoded_state(df):
+    """Per-frame decoded register state (macros expanded), the byte-exactness oracle. Op-less frames
+    are treated as plain SETs, matching ``parse_audit``."""
+    from preframr_tokens.audit_primitives import register_state
+    from preframr_tokens.stfconstants import SET_OP
+
+    return register_state(df if "op" in df.columns else df.assign(op=int(SET_OP)))
+
+
+def _lossless(src_state, candidate_df):
+    """True iff ``candidate_df`` decodes to the same per-frame register state as the source (same shape
+    -- frame budget -- and same values). Returns False on any decode error: an undecodable candidate is
+    never accepted."""
+    try:
+        cand = _decoded_state(candidate_df)
+    except (
+        Exception
+    ):  # noqa: BLE001 -- an undecodable claim partition is simply rejected
+        return False
+    if cand.shape != src_state.shape:
+        return False
+    return not (cand != src_state).any()
+
+
+def _strict():
+    return os.environ.get("PREFRAMR_ARBITER_STRICT", "") not in ("", "0")
+
+
+def arbitrate(df, claims, validate=False):
+    """Select non-overlapping claims greedily in ``_sort_key`` order; write-overlapping lower-ranked
+    claims drop and stay literal. ``validate`` (register-exact passes) decodes the result and drops any
+    claim that changes the source register_state -- CUMULATIVELY, since claims interact (one ctrl
+    collapse's frame-tick drain can land in another's frame, so independent checks are unsound) -- a
+    clobbered collapse stays literal. ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
     """
     claimed: set = set()
-    drop_idx: list = []
-    new_rows: list = []
+    selected: list = []
     for claim in sorted(claims, key=_sort_key):
         w = set(claim.writes)
         if w & claimed:
             continue
         claimed |= w
-        drop_idx.extend(claim.writes)
-        new_rows.extend(claim.tokens)
-    return _splice_rows(df, drop_idx, new_rows)
+        selected.append(claim)
+    if not selected:
+        return df
+
+    def _apply(chosen):
+        drop_idx: list = []
+        new_rows: list = []
+        for c in chosen:
+            drop_idx.extend(c.writes)
+            new_rows.extend(c.tokens)
+        return _splice_rows(df, drop_idx, new_rows)
+
+    out = _apply(selected)
+    strict = _strict()
+    if not (validate or strict):
+        return out
+    src_state = _decoded_state(df)
+    if _lossless(src_state, out):
+        return out
+    accepted: list = []
+    for claim in selected:
+        if _lossless(src_state, _apply(accepted + [claim])):
+            accepted.append(claim)
+    if strict and len(accepted) != len(selected):
+        raise AssertionError(
+            f"ARBITER: {len(selected) - len(accepted)} claim(s) not byte-exact; "
+            f"root-fix the proposing pass"
+        )
+    return _apply(accepted)

@@ -10,5 +10,5 @@ __all__ = ["vocab_frame_weights"]
 
 
 def vocab_frame_weights(rt, tokens, n_vocab: int) -> np.ndarray:
-    """Per-vocab-id frame-time weight (float32). Default 1.0 for tokens with no explicit weight. Weight sources: BACK_REF_LEN (val), DO_LOOP (val), SLOPE_RUNTIME (val), DELAY (val), FRAME (+1.0)."""
+    """Per-vocab-id frame-time weight (float32). Default 1.0 for tokens with no explicit weight. Weight sources: PATTERN_REPLAY_LEN (val), DO_LOOP (val), SLOPE_RUNTIME (val), DELAY (val), FRAME (+1.0)."""
     return VocabSignature(rt, tokens, n_vocab).frame_weights

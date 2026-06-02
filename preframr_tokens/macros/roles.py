@@ -6,10 +6,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DO_LOOP_OP,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -33,7 +29,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class DistancePairSpec:
-    """Mapping from a distance-pair op (``BACK_REF`` / ``PATTERN_REPLAY``) to its DIST_HI / DIST_LO / LEN slot ids and any extra trailing slots (``PATTERN_REPLAY`` carries OVERLAY_COUNT)."""
+    """Mapping from a distance-pair op (``PATTERN_REPLAY``) to its DIST_HI / DIST_LO / LEN slot ids and any extra trailing slots (``PATTERN_REPLAY`` carries the optional OVERLAY_COUNT)."""
 
     label: str
     dist_hi: int
@@ -43,13 +39,6 @@ class DistancePairSpec:
 
 
 DISTANCE_PAIR_OPS: dict[int, DistancePairSpec] = {
-    BACK_REF_OP: DistancePairSpec(
-        label="BACK_REF",
-        dist_hi=BACK_REF_SUBREG_DIST_HI,
-        dist_lo=BACK_REF_SUBREG_DIST_LO,
-        length=BACK_REF_SUBREG_LEN,
-        extra_subregs=frozenset(),
-    ),
     PATTERN_REPLAY_OP: DistancePairSpec(
         label="PR",
         dist_hi=PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -95,11 +84,11 @@ def slope_subreg_role(op: int, subreg: int) -> Optional[str]:
 
 
 def frame_weight_role(op: int, subreg: int) -> Optional[str]:
-    """``"back_ref_len" | "do_loop_len" | "slope_runtime" | None`` for the three op-side weight sources (the reg-side DELAY / FRAME ones live in ``token_weighting``)."""
+    """``"pattern_replay_len" | "do_loop_len" | "slope_runtime" | None`` for the three op-side weight sources (the reg-side DELAY / FRAME ones live in ``token_weighting``)."""
     op = int(op)
     sr = int(subreg)
-    if op == BACK_REF_OP and sr == BACK_REF_SUBREG_LEN:
-        return "back_ref_len"
+    if op == PATTERN_REPLAY_OP and sr == PATTERN_REPLAY_SUBREG_LEN:
+        return "pattern_replay_len"
     if op == DO_LOOP_OP and sr == 0:
         return "do_loop_len"
     if op in _SLOPE_OP_SET and sr == FT_SUBREG_RUNTIME:

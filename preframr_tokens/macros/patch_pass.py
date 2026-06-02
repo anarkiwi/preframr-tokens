@@ -10,10 +10,12 @@ __all__ = ["PatchPass"]
 from collections import defaultdict
 
 from preframr_tokens.macros.arbiter import Claim, arbitrate
+from preframr_tokens.macros.codebook_emit import emit_recurring
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
     _frame_index,
+    make_row,
     MacroPass,
 )
 from preframr_tokens.stfconstants import (
@@ -35,15 +37,7 @@ _PATCH_PRIORITY = -5
 
 
 def _row(reg, op, subreg, val, irq):
-    return {
-        "reg": int(reg),
-        "val": int(val),
-        "diff": int(_MIN_DIFF),
-        "op": int(op),
-        "subreg": int(subreg),
-        "irq": int(irq),
-        "description": 0,
-    }
+    return make_row(reg, val, op=op, subreg=subreg, diff=_MIN_DIFF, irq=irq)
 
 
 class PatchPass(MacroPass):
@@ -62,20 +56,10 @@ class PatchPass(MacroPass):
             df["op"] = int(SET_OP)
         irq = _first_irq(df)
         events = self._events(df)
-        drop_idx, new_rows = self._emit(events, irq)
-        if not new_rows:
+        claims = self._emit(events, irq)
+        if not claims:
             return df
-        return arbitrate(
-            df,
-            [
-                Claim(
-                    writes=tuple(drop_idx),
-                    tokens=new_rows,
-                    priority=_PATCH_PRIORITY,
-                    label="patch",
-                )
-            ],
-        )
+        return arbitrate(df, claims, validate=True)
 
     @staticmethod
     def _events(df):
@@ -90,16 +74,23 @@ class PatchPass(MacroPass):
         ad_regs = {int(reg) + PATCH_AD_OFFSET: int(reg) for reg in FREQ_TRAJ_REGS}
         sr_regs = {int(reg) + PATCH_SR_OFFSET: int(reg) for reg in FREQ_TRAJ_REGS}
         ad_at, sr_at = {}, {}
+        ad_count, sr_count = defaultdict(int), defaultdict(int)
         for i in range(len(df)):
             if int(ops[i]) != SET_OP or int(subregs[i]) != -1:
                 continue
             reg = int(regs[i])
             if reg in ad_regs:
-                ad_at[(ad_regs[reg], int(f_idx[i]))] = (int(i), int(vals[i]))
+                key = (ad_regs[reg], int(f_idx[i]))
+                ad_at[key] = (int(i), int(vals[i]))
+                ad_count[key] += 1
             elif reg in sr_regs:
-                sr_at[(sr_regs[reg], int(f_idx[i]))] = (int(i), int(vals[i]))
+                key = (sr_regs[reg], int(f_idx[i]))
+                sr_at[key] = (int(i), int(vals[i]))
+                sr_count[key] += 1
         events = []
         for key in set(ad_at) & set(sr_at):
+            if ad_count[key] != 1 or sr_count[key] != 1:
+                continue
             freq_reg, _frame = key
             ad_row, ad = ad_at[key]
             sr_row, sr = sr_at[key]
@@ -117,34 +108,43 @@ class PatchPass(MacroPass):
 
     @staticmethod
     def _emit(events, irq):
-        """Group events by (ad,sr); for each state recurring >= PATCH_MINREP, the earliest-positioned
-        occurrence becomes the PATCH_DEF and the rest become PATCH_SET backrefs. ids are assigned in
-        DEF-position order so every backref's def precedes it in the row stream."""
+        """Group events by (freq_reg, ad, sr) -- per-voice, so a def and its PATCH_SET reuses keep
+        def-before-ref under the voice-major _norm_pr_order (a global cross-voice codebook let a reuse
+        sort ahead of its def -> "id not live"). Each group recurring >= PATCH_MINREP is one Claim
+        (PATCH_DEF on the earliest occurrence, PATCH_SET after) so a single divergent patch drops alone
+        under validate, not the tune's whole codebook."""
         groups = defaultdict(list)
         for ev in events:
-            groups[(ev["ad"], ev["sr"])].append(ev)
-        recurring = []
-        for key, occ in groups.items():
-            if len(occ) >= PATCH_MINREP:
-                occ = sorted(occ, key=lambda e: e["pos"])
-                recurring.append((occ[0]["pos"], key, occ))
-        recurring.sort()
-        drop_idx, new_rows = [], []
-        for patch_id, (_pos, (ad, sr), occ) in enumerate(recurring):
-            for j, ev in enumerate(occ):
-                if j == 0:
-                    rows = [
-                        _row(
-                            ev["freq_reg"], PATCH_DEF_OP, PATCH_SUBREG_ID, patch_id, irq
-                        ),
-                        _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_AD, ad, irq),
-                        _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_SR, sr, irq),
-                    ]
-                else:
-                    rows = [_row(ev["freq_reg"], PATCH_SET_OP, -1, patch_id, irq)]
-                for r in rows:
-                    r["__pos"] = ev["pos"]
-                    new_rows.append(r)
-                drop_idx.append(ev["ad_row"])
-                drop_idx.append(ev["sr_row"])
-        return drop_idx, new_rows
+            groups[(ev["freq_reg"], ev["ad"], ev["sr"])].append(ev)
+
+        def emit_first(cb_id, occ):
+            ev = occ[0]
+            return [
+                _row(ev["freq_reg"], PATCH_DEF_OP, PATCH_SUBREG_ID, cb_id, irq),
+                _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_AD, ev["ad"], irq),
+                _row(ev["freq_reg"], PATCH_STEP_OP, PATCH_SUBREG_SR, ev["sr"], irq),
+            ]
+
+        def emit_ref(cb_id, ev):
+            return [_row(ev["freq_reg"], PATCH_SET_OP, -1, cb_id, irq)]
+
+        grouped, _ = emit_recurring(
+            groups,
+            minrep=PATCH_MINREP,
+            group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
+            occ_sort=lambda e: e["pos"],
+            pos_of=lambda e: e["pos"],
+            rows_of=lambda e: (e["ad_row"], e["sr_row"]),
+            emit_first=emit_first,
+            emit_ref=emit_ref,
+            per_group=True,
+        )
+        return [
+            Claim(
+                writes=tuple(g_drop),
+                tokens=g_rows,
+                priority=_PATCH_PRIORITY,
+                label="patch",
+            )
+            for g_drop, g_rows in grouped
+        ]

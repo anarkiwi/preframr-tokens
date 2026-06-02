@@ -9,13 +9,13 @@ import pandas as pd
 
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_LEN,
     DELAY_REG,
     DO_LOOP_OP,
     FRAME_REG,
     MODEL_PDTYPE,
     PAD_REG,
+    PATTERN_REPLAY_OP,
+    PATTERN_REPLAY_SUBREG_LEN,
     SET_OP,
 )
 from preframr_tokens.token_weighting import vocab_frame_weights
@@ -61,13 +61,13 @@ class TestVocabFrameWeights(unittest.TestCase):
         w = vocab_frame_weights(_rt(tokens), tokens, n_vocab=1)
         self.assertEqual(float(w[0]), 7.0)
 
-    def test_back_ref_len_subreg_weighs_val(self):
+    def test_pattern_replay_len_subreg_weighs_val(self):
         tokens = _tokens(
             [
                 {
-                    "op": BACK_REF_OP,
+                    "op": PATTERN_REPLAY_OP,
                     "reg": 0,
-                    "subreg": BACK_REF_SUBREG_LEN,
+                    "subreg": PATTERN_REPLAY_SUBREG_LEN,
                     "val": 4,
                     "n": 0,
                 }

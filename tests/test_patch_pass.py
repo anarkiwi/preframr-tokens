@@ -111,7 +111,11 @@ def test_two_distinct_patches_get_two_defs():
     assert int((enc["op"] == PATCH_SET_OP).sum()) == 2
 
 
-def test_recurring_patch_across_voices_shares_def():
+def test_patch_codebook_is_per_voice():
+    """Per-voice instrument codebook: the same envelope used once in each of three voices is NOT shared
+    into one def. Cross-voice sharing was dropped because it let a reuse in one voice sort ahead of its
+    def in another under the voice-major _norm_pr_order; single-use-per-voice stays literal, byte-exact.
+    """
     raw = (
         _Builder()
         .load(0x09, 0x00, freq_reg=0)
@@ -122,8 +126,8 @@ def test_recurring_patch_across_voices_shares_def():
         .df()
     )
     enc = _roundtrip_exact(raw, _args())
-    assert int((enc["op"] == PATCH_DEF_OP).sum()) == 1, "shared instrument, one def"
-    assert int((enc["op"] == PATCH_SET_OP).sum()) == 2
+    assert int((enc["op"] == PATCH_DEF_OP).sum()) == 0
+    assert int((enc["op"] == PATCH_SET_OP).sum()) == 0
 
 
 def test_single_use_load_left_alone():

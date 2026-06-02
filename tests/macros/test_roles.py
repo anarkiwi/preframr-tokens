@@ -12,10 +12,6 @@ from preframr_tokens.macros.roles import (
     slope_subreg_role,
 )
 from preframr_tokens.stfconstants import (
-    BACK_REF_OP,
-    BACK_REF_SUBREG_DIST_HI,
-    BACK_REF_SUBREG_DIST_LO,
-    BACK_REF_SUBREG_LEN,
     DO_LOOP_OP,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -31,15 +27,6 @@ from preframr_tokens.stfconstants import (
 
 
 class TestDistancePairRole(unittest.TestCase):
-    def test_back_ref_slots(self):
-        self.assertEqual(
-            distance_pair_role(BACK_REF_OP, BACK_REF_SUBREG_DIST_HI), "dist_hi"
-        )
-        self.assertEqual(
-            distance_pair_role(BACK_REF_OP, BACK_REF_SUBREG_DIST_LO), "dist_lo"
-        )
-        self.assertEqual(distance_pair_role(BACK_REF_OP, BACK_REF_SUBREG_LEN), "len")
-
     def test_pattern_replay_slots(self):
         self.assertEqual(
             distance_pair_role(PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI),
@@ -57,24 +44,17 @@ class TestDistancePairRole(unittest.TestCase):
             "ov_count",
         )
 
-    def test_back_ref_has_no_ov_count(self):
-        self.assertIsNone(distance_pair_role(BACK_REF_OP, 3))
-
     def test_non_distance_op_returns_none(self):
         self.assertIsNone(distance_pair_role(SET_OP, 0))
         self.assertIsNone(distance_pair_role(DO_LOOP_OP, 0))
 
     def test_unknown_subreg_returns_none(self):
-        self.assertIsNone(distance_pair_role(BACK_REF_OP, 99))
+        self.assertIsNone(distance_pair_role(PATTERN_REPLAY_OP, 99))
 
 
 class TestDistancePairOps(unittest.TestCase):
     def test_table_contents(self):
-        self.assertIn(BACK_REF_OP, DISTANCE_PAIR_OPS)
         self.assertIn(PATTERN_REPLAY_OP, DISTANCE_PAIR_OPS)
-        br = DISTANCE_PAIR_OPS[BACK_REF_OP]
-        self.assertEqual(br.label, "BACK_REF")
-        self.assertEqual(br.extra_subregs, frozenset())
         pr = DISTANCE_PAIR_OPS[PATTERN_REPLAY_OP]
         self.assertEqual(pr.label, "PR")
         self.assertEqual(
@@ -82,7 +62,7 @@ class TestDistancePairOps(unittest.TestCase):
         )
 
     def test_spec_is_frozen(self):
-        spec = DISTANCE_PAIR_OPS[BACK_REF_OP]
+        spec = DISTANCE_PAIR_OPS[PATTERN_REPLAY_OP]
         with self.assertRaises(Exception):
             spec.label = "mutated"  # type: ignore[misc]
         self.assertIsInstance(spec, DistancePairSpec)
@@ -97,16 +77,17 @@ class TestSlopeSubregRole(unittest.TestCase):
 
     def test_non_slope_op_returns_none(self):
         self.assertIsNone(slope_subreg_role(SET_OP, FT_SUBREG_TERMINAL_HI))
-        self.assertIsNone(slope_subreg_role(BACK_REF_OP, FT_SUBREG_TERMINAL_HI))
+        self.assertIsNone(slope_subreg_role(DO_LOOP_OP, FT_SUBREG_TERMINAL_HI))
 
     def test_unknown_subreg_returns_none(self):
         self.assertIsNone(slope_subreg_role(FREQ_TRAJ_OP, 99))
 
 
 class TestFrameWeightRole(unittest.TestCase):
-    def test_back_ref_len(self):
+    def test_pattern_replay_len(self):
         self.assertEqual(
-            frame_weight_role(BACK_REF_OP, BACK_REF_SUBREG_LEN), "back_ref_len"
+            frame_weight_role(PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_LEN),
+            "pattern_replay_len",
         )
 
     def test_do_loop_len(self):
@@ -117,8 +98,10 @@ class TestFrameWeightRole(unittest.TestCase):
             frame_weight_role(FREQ_TRAJ_OP, FT_SUBREG_RUNTIME), "slope_runtime"
         )
 
-    def test_back_ref_dist_hi_is_not_a_weight_source(self):
-        self.assertIsNone(frame_weight_role(BACK_REF_OP, BACK_REF_SUBREG_DIST_HI))
+    def test_pattern_replay_dist_hi_is_not_a_weight_source(self):
+        self.assertIsNone(
+            frame_weight_role(PATTERN_REPLAY_OP, PATTERN_REPLAY_SUBREG_DIST_HI)
+        )
 
     def test_do_loop_non_zero_subreg(self):
         self.assertIsNone(frame_weight_role(DO_LOOP_OP, 1))

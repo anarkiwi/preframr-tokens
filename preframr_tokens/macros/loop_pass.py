@@ -11,7 +11,6 @@ from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
     OVERLAY_BODY_FREQ_DELTA_BIN,
     _FREQ_REGS_VOICED,
-    _back_ref_rows,
     _bin_body_freq_delta,
     _pattern_overlay_rows,
     _pattern_replay_rows,
@@ -492,7 +491,15 @@ class LoopPass(MacroPass):
                 _seed_pair(i)
 
         def emit_back_ref(i, dist, length):
-            out_rows.extend(_back_ref_rows(dist, length, diff_default, irq_default))
+            out_rows.extend(
+                _pattern_replay_rows(
+                    dist,
+                    length,
+                    overlay_count=0,
+                    diff_default=diff_default,
+                    irq_default=irq_default,
+                )
+            )
             for k in range(length):
                 if i + k + 1 < n_frames:
                     _seed_pair(i + k)

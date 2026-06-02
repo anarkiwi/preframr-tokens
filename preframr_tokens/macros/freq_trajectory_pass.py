@@ -7,6 +7,7 @@ __all__ = ["FreqTrajectoryPass", "quantise_slope_runtime"]
 from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.passes_base import (
     _first_irq,
+    make_row,
     MacroPass,
     _ensure_subreg,
     _frame_index,
@@ -123,15 +124,7 @@ def _periodic_period(deltas):
 
 
 def _row(reg, subreg, val, diff, irq):
-    return {
-        "reg": int(reg),
-        "val": int(val),
-        "diff": int(diff),
-        "op": int(FREQ_TRAJ_OP),
-        "subreg": int(subreg),
-        "irq": int(irq),
-        "description": 0,
-    }
+    return make_row(reg, val, op=FREQ_TRAJ_OP, subreg=subreg, diff=diff, irq=irq)
 
 
 def _ramp_rows(reg, terminal, runtime, diff, irq):

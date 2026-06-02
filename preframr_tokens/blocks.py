@@ -13,6 +13,7 @@ from preframr_tokens.macros import iter_self_contained_row_blocks, self_contain_
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
+from preframr_tokens.macros.validators import validate_stream
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reglogparser import (
     RegLogParser,
@@ -152,6 +153,7 @@ def iter_voiced_blocks(
         voiced = FreqNudgePass().apply(voiced, args=parser.args)
         voiced = CtrlUpdatePass().apply(voiced, args=parser.args)
         voiced = LonelyWriteValidatorPass().apply(voiced, args=parser.args)
+        validate_stream(voiced, prompt_frame_count=0)
         yield voiced
 
 
@@ -218,7 +220,7 @@ def parser_worker(args, logger, dump_file, max_perm):
 def self_contained_prompt_df(
     loader, dataset, seq, seq_meta, start, prompt_seq_len, irq
 ):
-    """Return a row-level prompt df where BACK_REF / GATE_REPLAY rows whose targets fall before the prompt have been materialised into literal frames. Decoders can then expand the df without the preamble in scope."""
+    """Return a row-level prompt df where PATTERN_REPLAY / GATE_REPLAY rows whose targets fall before the prompt have been materialised into literal frames. Decoders can then expand the df without the preamble in scope."""
     full_states = dataset.tokenizer.decode(seq.numpy())
     full_df = loader._state_df(  # pylint: disable=protected-access
         full_states, dataset, irq

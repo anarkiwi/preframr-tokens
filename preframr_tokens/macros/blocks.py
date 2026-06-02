@@ -60,11 +60,14 @@ def self_contain_slice(df, slice_lo_frame, slice_hi_frame, args=None):
 def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None):
     """Yield row-DataFrames each covering ``frames_per_block`` logical
     frame slots (= FRAME_REG/DELAY_REG markers) of ``df``. Every block
-    has its out-of-block references (BACK_REF_OP, GATE_REPLAY_OP,
+    has its out-of-block references (PATTERN_REPLAY_OP, GATE_REPLAY_OP,
     PLAY_INSTRUMENT_OP, DO_LOOP_OP) rewritten to literals so the block
     can be tokenized and decoded standalone.
     """
-    from preframr_tokens.macros import run_freq_block_passes, run_passes
+    from preframr_tokens.macros import (
+        run_block_refire_passes,
+        run_post_norm_pre_voice_passes,
+    )
 
     if stride is None or stride < 1:
         stride = frames_per_block
@@ -108,8 +111,9 @@ def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None)
         if slice_df.empty:
             continue
         if args is not None:
-            slice_df = run_freq_block_passes(slice_df, args=args)
-            block = run_passes(slice_df, args=args)
+            block = run_block_refire_passes(slice_df, args=args)
+            block = consolidator._norm_pr_order(block)
+            block = run_post_norm_pre_voice_passes(block, args=args)
         else:
             block = slice_df
         if block.empty:

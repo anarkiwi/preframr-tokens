@@ -132,12 +132,16 @@ class TestRegisterOrderFidelity(unittest.TestCase):
 
     def test_parse_audit_silent_through_post_rotation_loops(self):
         """The byte-exact pipeline must stay lossless END TO END, including the POST-rotation passes
-        where LoopPass (in run_post_norm_pre_voice_passes) mints BACK_REF/DO_LOOP refs. Parse a real
-        loop-heavy tune on the skeleton path with the audit in raise mode: any post-rotation pass that
-        breaks per-frame register_state (expand_loops round-trip), the loop-expanded frame budget, or
-        loop-aware back-ref integrity (validate_stream) raises here.
+        where LoopPass (in run_post_norm_pre_voice_passes) mints PATTERN_REPLAY/DO_LOOP refs. Parse a
+        real loop-heavy tune on the skeleton path with the audit in raise mode: any post-rotation pass
+        that breaks per-frame register_state (expand_loops round-trip), the loop-expanded frame budget,
+        or loop-aware back-ref integrity (validate_stream) raises here.
         """
-        from preframr_tokens.stfconstants import BACK_REF_OP, DO_LOOP_OP
+        from preframr_tokens.stfconstants import (
+            DO_LOOP_OP,
+            PATTERN_REPLAY_OP,
+            PATTERN_REPLAY_SUBREG_DIST_HI,
+        )
 
         parser = RegLogParser(
             args=default_tokenizer_args(
@@ -149,7 +153,10 @@ class TestRegisterOrderFidelity(unittest.TestCase):
             )
         )
         xdf = next(parser.parse(self.dump, max_perm=1, require_pq=False, reparse=True))
-        loops = int((xdf["op"] == BACK_REF_OP).sum() + (xdf["op"] == DO_LOOP_OP).sum())
+        pr_heads = (xdf["op"] == PATTERN_REPLAY_OP) & (
+            xdf["subreg"] == PATTERN_REPLAY_SUBREG_DIST_HI
+        )
+        loops = int(pr_heads.sum() + (xdf["op"] == DO_LOOP_OP).sum())
         self.assertGreater(
             loops, 0, "tune produced no loops -- post-rotation refs unexercised"
         )

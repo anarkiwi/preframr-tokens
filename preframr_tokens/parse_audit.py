@@ -18,7 +18,7 @@ _FRAME_REBASE = frozenset({"_consolidate_frames"})
 
 def _loop_aware_frames(df):
     """Elapsed-frame budget counted on the loop-EXPANDED stream, so a pass that folds literal frames
-    into BACK_REF/DO_LOOP/PATTERN_REPLAY refs (LoopPass, post-rotation) conserves the budget instead of
+    into DO_LOOP/PATTERN_REPLAY refs (LoopPass, post-rotation) conserves the budget instead of
     appearing to lose frames. Pre-loop streams expand to themselves, so this is identical there.
     """
     from preframr_tokens.macros.loops import expand_loops
@@ -96,7 +96,7 @@ class PassAudit:
         ]
 
     def _ref_problems(self, df):
-        """validate_stream checks codebook + back-ref integrity (every BACK_REF / PATTERN_REPLAY distance
+        """validate_stream checks codebook + back-ref integrity (every PATTERN_REPLAY distance
         resolves in bounds, loop-aware) after every pass, so a malformed ref minted post-rotation by
         LoopPass is pinpointed at parse time alongside the losslessness check.
         """
