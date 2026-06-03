@@ -181,13 +181,15 @@ class PerRegBurstPass(MacroPass):
         ):
             df = df.merge(xdf[["reg", "f", "pval"]], how="left", on=["f", "reg"])
             cand = df[matcher(df) & (df["op"] == SET_OP)].copy()
-            if barrier:
-                cand = cand[
+            if barrier and not cand.empty:
+                keep = np.array(
                     [
                         (int(r), int(fr)) not in barrier
                         for r, fr in zip(cand["reg"], cand["f"])
-                    ]
-                ]
+                    ],
+                    dtype=bool,
+                )
+                cand = cand[keep]
             df, change_dfs = _add_change_reg(
                 df, cand, minchange=minchange, opcodes=self.opcodes
             )
