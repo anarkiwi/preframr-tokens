@@ -7,6 +7,7 @@ small-delta walks round-trip exactly -- this guards that, with DIFF-only as the 
 import unittest
 
 import pandas as pd
+import pytest
 
 from preframr_tokens.audit_primitives import register_state
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
@@ -53,44 +54,62 @@ def _lcg(seed, n):
     return out
 
 
-class TestPerRegBurstFreqLossless(unittest.TestCase):
-    def test_random_small_delta_walks_round_trip(self):
-        fails = []
-        for trial in range(300):
-            r = _lcg(12345 + trial * 7, 14)
-            cur = 100 + (r[0] % 40)
-            seq = [cur]
-            for j in range(1, 12):
-                cur = max(1, min(250, cur + [0, 1, -1, 2, -2][r[j] % 5]))
-                seq.append(cur if (r[j] % 7) else None)
-            if _bad_frames(seq):
-                fails.append(seq)
-        self.assertEqual(
-            fails, [], f"{len(fails)}/300 freq walks lossy; e.g. {fails[:2]}"
-        )
+def _walk_seq(seed_base, trial):
+    """The shared 12-step small-delta random walk used by both lossless property tests."""
+    r = _lcg(seed_base + trial * 7, 14)
+    cur = 100 + (r[0] % 40)
+    seq = [cur]
+    for j in range(1, 12):
+        cur = max(1, min(250, cur + [0, 1, -1, 2, -2][r[j] % 5]))
+        seq.append(cur if (r[j] % 7) else None)
+    return seq
 
-    def test_diff_only_round_trips_lossless(self):
-        """The lossless floor: with FLIP disabled (DIFF-only), every walk must round-trip -- the
-        fallback a correct encoder uses, and proof the lossiness is the FLIP/run detection, not DIFF.
-        """
-        bad = []
-        for trial in range(150):
-            r = _lcg(999 + trial * 13, 14)
-            cur = 100 + (r[0] % 40)
-            seq = [cur]
-            for j in range(1, 12):
-                cur = max(1, min(250, cur + [0, 1, -1, 2, -2][r[j] % 5]))
-                seq.append(cur if (r[j] % 7) else None)
-            df = _build(seq)
-            from preframr_tokens.stfconstants import DIFF_OP
 
-            out = PerRegBurstPass(opcodes=[int(DIFF_OP)]).apply(df.copy(), args=_ARGS)
-            gt = register_state(df)[:, _REG]
-            dec = register_state(out)[:, _REG]
-            n = min(len(gt), len(dec))
-            if any(gt[i] != dec[i] for i in range(n)):
-                bad.append(seq)
-        self.assertEqual(bad, [], f"DIFF-only lossy on {len(bad)} walks: {bad[:2]}")
+_TRIALS = 300
+_DIFF_TRIALS = 150
+_CHUNK = 25
+
+
+@pytest.mark.parametrize("lo", range(0, _TRIALS, _CHUNK))
+def test_random_small_delta_walks_round_trip(lo):
+    """One ``_CHUNK``-trial slice of the small-delta walk sweep; chunked into independent
+    parametrized items so pytest-xdist fans the 300 trials across workers instead of
+    pinning one worker for the whole serial loop (the suite wall-clock floor)."""
+    fails = []
+    for trial in range(lo, min(lo + _CHUNK, _TRIALS)):
+        seq = _walk_seq(12345, trial)
+        if _bad_frames(seq):
+            fails.append(seq)
+    assert (
+        fails == []
+    ), f"{len(fails)} freq walks lossy in [{lo},{lo + _CHUNK}); e.g. {fails[:2]}"
+
+
+@pytest.mark.parametrize("lo", range(0, _DIFF_TRIALS, _CHUNK))
+def test_diff_only_round_trips_lossless(lo):
+    """The lossless floor: with FLIP disabled (DIFF-only), every walk must round-trip -- the
+    fallback a correct encoder uses, and proof the lossiness is the FLIP/run detection, not DIFF.
+    """
+    from preframr_tokens.stfconstants import DIFF_OP
+
+    bad = []
+    for trial in range(lo, min(lo + _CHUNK, _DIFF_TRIALS)):
+        r = _lcg(999 + trial * 13, 14)
+        cur = 100 + (r[0] % 40)
+        seq = [cur]
+        for j in range(1, 12):
+            cur = max(1, min(250, cur + [0, 1, -1, 2, -2][r[j] % 5]))
+            seq.append(cur if (r[j] % 7) else None)
+        df = _build(seq)
+        out = PerRegBurstPass(opcodes=[int(DIFF_OP)]).apply(df.copy(), args=_ARGS)
+        gt = register_state(df)[:, _REG]
+        dec = register_state(out)[:, _REG]
+        n = min(len(gt), len(dec))
+        if any(gt[i] != dec[i] for i in range(n)):
+            bad.append(seq)
+    assert (
+        bad == []
+    ), f"DIFF-only lossy on {len(bad)} walks in [{lo},{lo + _CHUNK}): {bad[:2]}"
 
 
 class TestPerRegBurstGapPval(unittest.TestCase):

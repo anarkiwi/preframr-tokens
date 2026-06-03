@@ -90,20 +90,30 @@ def _convert(kind: str, raw: int) -> float:
 
 def _smooth(val: np.ndarray, w: int) -> np.ndarray:
     """Median-filter (window ``w``) over a NaN-interpolated copy of ``val``;
-    suppresses vibrato/PWM jitter so a held-with-modulation level reads flat."""
+    suppresses vibrato/PWM jitter so a held-with-modulation level reads flat.
+    The full-width interior windows are medianed in one vectorised pass
+    (``sliding_window_view``); only the shrinking edge windows fall back to the
+    per-index ``np.median``, so the result is bit-identical to the naive loop."""
     valid = ~np.isnan(val)
     idx = np.where(valid)[0]
     if len(idx) == 0:
         return np.zeros(len(val), dtype=float)
     series = np.interp(np.arange(len(val)), idx, val[idx])
+    n = len(series)
     half = w // 2
-    return np.array(
-        [
-            np.median(series[max(0, i - half) : i + half + 1])
-            for i in range(len(series))
-        ],
-        dtype=float,
-    )
+    if half == 0 or n < 2 * half + 1:
+        return np.array(
+            [np.median(series[max(0, i - half) : i + half + 1]) for i in range(n)],
+            dtype=float,
+        )
+    out = np.empty(n, dtype=float)
+    windows = np.lib.stride_tricks.sliding_window_view(series, 2 * half + 1)
+    out[half : n - half] = np.median(windows, axis=1)
+    for i in range(half):
+        out[i] = np.median(series[0 : i + half + 1])
+    for i in range(n - half, n):
+        out[i] = np.median(series[i - half : n])
+    return out
 
 
 def pass1_origins(

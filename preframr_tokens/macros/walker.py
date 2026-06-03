@@ -19,23 +19,24 @@ class FrameWalker:
     set_fastpath = False
 
     def __init__(self, df, state):
-        """Hoists the column arrays out of ``arrs`` (one attribute lookup per row,
-        not a dict lookup per field) and reuses a single ``_FastRow`` buffer across
-        rows: decoders read row fields by value and never retain the row, so per-row
-        reallocation is pure churn on the hottest loop."""
+        """Hoist the per-row columns as Python lists (``.tolist()``) and reuse one
+        ``_FastRow`` buffer across rows. Scalar element access in the per-row loop is
+        ~3x faster on a list than boxing a numpy scalar each iteration (the loop touches
+        each column ~1.3M times/song); ``self.arrs`` stays numpy for ``walk``'s
+        vectorised fastpath check and ``frame_starts``."""
         self.df = df
         self.state = state
         self.arrs, self.frame_starts = _df_arrays_and_frames(df)
         self.cur_frame = 0
         self.f_writes = []
         self.marker_index = 0
-        self._c_reg = self.arrs["reg"]
-        self._c_val = self.arrs["val"]
-        self._c_op = self.arrs["op"]
-        self._c_subreg = self.arrs["subreg"]
-        self._c_diff = self.arrs["diff"]
-        self._c_desc = self.arrs["description"]
-        self._c_idx = self.arrs["Index"]
+        self._c_reg = self.arrs["reg"].tolist()
+        self._c_val = self.arrs["val"].tolist()
+        self._c_op = self.arrs["op"].tolist()
+        self._c_subreg = self.arrs["subreg"].tolist()
+        self._c_diff = self.arrs["diff"].tolist()
+        self._c_desc = self.arrs["description"].tolist()
+        self._c_idx = self.arrs["Index"].tolist()
         self._row_buf = _FastRow(0, 0, 0, 0, 0, 0, 0)
 
     def walk(self):
@@ -76,11 +77,11 @@ class FrameWalker:
 
     def _walk_frame(self, start, end):
         self.f_writes = []
-        marker_reg = int(self.arrs["reg"][start])
-        marker_val = int(self.arrs["val"][start])
-        marker_diff = int(self.arrs["diff"][start])
-        marker_desc = int(self.arrs["description"][start])
-        self.marker_index = int(self.arrs["Index"][start])
+        marker_reg = int(self._c_reg[start])
+        marker_val = int(self._c_val[start])
+        marker_diff = int(self._c_diff[start])
+        marker_desc = int(self._c_desc[start])
+        self.marker_index = int(self._c_idx[start])
         self.on_marker(marker_reg, marker_val, marker_diff, marker_desc)
         self._drain_deferred(self.state.pending_deferred_pre_unroll)
         if marker_reg == DELAY_REG:

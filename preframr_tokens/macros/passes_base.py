@@ -88,6 +88,29 @@ def _ensure_subreg(df):
     return df
 
 
+def _rows_to_df(rows, columns, defaults=None):
+    """Build a DataFrame from dict-rows column-wise over an explicit ``columns`` list,
+    skipping pandas' per-row list-of-dicts inference (``_list_of_dict_to_arrays`` +
+    per-column ``convert``). Each column goes through a numpy int64 fast path; any
+    irregular value (NA/float/non-int) drops that column to object-list inference. A
+    missing key uses ``defaults[col]`` (``-1`` if unspecified)."""
+    defaults = defaults or {}
+    cols = list(columns)
+    if not rows:
+        return pd.DataFrame(
+            {c: np.empty(0, dtype=np.int64) for c in cols}, columns=cols
+        )
+    data = {}
+    for c in cols:
+        d = defaults.get(c, -1)
+        vals = [r[c] if c in r else d for r in rows]
+        try:
+            data[c] = np.fromiter(vals, dtype=np.int64, count=len(vals))
+        except (TypeError, ValueError, OverflowError):
+            data[c] = vals
+    return pd.DataFrame(data, columns=cols)
+
+
 def _splice_rows(df, drop_idx, new_rows):
     """Drop rows by index and splice ``new_rows`` (each carrying ``__pos``)
     into their original positions, preserving the rest of the row order.
@@ -100,16 +123,9 @@ def _splice_rows(df, drop_idx, new_rows):
     orig_dtypes = df.dtypes.to_dict()
     df = df.drop(index=drop_idx)
     df["__pos"] = df.index.astype("int64")
-    new_df = pd.DataFrame(new_rows)
-    for col in df.columns:
-        if col not in new_df.columns:
-            if col == "description":
-                new_df[col] = 0
-            elif col == "irq":
-                new_df[col] = irq_value
-            else:
-                new_df[col] = -1
-    new_df = new_df[df.columns]
+    new_df = _rows_to_df(
+        new_rows, df.columns, defaults={"description": 0, "irq": irq_value}
+    )
     combined = pd.concat([df, new_df], ignore_index=True)
     combined = combined.sort_values("__pos", kind="stable").reset_index(drop=True)
     combined = combined.drop(columns=["__pos"])

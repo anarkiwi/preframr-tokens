@@ -15,6 +15,7 @@ __all__ = [
 from preframr_tokens.macros.passes_base import (
     MacroPass,
     _frame_index,
+    _rows_to_df,
     _splice_rows,
     requires_state,
 )
@@ -564,7 +565,7 @@ class VoiceBlockOrderPass(MacroPass):
             for i in negative:
                 out_rows.append({c: df_iloc[i, col_index[c]] for c in cols})
 
-        out_df = pd.DataFrame(out_rows, columns=cols)
+        out_df = _rows_to_df(out_rows, cols)
         for c in cols:
             out_df[c] = out_df[c].astype(df[c].dtype)
         if df.attrs:
