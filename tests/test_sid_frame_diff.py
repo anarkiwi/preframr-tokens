@@ -27,7 +27,7 @@ from preframr_tokens.sid_frame_diff import (
 from preframr_tokens.tokenizer_config import default_tokenizer_args
 from tests.parse_probes import parse_args
 
-_KNOWN_FREQ_LOSSY = {"sweep_pass", "sweep_loop", "stamp_pass"}
+_KNOWN_FREQ_LOSSY: set[str] = set()
 _STACK_FLAGS = {
     "skeleton_pass",
     "trajectory_anchor_pass",
@@ -192,8 +192,9 @@ class TestFrameDiffReleaseGate(unittest.TestCase):
 
     def test_deployed_and_stack_full_tune(self):
         """Over the full tune (the slice can miss late behaviour): the deployed default and the full
-        skeleton-owned macro stack keep discrete regs exact; pitch stays within tolerance, tolerating only
-        the tracked _KNOWN_FREQ_LOSSY passes the stack includes."""
+        skeleton-owned macro stack keep discrete regs exact AND pitch frame-exact. The byte-exact arc
+        (register-exact SWEEP/stamp) left no tracked-lossy pass, so _KNOWN_FREQ_LOSSY is empty and the gate
+        enforces full pitch fidelity end to end."""
         default = self._parse(default_tokenizer_args(cents=50), self.dump)
         res = diff_dump_vs_pipeline(self.dump, default)
         self.assertEqual(
@@ -210,16 +211,7 @@ class TestFrameDiffReleaseGate(unittest.TestCase):
         self.assertEqual(
             res["exact_fail"], [], f"macro stack diverges on discrete regs: {res}"
         )
-        self.assertTrue(
-            _STACK_FLAGS & _KNOWN_FREQ_LOSSY,
-            "stack should contain a tracked lossy pass",
-        )
-        for cls, info in res["freq"].items():
-            self.assertLess(
-                info["over_tol"],
-                res["frames"] // 20,
-                f"macro stack pitch divergence too large in {cls}: {info}",
-            )
+        self.assertEqual(res["freq_fail"], [], f"macro stack diverges on pitch: {res}")
 
     def _matrix(self):
         """Every gated flag in a minimal valid pipeline and (where compatible) paired with the skeleton
