@@ -4,9 +4,11 @@ and FREQ/PW/FC trajectory coverage."""
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+import hashlib
+from collections import Counter, OrderedDict, defaultdict
 
 import numpy as np
+import pandas as pd
 
 __all__ = [
     "distinct_n",
@@ -121,10 +123,29 @@ def _register_state_walker_cls():
     return _RS_WALKER_CLS
 
 
+_RS_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_RS_CACHE_MAX = 8
+
+
+def _rs_cache_key(xdf):
+    """Exact content fingerprint of ``xdf`` (all columns + index + row order). register_state is a
+    pure function of that content, so identical content -> identical decode."""
+    row_hash = pd.util.hash_pandas_object(xdf, index=True).to_numpy()
+    return (len(xdf), hashlib.blake2b(row_hash.tobytes(), digest_size=16).digest())
+
+
 def register_state(xdf):
-    """Decoded per-frame SID register state (regs 0-24) as ``(n_frames, 25)``; the canonical
-    atoms->writes reduction the fidelity oracle and the profiler share, via the public decode walk.
-    """
+    """Decoded per-frame SID register state (regs 0-24) as ``(n_frames, 25)`` -- the canonical
+    atoms->writes reduction the fidelity oracle + profiler share. Memoized on an exact content
+    fingerprint (bounded LRU): the arbiter decodes a pass's input then its output, and the next
+    pass's input IS that output, so the source decode repeats it. Self-correcting; the returned
+    array is shared and read-only (callers must not mutate)."""
+    key = _rs_cache_key(xdf)
+    cached = _RS_CACHE.get(key)
+    if cached is not None:
+        _RS_CACHE.move_to_end(key)
+        return cached
+
     from preframr_tokens.macros.loops import expand_loops
     from preframr_tokens.macros.state import _build_decode_state
     from preframr_tokens.reglogparser import remove_voice_reg
@@ -133,7 +154,13 @@ def register_state(xdf):
     df = expand_loops(df.copy())
     walker = _register_state_walker_cls()(df, _build_decode_state(df, strict=False))
     walker.walk()
-    return np.stack(walker.snaps)
+    out = np.stack(walker.snaps)
+
+    _RS_CACHE[key] = out
+    _RS_CACHE.move_to_end(key)
+    while len(_RS_CACHE) > _RS_CACHE_MAX:
+        _RS_CACHE.popitem(last=False)
+    return out
 
 
 def op_atom_profile(xdf):
