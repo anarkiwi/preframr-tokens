@@ -270,8 +270,7 @@ class StampPass(MacroPass):
         consumed = set()
 
         def abs_first(stamp_id, occ):
-            char = classify_char(occ[0]["fns"], occ[0]["ctrls"])
-            return self._def_rows(stamp_id, char, occ[0], irq) + [
+            return self._def_rows(stamp_id, occ[0], irq) + [
                 _row(occ[0]["reg"], STAMP_REF_OP, -1, stamp_id, irq, irq)
             ]
 
@@ -297,8 +296,7 @@ class StampPass(MacroPass):
                     rel_groups[_rel_sig(span)].append(span)
 
         def rel_first(stamp_id, occ):
-            char = classify_char(occ[0]["fns"], occ[0]["ctrls"])
-            return self._rel_def_rows(stamp_id, char, occ[0], irq) + self._rel_ref_rows(
+            return self._rel_def_rows(stamp_id, occ[0], irq) + self._rel_ref_rows(
                 occ[0], stamp_id, irq
             )
 
@@ -321,11 +319,11 @@ class StampPass(MacroPass):
         return drop_idx, new_rows
 
     @staticmethod
-    def _rel_def_rows(stamp_id, char, span, irq):
+    def _rel_def_rows(stamp_id, span, irq):
         """Like _def_rows but freq is stored as a signed 16-bit DELTA from the span's onset freq
         (frame 0 delta = 0), so any transposition of the gesture replays as base + delta.
         """
-        rows = [_row(0, STAMP_DEF_OP, char, stamp_id, irq, irq)]
+        rows = [_row(0, STAMP_DEF_OP, -1, stamp_id, irq, irq)]
         fns, ctrls = span["fns"], span["ctrls"]
         base = fns[0]
         prev_d = prev_ctrl = None
@@ -359,11 +357,12 @@ class StampPass(MacroPass):
         ]
 
     @staticmethod
-    def _def_rows(stamp_id, char, span, irq):
-        """Inline def: a header (val=id, subreg=char) then per-internal-frame STEP atoms emitting
-        freq (offset 0) and ctrl (offset 4) only when they change, a frame-advance STEP between
-        frames, terminated by STAMP_END. Voice-relative (no voice on the def)."""
-        rows = [_row(0, STAMP_DEF_OP, char, stamp_id, irq, irq)]
+    def _def_rows(stamp_id, span, irq):
+        """Inline def: a header (val=id, subreg=-1; the id is a pure tune-local ordinal, not
+        entangled with content) then per-internal-frame STEP atoms emitting freq (offset 0) and
+        ctrl (offset 4) only when they change, a frame-advance STEP between frames, terminated by
+        STAMP_END. Voice-relative (no voice on the def)."""
+        rows = [_row(0, STAMP_DEF_OP, -1, stamp_id, irq, irq)]
         prev_fn = prev_ctrl = None
         fns, ctrls = span["fns"], span["ctrls"]
         for i in range(len(fns)):
