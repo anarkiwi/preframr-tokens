@@ -37,24 +37,6 @@ class _FastRow:
         self.Index = Index
 
 
-def _fastrow_from_arrs(arrs, i):
-    """Build a ``_FastRow`` from the per-column arrays produced by
-    ``_df_arrays_and_frames`` at row index ``i``. Centralises the
-    repeated ``_FastRow(reg=int(regs[i]), val=int(vals[i]), ...)``
-    pattern that appeared in 8+ pass walkers; one place to fix if the
-    columns ever change.
-    """
-    return _FastRow(
-        reg=int(arrs["reg"][i]),
-        val=int(arrs["val"][i]),
-        op=int(arrs["op"][i]),
-        subreg=int(arrs["subreg"][i]),
-        diff=int(arrs["diff"][i]),
-        description=int(arrs["description"][i]),
-        Index=int(arrs["Index"][i]),
-    )
-
-
 def _frame_arrays(f_df):
     """Extract per-row arrays for a frame group. Used by hot pass loops
     that previously walked via ``itertuples`` (slow: per-row namedtuple +

@@ -6,7 +6,7 @@ redundancy reporter.
 __all__ = ["FrameWalker"]
 
 from preframr_tokens.macros.decoders import DECODERS
-from preframr_tokens.macros.state import _df_arrays_and_frames, _fastrow_from_arrs
+from preframr_tokens.macros.state import _FastRow, _df_arrays_and_frames
 from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP
 
 
@@ -19,12 +19,24 @@ class FrameWalker:
     set_fastpath = False
 
     def __init__(self, df, state):
+        """Hoists the column arrays out of ``arrs`` (one attribute lookup per row,
+        not a dict lookup per field) and reuses a single ``_FastRow`` buffer across
+        rows: decoders read row fields by value and never retain the row, so per-row
+        reallocation is pure churn on the hottest loop."""
         self.df = df
         self.state = state
         self.arrs, self.frame_starts = _df_arrays_and_frames(df)
         self.cur_frame = 0
         self.f_writes = []
         self.marker_index = 0
+        self._c_reg = self.arrs["reg"]
+        self._c_val = self.arrs["val"]
+        self._c_op = self.arrs["op"]
+        self._c_subreg = self.arrs["subreg"]
+        self._c_diff = self.arrs["diff"]
+        self._c_desc = self.arrs["description"]
+        self._c_idx = self.arrs["Index"]
+        self._row_buf = _FastRow(0, 0, 0, 0, 0, 0, 0)
 
     def walk(self):
         if self.set_fastpath:
@@ -117,15 +129,15 @@ class FrameWalker:
             self.after_row(-1, int(row.reg), base_op, writes)
 
     def _dispatch_row(self, i):
-        reg = int(self.arrs["reg"][i])
+        reg = int(self._c_reg[i])
         if reg < 0:
             return
-        op = int(self.arrs["op"][i])
+        op = int(self._c_op[i])
         if not self.before_row(i, reg, op):
             return
-        if self.set_fastpath and op == SET_OP and int(self.arrs["subreg"][i]) == -1:
-            val = int(self.arrs["val"][i])
-            diff = int(self.arrs["diff"][i])
+        if self.set_fastpath and op == SET_OP and int(self._c_subreg[i]) == -1:
+            val = int(self._c_val[i])
+            diff = int(self._c_diff[i])
             self.state.last_val[reg] = val
             self.state.last_diff[reg] = diff
             self.after_row(i, reg, op, [(reg, val, diff, 0)])
@@ -133,7 +145,14 @@ class FrameWalker:
         decoder = DECODERS.get(op)
         if decoder is None:
             return
-        row = _fastrow_from_arrs(self.arrs, i)
+        row = self._row_buf
+        row.reg = reg
+        row.val = int(self._c_val[i])
+        row.op = op
+        row.subreg = int(self._c_subreg[i])
+        row.diff = int(self._c_diff[i])
+        row.description = int(self._c_desc[i])
+        row.Index = int(self._c_idx[i])
         writes = decoder.expand(row, self.state)
         self.after_row(i, reg, op, writes)
 
