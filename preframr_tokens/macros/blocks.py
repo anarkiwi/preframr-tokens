@@ -8,10 +8,50 @@ __all__ = [
 
 import logging
 
+import numpy as np
+
 from preframr_tokens.macros.decode import expand_ops
-from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP
+from preframr_tokens.stfconstants import (
+    DELAY_REG,
+    DESCRIPTION_PDTYPE,
+    DIFF_PDTYPE,
+    FRAME_REG,
+    IRQ_PDTYPE,
+    OP_PDTYPE,
+    REG_PDTYPE,
+    SET_OP,
+    SUBREG_PDTYPE,
+    VAL_PDTYPE,
+)
 
 _logger = logging.getLogger(__name__)
+
+_FAST_INT_COLS = ("reg", "val", "diff", "irq", "op", "subreg", "description")
+_CANONICAL_DTYPES = {
+    "reg": REG_PDTYPE,
+    "val": VAL_PDTYPE,
+    "diff": DIFF_PDTYPE,
+    "irq": IRQ_PDTYPE,
+    "op": OP_PDTYPE,
+    "subreg": SUBREG_PDTYPE,
+    "description": DESCRIPTION_PDTYPE,
+}
+
+
+def _to_fast_int(df):
+    """Cast the always-populated int columns to plain int64 numpy. The per-block re-fire passes
+    never see NA in these columns (corpus NA audit: 3270/3270 block-pipeline dfs NA-free), so the
+    canonical nullable Int* dtypes are pure per-cell boxing (maybe_box_native / masked.__iter__) on
+    every to_dict / itertuples in the pass loop; canonical dtypes are restored at the block boundary
+    so the emitted block stays byte-identical for tokenisation."""
+    cast = {c: np.int64 for c in _FAST_INT_COLS if c in df.columns}
+    return df.astype(cast) if cast else df
+
+
+def _to_canonical_int(df):
+    """Restore the canonical nullable Int* dtypes on the columns present."""
+    cast = {c: dt for c, dt in _CANONICAL_DTYPES.items() if c in df.columns}
+    return df.astype(cast) if cast else df
 
 
 def expand_to_literal_form(df):
@@ -94,6 +134,7 @@ def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None)
 
     literal = expand_to_literal_form(df)
     literal.attrs.clear()
+    literal = _to_fast_int(literal)
     lit_is_marker = literal["reg"].isin({FRAME_REG, DELAY_REG})
     marker_idx = literal.index[lit_is_marker].tolist()
     n_lit_frames = len(marker_idx)
@@ -131,4 +172,4 @@ def iter_self_contained_row_blocks(df, frames_per_block, args=None, stride=None)
                 hi_frame,
                 e,
             )
-        yield block
+        yield _to_canonical_int(block)

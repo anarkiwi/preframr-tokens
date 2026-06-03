@@ -395,7 +395,9 @@ class LoopPass(MacroPass):
         sample_row = df.iloc[0]
         diff_default = int(sample_row["diff"]) if "diff" in df.columns else 0
         irq_default = int(df["irq"].iloc[0]) if "irq" in df.columns else -1
-        all_records = df.to_dict("records")
+        _rec_cols = list(df.columns)
+        _rec_arrs = [df[c].to_numpy() for c in _rec_cols]
+        all_records = [dict(zip(_rec_cols, vals)) for vals in zip(*_rec_arrs)]
         snapshot_regs = sorted(snapshots[0].keys()) if snapshots else []
         snapshot_regs_arr = np.asarray(snapshot_regs, dtype=np.int64)
         if snapshots:
