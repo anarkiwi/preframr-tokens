@@ -23,6 +23,7 @@ from preframr_tokens.stfconstants import (
     FREQ_TRAJ_REGS,
     FT_SUBREG_V0_HI,
     FT_SUBREG_V0_LO,
+    is_codebook_id_atom,
     OP_PDTYPE,
     ORN_OP,
     PAD_REG,
@@ -333,10 +334,39 @@ class RegTokenizer:
         if len(self.frame_tokens) > 64:
             self.crunch_tokens()
 
+    def _add_codebook_id_coverage(self, tokens):
+        """Densely enumerate codebook id atoms ``0..max`` in the alphabet so an eval
+        tune's tune-local ordinal id (a define->ref pointer) is never out-of-alphabet
+        and thus never value-snapped (which silently rebinds the reference). ids are
+        dense per-tune ordinals, so the train max bounds the realistic range; an eval
+        tune that exceeds it raises loudly at tokenize rather than corrupting."""
+        ops = tokens["op"].to_numpy()
+        subs = tokens["subreg"].to_numpy()
+        mask = np.array(
+            [is_codebook_id_atom(o, s) for o, s in zip(ops, subs)], dtype=bool
+        )
+        if not mask.any():
+            return tokens
+        id_atoms = tokens[mask]
+        global_max = int(id_atoms["val"].max())
+        have = set(
+            zip(id_atoms["op"], id_atoms["reg"], id_atoms["subreg"], id_atoms["val"])
+        )
+        sigs = set(zip(id_atoms["op"], id_atoms["reg"], id_atoms["subreg"]))
+        new_rows = [
+            {"op": op, "reg": reg, "subreg": subreg, "val": cid, "count": 0}
+            for (op, reg, subreg) in sigs
+            for cid in range(global_max + 1)
+            if (op, reg, subreg, cid) not in have
+        ]
+        if new_rows:
+            tokens = pd.concat([tokens, pd.DataFrame(new_rows)], ignore_index=True)
+        return tokens
+
     def make_tokens(self):
         self.logger.info("making tokens")
         self.crunch_tokens()
-        tokens = self.frame_tokens[0]
+        tokens = self._add_codebook_id_coverage(self.frame_tokens[0])
         pad_row = pd.DataFrame(
             [{"op": 0, "reg": PAD_REG, "subreg": -1, "val": 0, "count": 0}]
         )
@@ -393,6 +423,14 @@ class RegTokenizer:
                 val = missing_token.val
                 op = getattr(missing_token, "op", SET_OP)
                 subreg = getattr(missing_token, "subreg", -1)
+                if is_codebook_id_atom(op, subreg):
+                    raise KeyError(
+                        f"codebook id atom op={int(op)} reg={int(reg)} "
+                        f"subreg={int(subreg)} val={int(val)} is OUT-OF-ALPHABET; "
+                        "a codebook id is a define->ref pointer and must not be "
+                        "value-snapped (would silently rebind the reference). The "
+                        "id alphabet must cover the full tune-local ordinal range."
+                    )
                 key_tokens = tokens[
                     (tokens["op"] == op)
                     & (tokens["reg"] == reg)

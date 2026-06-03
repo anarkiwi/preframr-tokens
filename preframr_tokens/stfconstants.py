@@ -120,6 +120,34 @@ WT_ONESHOT_SUBREG_OFFSET = 2
 WT_ONESHOT_SUBREG_HOLD = 3
 WT_ONESHOT_SUBREG_END = 4
 
+CODEBOOK_ID_VAL_OPS = frozenset(
+    {STAMP_DEF_OP, STAMP_END_OP, STAMP_REF_OP, WAVETABLE_DEF_OP, PATCH_SET_OP}
+)
+CODEBOOK_ID_OP_SUBREGS = frozenset(
+    {
+        (STAMP_REL_REF_OP, STAMP_REL_SUBREG_ID),
+        (PATCH_DEF_OP, PATCH_SUBREG_ID),
+        (WAVETABLE_REF_OP, WT_REF_SUBREG_ID),
+    }
+)
+
+
+def is_codebook_id_atom(op, subreg):
+    """True iff ``(op, subreg)``'s ``val`` is a tune-local codebook id (a define->ref
+    pointer, NOT a magnitude) -- so it must never be value-snapped to a "nearest"
+    alphabet entry (that silently rebinds the reference). ``CODEBOOK_ID_VAL_OPS`` carry
+    the id in ``val`` for any subreg; ``CODEBOOK_ID_OP_SUBREGS`` only at the listed subreg.
+    """
+    return (
+        int(op) in CODEBOOK_ID_VAL_OPS
+        or (
+            int(op),
+            int(subreg),
+        )
+        in CODEBOOK_ID_OP_SUBREGS
+    )
+
+
 CTRL_BIGRAM_TABLE = (
     (0x41, 0x40),
     (0x81, 0x41),

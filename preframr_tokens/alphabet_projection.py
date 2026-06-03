@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 
+from preframr_tokens.stfconstants import is_codebook_id_atom
+
 __all__ = ["build_projection_table", "project_df"]
 
 
@@ -58,6 +60,8 @@ def project_df(df, projection_table):
     keys = pd.MultiIndex.from_arrays([ops, regs, subs])
     key_df = pd.DataFrame({"_row": np.arange(len(out))}, index=keys)
     for key, group in key_df.groupby(level=[0, 1, 2], sort=False):
+        if is_codebook_id_atom(key[0], key[2]):
+            continue
         tbl = projection_table.get(key)
         if tbl is None or len(tbl) == 0:
             continue
