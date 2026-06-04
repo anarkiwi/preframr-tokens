@@ -1020,12 +1020,16 @@ class RegLogParser:
             assert delay_max <= 256, delay_max
         irq = min(2 ** (IRQ_PDTYPE.itemsize * 8) - 1, irq)
         df["irq"] = irq
-        while not df.empty and frame_match(df.iloc[-1]):
-            df = df.head(len(df) - 1)
-        while not df.empty and (
-            (df.iloc[0]["reg"] == MODE_VOL_REG and df.iloc[0]["val"] == 15)
-        ):
-            df = df.tail(len(df) - 1)
+        # Strip the trailing run of frame markers and the leading run of
+        # MODE_VOL_REG==15 rows. Computed as single slices (find the cut index,
+        # slice once) rather than one full-df copy per stripped row.
+        reg = df["reg"].to_numpy()
+        keep = np.nonzero((reg != FRAME_REG) & (reg != DELAY_REG))[0]
+        df = df.iloc[: keep[-1] + 1] if keep.size else df.iloc[:0]
+        reg = df["reg"].to_numpy()
+        val = df["val"].to_numpy()
+        keep = np.nonzero(~((reg == MODE_VOL_REG) & (val == 15)))[0]
+        df = df.iloc[keep[0] :] if keep.size else df.iloc[:0]
 
         if not frame_match(df.iloc[0]):
             first_frame = df[df["reg"] == FRAME_REG].head(1)
