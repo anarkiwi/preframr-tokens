@@ -5,11 +5,23 @@ Scope: the encode-side parse pipeline driven by `RegLogParser.parse()`
 (`preframr_tokens/reglogparser.py`) and the macro-pass chain, as it stands
 after the codebook-unify refactor (PR #51, `a0a76e6..90d8a48`).
 
-No corpus of `*.dump.parquet` is available locally (only raw `.d64`/`.d71`
-disk images under `/scratch/preframr/hvsc`), so these findings are from static
-analysis of the hot path, not a profile. Each item lists where it fires, how
-often, and a rough effort/impact. **Validate against a profile before
-investing** — the order below is my best estimate of payoff.
+The findings below started as static hot-path analysis, then were profiled and
+verified against the real corpus (87k `*.dump.parquet` under
+`/scratch/preframr/hvsc`). Each item lists where it fires, how often, and a
+rough effort/impact.
+
+## Verified results (findings #2/#4/#5/#6 applied)
+
+- **Correctness:** parse output is byte-identical to `main` across **500 real
+  HVSC dumps** (`tools/bulk_equiv.py`, 2 configs, `reparse=True` — no `.parsed`
+  sidecar shortcut; 0 differences), plus the 108-output fixture harness
+  (`tools/parse_equiv.py`) and per-change property tests (20k/5k/8k/800 cases).
+- **Speed:** ~**6.5–7% faster end-to-end (1.07×)** at corpus scale — fair
+  same-500-dump comparison, total CPU time 3704.8 s (main) → 3464.5 s (branch).
+  A controlled 6-dump × 4-config bench shows 9.5%, but over-weights the touched
+  paths; the corpus figure is the representative one. The dominant costs are
+  untouched (`walk` 23%, `_add_voice_reg` 18% — the latter is finding #1, unsafe
+  to cut), which caps the achievable end-to-end gain.
 
 ## What the refactor got right (no action)
 
