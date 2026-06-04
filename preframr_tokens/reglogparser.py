@@ -23,6 +23,7 @@ from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
+from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
@@ -999,6 +1000,7 @@ class RegLogParser:
             PresetPass(),
             PerRegBurstPass(),
             GateSlopeShiftPass(),
+            InstrumentProgramPass(),
             PatchPass(),
             ReleaseUpdatePass(),
             CtrlOscPass(),

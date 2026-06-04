@@ -13,6 +13,7 @@ import pytest
 from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
 from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.decode import expand_ops
+from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
@@ -210,6 +211,26 @@ def _ctrl_wt_streams():
     return out
 
 
+def _instrument_streams():
+    c0 = int(CTRL_REGS_BY_VOICE[0])
+
+    def build(notes):
+        b = _Builder()
+        for walk, ad, sr in notes:
+            b.frame().write(c0 + 1, ad).write(c0 + 2, sr).write(c0, 0x41)
+            for c in walk:
+                b.frame().write(c0, c)
+        b.frame()
+        return b.df()
+
+    note = ([0x11, 0x41], 0x09, 0x00)
+    out = {}
+    out["instrument_def_ref"] = InstrumentProgramPass().apply(
+        build([note, note, note]), args=_args(instrument_program=True)
+    )
+    return out
+
+
 def _dead_ref_stream():
     """A STAMP_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
     return _Builder().frame().write(0, 99, op=STAMP_REF_OP).frame().df()
@@ -235,6 +256,7 @@ def _corpus():
     streams.update(_patch_streams())
     streams.update(_wavetable_streams())
     streams.update(_ctrl_wt_streams())
+    streams.update(_instrument_streams())
     streams["dead_ref"] = _dead_ref_stream()
     streams["oneshot_handbuilt"] = _oneshot_handbuilt_stream()
     return streams
