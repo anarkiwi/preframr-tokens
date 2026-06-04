@@ -22,15 +22,11 @@ __all__ = [
     "CtrlBigramDecoder",
     "SkeletonDecoder",
     "OrnamentDecoder",
-    "StampDecoder",
-    "PatchDecoder",
     "SweepDecoder",
     "CtrlOscDecoder",
     "GradientDecoder",
     "InitDecoder",
     "NoteOffDecoder",
-    "CtrlWtDecoder",
-    "WavetableDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -72,10 +68,6 @@ from preframr_tokens.stfconstants import (
     GRADIENT_SUBREG_END,
     GRADIENT_SUBREG_NSTAGES,
     GRADIENT_SUBREG_VAL_BASE,
-    CTRL_WT_DEF_OP,
-    CTRL_WT_SET_OP,
-    CTRL_WT_STEP_OP,
-    CTRL_WT_SUBREG_VAL,
     CTRL_TRIPLE_SUBREG_0,
     CTRL_TRIPLE_SUBREG_1,
     CTRL_TRIPLE_SUBREG_2,
@@ -114,13 +106,6 @@ from preframr_tokens.stfconstants import (
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
-    PATCH_AD_OFFSET,
-    PATCH_DEF_OP,
-    PATCH_SET_OP,
-    PATCH_SR_OFFSET,
-    PATCH_STEP_OP,
-    PATCH_SUBREG_AD,
-    PATCH_SUBREG_SR,
     PRESET_OPS,
     PRESET_SHIFTED_OPS,
     PWM_PRESET_OP,
@@ -131,15 +116,6 @@ from preframr_tokens.stfconstants import (
     SHIFTED_TO_BASE_OP,
     SKEL_OP,
     SKEL_SUBREG_ABS,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-    STAMP_REL_SUBREG_BASE_HI,
-    STAMP_REL_SUBREG_BASE_LO,
-    STAMP_REL_SUBREG_ID,
-    STAMP_STEP_OP,
-    STAMP_SUBREG_FRAME,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
     SWEEP_SUBREG_DELTA_HI,
@@ -156,27 +132,9 @@ from preframr_tokens.stfconstants import (
     TRACK_REF_SUBREG_LEAD,
     TRANSPOSE_OP,
     VOICES,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_ONESHOT_OP,
-    WAVETABLE_REF_OP,
-    WAVETABLE_STEP_OP,
     WAVETABLE_SUSTAIN_OP,
-    WT_ONESHOT_SUBREG_END,
-    WT_ONESHOT_SUBREG_HOLD,
-    WT_ONESHOT_SUBREG_LEN_HI,
-    WT_ONESHOT_SUBREG_LEN_LO,
-    WT_ONESHOT_SUBREG_OFFSET,
-    WT_REF_SUBREG_ID,
-    WT_REF_SUBREG_LEAD,
-    WT_REF_SUBREG_LEADOFF,
-    WT_REF_SUBREG_LEN_HI,
-    WT_REF_SUBREG_LEN_LO,
-    WT_STEP_SUBREG_HOLD,
-    WT_STEP_SUBREG_LOOP,
-    WT_STEP_SUBREG_OFFSET,
 )
-from preframr_tokens.macros.wavetable import unroll as wt_unroll
+from preframr_tokens.macros.codebook import codebook_decoders
 
 
 class MacroDecoder:
@@ -817,178 +775,6 @@ class OrnamentDecoder(MacroDecoder):
         return None
 
 
-class StampDecoder(MacroDecoder):
-    """Decode the inline-redefinable percussion stamp ops (design/percussion_stamp_encoding.md):
-    STAMP_DEF/STEP/END buffer a voice-relative write-series into a live id->frames table (a later
-    DEF id rebinds), and STAMP_REF (reg=target-voice freq reg, val=id) replays it on that voice via
-    pending_set_writes -- one forward-filled value per song frame -- reproducing the exact series.
-    """
-
-    op_code = -1
-
-    def expand(self, row, state):
-        op = int(row.op)
-        if op == STAMP_DEF_OP:
-            state.pending_stamp_def = {"id": int(row.val), "frames": [[]]}
-            return None
-        if op == STAMP_STEP_OP:
-            self._step(row, state)
-            return None
-        if op == STAMP_END_OP:
-            stamp = state.pending_stamp_def
-            if stamp is not None:
-                state.stamp_table[int(stamp["id"])] = stamp["frames"]
-                state.pending_stamp_def = None
-            return None
-        if op == STAMP_REL_REF_OP:
-            return self._rel_ref(row, state)
-        return self._ref(row, state)
-
-    @staticmethod
-    def _step(row, state):
-        stamp = state.pending_stamp_def
-        if stamp is None:
-            return
-        if int(row.subreg) == STAMP_SUBREG_FRAME:
-            stamp["frames"].append([])
-        else:
-            stamp["frames"][-1].append((int(row.subreg), int(row.val)))
-
-    @staticmethod
-    def _offsets_in_order(frames):
-        """Voice-relative offsets in first-write order across the buffered frames -- preserves the
-        drum's intra-frame freq<->ctrl order (the per-frame drain in State.tick_frame emits regs in
-        pending_set_writes insertion order, so the first-seen offset writes first)."""
-        offsets, seen = [], set()
-        for fr in frames:
-            for off, _val in fr:
-                if off not in seen:
-                    seen.add(off)
-                    offsets.append(off)
-        return offsets
-
-    @staticmethod
-    def _ref(row, state):
-        frames = state.stamp_table.get(int(row.val))
-        if not frames:
-            return None
-        base = int(row.reg)
-        offsets = StampDecoder._offsets_in_order(frames)
-        pre = state.maybe_flush_for(base, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off in cur:
-                    state.pending_set_writes[base + off].append(int(cur[off]))
-        return pre or None
-
-    def _rel_ref(self, row, state):
-        """A transpose-relative hit: buffer id + base-freq hi/lo, then replay the stamp adding the
-        (sign-extended) freq delta at offset 0 to the per-hit base, leaving ctrl (offset 4) raw.
-        """
-        subreg = int(row.subreg)
-        if subreg == STAMP_REL_SUBREG_ID:
-            state.pending_stamp_rel = {
-                "id": int(row.val),
-                "reg": int(row.reg),
-                "base": 0,
-            }
-            return None
-        pend = state.pending_stamp_rel
-        if pend is None:
-            return None
-        if subreg == STAMP_REL_SUBREG_BASE_HI:
-            pend["base"] |= (int(row.val) & 0xFF) << 8
-            return None
-        if subreg != STAMP_REL_SUBREG_BASE_LO:
-            return None
-        pend["base"] |= int(row.val) & 0xFF
-        state.pending_stamp_rel = None
-        return self._replay_rel(pend, state)
-
-    @staticmethod
-    def _replay_rel(pend, state):
-        frames = state.stamp_table.get(int(pend["id"]))
-        if not frames:
-            return None
-        base = int(pend["base"])
-        voice = int(pend["reg"])
-        offsets = StampDecoder._offsets_in_order(frames)
-        pre = state.maybe_flush_for(voice, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off not in cur:
-                    continue
-                val = int(cur[off])
-                if off == 0:
-                    signed = val if val < 0x8000 else val - 0x10000
-                    val = (base + signed) & 0xFFFF
-                state.pending_set_writes[voice + off].append(val)
-        return pre or None
-
-
-class PatchDecoder(MacroDecoder):
-    """Decode the inline melodic-instrument patch ops (design/patch_preamble_encoding.md):
-    PATCH_DEF + two PATCH_STEP rows buffer a full (AD,SR) envelope into a live id->state table (a
-    later DEF id rebinds), emitting both register writes on the def's voice; PATCH_SET (val=id)
-    re-emits a defined patch's AD/SR on the ref's voice -- reproducing the exact envelope writes.
-    """
-
-    op_code = -1
-
-    def expand(self, row, state):
-        op = int(row.op)
-        if op == PATCH_DEF_OP:
-            state.pending_patch_def = {
-                "id": int(row.val),
-                "freq_reg": int(row.reg),
-                "ad": None,
-                "sr": None,
-            }
-            return None
-        if op == PATCH_STEP_OP:
-            return self._step(row, state)
-        return self._ref(row, state)
-
-    def _step(self, row, state):
-        pend = state.pending_patch_def
-        if pend is None:
-            return None
-        if int(row.subreg) == PATCH_SUBREG_AD:
-            pend["ad"] = int(row.val)
-        elif int(row.subreg) == PATCH_SUBREG_SR:
-            pend["sr"] = int(row.val)
-        if pend["ad"] is None or pend["sr"] is None:
-            return None
-        state.pending_patch_def = None
-        state.patch_table[int(pend["id"])] = (int(pend["ad"]), int(pend["sr"]))
-        return self._emit(int(pend["freq_reg"]), pend["ad"], pend["sr"], row, state)
-
-    def _ref(self, row, state):
-        patch = state.patch_table.get(int(row.val))
-        if patch is None:
-            return None
-        return self._emit(int(row.reg), patch[0], patch[1], row, state)
-
-    @staticmethod
-    def _emit(freq_reg, ad, sr, row, state):
-        writes = []
-        for reg, val in (
-            (freq_reg + PATCH_AD_OFFSET, int(ad)),
-            (freq_reg + PATCH_SR_OFFSET, int(sr)),
-        ):
-            writes.extend(state.maybe_flush_for(reg, -1))
-            state.last_val[reg] = val
-            state.last_diff[reg] = row.diff
-            writes.append((reg, val, row.diff, row.description))
-        return writes
-
-
 class SweepDecoder(MacroDecoder):
     """Decode a SWEEP atom (design SoundMonitor/skydive): START_HI/LO, signed-16 DELTA_HI/LO, LEN
     buffer a constant-raw-freq-delta ramp; on LEN the per-frame freqs (start + k*delta) queue into
@@ -1125,180 +911,6 @@ class NoteOffDecoder(MacroDecoder):
         return pre + [own]
 
 
-class CtrlWtDecoder(MacroDecoder):
-    """Decode the inline ctrl-state codebook ops (CtrlWavetablePass): CTRL_WT_DEF + CTRL_WT_STEP buffer
-    a ctrl byte into a live id->byte table (a later DEF id rebinds), emitting the write on the def's
-    voice; CTRL_WT_SET (val=id) re-emits the defined byte on the ref's voice -- byte-identical to the
-    literal ctrl SET it re-labels."""
-
-    op_code = -1
-
-    def expand(self, row, state):
-        op = int(row.op)
-        if op == CTRL_WT_DEF_OP:
-            state.pending_ctrl_wt_def = {"id": int(row.val), "reg": int(row.reg)}
-            return None
-        if op == CTRL_WT_STEP_OP:
-            return self._step(row, state)
-        return self._ref(row, state)
-
-    def _step(self, row, state):
-        pend = state.pending_ctrl_wt_def
-        if pend is None or int(row.subreg) != CTRL_WT_SUBREG_VAL:
-            return None
-        state.pending_ctrl_wt_def = None
-        val = int(row.val)
-        state.ctrl_wt_table[int(pend["id"])] = val
-        return self._emit(int(pend["reg"]), val, row, state)
-
-    def _ref(self, row, state):
-        val = state.ctrl_wt_table.get(int(row.val))
-        if val is None:
-            return None
-        return self._emit(int(row.reg), int(val), row, state)
-
-    @staticmethod
-    def _emit(reg, val, row, state):
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(val)
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, int(val), row.diff, row.description)]
-
-
-class WavetableDecoder(MacroDecoder):
-    """Decode the inline-redefinable wavetable codebook ops (design/wavetable_codebook_encoding):
-    DEF/STEP/END buffer a note-relative offset program into a live id->program table (a later DEF id
-    rebinds); REF (reg=voice freq reg) unrolls the program to LEN frames after the per-hit onset-strip
-    LEAD and replays base + LUT[note+off] per frame onto last_skel_note via pending_set_writes,
-    byte-identical to the OrnamentDecoder RESID queue it replaces."""
-
-    op_code = -1
-
-    def expand(self, row, state):
-        op = int(row.op)
-        if op == WAVETABLE_DEF_OP:
-            state.pending_wavetable_def = {"id": int(row.val), "steps": [], "loop": 0}
-            return None
-        if op == WAVETABLE_STEP_OP:
-            self._step(row, state)
-            return None
-        if op == WAVETABLE_END_OP:
-            wt = state.pending_wavetable_def
-            if wt is not None:
-                state.wavetable_table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
-                state.pending_wavetable_def = None
-            return None
-        if op == WAVETABLE_ONESHOT_OP:
-            return self._oneshot(row, state)
-        return self._ref(row, state)
-
-    def _oneshot(self, row, state):
-        """Decode the self-contained inline one-shot (no codebook id): LEN_HI opens a pending
-        program on the voice freq reg, OFFSET/HOLD buffer its verbatim RLE steps, END unrolls and
-        replays base + LUT[note+off] per frame -- byte-identical to the ORN RESID queue it replaces.
-        """
-        subreg = int(row.subreg)
-        if subreg == WT_ONESHOT_SUBREG_LEN_HI:
-            state.pending_wavetable_oneshot = {
-                "reg": int(row.reg),
-                "len": (int(row.val) & 0xFF) << 8,
-                "steps": [],
-            }
-            return None
-        pend = state.pending_wavetable_oneshot
-        if pend is None:
-            return None
-        if subreg == WT_ONESHOT_SUBREG_LEN_LO:
-            pend["len"] |= int(row.val) & 0xFF
-            return None
-        if subreg == WT_ONESHOT_SUBREG_OFFSET:
-            v = int(row.val) & 0xFF
-            pend["steps"].append([v if v < 128 else v - 256, 1])
-            return None
-        if subreg == WT_ONESHOT_SUBREG_HOLD:
-            if pend["steps"]:
-                pend["steps"][-1][1] = int(row.val) & 0xFFFF
-            return None
-        return self._replay_oneshot(pend, state)
-
-    @staticmethod
-    def _replay_oneshot(pend, state):
-        state.pending_wavetable_oneshot = None
-        steps = pend["steps"]
-        reg = int(pend["reg"])
-        note = int(state.last_skel_note.get(reg, 0))
-        offsets = wt_unroll(steps, len(steps), int(pend["len"]), [])
-        queue = state.pending_set_writes[reg]
-        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
-        for off in offsets:
-            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
-        return None
-
-    @staticmethod
-    def _step(row, state):
-        wt = state.pending_wavetable_def
-        if wt is None:
-            return
-        subreg = int(row.subreg)
-        if subreg == WT_STEP_SUBREG_OFFSET:
-            v = int(row.val) & 0xFF
-            wt["steps"].append([v if v < 128 else v - 256, 1])
-        elif subreg == WT_STEP_SUBREG_HOLD:
-            if wt["steps"]:
-                wt["steps"][-1][1] = int(row.val) & 0xFFFF
-        elif subreg == WT_STEP_SUBREG_LOOP:
-            wt["loop"] = int(row.val) & 0xFFFF
-
-    def _ref(self, row, state):
-        subreg = int(row.subreg)
-        if subreg == WT_REF_SUBREG_ID:
-            state.pending_wavetable_ref = {
-                "id": int(row.val),
-                "reg": int(row.reg),
-                "len": 0,
-                "lead": [],
-                "lead_n": 0,
-            }
-            return None
-        pend = state.pending_wavetable_ref
-        if pend is None:
-            return None
-        if subreg == WT_REF_SUBREG_LEN_HI:
-            pend["len"] |= (int(row.val) & 0xFF) << 8
-            return None
-        if subreg == WT_REF_SUBREG_LEN_LO:
-            pend["len"] |= int(row.val) & 0xFF
-            return None
-        if subreg == WT_REF_SUBREG_LEAD:
-            pend["lead_n"] = int(row.val) & 0xFFFF
-            if pend["lead_n"] == 0:
-                return self._replay(pend, state)
-            return None
-        if subreg == WT_REF_SUBREG_LEADOFF:
-            v = int(row.val) & 0xFF
-            pend["lead"].append(v if v < 128 else v - 256)
-            if len(pend["lead"]) >= pend["lead_n"]:
-                return self._replay(pend, state)
-            return None
-        return None
-
-    @staticmethod
-    def _replay(pend, state):
-        state.pending_wavetable_ref = None
-        program = state.wavetable_table.get(int(pend["id"]))
-        if program is None:
-            return None
-        steps, loop = program
-        reg = int(pend["reg"])
-        note = int(state.last_skel_note.get(reg, 0))
-        offsets = wt_unroll(steps, loop, int(pend["len"]), pend["lead"])
-        queue = state.pending_set_writes[reg]
-        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
-        for off in offsets:
-            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
-        return None
-
-
 DECODERS = {
     d.op_code: d
     for d in (
@@ -1332,30 +944,7 @@ DECODERS = {
     )
 }
 DECODERS[NOTE_ON_OP] = DECODERS[NOTE_OFF_OP]
-_CTRL_WT_DECODER = CtrlWtDecoder()
-for _op in (CTRL_WT_DEF_OP, CTRL_WT_STEP_OP, CTRL_WT_SET_OP):
-    DECODERS[_op] = _CTRL_WT_DECODER
-_STAMP_DECODER = StampDecoder()
-for _op in (
-    STAMP_DEF_OP,
-    STAMP_STEP_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-):
-    DECODERS[_op] = _STAMP_DECODER
-_PATCH_DECODER = PatchDecoder()
-for _op in (PATCH_DEF_OP, PATCH_STEP_OP, PATCH_SET_OP):
-    DECODERS[_op] = _PATCH_DECODER
-_WAVETABLE_DECODER = WavetableDecoder()
-for _op in (
-    WAVETABLE_DEF_OP,
-    WAVETABLE_STEP_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_REF_OP,
-    WAVETABLE_ONESHOT_OP,
-):
-    DECODERS[_op] = _WAVETABLE_DECODER
+DECODERS.update(codebook_decoders())
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:
     DECODERS[_op] = _PRESET_DECODER
