@@ -73,3 +73,73 @@ nibble-pair duplicates that A/B will collapse — re-measure after A/B before si
 2. Build B (INIT preamble). Re-measure (expect multiwrite to fall as nibble pairs go).
 3. Extend C (hard-restart multiload) for the remainder.
 4. Gate green → PR `resid/ornament-and-digi` (NO release).
+
+## Driver grounding (design/sid_driver_ornament_reference.md)
+
+Model A is NOT a foreign mechanism. The reference's **mechanism (B) — parametric/
+table sweep in the value domain** covers vibrato/PW/filter/volume, and states
+"**one bounded-sweep / gradient primitive family generalizes across them, as
+Galway's shared envelope shows**." Galway uses ONE structure — `G0..G3` values +
+`D0..D3` durations + delay — for vibrato, PW AND filter. A held-step automation
+curve (volume fade, filter gradient, env automation) is that **gradient envelope**:
+a sequence of `(value, duration)` stages. `SweepPass` already implements the
+per-frame (delta/frame) form for freq/PW/filter (reg 21 cutoff only); the gap is
+(a) the STAGED/held form and (b) the volume (reg24) and env (reg5/6) domains.
+RESID in the reference = "lossless escape for content no primitive models YET ...
+not a floor" — matches the zero-residual directive exactly.
+
+## A. GRADIENT atom — executable spec
+
+New default-OFF research atom modeled on CTRL_OSC (the closest analog: per-frame
+drain into `pending_set_writes`). Mine pre-SubregPass on full bytes (inline pass
+list, reglogparser ~984, so a logical curve is ONE atom, not nibble pairs). Keep
+default-OFF and OUT of `_RESIDUAL_ARM`/REGISTERED_MACROS until its own tests pass
+AND it drains in the census — so every intermediate commit stays green.
+
+Touchpoints (mirror every CTRL_OSC site):
+- `stfconstants.py`: `GRADIENT_OP = 76` (76 is free; NOTE_ON_OP=75 is current max —
+  re-verify). Subregs: `GRADIENT_SUBREG_NSTAGES=0`, `GRADIENT_SUBREG_END=1`,
+  `GRADIENT_SUBREG_VAL_BASE=2`, `GRADIENT_SUBREG_DUR_BASE=2+MAX_STAGES`. Limits:
+  `GRADIENT_MAX_STAGES` (e.g. 16), `GRADIENT_MIN_STAGES=2`, `GRADIENT_MAX_SPAN` for
+  per-atom DELAY-cap re-anchoring (see CTRL_OSC `_chunk_starts`).
+- `macros/gradient_pass.py` (new, mirror `ctrl_osc_pass.py`): `GATE_FLAGS =
+  {"modevol_gradient","env_gradient","filter_gradient","ctrl_gradient"}`;
+  `_target_regs(args)` unions reg classes (MODE_VOL_REG; AD/SR_REGS_BY_VOICE;
+  `_FILTER_REGS`; CTRL_REGS_BY_VOICE). `_collect_writes` = CTRL_OSC's (plain SETs,
+  subreg==-1, real-frame index). Mining: a maximal run of >= MIN_STAGES SETs on one
+  reg, NON-note-aligned (gradients persist across notes), each stage = (val, hold)
+  where hold = frames until the next write (>=1; a per-frame oscillation degenerates
+  to hold=1, subsuming per_frame_dense). Emit one Claim per run (priority below
+  SWEEP so true constant-delta sweeps win first), `validate=True`. Tile to
+  GRADIENT_MAX_SPAN/MAX_STAGES chunks each re-anchored on a written row.
+- `macros/decoders.py` (new `GradientDecoder`, mirror `CtrlOscDecoder`): NSTAGES
+  opens `pending_gradient={reg,fields:{}}`; collect VAL_BASE+i / DUR_BASE+i; END
+  drains `for i in range(nstages): pending_set_writes[reg] += [val_i]*dur_i` after
+  `maybe_flush_for(reg,-1)`.
+- `macros/op_contracts.py`: `OpContract(GRADIENT_OP, MaskRole.ATOM)` + import.
+- `macros/macro_contracts.py`: add `int(GRADIENT_OP)` to the ATOM set (~line 314) +
+  import; add to `reg_class`/role handling if CTRL_OSC is there.
+- `macros/__init__.py` + `reglogparser.py` ~984: add `GradientPass()` to the inline
+  list AFTER SweepPass/CtrlOscPass (so constant-delta sweeps and periodic osc claim
+  first; gradient takes the aperiodic held remainder).
+- `macros/flag_registry.py`: no edit needed (GATE_FLAGS auto-registers); add any
+  FLAG_REQUIRES if a gradient flag should imply another (none expected).
+- Tests: `tests/test_gradient_pass.py` through full `RegLogParser.parse()`
+  (test-through-real-parse: synthetic dfs ship false-green). Assert byte-exact
+  round-trip via the decoder, and that a fade like reg24 13..1 becomes ONE gradient
+  atom. Run under xdist; NO narrative `#` comments (lint).
+- Codebook reuse (phase 2): once the structural atom drains, add DEF/REF so
+  identical gradients across voices/subtunes share one DEF (Galway reuses one
+  structure) — generalizable + learnable, per "codebooks always".
+
+Then add the four `*_gradient` flags to `_RESIDUAL_ARM` (gate) and `_CODEBOOK`
+(residual_mechanism.py) and re-measure.
+
+## B. INIT preamble atom — spec sketch
+
+`init_startup` (130) = the driver's one-time init routine (filter/master-vol/freq
+set once at startup, never recurs). One-time so the codebook (MINREP=2) can't claim
+it. Model: an INIT/preamble atom bundling the leading one-time register
+configuration (the writes before the first note-on / within the first ~3% of
+frames that never recur) into one named atom. NOT a catch-all — it is the named
+init mechanism. Build after A; re-measure first (A may absorb some startup curves).
