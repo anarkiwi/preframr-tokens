@@ -14,22 +14,14 @@ from preframr_tokens.macros.passes import (
     TransposePass,
     VoiceBlockOrderPass,
 )
-from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
-from preframr_tokens.macros.ctrl_wavetable_pass import (
-    CtrlWavetablePass,
-    CtrlWavetableNibblePass,
-)
-from preframr_tokens.macros.ctrl_triple_pass import CtrlTriplePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
-from preframr_tokens.macros.local_macros import CtrlBigramPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
-from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
@@ -64,11 +56,8 @@ FREQ_BLOCK_PASSES = [
     FreqOnsetPass(),
     PerRegBurstPass(),
     InstrumentProgramPass(),
-    PatchPass(),
     ReleaseUpdatePass(),
-    CtrlOscPass(),
     NoteOffPass(),
-    CtrlWavetablePass(),
 ]
 
 
@@ -80,10 +69,7 @@ PASSES = [
     DedupSetPass(),
     HardRestartPass(),
     LegatoPerClusterPass(),
-    CtrlTriplePass(),
-    CtrlBigramPass(),
     SubregPass(),
-    CtrlWavetableNibblePass(),
 ]
 
 

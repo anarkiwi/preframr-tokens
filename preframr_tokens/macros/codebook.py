@@ -1,4 +1,4 @@
-"""Single source of truth for the inline-codebook families (STAMP, PATCH, WAVETABLE, CTRL_WT).
+"""Single source of truth for the inline-codebook families (STAMP, WAVETABLE, INSTRUMENT).
 Each shares one machine: DEF opens a pending entry, STEP(s) accumulate its payload, a COMMIT
 (an END op or a STEP at a terminal subreg) makes the id live in an ``id -> entry`` table, and
 REF(s) replay a live id. This leaf (stfconstants only) declares that as ``CodebookFamily``
@@ -11,26 +11,12 @@ from dataclasses import dataclass
 
 from preframr_tokens.macros.wavetable import unroll as wt_unroll
 from preframr_tokens.stfconstants import (
-    CTRL_WT_DEF_OP,
-    CTRL_WT_SET_OP,
-    CTRL_WT_STEP_OP,
-    CTRL_WT_SUBREG_ID,
-    CTRL_WT_SUBREG_ID_NIB0,
-    CTRL_WT_SUBREG_ID_NIB1,
-    CTRL_WT_SUBREG_VAL,
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_OFF_CTRL,
     INSTR_REF_OP,
     INSTR_STEP_OP,
     INSTR_SUBREG_FRAME,
-    PATCH_AD_OFFSET,
-    PATCH_DEF_OP,
-    PATCH_SET_OP,
-    PATCH_SR_OFFSET,
-    PATCH_STEP_OP,
-    PATCH_SUBREG_AD,
-    PATCH_SUBREG_SR,
     STAMP_DEF_OP,
     STAMP_END_OP,
     STAMP_REF_OP,
@@ -77,9 +63,7 @@ DEAD_REF_POLICY = "drop"
 
 CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
     "stamp",
-    "patch",
     "wavetable",
-    "ctrl_wt",
     "instrument",
 )
 
@@ -88,7 +72,7 @@ CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
 class RefSpec:
     """One REF op of a family. ``id_subreg`` is the subreg carrying the codebook id (a
     multi-row ref like WAVETABLE_REF/STAMP_REL_REF) or ``None`` when the op's own row carries
-    it (a single-row ref like PATCH_SET/CTRL_WT_SET/STAMP_REF). ``table_less`` marks a ref that
+    it (a single-row ref like STAMP_REF). ``table_less`` marks a ref that
     carries its payload inline and looks up no id (WAVETABLE_ONESHOT); such ops are not
     liveness-tracked and stay out of the spec table."""
 
@@ -103,7 +87,7 @@ class CodebookFamily:
     ``commit_subreg``/``refs`` derive the per-op ``CodebookSpec`` consumed by validation and the
     legality mask; ``step_ops`` and ``def_emits`` additionally drive the unified decoder.
     ``commit_subreg`` is ``None`` when ``commit_op`` is a dedicated END op, else the terminal
-    STEP subreg that triggers the commit (PATCH/CTRL_WT)."""
+    STEP subreg that triggers the commit."""
 
     name: str
     def_op: int
@@ -151,15 +135,6 @@ CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
         ),
         def_emits=False,
     ),
-    "patch": CodebookFamily(
-        name="patch",
-        def_op=PATCH_DEF_OP,
-        step_ops=(PATCH_STEP_OP,),
-        commit_op=PATCH_STEP_OP,
-        commit_subreg=PATCH_SUBREG_SR,
-        refs=(RefSpec(PATCH_SET_OP),),
-        def_emits=True,
-    ),
     "wavetable": CodebookFamily(
         name="wavetable",
         def_op=WAVETABLE_DEF_OP,
@@ -171,15 +146,6 @@ CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
             RefSpec(WAVETABLE_ONESHOT_OP, table_less=True),
         ),
         def_emits=False,
-    ),
-    "ctrl_wt": CodebookFamily(
-        name="ctrl_wt",
-        def_op=CTRL_WT_DEF_OP,
-        step_ops=(CTRL_WT_STEP_OP,),
-        commit_op=CTRL_WT_STEP_OP,
-        commit_subreg=CTRL_WT_SUBREG_VAL,
-        refs=(RefSpec(CTRL_WT_SET_OP),),
-        def_emits=True,
     ),
     "instrument": CodebookFamily(
         name="instrument",
@@ -361,109 +327,6 @@ class _StampCodec(_Codec):
                     signed = val if val < 0x8000 else val - 0x10000
                     val = (base + signed) & 0xFFFF
                 state.pending_set_writes[voice + off].append(val)
-        return pre or None
-
-
-class _PatchCodec(_Codec):
-    """Melodic-instrument patch: DEF + two STEP rows buffer an (AD,SR) envelope into the id table and
-    emit it on the def's voice, SET re-emits a defined patch's AD/SR on the ref's voice.
-    """
-
-    def def_open(self, row, state, cb):
-        cb.pending = {
-            "id": int(row.val),
-            "freq_reg": int(row.reg),
-            "ad": None,
-            "sr": None,
-        }
-
-    def step(self, state, row, cb):
-        pend = cb.pending
-        if pend is None:
-            return None
-        if int(row.subreg) == PATCH_SUBREG_AD:
-            pend["ad"] = int(row.val)
-        elif int(row.subreg) == PATCH_SUBREG_SR:
-            pend["sr"] = int(row.val)
-        if pend["ad"] is None or pend["sr"] is None:
-            return None
-        cb.pending = None
-        cb.table[int(pend["id"])] = (int(pend["ad"]), int(pend["sr"]))
-        return self._emit(int(pend["freq_reg"]), pend["ad"], pend["sr"], row, state)
-
-    def ref(self, state, row, cb):
-        patch = cb.table.get(int(row.val))
-        if patch is None:
-            return None
-        return self._emit(int(row.reg), patch[0], patch[1], row, state)
-
-    @staticmethod
-    def _emit(freq_reg, ad, sr, row, state):
-        writes = []
-        for reg, val in (
-            (freq_reg + PATCH_AD_OFFSET, int(ad)),
-            (freq_reg + PATCH_SR_OFFSET, int(sr)),
-        ):
-            writes.extend(state.maybe_flush_for(reg, -1))
-            state.last_val[reg] = val
-            state.last_diff[reg] = row.diff
-            writes.append((reg, val, row.diff, row.description))
-        return writes
-
-
-class _CtrlWtCodec(_Codec):
-    """Inline register-state codebook: DEF + STEP buffer a single register value into the id table and
-    emit it on the def's voice, SET re-emits the defined value on the ref's voice. The DEF subreg sets
-    the lane -- a full byte (``CTRL_WT_SUBREG_ID``) or a nibble (``..._ID_NIB0`` / ``..._ID_NIB1``, so a
-    SubregPass-split AD/SR/filter nibble can be interned too)."""
-
-    _ID_SUBREG_TO_LANE = {
-        CTRL_WT_SUBREG_ID: -1,
-        CTRL_WT_SUBREG_ID_NIB0: 0,
-        CTRL_WT_SUBREG_ID_NIB1: 1,
-    }
-
-    def def_open(self, row, state, cb):
-        cb.pending = {
-            "id": int(row.val),
-            "reg": int(row.reg),
-            "lane": self._ID_SUBREG_TO_LANE.get(int(row.subreg), -1),
-        }
-
-    def step(self, state, row, cb):
-        pend = cb.pending
-        if pend is None or int(row.subreg) != CTRL_WT_SUBREG_VAL:
-            return None
-        cb.pending = None
-        lane = int(pend["lane"])
-        val = int(row.val)
-        cb.table[int(pend["id"])] = (lane, val)
-        return self._emit(int(pend["reg"]), lane, val, row, state)
-
-    def ref(self, state, row, cb):
-        entry = cb.table.get(int(row.val))
-        if entry is None:
-            return None
-        lane, val = entry
-        return self._emit(int(row.reg), int(lane), int(val), row, state)
-
-    @staticmethod
-    def _emit(reg, lane, val, row, state):
-        if lane < 0:
-            pre = state.maybe_flush_for(reg, -1)
-            state.last_val[reg] = int(val)
-            state.last_diff[reg] = row.diff
-            return pre + [(reg, int(val), row.diff, row.description)]
-        pre = state.maybe_flush_for(reg, lane)
-        if lane == 0:
-            state.last_val[reg] = (state.last_val[reg] & 0xF0) | (int(val) & 0x0F)
-        else:
-            state.last_val[reg] = (state.last_val[reg] & 0x0F) | (
-                (int(val) & 0x0F) << 4
-            )
-        state.last_diff[reg] = row.diff
-        state.pending_subreg_reg = reg
-        state.pending_subreg_nibbles.add(lane)
         return pre or None
 
 
@@ -649,9 +512,7 @@ class _InstrumentCodec(_Codec):
 
 _CODECS: dict[str, _Codec] = {
     "stamp": _StampCodec(),
-    "patch": _PatchCodec(),
     "wavetable": _WavetableCodec(),
-    "ctrl_wt": _CtrlWtCodec(),
     "instrument": _InstrumentCodec(),
 }
 
@@ -659,7 +520,7 @@ _CODECS: dict[str, _Codec] = {
 class CodebookDecoder:
     """One decoder, instantiated per family, registered for every op the family owns. Routes a row to
     its lifecycle phase from the registry (def opens a pending entry, step/commit make the id live,
-    ref replays it) and delegates the payload codec against the family's ``_Codebook``, so all four
+    ref replays it) and delegates the payload codec against the family's ``_Codebook``, so all
     families share one machine."""
 
     op_code = -1

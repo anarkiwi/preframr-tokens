@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from preframr_tokens.macros.decoders import (
-    CtrlBigramDecoder,
     HardRestartDecoder,
     SubregFlushDecoder,
     _LegatoClusterByteDecoder,
     _LegatoClusterNibbleDecoder,
 )
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
-from preframr_tokens.macros.local_macros import CtrlBigramPass
 from preframr_tokens.macros.passes import (
     HardRestartPass,
     LegatoPerClusterPass,
@@ -24,8 +22,6 @@ from preframr_tokens.macros.transform import (
     register,
 )
 from preframr_tokens.stfconstants import (
-    CTRL_BIGRAM_OP,
-    CTRL_BIGRAM_TABLE,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
@@ -67,32 +63,6 @@ class HardRestartTransform(RowExpandingTransform):
         first["val"] = int(a)
         second = dict(base)
         second["val"] = int(b)
-        return [first, second]
-
-
-@register("ctrl_bigram")
-class CtrlBigramTransform(RowExpandingTransform):
-    TIER = "bit_exact"
-    OP_CODES = frozenset({CTRL_BIGRAM_OP})
-    OPERATES_ON_VOICE_REGS = True
-    DECOMPOSES_TO_ATOMS = True
-    LOSS_TIER = "zero"
-    REQUIRES_ARGS = frozenset({"ctrl_bigram_pass"})
-    PROVIDES_OPS = frozenset({CTRL_BIGRAM_OP})
-    EMITS_NON_SET_REGS = frozenset({4})
-    PASS_CLASS = CtrlBigramPass
-    DECODER_CLASS = CtrlBigramDecoder
-
-    @staticmethod
-    def _expand_row(row):
-        idx = int(getattr(row, "val"))
-        prev_byte, cur_byte = CTRL_BIGRAM_TABLE[idx]
-        base = _row_to_dict(row, row._fields)
-        base["op"] = int(SET_OP)
-        first = dict(base)
-        first["val"] = int(prev_byte)
-        second = dict(base)
-        second["val"] = int(cur_byte)
         return [first, second]
 
 

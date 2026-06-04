@@ -72,12 +72,11 @@ REGISTERED_MACROS = (
     "legato_pass_c2",
     "legato_pass_c4",
     "voice_canonical_block_order",
-    "ctrl_bigram_pass",
     "loop_pass",
     "loop_transposed",
     "freq_nudge_pass",
     "release_update_pass",
-    "ctrl_triple_pass",
+    "instrument_program",
     "lonely_catch_all",
 )
 

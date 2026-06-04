@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from preframr_tokens.stfconstants import (
-    CTRL_OSC_OP,
-    CTRL_WT_SET_OP,
     GRADIENT_OP,
     DIFF_OP,
     FLIP_OP,
@@ -20,7 +18,6 @@ from preframr_tokens.stfconstants import (
     INSTR_REF_OP,
     MODE_VOL_REG,
     ORN_OP,
-    PATCH_SET_OP,
     SKEL_OP,
     STAMP_REF_OP,
     STAMP_REL_REF_OP,
@@ -180,14 +177,6 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
-            "PatchPass",
-            frozenset({(_AD, _RPL), (_SR, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            False,
-        ),
-        MacroContract(
             "ReleaseUpdatePass",
             frozenset({(_AD, _ABS), (_SR, _ABS)}),
             frozenset(),
@@ -196,26 +185,8 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
-            "CtrlOscPass",
-            frozenset({(_CTRL, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            False,
-        ),
-        MacroContract(
             "NoteOffPass",
             frozenset({(_CTRL, _ABS)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.PRESERVES,
-            False,
-        ),
-        MacroContract(
-            "CtrlWavetablePass",
-            frozenset(
-                {(_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL), (_FILT, _RPL), (_FREQ, _RPL)}
-            ),
             frozenset(),
             frozenset(),
             FrameEffect.PRESERVES,
@@ -250,11 +221,8 @@ PIPELINE_ORDER = (
     "FreqOnsetPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
-    "PatchPass",
     "ReleaseUpdatePass",
-    "CtrlOscPass",
     "NoteOffPass",
-    "CtrlWavetablePass",
     "frame_consolidation",
 )
 
@@ -307,7 +275,7 @@ KNOWN_MISMATCHES = frozenset(
 )
 
 
-LOSSLESS_PASSES = frozenset({"StampPass", "PatchPass"})
+LOSSLESS_PASSES = frozenset({"StampPass"})
 
 
 RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
@@ -322,10 +290,7 @@ REPLAY_OPS = frozenset(
         int(TRACK_REF_OP),
         int(WAVETABLE_REF_OP),
         int(WAVETABLE_ONESHOT_OP),
-        int(PATCH_SET_OP),
-        int(CTRL_OSC_OP),
         int(GRADIENT_OP),
-        int(CTRL_WT_SET_OP),
         int(INSTR_REF_OP),
     }
 )

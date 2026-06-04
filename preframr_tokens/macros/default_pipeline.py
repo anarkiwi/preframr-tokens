@@ -23,7 +23,6 @@ DEFAULT_PIPELINE_SPEC = {
         {"name": "norm_pr_order"},
         {"name": "hard_restart"},
         {"name": "legato_per_cluster"},
-        {"name": "ctrl_bigram"},
         {"name": "subreg_flush"},
         {"name": "norm_pr_order"},
         {"name": "voice_block_order"},

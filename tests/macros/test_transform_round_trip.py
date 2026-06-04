@@ -17,9 +17,6 @@ from preframr_tokens.macros.transform import (
     collect_substitutable_ops,
 )
 from preframr_tokens.stfconstants import (
-    CTRL_BIGRAM_OP,
-    CTRL_BIGRAM_PAIR_TO_IDX,
-    CTRL_BIGRAM_TABLE,
     FRAME_REG,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
@@ -66,7 +63,6 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
     def test_collects_decomposing_op_codes(self):
         ops = collect_decomposing_op_codes()
         self.assertIn(HARD_RESTART_OP, ops)
-        self.assertIn(CTRL_BIGRAM_OP, ops)
         self.assertNotIn(SET_OP, ops)
 
     def test_collects_op_loss_tiers(self):
@@ -75,7 +71,6 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
         self.assertIsInstance(tiers, dict)
         self.assertTrue(tiers, "expected at least one op->tier mapping")
         self.assertEqual(tiers[int(HARD_RESTART_OP)], "structural")
-        self.assertEqual(tiers[int(CTRL_BIGRAM_OP)], "zero")
         for op, tier in tiers.items():
             self.assertIsInstance(op, int)
             self.assertIn(tier, {"structural", "mid", "content", "zero"})
@@ -130,39 +125,14 @@ class TestHardRestartRoundTrip(unittest.TestCase):
             self.assertEqual(int(v), SET_OP)
 
 
-class TestCtrlBigramRoundTrip(unittest.TestCase):
-    def test_inverse_unpacks_table_idx(self):
-        from preframr_tokens.macros.transforms_bit_exact import CtrlBigramTransform
-
-        t = CtrlBigramTransform()
-        for idx, (a, b) in enumerate(CTRL_BIGRAM_TABLE[:8]):
-            synth = pd.DataFrame(
-                [
-                    {
-                        "op": CTRL_BIGRAM_OP,
-                        "reg": 4,
-                        "subreg": -1,
-                        "val": idx,
-                        "diff": 100,
-                        "description": 0,
-                    }
-                ]
-            )
-            expanded = t.inverse(synth)
-            self.assertEqual(len(expanded), 2)
-            self.assertEqual(int(expanded["val"].iloc[0]), int(a) & 0xFF)
-            self.assertEqual(int(expanded["val"].iloc[1]), int(b) & 0xFF)
-
-
 class TestVoiceSymmetry(unittest.TestCase):
     def _voice_symmetry_args(self):
         ap = argparse.ArgumentParser()
         ap.add_argument("--hard-restart-pass", action="store_true", default=True)
-        ap.add_argument("--ctrl-bigram-pass", action="store_true", default=True)
         return ap.parse_args([])
 
     def _synthetic_voice_symmetric_df(self):
-        pair_idx_a = (CTRL_BIGRAM_TABLE[0][0], CTRL_BIGRAM_TABLE[0][1])
+        pair_idx_a = (0x41, 0x40)
         rows = []
         for ctrl_reg in _voice_ctrl_regs():
             rows.append(

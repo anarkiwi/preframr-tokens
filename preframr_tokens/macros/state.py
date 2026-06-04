@@ -123,9 +123,7 @@ class DecodeState:
 
     _SEED_TABLE_KEYS = (
         "stamp_table",
-        "patch_table",
         "wavetable_table",
-        "ctrl_wt_table",
         "last_skel_note",
         "last_freq_v0",
     )
@@ -155,9 +153,7 @@ class DecodeState:
         self.pending_orn = None
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
-        self.pending_ctrl_osc = None
         self.pending_gradient = None
-        self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
@@ -174,20 +170,12 @@ class DecodeState:
         return self.codebooks[_TABLE_IDX["stamp"]].table
 
     @property
-    def patch_table(self):
-        return self.codebooks[_TABLE_IDX["patch"]].table
-
-    @property
     def wavetable_table(self):
         return self.codebooks[_TABLE_IDX["wavetable"]].table
 
-    @property
-    def ctrl_wt_table(self):
-        return self.codebooks[_TABLE_IDX["ctrl_wt"]].table
-
     def _apply_seed(self, seed):
         """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
-        §4 B3): a STAMP/PATCH/WAVETABLE REF whose DEF preceded the window resolves from the snapshot
+        §4 B3): a STAMP/WAVETABLE REF whose DEF preceded the window resolves from the snapshot
         instead of silently dropping. Only tables this build defines are seeded."""
         for key in self._SEED_TABLE_KEYS:
             if key in seed and hasattr(self, key):

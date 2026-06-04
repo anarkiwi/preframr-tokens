@@ -78,7 +78,6 @@ def _parse(path, wavetable_pass):
         trajectory_anchor_pass=True,
         stamp_pass=True,
         sweep_pass=True,
-        patch_pass=True,
         held_arp=True,
         wavetable_pass=wavetable_pass,
     )

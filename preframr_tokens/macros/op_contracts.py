@@ -2,7 +2,7 @@
 op the model can emit -- the atom ops in ``DECODERS`` plus the loop ops ``expand_loops`` consumes -- so
 the sampling mask, the stream validators, and the precompute arrays dispatch on one source of truth
 instead of three hand-kept copies. Each op declares its ``MaskRole`` (how constrained decode treats it);
-the completeness test goes red if any emittable op lacks a contract (the STAMP/PATCH drift, caught).
+the completeness test goes red if any emittable op lacks a contract (the STAMP drift, caught).
 """
 
 from __future__ import annotations
@@ -14,15 +14,9 @@ import preframr_tokens.stfconstants as _stfconstants
 from preframr_tokens.macros.codebook import codebook_spec_tuples
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
-    CTRL_BIGRAM_OP,
-    CTRL_OSC_OP,
-    CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
     GRADIENT_OP,
     INIT_OP,
-    CTRL_WT_DEF_OP,
-    CTRL_WT_SET_OP,
-    CTRL_WT_STEP_OP,
     DIFF_OP,
     DO_LOOP_OP,
     FC_PRESET_OP,
@@ -41,9 +35,6 @@ from preframr_tokens.stfconstants import (
     LEGATO_OP_CLUSTER_7,
     NOTE_OFF_OP,
     NOTE_ON_OP,
-    PATCH_DEF_OP,
-    PATCH_SET_OP,
-    PATCH_STEP_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_OVERLAY_SUBREG_FRAME_OFFSET,
     PATTERN_OVERLAY_SUBREG_NEW_VAL,
@@ -144,7 +135,6 @@ _CONTRACT_LIST = (
     OpContract(PWM_PRESET_OP, MaskRole.ATOM),
     OpContract(FC_PRESET_OP, MaskRole.ATOM),
     OpContract(PWM_PRESET_SHIFTED_OP, MaskRole.ATOM),
-    OpContract(CTRL_BIGRAM_OP, MaskRole.ATOM),
     OpContract(PWM_SUSTAIN_OP, MaskRole.ATOM),
     OpContract(WAVETABLE_SUSTAIN_OP, MaskRole.ATOM),
     OpContract(FREQ_TRAJ_OP, MaskRole.ATOM),
@@ -152,19 +142,14 @@ _CONTRACT_LIST = (
     OpContract(FREQ_NUDGE_OP, MaskRole.ATOM),
     OpContract(FREQ_ONSET_OP, MaskRole.ATOM),
     OpContract(RELEASE_UPDATE_OP, MaskRole.ATOM),
-    OpContract(CTRL_TRIPLE_OP, MaskRole.ATOM),
     OpContract(CTRL_UPDATE_OP, MaskRole.ATOM),
     OpContract(SKEL_OP, MaskRole.ATOM),
     OpContract(ORN_OP, MaskRole.ATOM),
     OpContract(SWEEP_OP, MaskRole.ATOM),
-    OpContract(CTRL_OSC_OP, MaskRole.ATOM),
     OpContract(GRADIENT_OP, MaskRole.ATOM),
     OpContract(INIT_OP, MaskRole.ATOM),
     OpContract(NOTE_OFF_OP, MaskRole.ATOM),
     OpContract(NOTE_ON_OP, MaskRole.ATOM),
-    OpContract(CTRL_WT_DEF_OP, MaskRole.CODEBOOK_DEF),
-    OpContract(CTRL_WT_STEP_OP, MaskRole.CODEBOOK_STEP),
-    OpContract(CTRL_WT_SET_OP, MaskRole.CODEBOOK_REF),
     OpContract(INSTR_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(INSTR_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(INSTR_END_OP, MaskRole.CODEBOOK_END),
@@ -175,9 +160,6 @@ _CONTRACT_LIST = (
     OpContract(STAMP_END_OP, MaskRole.CODEBOOK_END),
     OpContract(STAMP_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(STAMP_REL_REF_OP, MaskRole.CODEBOOK_REF),
-    OpContract(PATCH_DEF_OP, MaskRole.CODEBOOK_DEF),
-    OpContract(PATCH_STEP_OP, MaskRole.CODEBOOK_STEP),
-    OpContract(PATCH_SET_OP, MaskRole.CODEBOOK_REF),
     OpContract(WAVETABLE_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(WAVETABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(WAVETABLE_END_OP, MaskRole.CODEBOOK_END),
@@ -259,9 +241,7 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
 
 CODEBOOK_TABLES: tuple[str, ...] = (
     "stamp",
-    "patch",
     "wavetable",
-    "ctrl_wt",
     "instrument",
 )
 
@@ -294,16 +274,10 @@ OP_PRODUCER: dict[int, str] = {
     STAMP_END_OP: "StampPass",
     STAMP_REF_OP: "StampPass",
     STAMP_REL_REF_OP: "StampPass",
-    PATCH_DEF_OP: "PatchPass",
-    PATCH_STEP_OP: "PatchPass",
-    PATCH_SET_OP: "PatchPass",
     WAVETABLE_DEF_OP: "WavetablePass",
     WAVETABLE_STEP_OP: "WavetablePass",
     WAVETABLE_END_OP: "WavetablePass",
     WAVETABLE_REF_OP: "WavetablePass",
-    CTRL_WT_DEF_OP: "CtrlWavetablePass",
-    CTRL_WT_STEP_OP: "CtrlWavetablePass",
-    CTRL_WT_SET_OP: "CtrlWavetablePass",
     INSTR_DEF_OP: "InstrumentProgramPass",
     INSTR_STEP_OP: "InstrumentProgramPass",
     INSTR_END_OP: "InstrumentProgramPass",

@@ -19,8 +19,6 @@ from preframr_tokens.macros.state import (
 )
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import (
-    CTRL_BIGRAM_OP,
-    CTRL_TRIPLE_OP,
     FREQ_TRAJ_OP,
 )
 from preframr_tokens.tokenizer_config import default_tokenizer_args as _args
@@ -98,31 +96,6 @@ class TestFullPipelineFidelity(unittest.TestCase):
             "per-frame register divergence vs raw:\n  " + "\n  ".join(failures),
         )
 
-    def test_ctrl_collapse_lossless(self):
-        self._assert_fired(
-            self.fixture_head,
-            dict(ctrl_bigram_pass=True),
-            CTRL_BIGRAM_OP,
-            "ctrl_bigram",
-        )
-        self._assert_fired(
-            self.fixture_head,
-            dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
-            CTRL_TRIPLE_OP,
-            "ctrl_triple",
-        )
-        self._assert_lossless(
-            self.fixture_head,
-            {
-                "freq_trajectory": dict(freq_trajectory_pass=True),
-                "ctrl_bigram_pass": dict(ctrl_bigram_pass=True),
-                "ctrl_triple_pass": dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
-                "freq_nudge_catch_all": dict(
-                    freq_nudge_pass=True, lonely_catch_all=True
-                ),
-            },
-        )
-
     def test_freq_trajectory_lossless(self):
         self._assert_fired(
             self.fixture_wide,
@@ -139,7 +112,6 @@ class TestFullPipelineFidelity(unittest.TestCase):
                     freq_nudge_pass=True,
                     lonely_catch_all=True,
                 ),
-                "ctrl_triple_pass": dict(ctrl_bigram_pass=True, ctrl_triple_pass=True),
             },
         )
 
