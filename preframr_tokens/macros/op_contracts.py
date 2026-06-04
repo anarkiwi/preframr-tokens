@@ -14,8 +14,13 @@ import preframr_tokens.stfconstants as _stfconstants
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
+    CTRL_OSC_OP,
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
+    CTRL_WT_DEF_OP,
+    CTRL_WT_SET_OP,
+    CTRL_WT_STEP_OP,
+    CTRL_WT_SUBREG_VAL,
     DIFF_OP,
     DO_LOOP_OP,
     FC_PRESET_OP,
@@ -28,6 +33,8 @@ from preframr_tokens.stfconstants import (
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
+    NOTE_OFF_OP,
+    NOTE_ON_OP,
     PATCH_DEF_OP,
     PATCH_SET_OP,
     PATCH_STEP_OP,
@@ -147,6 +154,12 @@ _CONTRACT_LIST = (
     OpContract(SKEL_OP, MaskRole.ATOM),
     OpContract(ORN_OP, MaskRole.ATOM),
     OpContract(SWEEP_OP, MaskRole.ATOM),
+    OpContract(CTRL_OSC_OP, MaskRole.ATOM),
+    OpContract(NOTE_OFF_OP, MaskRole.ATOM),
+    OpContract(NOTE_ON_OP, MaskRole.ATOM),
+    OpContract(CTRL_WT_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(CTRL_WT_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(CTRL_WT_SET_OP, MaskRole.CODEBOOK_REF),
     OpContract(WAVETABLE_ONESHOT_OP, MaskRole.ATOM),
     OpContract(STAMP_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(STAMP_STEP_OP, MaskRole.CODEBOOK_STEP),
@@ -235,7 +248,7 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
     "overlay_count",
 )
 
-CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch", "wavetable")
+CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch", "wavetable", "ctrl_wt")
 
 
 @dataclass(frozen=True)
@@ -266,6 +279,11 @@ CODEBOOK_SPECS: dict[int, CodebookSpec] = {
     WAVETABLE_REF_OP: CodebookSpec(
         WAVETABLE_REF_OP, "wavetable", "ref", WT_REF_SUBREG_ID
     ),
+    CTRL_WT_DEF_OP: CodebookSpec(CTRL_WT_DEF_OP, "ctrl_wt", "def"),
+    CTRL_WT_STEP_OP: CodebookSpec(
+        CTRL_WT_STEP_OP, "ctrl_wt", "commit", CTRL_WT_SUBREG_VAL
+    ),
+    CTRL_WT_SET_OP: CodebookSpec(CTRL_WT_SET_OP, "ctrl_wt", "ref"),
 }
 
 
@@ -285,6 +303,9 @@ OP_PRODUCER: dict[int, str] = {
     WAVETABLE_STEP_OP: "WavetablePass",
     WAVETABLE_END_OP: "WavetablePass",
     WAVETABLE_REF_OP: "WavetablePass",
+    CTRL_WT_DEF_OP: "CtrlWavetablePass",
+    CTRL_WT_STEP_OP: "CtrlWavetablePass",
+    CTRL_WT_SET_OP: "CtrlWavetablePass",
 }
 
 _REFERENCE_ROLES = frozenset(
