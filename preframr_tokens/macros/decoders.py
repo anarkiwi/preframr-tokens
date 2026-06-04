@@ -169,6 +169,7 @@ from preframr_tokens.stfconstants import (
     WT_STEP_SUBREG_OFFSET,
 )
 from preframr_tokens.macros.wavetable import unroll as wt_unroll
+from preframr_tokens.macros.codebook import codebook_decoders
 
 
 class MacroDecoder:
@@ -1272,30 +1273,7 @@ DECODERS = {
     )
 }
 DECODERS[NOTE_ON_OP] = DECODERS[NOTE_OFF_OP]
-_CTRL_WT_DECODER = CtrlWtDecoder()
-for _op in (CTRL_WT_DEF_OP, CTRL_WT_STEP_OP, CTRL_WT_SET_OP):
-    DECODERS[_op] = _CTRL_WT_DECODER
-_STAMP_DECODER = StampDecoder()
-for _op in (
-    STAMP_DEF_OP,
-    STAMP_STEP_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-):
-    DECODERS[_op] = _STAMP_DECODER
-_PATCH_DECODER = PatchDecoder()
-for _op in (PATCH_DEF_OP, PATCH_STEP_OP, PATCH_SET_OP):
-    DECODERS[_op] = _PATCH_DECODER
-_WAVETABLE_DECODER = WavetableDecoder()
-for _op in (
-    WAVETABLE_DEF_OP,
-    WAVETABLE_STEP_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_REF_OP,
-    WAVETABLE_ONESHOT_OP,
-):
-    DECODERS[_op] = _WAVETABLE_DECODER
+DECODERS.update(codebook_decoders())
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:
     DECODERS[_op] = _PRESET_DECODER
