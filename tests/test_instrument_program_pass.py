@@ -174,3 +174,19 @@ def test_lossless_guard_falls_back(monkeypatch):
     pd.testing.assert_frame_equal(
         fell_back.reset_index(drop=True), df.reset_index(drop=True)
     )
+
+
+def test_instr_trust_skips_guard(monkeypatch):
+    """PREFRAMR_INSTR_TRUST skips the register_state guard: a forced-divergent replay is committed
+    instead of dropped -- the opt-in production fast path once byte-exactness is corpus-proven.
+    """
+    df = _inline_df()
+    args = SimpleNamespace(instrument_program=True)
+    monkeypatch.setattr(
+        InstrumentProgramPass,
+        "_instr_is_lossless",
+        staticmethod(lambda before, after: False),
+    )
+    monkeypatch.setenv("PREFRAMR_INSTR_TRUST", "1")
+    out = InstrumentProgramPass().apply(df.copy(), args=args)
+    assert int((out["op"] == INSTR_DEF_OP).sum()) >= 1
