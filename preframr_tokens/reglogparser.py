@@ -11,6 +11,9 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
+from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
+from preframr_tokens.macros.note_off_pass import NoteOffPass
+from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
@@ -992,6 +995,9 @@ class RegLogParser:
             GateSlopeShiftPass(),
             PatchPass(),
             ReleaseUpdatePass(),
+            CtrlOscPass(),
+            NoteOffPass(),
+            CtrlWavetablePass(),
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)

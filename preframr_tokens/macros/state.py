@@ -121,6 +121,7 @@ class DecodeState:
         "stamp_table",
         "patch_table",
         "wavetable_table",
+        "ctrl_wt_table",
         "last_skel_note",
         "last_freq_v0",
     )
@@ -152,6 +153,9 @@ class DecodeState:
         self.stamp_table = {}
         self.pending_stamp_rel = None
         self.pending_sweep = None
+        self.pending_ctrl_osc = None
+        self.pending_ctrl_wt_def = None
+        self.ctrl_wt_table = {}
         self.pending_patch_def = None
         self.patch_table = {}
         self.wavetable_table = {}
@@ -273,13 +277,13 @@ class DecodeState:
 
 def _build_last_diff(df):
     """Per-reg first-SET diff lookup. Returns ``{int(reg): int(diff)}``
-    with ``_MIN_DIFF`` as the fallback when a reg has no SET row.
+    with ``_MIN_DIFF`` as the fallback when a reg has no SET row. One groupby
+    over the SET rows instead of a full-frame mask scan per unique reg (the
+    latter dominated register_state setup under per-block re-encoding).
     """
-    last_diff = {}
-    for reg in df["reg"].unique():
-        sub = df[(df["reg"] == reg) & (df["op"] == SET_OP)]["diff"]
-        last_diff[int(reg)] = int(sub.iloc[0]) if len(sub) else _MIN_DIFF
-    return last_diff
+    set_df = df[df["op"] == SET_OP]
+    first = set_df.groupby("reg")["diff"].first().to_dict() if len(set_df) else {}
+    return {int(reg): int(first.get(reg, _MIN_DIFF)) for reg in df["reg"].unique()}
 
 
 def _build_decode_state(df, strict=False, seed=None):

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from preframr_tokens.macros.passes_base import _splice_rows
 
-__all__ = ["Claim", "arbitrate"]
+__all__ = ["Claim", "arbitrate", "arbitrate_independent_groups"]
 
 
 @dataclass
@@ -66,13 +66,9 @@ def _strict():
     return os.environ.get("PREFRAMR_ARBITER_STRICT", "") not in ("", "0")
 
 
-def arbitrate(df, claims, validate=False):
-    """Select non-overlapping claims greedily in ``_sort_key`` order; write-overlapping lower-ranked
-    claims drop and stay literal. ``validate`` (register-exact passes) decodes the result and drops any
-    claim that changes the source register_state -- CUMULATIVELY, since claims interact (one ctrl
-    collapse's frame-tick drain can land in another's frame, so independent checks are unsound) -- a
-    clobbered collapse stays literal. ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
-    """
+def _select_nonoverlap(claims):
+    """Greedy ``_sort_key``-order selection dropping any claim whose source writes overlap an
+    already-selected claim (write-overlapping lower-ranked claims stay literal)."""
     claimed: set = set()
     selected: list = []
     for claim in sorted(claims, key=_sort_key):
@@ -81,31 +77,87 @@ def arbitrate(df, claims, validate=False):
             continue
         claimed |= w
         selected.append(claim)
-    if not selected:
-        return df
+    return selected
 
-    def _apply(chosen):
-        drop_idx: list = []
-        new_rows: list = []
-        for c in chosen:
-            drop_idx.extend(c.writes)
-            new_rows.extend(c.tokens)
-        return _splice_rows(df, drop_idx, new_rows)
 
-    out = _apply(selected)
-    strict = _strict()
-    if not (validate or strict):
-        return out
-    src_state = _decoded_state(df)
-    if _lossless(src_state, out):
-        return out
+def _apply(df, chosen):
+    drop_idx: list = []
+    new_rows: list = []
+    for c in chosen:
+        drop_idx.extend(c.writes)
+        new_rows.extend(c.tokens)
+    return _splice_rows(df, drop_idx, new_rows)
+
+
+def _greedy_accept(df, selected, src_state):
+    """Cumulative byte-exact greedy: keep each claim (in ``selected`` order) only if the result still
+    decodes to ``src_state``. Returns the accepted subset."""
+    if _lossless(src_state, _apply(df, selected)):
+        return list(selected)
     accepted: list = []
     for claim in selected:
-        if _lossless(src_state, _apply(accepted + [claim])):
+        if _lossless(src_state, _apply(df, accepted + [claim])):
             accepted.append(claim)
+    return accepted
+
+
+def arbitrate(df, claims, validate=False):
+    """Select non-overlapping claims greedily in ``_sort_key`` order; write-overlapping lower-ranked
+    claims drop and stay literal. ``validate`` (register-exact passes) decodes the result and drops any
+    claim that changes the source register_state -- CUMULATIVELY, since claims interact (one ctrl
+    collapse's frame-tick drain can land in another's frame, so independent checks are unsound) -- a
+    clobbered collapse stays literal. ``PREFRAMR_ARBITER_STRICT`` raises on such a drop instead.
+    """
+    selected = _select_nonoverlap(claims)
+    if not selected:
+        return df
+    strict = _strict()
+    if not (validate or strict):
+        return _apply(df, selected)
+    src_state = _decoded_state(df)
+    accepted = _greedy_accept(df, selected, src_state)
     if strict and len(accepted) != len(selected):
         raise AssertionError(
             f"ARBITER: {len(selected) - len(accepted)} claim(s) not byte-exact; "
             f"root-fix the proposing pass"
         )
-    return _apply(accepted)
+    return _apply(df, accepted)
+
+
+def arbitrate_independent_groups(df, groups, validate=False):
+    """Like ``arbitrate`` on the flattened claims, but validates each group against ONE shared source
+    decode. Sound only when groups are register_state-INDEPENDENT (no group's decode touches another's
+    frames -- e.g. ``collapse_runs`` claims separated by more than the tick-drain span): then a claim's
+    cumulative-lossless verdict depends only on its own group, so per-group greedy equals global greedy,
+    at a fraction of the decodes. ``PREFRAMR_VERIFY_PARTITION`` asserts equality vs the flat path.
+    """
+    flat = [c for g in groups for c in g]
+    selected = _select_nonoverlap(flat)
+    if not selected:
+        return df
+    strict = _strict()
+    if not (validate or strict):
+        return _apply(df, selected)
+    src_state = _decoded_state(df)
+    if _lossless(src_state, _apply(df, selected)):
+        accepted = selected
+    else:
+        sel_ids = {id(c) for c in selected}
+        accepted = []
+        for g in groups:
+            g_sel = [c for c in g if id(c) in sel_ids]
+            if g_sel:
+                accepted.extend(_greedy_accept(df, g_sel, src_state))
+    if os.environ.get("PREFRAMR_VERIFY_PARTITION", "") not in ("", "0"):
+        ref = _greedy_accept(df, selected, src_state)
+        if {id(c) for c in accepted} != {id(c) for c in ref}:
+            raise AssertionError(
+                f"PARTITION: group result != flat greedy "
+                f"({len(accepted)} vs {len(ref)} accepted); groups not independent"
+            )
+    if strict and len(accepted) != len(selected):
+        raise AssertionError(
+            f"ARBITER: {len(selected) - len(accepted)} claim(s) not byte-exact; "
+            f"root-fix the proposing pass"
+        )
+    return _apply(df, accepted)

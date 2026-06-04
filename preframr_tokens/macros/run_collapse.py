@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from preframr_tokens.macros.arbiter import Claim, arbitrate
+from preframr_tokens.macros.arbiter import (
+    Claim,
+    arbitrate_independent_groups,
+)
 from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, SET_OP
 
 __all__ = ["one_frame_apart", "frame_final", "collapse_runs"]
+
+_GROUP_GAP = 8
 
 
 def one_frame_apart(regs, i, j):
@@ -52,10 +57,13 @@ def collapse_runs(df, *, run_len, target_regs, build_atom, label):
     )
     if FRAME_REG not in regs:
         return df
-    claims = []
+    frame_idx = np.cumsum((regs == FRAME_REG) | (regs == DELAY_REG))
+    groups = []
     for reg in target_regs:
         positions = np.flatnonzero((regs == reg) & (ops == SET_OP) & (subregs == -1))
         k = 0
+        cur = []
+        last_hi = None
         while k + run_len - 1 < len(positions):
             idxs = [int(positions[k + o]) for o in range(run_len)]
             adjacent = all(
@@ -66,10 +74,18 @@ def collapse_runs(df, *, run_len, target_regs, build_atom, label):
                 if atom is not None:
                     for row in atom:
                         row["__pos"] = idxs[0]
-                    claims.append(Claim(writes=tuple(idxs), tokens=atom, label=label))
+                    flo = int(frame_idx[idxs[0]])
+                    fhi = int(frame_idx[idxs[-1]])
+                    if last_hi is not None and flo - last_hi > _GROUP_GAP:
+                        groups.append(cur)
+                        cur = []
+                    cur.append(Claim(writes=tuple(idxs), tokens=atom, label=label))
+                    last_hi = fhi if last_hi is None else max(last_hi, fhi)
                     k += run_len
                     continue
             k += 1
-    if not claims:
+        if cur:
+            groups.append(cur)
+    if not groups:
         return df
-    return arbitrate(df, claims, validate=True)
+    return arbitrate_independent_groups(df, groups, validate=True)

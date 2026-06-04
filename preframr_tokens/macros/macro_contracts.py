@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from preframr_tokens.stfconstants import (
+    CTRL_OSC_OP,
+    CTRL_WT_SET_OP,
     DIFF_OP,
     FLIP_OP,
     FREQ_TRAJ_OP,
@@ -192,6 +194,32 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
+            "CtrlOscPass",
+            frozenset({(_CTRL, _RPL)}),
+            frozenset(),
+            frozenset(),
+            FrameEffect.ANCHORED_REPLAY,
+            False,
+        ),
+        MacroContract(
+            "NoteOffPass",
+            frozenset({(_CTRL, _ABS)}),
+            frozenset(),
+            frozenset(),
+            FrameEffect.PRESERVES,
+            False,
+        ),
+        MacroContract(
+            "CtrlWavetablePass",
+            frozenset(
+                {(_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL), (_FILT, _RPL), (_FREQ, _RPL)}
+            ),
+            frozenset(),
+            frozenset(),
+            FrameEffect.PRESERVES,
+            False,
+        ),
+        MacroContract(
             "frame_consolidation",
             frozenset(),
             frozenset(),
@@ -213,6 +241,9 @@ PIPELINE_ORDER = (
     "PerRegBurstPass",
     "PatchPass",
     "ReleaseUpdatePass",
+    "CtrlOscPass",
+    "NoteOffPass",
+    "CtrlWavetablePass",
     "frame_consolidation",
 )
 
@@ -280,6 +311,8 @@ REPLAY_OPS = frozenset(
         int(WAVETABLE_REF_OP),
         int(WAVETABLE_ONESHOT_OP),
         int(PATCH_SET_OP),
+        int(CTRL_OSC_OP),
+        int(CTRL_WT_SET_OP),
     }
 )
 

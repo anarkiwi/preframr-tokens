@@ -25,6 +25,9 @@ __all__ = [
     "StampDecoder",
     "PatchDecoder",
     "SweepDecoder",
+    "CtrlOscDecoder",
+    "NoteOffDecoder",
+    "CtrlWtDecoder",
     "WavetableDecoder",
 ]
 
@@ -55,8 +58,16 @@ from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
     CTRL_BIGRAM_TABLE,
+    CTRL_OSC_OP,
+    CTRL_OSC_SUBREG_LEN,
+    CTRL_OSC_SUBREG_PERIOD,
+    CTRL_OSC_SUBREG_STATE_BASE,
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
+    CTRL_WT_DEF_OP,
+    CTRL_WT_SET_OP,
+    CTRL_WT_STEP_OP,
+    CTRL_WT_SUBREG_VAL,
     CTRL_TRIPLE_SUBREG_0,
     CTRL_TRIPLE_SUBREG_1,
     CTRL_TRIPLE_SUBREG_2,
@@ -69,6 +80,8 @@ from preframr_tokens.stfconstants import (
     FREQ_NUDGE_MODE_DELTA,
     FREQ_NUDGE_OP,
     FREQ_ONSET_OP,
+    NOTE_OFF_OP,
+    NOTE_ON_OP,
     FREQ_NUDGE_SUBREG_DELTA,
     FREQ_NUDGE_SUBREG_HI,
     FREQ_NUDGE_SUBREG_MODE,
@@ -1004,6 +1017,96 @@ class SweepDecoder(MacroDecoder):
         return pre or None
 
 
+class CtrlOscDecoder(MacroDecoder):
+    """Decode a CTRL_OSC atom (CtrlOscPass): PERIOD opens the buffer, STATE_BASE+m the P cycle bytes,
+    LEN (terminal) queues cycle[k % P] for LEN frames into pending_set_writes -- one drained per song
+    frame, reproducing the exact per-frame ctrl oscillation. A SWEEP twin with an explicit byte cycle.
+    """
+
+    op_code = CTRL_OSC_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == CTRL_OSC_SUBREG_PERIOD:
+            state.pending_ctrl_osc = {"reg": int(row.reg), "fields": {}}
+        pend = state.pending_ctrl_osc
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != CTRL_OSC_SUBREG_LEN:
+            return None
+        state.pending_ctrl_osc = None
+        f = pend["fields"]
+        reg = int(pend["reg"])
+        period = int(f.get(CTRL_OSC_SUBREG_PERIOD, 0))
+        length = int(f.get(CTRL_OSC_SUBREG_LEN, 0))
+        if period <= 0:
+            return None
+        cycle = [
+            int(f.get(CTRL_OSC_SUBREG_STATE_BASE + m, 0)) & 0xFF for m in range(period)
+        ]
+        pre = state.maybe_flush_for(reg, -1)
+        for k in range(length):
+            state.pending_set_writes[reg].append(cycle[k % period])
+        return pre or None
+
+
+class NoteOffDecoder(MacroDecoder):
+    """Decode a NOTE_OFF atom (NoteOffPass): re-emit the stored gate-clear ctrl byte inline on its reg,
+    byte-identical to the literal SET it re-labels (same value, frame and intra-frame position).
+    """
+
+    op_code = NOTE_OFF_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        own = (reg, int(state.last_val[reg]), row.diff, row.description)
+        return pre + [own]
+
+
+class CtrlWtDecoder(MacroDecoder):
+    """Decode the inline ctrl-state codebook ops (CtrlWavetablePass): CTRL_WT_DEF + CTRL_WT_STEP buffer
+    a ctrl byte into a live id->byte table (a later DEF id rebinds), emitting the write on the def's
+    voice; CTRL_WT_SET (val=id) re-emits the defined byte on the ref's voice -- byte-identical to the
+    literal ctrl SET it re-labels."""
+
+    op_code = -1
+
+    def expand(self, row, state):
+        op = int(row.op)
+        if op == CTRL_WT_DEF_OP:
+            state.pending_ctrl_wt_def = {"id": int(row.val), "reg": int(row.reg)}
+            return None
+        if op == CTRL_WT_STEP_OP:
+            return self._step(row, state)
+        return self._ref(row, state)
+
+    def _step(self, row, state):
+        pend = state.pending_ctrl_wt_def
+        if pend is None or int(row.subreg) != CTRL_WT_SUBREG_VAL:
+            return None
+        state.pending_ctrl_wt_def = None
+        val = int(row.val)
+        state.ctrl_wt_table[int(pend["id"])] = val
+        return self._emit(int(pend["reg"]), val, row, state)
+
+    def _ref(self, row, state):
+        val = state.ctrl_wt_table.get(int(row.val))
+        if val is None:
+            return None
+        return self._emit(int(row.reg), int(val), row, state)
+
+    @staticmethod
+    def _emit(reg, val, row, state):
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(val)
+        state.last_diff[reg] = row.diff
+        return pre + [(reg, int(val), row.diff, row.description)]
+
+
 class WavetableDecoder(MacroDecoder):
     """Decode the inline-redefinable wavetable codebook ops (design/wavetable_codebook_encoding):
     DEF/STEP/END buffer a note-relative offset program into a live id->program table (a later DEF id
@@ -1164,8 +1267,14 @@ DECODERS = {
         SkeletonDecoder(),
         OrnamentDecoder(),
         SweepDecoder(),
+        CtrlOscDecoder(),
+        NoteOffDecoder(),
     )
 }
+DECODERS[NOTE_ON_OP] = DECODERS[NOTE_OFF_OP]
+_CTRL_WT_DECODER = CtrlWtDecoder()
+for _op in (CTRL_WT_DEF_OP, CTRL_WT_STEP_OP, CTRL_WT_SET_OP):
+    DECODERS[_op] = _CTRL_WT_DECODER
 _STAMP_DECODER = StampDecoder()
 for _op in (
     STAMP_DEF_OP,
