@@ -225,6 +225,89 @@ def test_onset_instrument_held_envelope_drains():
     ), "the one AD setup write is drained"
 
 
+def test_onset_def_once_only_drains_to_lone_def():
+    """A single-reg instrument value written ONCE at/after the first note-on drains to a lone
+    CTRL_WT_DEF (no reuse) -- the define names the per-tune instrument value, the STEP re-emits it
+    byte-exactly."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = _roundtrip_exact(raw, _args(ctrl_wavetable=False, onset_def=True))
+    assert (
+        int(((enc["op"] == CTRL_WT_DEF_OP) & (enc["reg"] == _SR0)).sum()) == 1
+    ), "the singleton becomes one define"
+    assert (
+        int(((enc["op"] == CTRL_WT_SET_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "no reuse -> no ref"
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "raw SET drained"
+
+
+def test_onset_def_preonset_preamble_left_for_init():
+    """A write BEFORE the first gate-rise is the driver init preamble (InitPass's province): onset_def
+    does not claim it."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_MV, 0x0F),
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=True)
+    )
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _MV)).sum()) == 1
+    ), "pre-onset MV stays literal"
+
+
+def test_onset_def_same_frame_multiwrite_left_for_hard_restart():
+    """Two writes to the same reg in one frame are a hard-restart multiload, not a single onset value:
+    onset_def (one-write-per-frame) leaves them for HardRestartPass."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x08),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=True)
+    )
+    assert (
+        int(((enc["op"] == CTRL_WT_DEF_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "double-load is not a define"
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _SR0)).sum()) == 2
+    ), "both SR writes stay literal"
+
+
+def test_onset_def_off_is_noop():
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    out = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=False)
+    )
+    pd.testing.assert_frame_equal(
+        out.reset_index(drop=True), raw.reset_index(drop=True)
+    )
+
+
 def test_both_flags_off_is_noop():
     raw = _Builder().write(_C0, 0x41).write(_C0, 0x41).df()
     out = CtrlWavetablePass().apply(

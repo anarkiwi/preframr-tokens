@@ -41,22 +41,33 @@ docker run --rm -v $PWD:/tok -v /scratch/preframr:/scratch/preframr -v /tmp:/tmp
 - **INIT** (`INIT_OP=77`, `init_pass.py`, `test_init_pass.py`): relabels
   pre-first-note-on SETs on the single-byte value regs as INIT; flag init_preamble.
   Drains the driver init routine + its SubregPass nibble-pairs.
+- **ONSET_DEF** (no new op — reuses the CTRL_WT codebook; `ctrl_wavetable_pass.py`
+  `_onset_def_claims`, flag `onset_def`): define-on-first. A single-reg instrument SET
+  (ctrl/AD/SR/freq/PW/filter/modevol) written ONCE and unclaimed by the CTRL_WT
+  recurrence phases is still a codebook entry — emit a lone CTRL_WT_DEF+STEP (the STEP
+  re-emits byte-exactly). Scoped to one-write-per-frame writes at/after the first
+  gate-rise onset (HARD_RESTART owns multiwrites, INIT the pre-onset preamble). The
+  held_step bucket was NOT nibble-lane runs (the prior hypothesis) — diagnostics showed
+  117/117 at note-ons, 83/117 single-reg, 68/86 runlen-1 singletons; the CTRL_WT
+  recurrence floor (MINREP=2) structurally couldn't claim count-1 values. Lowering that
+  floor to 1 for onset writes is the fix.
 
-Result: sample 444 -> 215 residual SETs. Suite green (924 passed, gate excluded).
+Result: sample 444 -> 215 -> **20** residual SETs. Suite green (953 + 4 onset_def passed,
+gate excluded; black/pylint 10.00/pyright clean).
 
 ## Next, in priority order (all real abstractions, NO catch-all)
-1. **Nibble-lane held_step** (~half of the remaining held_step 117): the surviving
-   ctrl/env/filter held automation is post-SubregPass NIBBLE LANES (subreg 0/1).
-   GRADIENT filters subreg==-1 so it misses them. Add a nibble-lane variant keyed on
-   `(reg, subreg)` (decoder must re-emit the subreg write). The rest are isolated
-   singletons (not runs of >=3) — need a different model or a codebook DEF-on-first.
-2. **Hard-restart multiload** (multiwrite 46): double AD/SR write in one frame
+The remaining 20 (digi-excluded stride sample): ~5 FREQ pre-onset preamble, ~6 true
+same-frame double-loads, ~9 stragglers (held_step 4 / recurring 3 / per_frame 2).
+1. **Combined-reg INIT** (the ~5 FREQ pre-onset preamble): INIT excludes the 16-bit
+   combined regs (freq/PW/filter-cutoff) because a plain emit doesn't reconstruct them.
+   Make INIT combined-reg-aware (emit through the same combine path) to drain pre-note
+   freq/PW init.
+2. **Hard-restart multiload** (the ~6 true multiwrites): double AD/SR write in one frame
    (gate-off + reload, the ADSR-bug workaround). Extend `HardRestartPass` (currently
    CTRL-pair only) to bundle the env multiload.
-3. **Combined-reg INIT** (init 44, mostly FREQ 30): INIT excludes the 16-bit combined
-   regs (freq/PW/filter-cutoff) because a plain emit doesn't reconstruct them. Make
-   INIT combined-reg-aware (emit through the same combine path) to drain pre-note
-   freq/PW init.
+3. **Stragglers** (~9): re-run `/tmp/resid_precise.py` per-shape after #1/#2; characterise
+   the held_step-4 / recurring_value-3 / per_frame-2 remainder before modelling (likely
+   onset_def floor/one-write-per-frame edge cases or post-SubregPass artifacts).
 
 ## Invariants
 - Mine full bytes PRE-SubregPass (inline pass list, `reglogparser.py` ~988) where you

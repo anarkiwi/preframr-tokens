@@ -82,6 +82,7 @@ class CtrlWavetablePass(MacroPass):
             "freq_wavetable",
             "pw_wavetable",
             "onset_instrument",
+            "onset_def",
         }
     )
 
@@ -103,7 +104,8 @@ class CtrlWavetablePass(MacroPass):
         if getattr(args, "pw_wavetable", False):
             target.extend(int(r) for r in PWM_REGS_BY_VOICE)
         onset = getattr(args, "onset_instrument", False)
-        if (not target and not onset) or df is None or len(df) == 0:
+        onset_def = getattr(args, "onset_def", False)
+        if (not target and not onset and not onset_def) or df is None or len(df) == 0:
             return df
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
@@ -114,8 +116,11 @@ class CtrlWavetablePass(MacroPass):
         events = self._events(df, target_set)
         claims = self._emit(events, irq, start_id=base) if target_set else []
         if onset:
-            onset_start = self._next_id(claims) if claims else base
+            onset_start = max(base, self._next_id(claims))
             claims.extend(self._onset_claims(df, irq, onset_start))
+        if onset_def:
+            def_start = max(base, self._next_id(claims))
+            claims.extend(self._onset_def_claims(df, irq, def_start, claims))
         if not claims:
             return df
         return arbitrate(df, claims, validate=True)
@@ -336,6 +341,80 @@ class CtrlWavetablePass(MacroPass):
                         )
                     )
                     next_id += 1
+        return claims
+
+    @staticmethod
+    def _onset_def_targets():
+        """The instrument-config register set a note onset writes: per-voice ctrl/AD/SR/freq/PW plus the
+        global filter (cutoff/resonance) and master mode-vol -- the regs whose once-written values are
+        the per-tune instrument alphabet."""
+        regs = set(_FILTER_REGS)
+        regs.add(int(MODE_VOL_REG))
+        for byvoice in (
+            CTRL_REGS_BY_VOICE,
+            AD_REGS_BY_VOICE,
+            SR_REGS_BY_VOICE,
+            FREQ_REGS_BY_VOICE,
+            PWM_REGS_BY_VOICE,
+        ):
+            regs.update(int(r) for r in byvoice)
+        return regs
+
+    @classmethod
+    def _first_onset_frame(cls, df):
+        """Decoded frame of the earliest gate-rise across voices (the first note-on), or 0 if none --
+        the floor below which writes are the driver init preamble (InitPass's province, not an onset).
+        """
+        state = register_state(df)
+        first = None
+        for v in range(VOICES):
+            creg = int(CTRL_REGS_BY_VOICE[v])
+            for d in range(state.shape[0] - 1):
+                if (int(state[d + 1, creg]) & 1) and not (int(state[d, creg]) & 1):
+                    first = d if first is None else min(first, d)
+                    break
+        return int(first or 0)
+
+    @classmethod
+    def _onset_def_claims(cls, df, irq, start_id, prior):
+        """Define-on-first: a single-reg instrument SET written ONCE and unclaimed by the recurrence
+        phases is still a codebook entry -- emit a lone CTRL_WT_DEF + STEP (the STEP re-emits the write
+        byte-exactly, the arbiter validates) so it leaves the raw-SET residual as a named define. Scoped
+        to one-write-per-frame writes at/after the first onset (HARD_RESTART owns multiwrites, InitPass
+        the pre-onset preamble)."""
+        regs = df["reg"].to_numpy()
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        target = cls._onset_def_targets()
+        frame_idx = cls._row_frames(regs, vals)
+        floor = cls._first_onset_frame(df)
+        claimed = {int(w) for c in prior for w in c.writes}
+        fr_reg_count = defaultdict(int)
+        for i in range(len(df)):
+            if int(ops[i]) == SET_OP and int(subs[i]) == -1 and int(regs[i]) in target:
+                fr_reg_count[(int(frame_idx[i]), int(regs[i]))] += 1
+        claims = []
+        next_id = start_id
+        for i in range(len(df)):
+            if int(ops[i]) != SET_OP or int(subs[i]) != -1 or int(i) in claimed:
+                continue
+            r = int(regs[i])
+            f = int(frame_idx[i])
+            if r not in target or f < floor or fr_reg_count[(f, r)] != 1:
+                continue
+            rows = [
+                _row(r, CTRL_WT_DEF_OP, CTRL_WT_SUBREG_ID, next_id, irq),
+                _row(r, CTRL_WT_STEP_OP, CTRL_WT_SUBREG_VAL, int(vals[i]), irq),
+            ]
+            for row in rows:
+                row["__pos"] = int(i)
+            claims.append(
+                Claim(
+                    (int(i),), rows, priority=_CTRL_WT_PRIORITY + 1, label="onset_def"
+                )
+            )
+            next_id += 1
         return claims
 
     @staticmethod

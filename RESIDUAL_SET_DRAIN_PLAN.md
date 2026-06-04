@@ -71,11 +71,24 @@ nibble-pair duplicates that A/B will collapse — re-measure after A/B before si
 ## Execution order
 1. Build A (held-step automation codebook). Re-measure.   [DONE — GRADIENT atom]
 2. Build B (INIT preamble). Re-measure.                   [DONE — INIT atom]
+4. Held_step singletons-at-onsets (NOT nibble-lane runs). [DONE — ONSET_DEF define-on-first]
 3. Extend C (hard-restart multiload) for the remainder.   [TODO]
-4. Nibble-lane held_step (the post-SubregPass remainder). [TODO]
-5. Gate green → PR `resid/ornament-and-digi` (NO release).
+6. Combined-reg INIT (pre-onset FREQ/PW preamble).        [TODO]
+5. Gate green → PR (NO release).
 
-## STATUS (2026-06-04): 444 -> 215 residual SETs on the sample (-52%)
+## STATUS (2026-06-04): 444 -> 215 -> 20 residual SETs on the sample (-95%)
+
+ONSET_DEF (CTRL_WT define-on-first, flag `onset_def`) drained 215 -> 20. The held_step
+bucket (117) was NOT post-SubregPass nibble-lane runs as item 4 hypothesised: diagnostics
+showed 117/117 at note-ons, 83/117 single-reg, 68/86 runlen-1 singletons. The CTRL_WT
+recurrence phases all gate on MINREP=2, so a value written once is never claimed;
+define-on-first lowers that floor to 1 for onset-co-located single-reg instrument writes
+(lone DEF, no REF). It also collapsed the nibble-pair-inflated multiwrites (46->6) and
+post-onset init writes (44->5). Remaining 20: ~5 FREQ pre-onset preamble (combined-reg
+INIT), ~6 true same-frame double-loads (hard-restart), ~9 stragglers. No new op/family/
+decoder; register-state-exact via the arbiter; default-OFF; OUT of REGISTERED_MACROS.
+
+## STATUS (prior): 444 -> 215 residual SETs on the sample (-52%)
 
 Landed on `resid/ornament-and-digi` (default-OFF research flags, NOT in
 REGISTERED_MACROS, register-state-exact, unit-tested, suite green):
