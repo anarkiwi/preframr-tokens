@@ -32,6 +32,7 @@ from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
+from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
 from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
@@ -986,6 +987,7 @@ class RegLogParser:
         audit = make_pass_audit(self.args)
         audit.start(df)
         for macro_pass in (
+            PreGateFreqPass(),
             VoiceTrackPass(),
             TrajectoryAnchorPass(),
             StampPass(),

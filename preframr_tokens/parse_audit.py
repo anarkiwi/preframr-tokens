@@ -12,7 +12,7 @@ import numpy as np
 
 __all__ = ["make_pass_audit", "PassAudit"]
 
-_LOSSY_RESETS = frozenset({"SkeletonPass"})
+_LOSSY_RESETS = frozenset({"SkeletonPass", "PreGateFreqPass"})
 _FRAME_REBASE = frozenset({"_consolidate_frames"})
 
 

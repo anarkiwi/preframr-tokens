@@ -429,6 +429,55 @@ class TestHardRestartPass(unittest.TestCase):
         )
         _assert_round_trip(self, df, encoded)
 
+    AD_V0 = 5
+    SR_V0 = 6
+
+    def _env_pair_df(self, a, b, reg):
+        return pd.DataFrame(
+            [_frame(), _row(reg, a, op=SET_OP), _row(reg, b, op=SET_OP)]
+        )
+
+    def test_env_multiload_collapses_ad_double_write(self):
+        df = self._env_pair_df(a=0x00, b=0x51, reg=self.AD_V0)
+        result = HardRestartPass().apply(df, args=FakeArgs(env_multiload=True))
+        ops = result[result["op"] == HARD_RESTART_OP]
+        self.assertEqual(len(ops), 1)
+        self.assertEqual(int(ops.iloc[0]["reg"]), self.AD_V0)
+        self.assertEqual(int(ops.iloc[0]["val"]), (0x00 << 8) | 0x51)
+        leftover = result[(result["reg"] == self.AD_V0) & (result["op"] == SET_OP)]
+        self.assertEqual(len(leftover), 0)
+
+    def test_env_multiload_collapses_sr_double_write(self):
+        df = self._env_pair_df(a=0x8E, b=0xCA, reg=self.SR_V0)
+        result = HardRestartPass().apply(df, args=FakeArgs(env_multiload=True))
+        ops = result[result["op"] == HARD_RESTART_OP]
+        self.assertEqual(len(ops), 1)
+        self.assertEqual(int(ops.iloc[0]["val"]), (0x8E << 8) | 0xCA)
+
+    def test_env_multiload_round_trip(self):
+        df = self._env_pair_df(a=0x00, b=0x51, reg=self.AD_V0)
+        encoded = HardRestartPass().apply(df.copy(), args=FakeArgs(env_multiload=True))
+        _assert_round_trip(self, df, encoded)
+
+    def test_env_multiload_skips_cross_frame_single(self):
+        df = pd.DataFrame(
+            [
+                _frame(),
+                _row(self.AD_V0, 0x51, op=SET_OP),
+                _frame(),
+                _row(self.AD_V0, 0x33, op=SET_OP),
+            ]
+        )
+        result = HardRestartPass().apply(df, args=FakeArgs(env_multiload=True))
+        self.assertEqual(len(result[result["op"] == HARD_RESTART_OP]), 0)
+
+    def test_env_multiload_off_leaves_adsr_literal(self):
+        df = self._env_pair_df(a=0x00, b=0x51, reg=self.AD_V0)
+        result = HardRestartPass().apply(df, args=FakeArgs(hard_restart_pass=True))
+        self.assertEqual(len(result[result["op"] == HARD_RESTART_OP]), 0)
+        leftover = result[(result["reg"] == self.AD_V0) & (result["op"] == SET_OP)]
+        self.assertEqual(len(leftover), 2)
+
 
 class TestDecodeState(unittest.TestCase):
     def test_tick_frame_consumes_pending_diffs(self):

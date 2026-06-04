@@ -94,17 +94,19 @@ class TransposePass(MacroPass):
 
 
 class HardRestartPass(MacroPass):
-    """Collapse the universal SID hard-restart two-write CTRL pair into one
-    ``HARD_RESTART_OP`` token.
+    """Collapse a same-frame SID hard-restart two-write pair into one ``HARD_RESTART_OP`` token (the
+    decoder re-emits both writes in order, so it is raw-write-order-exact). ``hard_restart_pass`` does
+    the CTRL gate pair; ``env_multiload`` (default OFF) does the AD/SR envelope multiload -- a
+    gate-off + reload double write of one envelope reg in a frame, the ADSR-bug workaround.
     """
 
-    GATE_FLAGS = frozenset({"hard_restart_pass"})
+    GATE_FLAGS = frozenset({"hard_restart_pass", "env_multiload"})
     target_regs = CTRL_REGS_BY_VOICE
     _ctrl_reg_to_voice = {r: v for v, r in enumerate(CTRL_REGS_BY_VOICE)}
 
     @staticmethod
     def _is_valid_pair(a, b):
-        """True iff (a, b) is a recognised hard-restart pair."""
+        """True iff (a, b) is a recognised hard-restart CTRL pair."""
         if (b & 0x09) != 0x01:
             return False
         if a == b:
@@ -115,58 +117,79 @@ class HardRestartPass(MacroPass):
             return True
         return False
 
+    @staticmethod
+    def _is_env_pair(_a, _b):
+        """Any same-frame double write of one AD/SR reg is an envelope multiload (no other reason to
+        write the envelope reg twice in a frame); collapse it regardless of the byte values.
+        """
+        return True
+
     def apply(self, df, args=None):
-        if args is None or not getattr(args, "hard_restart_pass", False):
+        if args is None or "op" not in df.columns:
             return df
-        if "op" not in df.columns:
+        hr = getattr(args, "hard_restart_pass", False)
+        env = getattr(args, "env_multiload", False)
+        if not hr and not env:
             return df
-        ctrl_mask = df["reg"].isin(self.target_regs) & (df["op"] == SET_OP)
+        set_mask = df["op"] == SET_OP
         if "subreg" in df.columns:
-            ctrl_mask = ctrl_mask & (df["subreg"] == -1)
-        if not ctrl_mask.any():
+            set_mask = set_mask & (df["subreg"] == -1)
+        if not set_mask.any():
             return df
         df = df.reset_index(drop=True).copy()
-        f_idx = _frame_index(df)
-        df["mf"] = f_idx
+        df["mf"] = _frame_index(df)
 
         drop_idx = []
         new_rows = []
-        for ctrl_reg in self.target_regs:
-            sub_mask = (df["reg"] == ctrl_reg) & (df["op"] == SET_OP)
-            if "subreg" in df.columns:
-                sub_mask = sub_mask & (df["subreg"] == -1)
-            sub = df[sub_mask]
-            if len(sub) < 2:
-                continue
-            indices = sub.index.tolist()
-            frames = sub["mf"].tolist()
-            vals = [int(v) & 0xFF for v in sub["val"].tolist()]
-            diffs = sub["diff"].tolist()
-            n = len(indices)
-            i = 0
-            while i + 1 < n:
-                a = vals[i]
-                b = vals[i + 1]
-                if frames[i] != frames[i + 1] or not self._is_valid_pair(a, b):
-                    i += 1
-                    continue
-                packed = ((a & 0xFF) << 8) | (b & 0xFF)
-                drop_idx.append(indices[i])
-                drop_idx.append(indices[i + 1])
-                new_rows.append(
-                    {
-                        "reg": int(ctrl_reg),
-                        "val": int(packed),
-                        "diff": int(diffs[i]),
-                        "op": int(HARD_RESTART_OP),
-                        "subreg": -1,
-                        "__pos": int(indices[i]),
-                    }
+        if hr:
+            for ctrl_reg in self.target_regs:
+                self._collapse(
+                    df, int(ctrl_reg), self._is_valid_pair, drop_idx, new_rows
                 )
-                i += 2
+        if env:
+            for reg in (*AD_REGS_BY_VOICE, *SR_REGS_BY_VOICE):
+                self._collapse(df, int(reg), self._is_env_pair, drop_idx, new_rows)
 
         df = df.drop(columns=["mf"])
         return _splice_rows(df, drop_idx, new_rows)
+
+    @staticmethod
+    def _collapse(df, reg, valid, drop_idx, new_rows):
+        """Pack each same-frame consecutive (a, b) pair on ``reg`` that ``valid(a, b)`` accepts into one
+        HARD_RESTART_OP carrying ``(a << 8) | b``, appending its source rows to ``drop_idx``.
+        """
+        sub_mask = (df["reg"] == reg) & (df["op"] == SET_OP)
+        if "subreg" in df.columns:
+            sub_mask = sub_mask & (df["subreg"] == -1)
+        sub = df[sub_mask]
+        if len(sub) < 2:
+            return
+        indices = sub.index.tolist()
+        frames = sub["mf"].tolist()
+        vals = [int(v) & 0xFF for v in sub["val"].tolist()]
+        diffs = sub["diff"].tolist()
+        n = len(indices)
+        i = 0
+        while i + 1 < n:
+            a = vals[i]
+            b = vals[i + 1]
+            if frames[i] != frames[i + 1] or not valid(a, b):
+                i += 1
+                continue
+            packed = ((a & 0xFF) << 8) | (b & 0xFF)
+            drop_idx.append(indices[i])
+            drop_idx.append(indices[i + 1])
+            new_rows.append(
+                {
+                    "reg": int(reg),
+                    "val": int(packed),
+                    "diff": int(diffs[i]),
+                    "op": int(HARD_RESTART_OP),
+                    "subreg": -1,
+                    "__pos": int(indices[i]),
+                }
+            )
+            i += 2
 
 
 _LEGATO_PER_CLUSTER_OP_MAP = {

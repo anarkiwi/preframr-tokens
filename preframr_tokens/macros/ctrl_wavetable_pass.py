@@ -5,7 +5,7 @@ per-reuse CTRL_WT_SET re-emitting the same write -- a learnable per-tune state a
 decode in ``decoders.py``.
 """
 
-__all__ = ["CtrlWavetablePass"]
+__all__ = ["CtrlWavetablePass", "CtrlWavetableNibblePass"]
 
 from collections import defaultdict
 
@@ -26,6 +26,7 @@ from preframr_tokens.macros.state import (
     FREQ_REGS_BY_VOICE,
     PWM_REGS_BY_VOICE,
     SR_REGS_BY_VOICE,
+    SUBREG_REGS,
     VOICES,
 )
 from preframr_tokens.stfconstants import (
@@ -35,6 +36,8 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_SET_OP,
     CTRL_WT_STEP_OP,
     CTRL_WT_SUBREG_ID,
+    CTRL_WT_SUBREG_ID_NIB0,
+    CTRL_WT_SUBREG_ID_NIB1,
     CTRL_WT_SUBREG_VAL,
     DELAY_REG,
     FC_LO_REG,
@@ -44,6 +47,9 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     VOICE_REG_SIZE,
 )
+
+_NIBBLE_REGS = frozenset(int(r) for r in SUBREG_REGS)
+_ID_SUBREGS = (CTRL_WT_SUBREG_ID, CTRL_WT_SUBREG_ID_NIB0, CTRL_WT_SUBREG_ID_NIB1)
 
 _FILTER_REGS = (int(FC_LO_REG), int(FC_LO_REG) + 1, int(FILTER_REG))
 
@@ -82,6 +88,7 @@ class CtrlWavetablePass(MacroPass):
             "freq_wavetable",
             "pw_wavetable",
             "onset_instrument",
+            "onset_def",
         }
     )
 
@@ -103,7 +110,8 @@ class CtrlWavetablePass(MacroPass):
         if getattr(args, "pw_wavetable", False):
             target.extend(int(r) for r in PWM_REGS_BY_VOICE)
         onset = getattr(args, "onset_instrument", False)
-        if (not target and not onset) or df is None or len(df) == 0:
+        onset_def = getattr(args, "onset_def", False)
+        if (not target and not onset and not onset_def) or df is None or len(df) == 0:
             return df
         df = _ensure_subreg(df.reset_index(drop=True).copy())
         if "op" not in df.columns:
@@ -114,8 +122,11 @@ class CtrlWavetablePass(MacroPass):
         events = self._events(df, target_set)
         claims = self._emit(events, irq, start_id=base) if target_set else []
         if onset:
-            onset_start = self._next_id(claims) if claims else base
+            onset_start = max(base, self._next_id(claims))
             claims.extend(self._onset_claims(df, irq, onset_start))
+        if onset_def:
+            def_start = max(base, self._next_id(claims))
+            claims.extend(self._onset_def_claims(df, irq, def_start, claims))
         if not claims:
             return df
         return arbitrate(df, claims, validate=True)
@@ -339,6 +350,80 @@ class CtrlWavetablePass(MacroPass):
         return claims
 
     @staticmethod
+    def _onset_def_targets():
+        """The instrument-config register set a note onset writes: per-voice ctrl/AD/SR/freq/PW plus the
+        global filter (cutoff/resonance) and master mode-vol -- the regs whose once-written values are
+        the per-tune instrument alphabet."""
+        regs = set(_FILTER_REGS)
+        regs.add(int(MODE_VOL_REG))
+        for byvoice in (
+            CTRL_REGS_BY_VOICE,
+            AD_REGS_BY_VOICE,
+            SR_REGS_BY_VOICE,
+            FREQ_REGS_BY_VOICE,
+            PWM_REGS_BY_VOICE,
+        ):
+            regs.update(int(r) for r in byvoice)
+        return regs
+
+    @classmethod
+    def _first_onset_frame(cls, df):
+        """Decoded frame of the earliest gate-rise across voices (the first note-on), or 0 if none --
+        the floor below which writes are the driver init preamble (InitPass's province, not an onset).
+        """
+        state = register_state(df)
+        first = None
+        for v in range(VOICES):
+            creg = int(CTRL_REGS_BY_VOICE[v])
+            for d in range(state.shape[0] - 1):
+                if (int(state[d + 1, creg]) & 1) and not (int(state[d, creg]) & 1):
+                    first = d if first is None else min(first, d)
+                    break
+        return int(first or 0)
+
+    @classmethod
+    def _onset_def_claims(cls, df, irq, start_id, prior):
+        """Define-on-first: a single-reg instrument SET written ONCE and unclaimed by the recurrence
+        phases is still a codebook entry -- emit a lone CTRL_WT_DEF + STEP (the STEP re-emits the write
+        byte-exactly, the arbiter validates) so it leaves the raw-SET residual as a named define. Scoped
+        to one-write-per-frame writes at/after the first onset (HARD_RESTART owns multiwrites, InitPass
+        the pre-onset preamble)."""
+        regs = df["reg"].to_numpy()
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        target = cls._onset_def_targets()
+        frame_idx = cls._row_frames(regs, vals)
+        floor = cls._first_onset_frame(df)
+        claimed = {int(w) for c in prior for w in c.writes}
+        fr_reg_count = defaultdict(int)
+        for i in range(len(df)):
+            if int(ops[i]) == SET_OP and int(subs[i]) == -1 and int(regs[i]) in target:
+                fr_reg_count[(int(frame_idx[i]), int(regs[i]))] += 1
+        claims = []
+        next_id = start_id
+        for i in range(len(df)):
+            if int(ops[i]) != SET_OP or int(subs[i]) != -1 or int(i) in claimed:
+                continue
+            r = int(regs[i])
+            f = int(frame_idx[i])
+            if r not in target or f < floor or fr_reg_count[(f, r)] != 1:
+                continue
+            rows = [
+                _row(r, CTRL_WT_DEF_OP, CTRL_WT_SUBREG_ID, next_id, irq),
+                _row(r, CTRL_WT_STEP_OP, CTRL_WT_SUBREG_VAL, int(vals[i]), irq),
+            ]
+            for row in rows:
+                row["__pos"] = int(i)
+            claims.append(
+                Claim(
+                    (int(i),), rows, priority=_CTRL_WT_PRIORITY + 1, label="onset_def"
+                )
+            )
+            next_id += 1
+        return claims
+
+    @staticmethod
     def _row_frames(regs, vals):
         """Decoded real-frame index per row (FRAME=+1, DELAY=+val), starting at -1 -- so frame ``d``
         ends at register_state row ``d+1`` (register_state carries a leading initial frame).
@@ -353,3 +438,98 @@ class CtrlWavetablePass(MacroPass):
                 f += max(1, int(vals[i]))
             out[i] = f
         return out
+
+
+class CtrlWavetableNibblePass(MacroPass):
+    """Post-SubregPass nibble-lane drain: a SET on subreg 0/1 (an AD/SR/filter nibble SubregPass split
+    out) is invisible to the full-byte CTRL_WT phases (they filter subreg==-1). Mine each surviving
+    nibble SET into the CTRL_WT codebook keyed on (reg, subreg, val) -- recurring -> DEF + per-reuse SET,
+    once-only -> a lone define-on-first DEF; the lane rides on the DEF subreg so the codec re-emits the
+    exact nibble. Register-state-exact (arbiter validates); default OFF (``nibble_wavetable``).
+    """
+
+    GATE_FLAGS = frozenset({"nibble_wavetable"})
+
+    def apply(self, df, args=None):
+        if args is None or not getattr(args, "nibble_wavetable", False):
+            return df
+        if df is None or len(df) == 0 or "op" not in df.columns:
+            return df
+        df = _ensure_subreg(df.reset_index(drop=True).copy())
+        irq = _first_irq(df)
+        regs = df["reg"].to_numpy()
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        events = []
+        for i in range(len(df)):
+            if (
+                int(ops[i]) == SET_OP
+                and int(subs[i]) in (0, 1)
+                and int(regs[i]) in _NIBBLE_REGS
+            ):
+                events.append(
+                    {
+                        "reg": int(regs[i]),
+                        "subreg": int(subs[i]),
+                        "val": int(vals[i]),
+                        "row": int(i),
+                        "pos": int(i),
+                    }
+                )
+        if not events:
+            return df
+        claims = self._emit_nibble(events, irq, self._max_def_id(df) + 1)
+        if not claims:
+            return df
+        return arbitrate(df, claims, validate=True)
+
+    @staticmethod
+    def _max_def_id(df):
+        """Largest CTRL_WT id defined in ``df`` (any lane), so the nibble phase allocates above the
+        full-byte DEFs the inline CTRL_WT phases already minted."""
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        m = -1
+        for i in range(len(df)):
+            if int(ops[i]) == CTRL_WT_DEF_OP and int(subs[i]) in _ID_SUBREGS:
+                m = max(m, int(vals[i]))
+        return m
+
+    @staticmethod
+    def _emit_nibble(events, irq, start_id):
+        """One id per (reg, subreg, val) nibble (MINREP=1 -- define-on-first), DEF + per-reuse SET."""
+        groups = defaultdict(list)
+        for ev in events:
+            groups[(ev["reg"], ev["subreg"], ev["val"])].append(ev)
+
+        def emit_first(cb_id, occ):
+            ev = occ[0]
+            id_subreg = (
+                CTRL_WT_SUBREG_ID_NIB0 if ev["subreg"] == 0 else CTRL_WT_SUBREG_ID_NIB1
+            )
+            return [
+                _row(ev["reg"], CTRL_WT_DEF_OP, id_subreg, cb_id, irq),
+                _row(ev["reg"], CTRL_WT_STEP_OP, CTRL_WT_SUBREG_VAL, ev["val"], irq),
+            ]
+
+        def emit_ref(cb_id, ev):
+            return [_row(ev["reg"], CTRL_WT_SET_OP, -1, cb_id, irq)]
+
+        grouped, _ = emit_recurring(
+            groups,
+            start_id=start_id,
+            minrep=1,
+            group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
+            occ_sort=lambda e: e["pos"],
+            pos_of=lambda e: e["pos"],
+            rows_of=lambda e: (e["row"],),
+            emit_first=emit_first,
+            emit_ref=emit_ref,
+            per_group=True,
+        )
+        return [
+            Claim(tuple(d), r, priority=_CTRL_WT_PRIORITY, label="ctrl_wt_nib")
+            for d, r in grouped
+        ]

@@ -71,11 +71,47 @@ nibble-pair duplicates that A/B will collapse — re-measure after A/B before si
 ## Execution order
 1. Build A (held-step automation codebook). Re-measure.   [DONE — GRADIENT atom]
 2. Build B (INIT preamble). Re-measure.                   [DONE — INIT atom]
-3. Extend C (hard-restart multiload) for the remainder.   [TODO]
-4. Nibble-lane held_step (the post-SubregPass remainder). [TODO]
-5. Gate green → PR `resid/ornament-and-digi` (NO release).
+4. Held_step singletons-at-onsets (NOT nibble-lane runs). [DONE — ONSET_DEF define-on-first]
+3. Extend C (hard-restart multiload) for the remainder.   [DONE — ENV_MULTILOAD, reuses HARD_RESTART_OP]
+6. FREQ pre-onset preamble (inaudible).                   [DONE — PRE_GATE_FREQ drop/relocate, audio-exact]
+7. Nibble-lane SR/AD held (subreg 0/1).                   [DONE — NIBBLE_WAVETABLE, CTRL_WT lane on DEF subreg]
+5. Gate green → PR (NO release).
 
-## STATUS (2026-06-04): 444 -> 215 residual SETs on the sample (-52%)
+## STATUS (2026-06-04): 444 -> 215 -> 20 -> 11 -> 6 -> 0 residual SETs on the sample (DONE)
+
+NIBBLE_WAVETABLE (CtrlWavetableNibblePass `nibble_wavetable`) drained the final 6 -> 0. Post-SubregPass,
+it mines surviving subreg-0/1 nibble SETs into the CTRL_WT codebook keyed on (reg, subreg, val):
+recurring -> DEF + SET reuse, once-only -> lone define-on-first DEF. The nibble lane rides on the DEF
+subreg (new CTRL_WT_SUBREG_ID_NIB0/NIB1); _CtrlWtCodec stores (lane, val) and re-emits the nibble via
+the SetDecoder merge. Register-state-exact (arbiter validates). The work order's sample acceptance gate
+(residual SETs == 0) is MET; next is the full-corpus census + xpt RUNBOOK release. The drain stack:
+GRADIENT, INIT (prior) + ONSET_DEF, ENV_MULTILOAD, PRE_GATE_FREQ (audio-exact), NIBBLE_WAVETABLE.
+
+## STATUS (prior): 444 -> 215 -> 20 -> 11 -> 6 residual SETs on the sample (-98.6%)
+
+PRE_GATE_FREQ (PreGateFreqPass `pre_gate_freq` flag) drained 11 -> 6. A freq written before a
+voice's first gate-on is inaudible (preframr-audio test); the user-directed rule DROPs it when the
+first gated note sets its own freq, else RELOCATEs it into the gate-on frame for the onset/skeleton
+macros. The FIRST audio-exact (not register-state-exact) drain atom -- in parse_audit._LOSSY_RESETS,
+default OFF; the audible region (gate-on onward) is preserved (unit-tested). Remaining 6: all SR/AD
+held on subreg 0/1 nibble lanes (CTRL_WT phases filter subreg==-1, so unseen) -- nibble-lane mining,
+design to be surfaced.
+
+## STATUS (prior): 444 -> 215 -> 20 -> 11 residual SETs on the sample (-97.5%)
+
+## STATUS (prior): 444 -> 215 -> 20 residual SETs on the sample (-95%)
+
+ONSET_DEF (CTRL_WT define-on-first, flag `onset_def`) drained 215 -> 20. The held_step
+bucket (117) was NOT post-SubregPass nibble-lane runs as item 4 hypothesised: diagnostics
+showed 117/117 at note-ons, 83/117 single-reg, 68/86 runlen-1 singletons. The CTRL_WT
+recurrence phases all gate on MINREP=2, so a value written once is never claimed;
+define-on-first lowers that floor to 1 for onset-co-located single-reg instrument writes
+(lone DEF, no REF). It also collapsed the nibble-pair-inflated multiwrites (46->6) and
+post-onset init writes (44->5). Remaining 20: ~5 FREQ pre-onset preamble (combined-reg
+INIT), ~6 true same-frame double-loads (hard-restart), ~9 stragglers. No new op/family/
+decoder; register-state-exact via the arbiter; default-OFF; OUT of REGISTERED_MACROS.
+
+## STATUS (prior): 444 -> 215 residual SETs on the sample (-52%)
 
 Landed on `resid/ornament-and-digi` (default-OFF research flags, NOT in
 REGISTERED_MACROS, register-state-exact, unit-tested, suite green):

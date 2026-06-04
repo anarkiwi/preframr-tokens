@@ -10,7 +10,10 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
-from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
+from preframr_tokens.macros.ctrl_wavetable_pass import (
+    CtrlWavetablePass,
+    CtrlWavetableNibblePass,
+)
 from preframr_tokens.macros.state import (
     AD_REGS_BY_VOICE,
     CTRL_REGS_BY_VOICE,
@@ -20,6 +23,8 @@ from preframr_tokens.macros.state import (
 from preframr_tokens.stfconstants import (
     CTRL_WT_DEF_OP,
     CTRL_WT_SET_OP,
+    CTRL_WT_SUBREG_ID_NIB0,
+    CTRL_WT_SUBREG_ID_NIB1,
     FILTER_REG,
     FRAME_REG,
     MODE_VOL_REG,
@@ -223,6 +228,149 @@ def test_onset_instrument_held_envelope_drains():
         int(((enc["op"] == SET_OP) & (enc["reg"] == _AD0) & (enc["val"] == 0xFF)).sum())
         == 0
     ), "the one AD setup write is drained"
+
+
+def test_onset_def_once_only_drains_to_lone_def():
+    """A single-reg instrument value written ONCE at/after the first note-on drains to a lone
+    CTRL_WT_DEF (no reuse) -- the define names the per-tune instrument value, the STEP re-emits it
+    byte-exactly."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = _roundtrip_exact(raw, _args(ctrl_wavetable=False, onset_def=True))
+    assert (
+        int(((enc["op"] == CTRL_WT_DEF_OP) & (enc["reg"] == _SR0)).sum()) == 1
+    ), "the singleton becomes one define"
+    assert (
+        int(((enc["op"] == CTRL_WT_SET_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "no reuse -> no ref"
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "raw SET drained"
+
+
+def test_onset_def_preonset_preamble_left_for_init():
+    """A write BEFORE the first gate-rise is the driver init preamble (InitPass's province): onset_def
+    does not claim it."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_MV, 0x0F),
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=True)
+    )
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _MV)).sum()) == 1
+    ), "pre-onset MV stays literal"
+
+
+def test_onset_def_same_frame_multiwrite_left_for_hard_restart():
+    """Two writes to the same reg in one frame are a hard-restart multiload, not a single onset value:
+    onset_def (one-write-per-frame) leaves them for HardRestartPass."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x08),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    enc = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=True)
+    )
+    assert (
+        int(((enc["op"] == CTRL_WT_DEF_OP) & (enc["reg"] == _SR0)).sum()) == 0
+    ), "double-load is not a define"
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _SR0)).sum()) == 2
+    ), "both SR writes stay literal"
+
+
+def test_onset_def_off_is_noop():
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_C0, 0x41),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 0x30),
+        _row(FRAME_REG, 0),
+    ]
+    raw = pd.DataFrame(rows)
+    out = CtrlWavetablePass().apply(
+        raw.copy(), args=_args(ctrl_wavetable=False, onset_def=False)
+    )
+    pd.testing.assert_frame_equal(
+        out.reset_index(drop=True), raw.reset_index(drop=True)
+    )
+
+
+def _nib_args(on=True):
+    return SimpleNamespace(nibble_wavetable=on)
+
+
+def _nib_roundtrip(raw, on=True):
+    enc = CtrlWavetableNibblePass().apply(raw.copy(), args=_nib_args(on))
+    rs = register_state(raw)
+    es = register_state(enc)
+    assert rs.shape == es.shape, (rs.shape, es.shape)
+    assert np.array_equal(rs, es), "nibble-codebook replay must be byte-exact"
+    return enc
+
+
+def test_nibble_recurring_interns_to_def_plus_ref():
+    """A recurring (reg, subreg-0, val) nibble lane the full-byte CTRL_WT misses interns to one DEF
+    (lane on subreg NIB0) + a per-reuse SET, byte-exact."""
+    rows = [
+        _row(FRAME_REG, 0),
+        _row(_SR0, 2, subreg=0),
+        _row(FRAME_REG, 0),
+        _row(_SR0, 2, subreg=0),
+        _row(FRAME_REG, 0),
+    ]
+    enc = _nib_roundtrip(pd.DataFrame(rows))
+    assert (
+        int((enc["op"] == CTRL_WT_DEF_OP).sum()) == 1
+    ), "one DEF for the recurring nibble"
+    assert int((enc["op"] == CTRL_WT_SET_OP).sum()) == 1, "one reuse"
+    defs = enc[enc["op"] == CTRL_WT_DEF_OP]
+    assert (
+        int(defs.iloc[0]["subreg"]) == CTRL_WT_SUBREG_ID_NIB0
+    ), "lane 0 on the DEF subreg"
+
+
+def test_nibble_singleton_define_on_first():
+    """A once-only high-nibble (subreg 1) write is still drained -- a lone define-on-first DEF (lane on
+    subreg NIB1), no reuse, byte-exact; the raw nibble SET is consumed."""
+    rows = [_row(FRAME_REG, 0), _row(_SR0, 5, subreg=1), _row(FRAME_REG, 0)]
+    enc = _nib_roundtrip(pd.DataFrame(rows))
+    assert int((enc["op"] == CTRL_WT_DEF_OP).sum()) == 1, "lone define-on-first DEF"
+    assert int((enc["op"] == CTRL_WT_SET_OP).sum()) == 0, "no reuse -> no ref"
+    defs = enc[enc["op"] == CTRL_WT_DEF_OP]
+    assert (
+        int(defs.iloc[0]["subreg"]) == CTRL_WT_SUBREG_ID_NIB1
+    ), "lane 1 on the DEF subreg"
+    assert (
+        int(((enc["op"] == SET_OP) & (enc["reg"] == _SR0) & (enc["subreg"] == 1)).sum())
+        == 0
+    ), "raw nibble SET drained"
+
+
+def test_nibble_off_is_noop():
+    rows = [_row(FRAME_REG, 0), _row(_SR0, 2, subreg=0), _row(FRAME_REG, 0)]
+    raw = pd.DataFrame(rows)
+    out = CtrlWavetableNibblePass().apply(raw.copy(), args=_nib_args(False))
+    pd.testing.assert_frame_equal(
+        out.reset_index(drop=True), raw.reset_index(drop=True)
+    )
 
 
 def test_both_flags_off_is_noop():
