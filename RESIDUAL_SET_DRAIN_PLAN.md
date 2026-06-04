@@ -74,10 +74,20 @@ nibble-pair duplicates that A/B will collapse — re-measure after A/B before si
 4. Held_step singletons-at-onsets (NOT nibble-lane runs). [DONE — ONSET_DEF define-on-first]
 3. Extend C (hard-restart multiload) for the remainder.   [DONE — ENV_MULTILOAD, reuses HARD_RESTART_OP]
 6. FREQ pre-onset preamble (inaudible).                   [DONE — PRE_GATE_FREQ drop/relocate, audio-exact]
-7. Nibble-lane SR/AD held (subreg 0/1).                   [TODO — surface design]
+7. Nibble-lane SR/AD held (subreg 0/1).                   [DONE — NIBBLE_WAVETABLE, CTRL_WT lane on DEF subreg]
 5. Gate green → PR (NO release).
 
-## STATUS (2026-06-04): 444 -> 215 -> 20 -> 11 -> 6 residual SETs on the sample (-98.6%)
+## STATUS (2026-06-04): 444 -> 215 -> 20 -> 11 -> 6 -> 0 residual SETs on the sample (DONE)
+
+NIBBLE_WAVETABLE (CtrlWavetableNibblePass `nibble_wavetable`) drained the final 6 -> 0. Post-SubregPass,
+it mines surviving subreg-0/1 nibble SETs into the CTRL_WT codebook keyed on (reg, subreg, val):
+recurring -> DEF + SET reuse, once-only -> lone define-on-first DEF. The nibble lane rides on the DEF
+subreg (new CTRL_WT_SUBREG_ID_NIB0/NIB1); _CtrlWtCodec stores (lane, val) and re-emits the nibble via
+the SetDecoder merge. Register-state-exact (arbiter validates). The work order's sample acceptance gate
+(residual SETs == 0) is MET; next is the full-corpus census + xpt RUNBOOK release. The drain stack:
+GRADIENT, INIT (prior) + ONSET_DEF, ENV_MULTILOAD, PRE_GATE_FREQ (audio-exact), NIBBLE_WAVETABLE.
+
+## STATUS (prior): 444 -> 215 -> 20 -> 11 -> 6 residual SETs on the sample (-98.6%)
 
 PRE_GATE_FREQ (PreGateFreqPass `pre_gate_freq` flag) drained 11 -> 6. A freq written before a
 voice's first gate-on is inaudible (preframr-audio test); the user-directed rule DROPs it when the

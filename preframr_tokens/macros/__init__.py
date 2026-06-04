@@ -16,7 +16,10 @@ from preframr_tokens.macros.passes import (
 )
 from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
-from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
+from preframr_tokens.macros.ctrl_wavetable_pass import (
+    CtrlWavetablePass,
+    CtrlWavetableNibblePass,
+)
 from preframr_tokens.macros.ctrl_triple_pass import CtrlTriplePass
 from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
@@ -78,6 +81,7 @@ PASSES = [
     CtrlTriplePass(),
     CtrlBigramPass(),
     SubregPass(),
+    CtrlWavetableNibblePass(),
 ]
 
 

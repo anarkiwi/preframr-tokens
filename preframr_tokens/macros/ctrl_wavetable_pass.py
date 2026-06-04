@@ -5,7 +5,7 @@ per-reuse CTRL_WT_SET re-emitting the same write -- a learnable per-tune state a
 decode in ``decoders.py``.
 """
 
-__all__ = ["CtrlWavetablePass"]
+__all__ = ["CtrlWavetablePass", "CtrlWavetableNibblePass"]
 
 from collections import defaultdict
 
@@ -26,6 +26,7 @@ from preframr_tokens.macros.state import (
     FREQ_REGS_BY_VOICE,
     PWM_REGS_BY_VOICE,
     SR_REGS_BY_VOICE,
+    SUBREG_REGS,
     VOICES,
 )
 from preframr_tokens.stfconstants import (
@@ -35,6 +36,8 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_SET_OP,
     CTRL_WT_STEP_OP,
     CTRL_WT_SUBREG_ID,
+    CTRL_WT_SUBREG_ID_NIB0,
+    CTRL_WT_SUBREG_ID_NIB1,
     CTRL_WT_SUBREG_VAL,
     DELAY_REG,
     FC_LO_REG,
@@ -44,6 +47,9 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     VOICE_REG_SIZE,
 )
+
+_NIBBLE_REGS = frozenset(int(r) for r in SUBREG_REGS)
+_ID_SUBREGS = (CTRL_WT_SUBREG_ID, CTRL_WT_SUBREG_ID_NIB0, CTRL_WT_SUBREG_ID_NIB1)
 
 _FILTER_REGS = (int(FC_LO_REG), int(FC_LO_REG) + 1, int(FILTER_REG))
 
@@ -432,3 +438,98 @@ class CtrlWavetablePass(MacroPass):
                 f += max(1, int(vals[i]))
             out[i] = f
         return out
+
+
+class CtrlWavetableNibblePass(MacroPass):
+    """Post-SubregPass nibble-lane drain: a SET on subreg 0/1 (an AD/SR/filter nibble SubregPass split
+    out) is invisible to the full-byte CTRL_WT phases (they filter subreg==-1). Mine each surviving
+    nibble SET into the CTRL_WT codebook keyed on (reg, subreg, val) -- recurring -> DEF + per-reuse SET,
+    once-only -> a lone define-on-first DEF; the lane rides on the DEF subreg so the codec re-emits the
+    exact nibble. Register-state-exact (arbiter validates); default OFF (``nibble_wavetable``).
+    """
+
+    GATE_FLAGS = frozenset({"nibble_wavetable"})
+
+    def apply(self, df, args=None):
+        if args is None or not getattr(args, "nibble_wavetable", False):
+            return df
+        if df is None or len(df) == 0 or "op" not in df.columns:
+            return df
+        df = _ensure_subreg(df.reset_index(drop=True).copy())
+        irq = _first_irq(df)
+        regs = df["reg"].to_numpy()
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        events = []
+        for i in range(len(df)):
+            if (
+                int(ops[i]) == SET_OP
+                and int(subs[i]) in (0, 1)
+                and int(regs[i]) in _NIBBLE_REGS
+            ):
+                events.append(
+                    {
+                        "reg": int(regs[i]),
+                        "subreg": int(subs[i]),
+                        "val": int(vals[i]),
+                        "row": int(i),
+                        "pos": int(i),
+                    }
+                )
+        if not events:
+            return df
+        claims = self._emit_nibble(events, irq, self._max_def_id(df) + 1)
+        if not claims:
+            return df
+        return arbitrate(df, claims, validate=True)
+
+    @staticmethod
+    def _max_def_id(df):
+        """Largest CTRL_WT id defined in ``df`` (any lane), so the nibble phase allocates above the
+        full-byte DEFs the inline CTRL_WT phases already minted."""
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        m = -1
+        for i in range(len(df)):
+            if int(ops[i]) == CTRL_WT_DEF_OP and int(subs[i]) in _ID_SUBREGS:
+                m = max(m, int(vals[i]))
+        return m
+
+    @staticmethod
+    def _emit_nibble(events, irq, start_id):
+        """One id per (reg, subreg, val) nibble (MINREP=1 -- define-on-first), DEF + per-reuse SET."""
+        groups = defaultdict(list)
+        for ev in events:
+            groups[(ev["reg"], ev["subreg"], ev["val"])].append(ev)
+
+        def emit_first(cb_id, occ):
+            ev = occ[0]
+            id_subreg = (
+                CTRL_WT_SUBREG_ID_NIB0 if ev["subreg"] == 0 else CTRL_WT_SUBREG_ID_NIB1
+            )
+            return [
+                _row(ev["reg"], CTRL_WT_DEF_OP, id_subreg, cb_id, irq),
+                _row(ev["reg"], CTRL_WT_STEP_OP, CTRL_WT_SUBREG_VAL, ev["val"], irq),
+            ]
+
+        def emit_ref(cb_id, ev):
+            return [_row(ev["reg"], CTRL_WT_SET_OP, -1, cb_id, irq)]
+
+        grouped, _ = emit_recurring(
+            groups,
+            start_id=start_id,
+            minrep=1,
+            group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
+            occ_sort=lambda e: e["pos"],
+            pos_of=lambda e: e["pos"],
+            rows_of=lambda e: (e["row"],),
+            emit_first=emit_first,
+            emit_ref=emit_ref,
+            per_group=True,
+        )
+        return [
+            Claim(tuple(d), r, priority=_CTRL_WT_PRIORITY, label="ctrl_wt_nib")
+            for d, r in grouped
+        ]

@@ -14,6 +14,9 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_DEF_OP,
     CTRL_WT_SET_OP,
     CTRL_WT_STEP_OP,
+    CTRL_WT_SUBREG_ID,
+    CTRL_WT_SUBREG_ID_NIB0,
+    CTRL_WT_SUBREG_ID_NIB1,
     CTRL_WT_SUBREG_VAL,
     PATCH_AD_OFFSET,
     PATCH_DEF_OP,
@@ -388,33 +391,59 @@ class _PatchCodec(_Codec):
 
 
 class _CtrlWtCodec(_Codec):
-    """Inline ctrl-state codebook: DEF + STEP buffer a single ctrl byte into the id table and emit it
-    on the def's voice, SET re-emits the defined byte on the ref's voice."""
+    """Inline register-state codebook: DEF + STEP buffer a single register value into the id table and
+    emit it on the def's voice, SET re-emits the defined value on the ref's voice. The DEF subreg sets
+    the lane -- a full byte (``CTRL_WT_SUBREG_ID``) or a nibble (``..._ID_NIB0`` / ``..._ID_NIB1``, so a
+    SubregPass-split AD/SR/filter nibble can be interned too)."""
+
+    _ID_SUBREG_TO_LANE = {
+        CTRL_WT_SUBREG_ID: -1,
+        CTRL_WT_SUBREG_ID_NIB0: 0,
+        CTRL_WT_SUBREG_ID_NIB1: 1,
+    }
 
     def def_open(self, row, state, cb):
-        cb.pending = {"id": int(row.val), "reg": int(row.reg)}
+        cb.pending = {
+            "id": int(row.val),
+            "reg": int(row.reg),
+            "lane": self._ID_SUBREG_TO_LANE.get(int(row.subreg), -1),
+        }
 
     def step(self, state, row, cb):
         pend = cb.pending
         if pend is None or int(row.subreg) != CTRL_WT_SUBREG_VAL:
             return None
         cb.pending = None
+        lane = int(pend["lane"])
         val = int(row.val)
-        cb.table[int(pend["id"])] = val
-        return self._emit(int(pend["reg"]), val, row, state)
+        cb.table[int(pend["id"])] = (lane, val)
+        return self._emit(int(pend["reg"]), lane, val, row, state)
 
     def ref(self, state, row, cb):
-        val = cb.table.get(int(row.val))
-        if val is None:
+        entry = cb.table.get(int(row.val))
+        if entry is None:
             return None
-        return self._emit(int(row.reg), int(val), row, state)
+        lane, val = entry
+        return self._emit(int(row.reg), int(lane), int(val), row, state)
 
     @staticmethod
-    def _emit(reg, val, row, state):
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(val)
+    def _emit(reg, lane, val, row, state):
+        if lane < 0:
+            pre = state.maybe_flush_for(reg, -1)
+            state.last_val[reg] = int(val)
+            state.last_diff[reg] = row.diff
+            return pre + [(reg, int(val), row.diff, row.description)]
+        pre = state.maybe_flush_for(reg, lane)
+        if lane == 0:
+            state.last_val[reg] = (state.last_val[reg] & 0xF0) | (int(val) & 0x0F)
+        else:
+            state.last_val[reg] = (state.last_val[reg] & 0x0F) | (
+                (int(val) & 0x0F) << 4
+            )
         state.last_diff[reg] = row.diff
-        return pre + [(reg, int(val), row.diff, row.description)]
+        state.pending_subreg_reg = reg
+        state.pending_subreg_nibbles.add(lane)
+        return pre or None
 
 
 class _WavetableCodec(_Codec):

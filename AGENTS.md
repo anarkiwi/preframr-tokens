@@ -65,15 +65,29 @@ docker run --rm -v $PWD:/tok -v /scratch/preframr:/scratch/preframr -v /tmp:/tmp
   in the inline loop. **AUDIO-exact, NOT register-state-exact** (changes the silent pre-gate frames)
   — the first such drain atom; default OFF, in `parse_audit._LOSSY_RESETS` so the auditor
   re-baselines. The audible region (gate-on onward register_state) is preserved (unit-tested).
+- **NIBBLE_WAVETABLE** (no new op — extends the CTRL_WT codebook; `ctrl_wavetable_pass.py`
+  `CtrlWavetableNibblePass`, flag `nibble_wavetable`): post-SubregPass drain of SET ops on subreg
+  0/1 (AD/SR/filter nibbles SubregPass split out, invisible to the full-byte CTRL_WT phases). Mines
+  each surviving nibble into the CTRL_WT codebook keyed on `(reg, subreg, val)` — recurring → DEF +
+  per-reuse SET, once-only → lone define-on-first DEF. The **lane rides on the DEF subreg** (new
+  `CTRL_WT_SUBREG_ID_NIB0/NIB1`, added to `CODEBOOK_ID_OP_SUBREGS`); `_CtrlWtCodec` now stores
+  `(lane, val)` and re-emits a nibble write via the SetDecoder merge path. Runs in `PASSES` after
+  SubregPass. **Register-state-exact** (arbiter validates); default OFF.
 
-Result: sample 444 -> 215 -> 20 -> 11 -> **6** residual SETs. Suite green (966 passed: +4 onset_def
-+5 env_multiload +4 pre_gate_freq; gate excluded; black/pylint 10.00/pyright clean).
+Result: sample 444 -> 215 -> 20 -> 11 -> 6 -> **0** residual SETs (digi-excluded stride sample, the
+residual_set_census arm incl preset_pass). Suite green (969 passed: +4 onset_def +5 env_multiload
++4 pre_gate_freq +3 nibble; gate excluded; black/pylint 10.00/pyright clean). Byte-exactness:
+onset_def/env_multiload/nibble are register-state-exact by ARBITER CONSTRUCTION (`validate=True` drops
+any claim that changes register_state); pre_gate_freq is audio-exact (audible region preserved,
+unit-tested). The byte-exact gate is `cb_div_audit` (codebook config, NO preset_pass) -- do NOT verify
+with preset_pass on (it cent-bins PW and trips parse_audit by design).
 
-## Next — the remaining 6 (all nibble-lane; surface design before building)
-The remaining 6 (digi-excluded stride sample) are all SR/AD held automation on subreg 0/1
-(post-SubregPass): held_step 4 (2 AD / 2 SR) + per_frame 2 (SR). Every CTRL_WT phase filters
-subreg==-1, so the nibble lanes are unseen. Drain needs nibble-lane mining keyed on `(reg, subreg)`
-— the decoder must re-emit the subreg write. User asked to surface this design before implementing.
+## Next — corpus census + release (the work order is done on the sample)
+Sample residual == 0. Remaining: (1) run the full-corpus residual census
+(`audit/residual_set_census.py`, fogbank, all the new flags) to confirm `residual_SETs=0` corpus-wide;
+(2) the residual passes (onset_def/env_multiload/nibble_wavetable register-state-exact, pre_gate_freq
+AUDIO-exact) stay OUT of REGISTERED_MACROS; (3) then the xpt RUNBOOK release pipeline. NOTE the new
+audio-exact tier (pre_gate_freq) — the census/byte-exact gate treats it via `_LOSSY_RESETS`.
 
 ## Invariants
 - Mine full bytes PRE-SubregPass (inline pass list, `reglogparser.py` ~988) where you
