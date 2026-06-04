@@ -1,19 +1,18 @@
-"""Differential oracle gate for the codebook-unification refactor: decode a corpus exercising every
-inline-codebook family and REF variant twice -- once with the legacy per-family decoders, once with the
-registry-driven CodebookDecoder machine -- and assert byte-identical expand_ops output. The legacy
-decoders are byte-exact and heavily tested, so they are the oracle the new machine must reproduce.
+"""Golden regression gate for the codebook-unification refactor: decode a corpus exercising every
+inline-codebook family and REF variant with the registry-driven CodebookDecoder machine and assert the
+expand_ops output matches a frozen golden captured from the legacy per-family decoders before they were
+deleted (Step 6). This permanently pins the machine to byte-identical pre-refactor decode output.
 """
 
-import contextlib
+import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from preframr_tokens.macros import decoders as dec_mod
-from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES, codebook_decoders
+from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
 from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.decode import expand_ops
-from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
@@ -35,38 +34,18 @@ from preframr_tokens.macros.skeleton_pass import midi_to_fn
 
 _IRQ = 19656
 _CODEBOOK_OPS = sorted({op for fam in CODEBOOK_FAMILIES.values() for op in fam.ops})
+_GOLDEN_PATH = Path(__file__).parent / "fixtures" / "codebook_machine_golden.json"
+_GOLDEN = json.loads(_GOLDEN_PATH.read_text())
+_GOLDEN_COLS = ("reg", "val", "diff", "description")
 
 
-def _legacy_codebook_map():
-    """The legacy per-family decoder registration, rebuilt explicitly so the oracle stays the legacy
-    classes regardless of what decoders.DECODERS currently holds (it flips to the machine in Step 3).
-    """
-    stamp, patch = dec_mod.StampDecoder(), dec_mod.PatchDecoder()
-    wt, ctrl_wt = dec_mod.WavetableDecoder(), dec_mod.CtrlWtDecoder()
-    by_name = {"stamp": stamp, "patch": patch, "wavetable": wt, "ctrl_wt": ctrl_wt}
-    return {
-        op: by_name[fam.name] for fam in CODEBOOK_FAMILIES.values() for op in fam.ops
-    }
+def _cols(df):
+    """expand_ops output as plain ``{col: [int]}`` -- the golden's serialisable, dtype-agnostic form."""
+    return {c: [int(x) for x in df[c].tolist()] for c in _GOLDEN_COLS}
 
 
-@contextlib.contextmanager
-def _decoders(codebook_map):
-    """Swap the codebook ops in the shared DECODERS dict in place (decode/walker hold the same dict)."""
-    saved = {op: DECODERS.get(op) for op in _CODEBOOK_OPS}
-    try:
-        DECODERS.update(codebook_map)
-        yield
-    finally:
-        for op, dec in saved.items():
-            if dec is None:
-                DECODERS.pop(op, None)
-            else:
-                DECODERS[op] = dec
-
-
-def _decode(df, codebook_map, seed=None):
-    with _decoders(codebook_map):
-        return expand_ops(df.copy(), codebook_seed=seed)
+def _decode(df, seed=None):
+    return expand_ops(df.copy(), codebook_seed=seed)
 
 
 def _row(reg, val, op=SET_OP, subreg=-1):
@@ -262,20 +241,15 @@ def _corpus():
 
 
 _CORPUS = _corpus()
-_LEGACY_MAP = _legacy_codebook_map()
-_NEW_MAP = codebook_decoders()
 
 
 @pytest.mark.parametrize("name", sorted(_CORPUS))
-def test_machine_matches_legacy(name):
-    df = _CORPUS[name]
-    legacy = _decode(df, _LEGACY_MAP)
-    new = _decode(df, _NEW_MAP)
-    pd.testing.assert_frame_equal(legacy, new)
+def test_machine_matches_golden(name):
+    assert _cols(_decode(_CORPUS[name])) == _GOLDEN[name]
 
 
 def test_corpus_covers_every_codebook_op():
-    """The corpus must actually exercise every codebook op, else equivalence proves nothing for it."""
+    """The corpus must actually exercise every codebook op, else the golden proves nothing for it."""
     seen = set()
     for df in _CORPUS.values():
         if "op" in df.columns:
@@ -286,11 +260,14 @@ def test_corpus_covers_every_codebook_op():
     ), f"corpus exercises no stream with codebook ops {sorted(missing)}"
 
 
-def test_seed_materialized_ref_matches_legacy():
-    """A REF whose DEF preceded the window resolves from the codebook_seed snapshot; both machines
-    must seed and replay it identically."""
+def test_golden_covers_corpus():
+    """Every corpus stream (plus the seed case) has a golden entry and vice-versa -- no silent drift."""
+    assert set(_GOLDEN) == set(_CORPUS) | {"seed_materialized"}
+
+
+def test_seed_materialized_ref_matches_golden():
+    """A REF whose DEF preceded the window resolves from the codebook_seed snapshot, byte-identical to
+    the pre-refactor decoder."""
     df = _Builder().frame().write(0, 7, op=STAMP_REF_OP).frame().df()
     seed = {"stamp_table": {7: [[(0, 1234), (4, 0x41)]]}}
-    legacy = _decode(df, _LEGACY_MAP, seed=seed)
-    new = _decode(df, _NEW_MAP, seed=seed)
-    pd.testing.assert_frame_equal(legacy, new)
+    assert _cols(_decode(df, seed=seed)) == _GOLDEN["seed_materialized"]

@@ -154,15 +154,8 @@ class DecodeState:
         self.last_skel_note = {}
         self.pending_orn = None
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
-        self.pending_stamp_def = None
-        self.pending_stamp_rel = None
         self.pending_sweep = None
         self.pending_ctrl_osc = None
-        self.pending_ctrl_wt_def = None
-        self.pending_patch_def = None
-        self.pending_wavetable_def = None
-        self.pending_wavetable_ref = None
-        self.pending_wavetable_oneshot = None
         self.pending_ctrl_triple = {}
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
