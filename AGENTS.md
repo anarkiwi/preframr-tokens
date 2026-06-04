@@ -51,23 +51,25 @@ docker run --rm -v $PWD:/tok -v /scratch/preframr:/scratch/preframr -v /tmp:/tmp
   117/117 at note-ons, 83/117 single-reg, 68/86 runlen-1 singletons; the CTRL_WT
   recurrence floor (MINREP=2) structurally couldn't claim count-1 values. Lowering that
   floor to 1 for onset writes is the fix.
+- **ENV_MULTILOAD** (no new op — reuses `HARD_RESTART_OP`; `passes.py` `HardRestartPass`,
+  flag `env_multiload`): collapse a same-frame double write of one AD/SR envelope reg
+  (gate-off + reload, the ADSR-bug workaround) into one HARD_RESTART_OP packing both
+  bytes. The decoder is reg-generic, so it re-emits both writes in order (raw-write-order-
+  exact). Runs in `PASSES` right before SubregPass (full bytes). Default OFF.
 
-Result: sample 444 -> 215 -> **20** residual SETs. Suite green (953 + 4 onset_def passed,
-gate excluded; black/pylint 10.00/pyright clean).
+Result: sample 444 -> 215 -> 20 -> **11** residual SETs. Suite green (962 + 4 onset_def +
+5 env_multiload passed, gate excluded; black/pylint 10.00/pyright clean).
 
 ## Next, in priority order (all real abstractions, NO catch-all)
-The remaining 20 (digi-excluded stride sample): ~5 FREQ pre-onset preamble, ~6 true
-same-frame double-loads, ~9 stragglers (held_step 4 / recurring 3 / per_frame 2).
-1. **Combined-reg INIT** (the ~5 FREQ pre-onset preamble): INIT excludes the 16-bit
-   combined regs (freq/PW/filter-cutoff) because a plain emit doesn't reconstruct them.
-   Make INIT combined-reg-aware (emit through the same combine path) to drain pre-note
-   freq/PW init.
-2. **Hard-restart multiload** (the ~6 true multiwrites): double AD/SR write in one frame
-   (gate-off + reload, the ADSR-bug workaround). Extend `HardRestartPass` (currently
-   CTRL-pair only) to bundle the env multiload.
-3. **Stragglers** (~9): re-run `/tmp/resid_precise.py` per-shape after #1/#2; characterise
-   the held_step-4 / recurring_value-3 / per_frame-2 remainder before modelling (likely
-   onset_def floor/one-write-per-frame edge cases or post-SubregPass artifacts).
+The remaining 11 (digi-excluded stride sample): ~5 FREQ pre-onset preamble, ~6 nibble-lane
+/ misc stragglers (held_step 4 / per_frame 2 on subreg 0/1).
+1. **FREQ pre-onset preamble** (~5): reg0 freq written once at frames 1-4, BEFORE the first
+   gate-on. User insight (2026-06-04): a freq change before any gate-on is INAUDIBLE — so
+   these may be droppable as an AUDIO-exact (not register-state-exact) normalisation rather
+   than needing combined-reg INIT. Audio unit test in `preframr-audio` pending to confirm.
+2. **Nibble-lane stragglers** (~6): SR/AD held automation on subreg 0/1 (post-SubregPass).
+   Every CTRL_WT phase filters subreg==-1, so they are unseen. Needs nibble-lane mining
+   (decoder must re-emit the subreg write) — surface the design before building.
 
 ## Invariants
 - Mine full bytes PRE-SubregPass (inline pass list, `reglogparser.py` ~988) where you
