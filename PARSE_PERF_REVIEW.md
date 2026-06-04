@@ -26,6 +26,21 @@ investing** — the order below is my best estimate of payoff.
 
 ## Findings, highest payoff first
 
+> **UPDATE (verified against fixtures — do NOT apply as written).** Profiling
+> confirms the impact (`_add_voice_reg` is 16–25% of parse, the preview calls
+> ~half of that), but the equivalence harness + a direct probe showed the gate
+> is **not** invariant to the transform, so this is unsafe as a mechanical swap:
+> `_add_voice_reg` collapses voice regs to `reg % VOICE_REG_SIZE`, so on the
+> voiced form `_filter`'s ctrl-density count sums across voices (commando: max
+> 3/frame) where the raw form keeps regs 4/11/18 separate (max 1/frame). The
+> digi-reject threshold `c_max > 6` is tuned on the voiced value, so filtering
+> the raw `xdf` makes digi/multispeed rejection ~3× looser. The length check
+> also differs (voiced form is ~900 rows longer). All 9 fixtures sit far below
+> the threshold (harness shows zero diff), but a dense-ctrl tune could flip.
+> Left in place. A safe version would compute the voiced-form ctrl-density and
+> length cheaply from the raw arrays without building the full structure — a
+> larger change that needs a digi-boundary fixture and maintainer intent.
+
 ### 1. Redundant `_add_voice_reg` per rotation, purely to gate `_filter`
 `reglogparser.py:1042-1045` then `:1055`
 
