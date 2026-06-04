@@ -40,6 +40,7 @@ _FIELDS = (
     "vol_changes_per_frame_max",
     "ctrl_changes_per_frame_max",
     "freq_writes_per_frame_max",
+    "pw_changes_per_frame_max",
 )
 
 
@@ -79,7 +80,17 @@ def _build_meta_from_raw(dump_path: Path, raw_df: pd.DataFrame) -> dict[str, Any
     )
     ctrl_max = int(ctrl_counts.max()) if len(ctrl_counts) else 0
     freq_max = int(freq_counts.max()) if len(freq_counts) else 0
-    is_digi = bool(vol_max >= 40 or ctrl_max >= 20)
+    voice_pw_regs = [v * VOICE_REG_SIZE + 2 for v in range(VOICES)] + [
+        v * VOICE_REG_SIZE + 3 for v in range(VOICES)
+    ]
+    pw_mask = np.isin(regs, voice_pw_regs)
+    pw_counts = (
+        pd.Series(irqs[pw_mask]).value_counts()
+        if pw_mask.any()
+        else pd.Series(dtype=int)
+    )
+    pw_max = int(pw_counts.max()) if len(pw_counts) else 0
+    is_digi = bool(vol_max >= 40 or ctrl_max >= 20 or pw_max >= 40)
     return {
         "meta_code_hash": meta_code_hash(),
         "is_digi": is_digi,
@@ -88,6 +99,7 @@ def _build_meta_from_raw(dump_path: Path, raw_df: pd.DataFrame) -> dict[str, Any
         "vol_changes_per_frame_max": vol_max,
         "ctrl_changes_per_frame_max": ctrl_max,
         "freq_writes_per_frame_max": freq_max,
+        "pw_changes_per_frame_max": pw_max,
     }
 
 
@@ -149,6 +161,10 @@ class DumpMeta:
     @property
     def freq_writes_per_frame_max(self) -> int:
         return int(self.fields.get("freq_writes_per_frame_max", 0))
+
+    @property
+    def pw_changes_per_frame_max(self) -> int:
+        return int(self.fields.get("pw_changes_per_frame_max", 0))
 
 
 def filter_dump_paths(

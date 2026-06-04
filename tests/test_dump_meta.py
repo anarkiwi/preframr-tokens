@@ -39,6 +39,26 @@ def _tiny_raw_df(irq=19656, vol_changes_per_frame=2, n_frames=10):
     return pd.DataFrame(rows)
 
 
+def _pw_raw_df(irq=19656, pw_changes_per_frame=2, n_frames=10):
+    rows = []
+    for f in range(n_frames):
+        frame_irq = irq * (f + 1)
+        for i in range(pw_changes_per_frame):
+            rows.append(
+                {
+                    "clock": frame_irq,
+                    "irq": frame_irq,
+                    "chipno": 0,
+                    "reg": 2,
+                    "val": i % 256,
+                }
+            )
+        rows.append(
+            {"clock": frame_irq + 1, "irq": frame_irq, "chipno": 0, "reg": 0, "val": 1}
+        )
+    return pd.DataFrame(rows)
+
+
 class TestDumpMetaWriteRead(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
@@ -95,6 +115,28 @@ class TestDigiDetection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             dump_path = Path(td) / f"clean{DUMP_SUFFIX}"
             df = _tiny_raw_df(vol_changes_per_frame=2)
+            df.to_parquet(dump_path, index=False)
+            write_meta(dump_path, df)
+            meta = read_meta(dump_path)
+            self.assertFalse(meta.is_digi)
+
+    def test_high_pw_density_flagged_as_digi(self):
+        # PWM digi signature: dense pulse-width writes ($D402/$D403); is_digi missed
+        # these before (vol/ctrl only). Reg 2 = voice-0 PW lo.
+        with tempfile.TemporaryDirectory() as td:
+            dump_path = Path(td) / f"pwdigi{DUMP_SUFFIX}"
+            df = _pw_raw_df(pw_changes_per_frame=50)
+            df.to_parquet(dump_path, index=False)
+            write_meta(dump_path, df)
+            meta = read_meta(dump_path)
+            self.assertTrue(meta.is_digi)
+            self.assertGreaterEqual(meta.pw_changes_per_frame_max, 50)
+
+    def test_low_pw_density_not_digi(self):
+        # normal-tune PW activity (corpus p99 ~= 12, max observed ~24) stays clean
+        with tempfile.TemporaryDirectory() as td:
+            dump_path = Path(td) / f"pwclean{DUMP_SUFFIX}"
+            df = _pw_raw_df(pw_changes_per_frame=12)
             df.to_parquet(dump_path, index=False)
             write_meta(dump_path, df)
             meta = read_meta(dump_path)
