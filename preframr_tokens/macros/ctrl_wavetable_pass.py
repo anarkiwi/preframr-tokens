@@ -24,6 +24,7 @@ from preframr_tokens.macros.state import (
     AD_REGS_BY_VOICE,
     CTRL_REGS_BY_VOICE,
     FREQ_REGS_BY_VOICE,
+    PWM_REGS_BY_VOICE,
     SR_REGS_BY_VOICE,
     VOICES,
 )
@@ -66,6 +67,7 @@ class CtrlWavetablePass(MacroPass):
             "filter_wavetable",
             "modevol_wavetable",
             "freq_wavetable",
+            "pw_wavetable",
             "onset_instrument",
         }
     )
@@ -85,6 +87,8 @@ class CtrlWavetablePass(MacroPass):
             target.append(int(MODE_VOL_REG))
         if getattr(args, "freq_wavetable", False):
             target.extend(int(r) for r in FREQ_REGS_BY_VOICE)
+        if getattr(args, "pw_wavetable", False):
+            target.extend(int(r) for r in PWM_REGS_BY_VOICE)
         onset = getattr(args, "onset_instrument", False)
         if (not target and not onset) or df is None or len(df) == 0:
             return df
