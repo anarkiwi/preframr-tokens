@@ -331,9 +331,8 @@ def _freq_to_cent_index(df, cents):
     fm = FreqMapper(cents=cents)
     if int(fv.max()) <= max(fm.if_map):
         return df
-    df.loc[freq_mask, "val"] = fv.map(lambda w: fm.fi_map[int(w) & 0xFFFF]).astype(
-        df["val"].dtype
-    )
+    keys = fv.astype("int64") & 0xFFFF
+    df.loc[freq_mask, "val"] = keys.map(fm.fi_map).astype(df["val"].dtype)
     return df
 
 
@@ -513,7 +512,12 @@ class RegLogParser:
         largest_irqs_sum = 0
         try:
             irq_counts = df["irqdiff"][m].value_counts()
-            largest_irqs_sum = sum([k * v for k, v in irq_counts.items()])
+            largest_irqs_sum = int(
+                (
+                    irq_counts.index.to_numpy(dtype="int64")
+                    * irq_counts.to_numpy(dtype="int64")
+                ).sum()
+            )
             irq = int(irq_counts.nlargest(1).index[0])
         except IndexError:
             irq = 0
