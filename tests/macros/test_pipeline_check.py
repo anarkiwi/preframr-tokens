@@ -17,7 +17,6 @@ from preframr_tokens.macros.transform import TransformPipeline
 def _args(**kw):
     base = dict(
         hard_restart_pass=True,
-        ctrl_bigram_pass=True,
         voice_canonical_block_order=True,
         freq_trajectory_pass=True,
         preset_pass=True,
@@ -32,7 +31,7 @@ class TestCanonicalSpecPasses(unittest.TestCase):
         spec = {
             "transforms": [
                 {"name": "hard_restart"},
-                {"name": "ctrl_bigram"},
+                {"name": "subreg_flush"},
                 {"name": "voice_block_order"},
             ]
         }
@@ -43,7 +42,7 @@ class TestCanonicalSpecPasses(unittest.TestCase):
         spec = {
             "transforms": [
                 {"name": "hard_restart"},
-                {"name": "ctrl_bigram"},
+                {"name": "subreg_flush"},
             ]
         }
         p = TransformPipeline.from_spec(spec, args=_args())
@@ -234,7 +233,6 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
         all_args = argparse.Namespace(
             voice_canonical_block_order=True,
             hard_restart_pass=True,
-            ctrl_bigram_pass=True,
             freq_trajectory_pass=True,
             preset_pass=True,
             loop_pass=True,

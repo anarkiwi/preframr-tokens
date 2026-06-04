@@ -13,17 +13,14 @@ __all__ = [
     "FreqNudgeDecoder",
     "ReleaseUpdateDecoder",
     "CtrlUpdateDecoder",
-    "CtrlTripleDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
     "SubregFlushDecoder",
     "PwmSustainDecoder",
     "WavetableSustainDecoder",
-    "CtrlBigramDecoder",
     "SkeletonDecoder",
     "OrnamentDecoder",
     "SweepDecoder",
-    "CtrlOscDecoder",
     "GradientDecoder",
     "InitDecoder",
     "NoteOffDecoder",
@@ -54,13 +51,6 @@ from preframr_tokens.stfconstants import (
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
-    CTRL_BIGRAM_OP,
-    CTRL_BIGRAM_TABLE,
-    CTRL_OSC_OP,
-    CTRL_OSC_SUBREG_LEN,
-    CTRL_OSC_SUBREG_PERIOD,
-    CTRL_OSC_SUBREG_STATE_BASE,
-    CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
     GRADIENT_OP,
     INIT_OP,
@@ -68,9 +58,6 @@ from preframr_tokens.stfconstants import (
     GRADIENT_SUBREG_END,
     GRADIENT_SUBREG_NSTAGES,
     GRADIENT_SUBREG_VAL_BASE,
-    CTRL_TRIPLE_SUBREG_0,
-    CTRL_TRIPLE_SUBREG_1,
-    CTRL_TRIPLE_SUBREG_2,
     DIFF_OP,
     FC_LO_REG,
     FC_PRESET_TABLE,
@@ -538,32 +525,6 @@ class CtrlUpdateDecoder(_SetEquivalentDecoder):
     op_code = CTRL_UPDATE_OP
 
 
-class CtrlTripleDecoder(MacroDecoder):
-    """Decode a CTRL_TRIPLE atom (3 byte subregs): three consecutive adjacent-
-    frame CTRL writes. All three bytes queue into ``pending_set_writes``, one
-    drained per frame tick from the atom's frame (like CTRL_BIGRAM extended by
-    one)."""
-
-    op_code = CTRL_TRIPLE_OP
-
-    def expand(self, row, state):
-        subreg = int(row.subreg)
-        reg = int(row.reg)
-        state.pending_ctrl_triple[subreg] = int(row.val) & 0xFF
-        if subreg != CTRL_TRIPLE_SUBREG_2:
-            return None
-        f = state.pending_ctrl_triple
-        state.pending_ctrl_triple = {}
-        pre = state.maybe_flush_for(reg, -1)
-        b0 = f.get(CTRL_TRIPLE_SUBREG_0, 0)
-        state.last_val[reg] = b0
-        state.last_diff[reg] = row.diff
-        state.pending_set_writes[reg].append(b0)
-        state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_1, 0))
-        state.pending_set_writes[reg].append(f.get(CTRL_TRIPLE_SUBREG_2, 0))
-        return list(pre)
-
-
 class PresetDecoder(MacroDecoder):
     """Decode PRESET_OP rows: emit a SET-equivalent write with table-snapped val."""
 
@@ -656,21 +617,6 @@ class WavetableSustainDecoder(MacroDecoder):
             (reg, pwm_val, row.diff, row.description),
             (int(FC_LO_REG), fc_val, row.diff, row.description),
         ]
-
-
-class CtrlBigramDecoder(MacroDecoder):
-    op_code = CTRL_BIGRAM_OP
-
-    def expand(self, row, state):
-        ctrl_reg = int(row.reg)
-        idx = int(row.val)
-        prev_byte, cur_byte = CTRL_BIGRAM_TABLE[idx]
-        pre = state.maybe_flush_for(ctrl_reg, -1)
-        state.last_diff[ctrl_reg] = row.diff
-        state.last_val[ctrl_reg] = int(prev_byte)
-        state.pending_set_writes[ctrl_reg].append(int(prev_byte))
-        state.pending_set_writes[ctrl_reg].append(int(cur_byte))
-        return list(pre)
 
 
 class SkeletonDecoder(MacroDecoder):
@@ -811,45 +757,11 @@ class SweepDecoder(MacroDecoder):
         return pre or None
 
 
-class CtrlOscDecoder(MacroDecoder):
-    """Decode a CTRL_OSC atom (CtrlOscPass): PERIOD opens the buffer, STATE_BASE+m the P cycle bytes,
-    LEN (terminal) queues cycle[k % P] for LEN frames into pending_set_writes -- one drained per song
-    frame, reproducing the exact per-frame ctrl oscillation. A SWEEP twin with an explicit byte cycle.
-    """
-
-    op_code = CTRL_OSC_OP
-
-    def expand(self, row, state):
-        sub = int(row.subreg)
-        if sub == CTRL_OSC_SUBREG_PERIOD:
-            state.pending_ctrl_osc = {"reg": int(row.reg), "fields": {}}
-        pend = state.pending_ctrl_osc
-        if pend is None:
-            return None
-        pend["fields"][sub] = int(row.val)
-        if sub != CTRL_OSC_SUBREG_LEN:
-            return None
-        state.pending_ctrl_osc = None
-        f = pend["fields"]
-        reg = int(pend["reg"])
-        period = int(f.get(CTRL_OSC_SUBREG_PERIOD, 0))
-        length = int(f.get(CTRL_OSC_SUBREG_LEN, 0))
-        if period <= 0:
-            return None
-        cycle = [
-            int(f.get(CTRL_OSC_SUBREG_STATE_BASE + m, 0)) & 0xFF for m in range(period)
-        ]
-        pre = state.maybe_flush_for(reg, -1)
-        for k in range(length):
-            state.pending_set_writes[reg].append(cycle[k % period])
-        return pre or None
-
-
 class GradientDecoder(MacroDecoder):
     """Decode a GRADIENT atom (GradientPass): NSTAGES opens the buffer, VAL_BASE+i / DUR_BASE+i give
     each stage's (value, hold_frames), END (terminal) queues value repeated hold times per stage into
     pending_set_writes -- one drained per song frame, reproducing the staged value-domain automation
-    curve (the Galway gradient envelope) byte-exact at register-state level. A CTRL_OSC sibling whose
+    curve (the Galway gradient envelope) byte-exact at register-state level. A SWEEP sibling whose
     stages are aperiodic and explicitly held."""
 
     op_code = GRADIENT_OP
@@ -924,7 +836,6 @@ DECODERS = {
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_3),
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
         _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
-        CtrlBigramDecoder(),
         PwmSustainDecoder(),
         WavetableSustainDecoder(),
         FreqTrajectoryDecoder(),
@@ -933,11 +844,9 @@ DECODERS = {
         FreqOnsetDecoder(),
         ReleaseUpdateDecoder(),
         CtrlUpdateDecoder(),
-        CtrlTripleDecoder(),
         SkeletonDecoder(),
         OrnamentDecoder(),
         SweepDecoder(),
-        CtrlOscDecoder(),
         GradientDecoder(),
         InitDecoder(),
         NoteOffDecoder(),

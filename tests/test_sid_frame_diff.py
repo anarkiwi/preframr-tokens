@@ -33,7 +33,6 @@ _STACK_FLAGS = {
     "trajectory_anchor_pass",
     "stamp_pass",
     "sweep_pass",
-    "patch_pass",
     "held_arp",
     "wavetable_pass",
     "zero_plain",

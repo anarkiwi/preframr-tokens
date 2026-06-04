@@ -11,11 +11,9 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
-from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
 from preframr_tokens.macros.gradient_pass import GradientPass
 from preframr_tokens.macros.init_pass import InitPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
-from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
@@ -30,7 +28,6 @@ from preframr_tokens.macros.sweep_pass import SweepPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
-from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
@@ -1001,11 +998,8 @@ class RegLogParser:
             PerRegBurstPass(),
             GateSlopeShiftPass(),
             InstrumentProgramPass(),
-            PatchPass(),
             ReleaseUpdatePass(),
-            CtrlOscPass(),
             NoteOffPass(),
-            CtrlWavetablePass(),
             GradientPass(),
             InitPass(),
         ):
@@ -1062,8 +1056,6 @@ class RegLogParser:
             audit.after(xdf, "FreqNudgePass")
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
             audit.after(xdf, "CtrlUpdatePass")
-            xdf = CtrlWavetablePass().apply(xdf, args=self.args)
-            audit.after(xdf, "CtrlWavetablePass(post-voice)")
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
             audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)

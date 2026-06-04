@@ -1,6 +1,6 @@
 """Codebook REF liveness mask (RESID_ZERO_PHASE3 §4 B2/B3): the constrained-decode mask forbids an
-inline-codebook STAMP/PATCH REF whose id is not live (defined + committed), a DEF stashes the pending id
-and a COMMIT makes it live, a later DEF rebinds it, and an out-of-window DEF can be seeded via
+inline-codebook STAMP/WAVETABLE REF whose id is not live (defined + committed), a DEF stashes the pending
+id and a COMMIT makes it live, a later DEF rebinds it, and an out-of-window DEF can be seeded via
 init_codebook_ids -- so the DEF->REF backref can no longer silently vanish at inference.
 """
 
@@ -17,11 +17,6 @@ from preframr_tokens.macros.validators import (
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     PAD_REG,
-    PATCH_DEF_OP,
-    PATCH_SET_OP,
-    PATCH_STEP_OP,
-    PATCH_SUBREG_AD,
-    PATCH_SUBREG_SR,
     SET_OP,
     STAMP_DEF_OP,
     STAMP_END_OP,
@@ -33,8 +28,7 @@ from preframr_tokens.stfconstants import (
 )
 
 PAD, FRAME, STAMP_DEF3, STAMP_END3, STAMP_REF3, STAMP_REF7 = 0, 1, 2, 3, 4, 5
-PATCH_DEF5, PATCH_AD, PATCH_SR, PATCH_SET5 = 6, 7, 8, 9
-WT_DEF9, WT_END9, WT_REF9 = 10, 11, 12
+WT_DEF9, WT_END9, WT_REF9 = 6, 7, 8
 
 _ROWS = [
     {"op": SET_OP, "reg": PAD_REG, "subreg": -1, "val": 0},
@@ -43,10 +37,6 @@ _ROWS = [
     {"op": STAMP_END_OP, "reg": 0, "subreg": -1, "val": 3},
     {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 3},
     {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 7},
-    {"op": PATCH_DEF_OP, "reg": 0, "subreg": -1, "val": 5},
-    {"op": PATCH_STEP_OP, "reg": 0, "subreg": PATCH_SUBREG_AD, "val": 30},
-    {"op": PATCH_STEP_OP, "reg": 0, "subreg": PATCH_SUBREG_SR, "val": 40},
-    {"op": PATCH_SET_OP, "reg": 0, "subreg": -1, "val": 5},
     {"op": WAVETABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
     {"op": WAVETABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
     {"op": WAVETABLE_REF_OP, "reg": 0, "subreg": WT_REF_SUBREG_ID, "val": 9},
@@ -72,12 +62,12 @@ class TestCodebookMask(unittest.TestCase):
         state = _state()
         self.assertTrue(_masked(state, STAMP_REF3))
         self.assertTrue(_masked(state, STAMP_REF7))
-        self.assertTrue(_masked(state, PATCH_SET5))
+        self.assertTrue(_masked(state, WT_REF9))
 
     def test_def_always_allowed(self):
         state = _state()
         self.assertFalse(_masked(state, STAMP_DEF3))
-        self.assertFalse(_masked(state, PATCH_DEF5))
+        self.assertFalse(_masked(state, WT_DEF9))
 
     def test_def_then_commit_makes_ref_legal(self):
         state = _state()
@@ -86,14 +76,6 @@ class TestCodebookMask(unittest.TestCase):
         state.update(STAMP_END3)
         self.assertFalse(_masked(state, STAMP_REF3), "ref legal after commit")
         self.assertTrue(_masked(state, STAMP_REF7), "other id still illegal")
-
-    def test_patch_commits_on_sr_step(self):
-        state = _state()
-        state.update(PATCH_DEF5)
-        state.update(PATCH_AD)
-        self.assertTrue(_masked(state, PATCH_SET5))
-        state.update(PATCH_SR)
-        self.assertFalse(_masked(state, PATCH_SET5))
 
     def test_seeded_live_id_makes_ref_legal(self):
         state = _state(init_codebook_ids={0: {3}})
@@ -128,7 +110,7 @@ class TestWavetableCodebookMask(unittest.TestCase):
 
     def test_wavetable_live_ids_table_index(self):
         live = codebook_live_ids(_df(WT_DEF9, WT_END9))
-        self.assertEqual(live[2], {9}, "wavetable is table index 2")
+        self.assertEqual(live[1], {9}, "wavetable is table index 1")
 
 
 class TestCodebookValidation(unittest.TestCase):
@@ -148,13 +130,6 @@ class TestCodebookValidation(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_codebook_refs(_df(STAMP_DEF3, STAMP_REF3))
 
-    def test_patch_def_commit_set(self):
-        self.assertTrue(
-            validate_codebook_refs(_df(PATCH_DEF5, PATCH_AD, PATCH_SR, PATCH_SET5))
-        )
-        with self.assertRaises(AssertionError):
-            validate_codebook_refs(_df(PATCH_DEF5, PATCH_AD, PATCH_SET5))
-
     def test_seeded_live_id_accepts_ref(self):
         self.assertTrue(validate_codebook_refs(_df(STAMP_REF3), live_ids={0: {3}}))
         self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={0: {3}}))
@@ -162,11 +137,9 @@ class TestCodebookValidation(unittest.TestCase):
 
 class TestMaterialization(unittest.TestCase):
     def test_live_ids_from_prior_context(self):
-        live = codebook_live_ids(
-            _df(STAMP_DEF3, STAMP_END3, PATCH_DEF5, PATCH_AD, PATCH_SR)
-        )
+        live = codebook_live_ids(_df(STAMP_DEF3, STAMP_END3, WT_DEF9, WT_END9))
         self.assertEqual(live[0], {3})
-        self.assertEqual(live[1], {5})
+        self.assertEqual(live[1], {9})
 
     def test_uncommitted_def_is_not_live(self):
         self.assertEqual(codebook_live_ids(_df(STAMP_DEF3))[0], set())

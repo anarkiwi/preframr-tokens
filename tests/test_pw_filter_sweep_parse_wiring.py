@@ -36,7 +36,6 @@ def _args(**over):
         trajectory_anchor_pass=True,
         stamp_pass=True,
         sweep_pass=True,
-        patch_pass=True,
         held_arp=True,
         wavetable_pass=True,
         parse_audit="raise",

@@ -21,9 +21,8 @@ from tests.test_codebook_machine_equivalence import _CORPUS, _Builder
 
 _FAMILY_CORPUS = {
     "stamp": "stamp_abs",
-    "patch": "patch_def_set",
     "wavetable": "wt_def_ref",
-    "ctrl_wt": "ctrl_wt_def_set",
+    "instrument": "instrument_def_ref",
 }
 
 

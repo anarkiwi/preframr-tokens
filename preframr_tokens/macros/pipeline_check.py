@@ -45,7 +45,6 @@ _HARDCODED_PRE_NORM_TRANSFORM_NAMES = frozenset(
         "dedup_set",
         "hard_restart",
         "legato_per_cluster",
-        "ctrl_bigram",
         "subreg_flush",
         "voice_block_order",
         "loop",

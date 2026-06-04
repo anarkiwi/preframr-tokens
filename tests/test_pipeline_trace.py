@@ -49,12 +49,10 @@ _FULL_MACROS_SPEC = {
         {"name": "hard_restart"},
         {"name": "legato_per_cluster", "params": {"clusters": [2, 4]}},
         {"name": "voice_block_order"},
-        {"name": "ctrl_bigram"},
         {"name": "loop"},
     ]
 }
 _ABSORBERS = [
-    "--ctrl-triple-pass",
     "--freq-nudge-pass",
     "--release-update-pass",
     "--lonely-catch-all",
@@ -70,7 +68,6 @@ class TestBuildArgs(unittest.TestCase):
         self.assertTrue(args.preset_pass)
         self.assertTrue(args.voice_canonical_block_order)
         self.assertTrue(args.lonely_catch_all)
-        self.assertTrue(args.ctrl_triple_pass)
         self.assertEqual(unknown_names, [])
         self.assertEqual(unknown_flags, [])
         self.assertIn(("freq_trajectory", "freq_trajectory_pass", True), resolution)

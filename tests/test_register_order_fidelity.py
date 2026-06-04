@@ -162,13 +162,17 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         )
 
     def test_decoded_ctrl_adsr_order_matches_dump(self):
-        """Per frame per voice, the decoded CTRL/AD/SR write sequence (order + value)
-        must equal the raw dump's, for the no-macro baseline AND the full macro stack.
-        Reg-sorting a voice's writes (the old `_norm_pr_order`) would fail this on any
-        tune with interleaved ADSR/CTRL frames."""
+        """Per frame per voice, the decoded CTRL/AD/SR write sequence (order + value) must
+        equal the raw dump's, for the no-macro baseline AND the non-replay macro stack.
+        Reg-sorting a voice's writes (the old `_norm_pr_order`) fails this on interleaved
+        ADSR/CTRL frames. ``instrument_program`` is excluded -- a per-frame replay re-asserts
+        unchanged values (audio-equivalence pinned by register_state in the sibling test).
+        """
         configs = {
             "baseline": {},
-            "full_macros": {f: True for f in REGISTERED_MACROS},
+            "non_replay_macros": {
+                f: True for f in REGISTERED_MACROS if f != "instrument_program"
+            },
         }
         for name, flags in configs.items():
             test_frames, _ = _decoded_frames(self.dump, flags)
@@ -180,11 +184,33 @@ class TestRegisterOrderFidelity(unittest.TestCase):
                 f"divergence vs dump; e.g. {examples}",
             )
 
+    def test_instrument_program_register_state_equivalent(self):
+        """``instrument_program`` (now in the production default) replays a per-frame
+        ctrl/AD/SR program, re-asserting unchanged values -- so its SID-visible write stream
+        differs from the raw dump, but every per-frame register_state cell is unchanged vs
+        the same stack without it: identical end-of-frame state, hence identical SID audio.
+        The byte-exact invariant the raw-dump order check cannot express for a replay pass.
+        """
+        from preframr_tokens.audit_primitives import register_state
+
+        non_replay = {f: True for f in REGISTERED_MACROS if f != "instrument_program"}
+        full = {f: True for f in REGISTERED_MACROS}
+        base = register_state(self._parse(non_replay))
+        full_state = register_state(self._parse(full))
+        self.assertEqual(len(base), len(full_state), "frame count diverged")
+        n = min(len(base), len(full_state))
+        cells = int((base[:n] != full_state[:n]).sum())
+        self.assertEqual(
+            cells,
+            0,
+            f"{cells} register_state cells diverge full_macros vs non-replay stack",
+        )
+
     def test_intra_frame_writes_carry_nominal_diff(self):
         """Every intra-frame decoded write must carry the nominal `_MIN_DIFF`; a
-        frame-scale `diff` (the patch_pass `diff=irq` class) drives the FRAME budget
+        frame-scale `diff` (the `diff=irq` class) drives the FRAME budget
         negative and drops samples. Guards that fix across the full stack incl.
-        patch/sweep/stamp."""
+        sweep/stamp."""
         flags = dict(
             {f: True for f in REGISTERED_MACROS},
             skeleton_pass=True,
@@ -194,7 +220,6 @@ class TestRegisterOrderFidelity(unittest.TestCase):
             wt_short=True,
             wt_oneshot=True,
             slide_wide=True,
-            patch_pass=True,
             stamp_pass=True,
             sweep_pass=True,
             sweep_loop=True,

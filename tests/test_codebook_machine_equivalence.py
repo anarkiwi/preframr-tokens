@@ -11,10 +11,8 @@ import pandas as pd
 import pytest
 
 from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
-from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
-from preframr_tokens.macros.patch_pass import PatchPass
 from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
@@ -127,41 +125,6 @@ def _stamp_streams():
     return out
 
 
-def _patch_streams():
-    _AD, _SR = 5, 6
-
-    def load(loads, gap=2):
-        b = _Builder()
-        for ad, sr, freq_reg in loads:
-            b.frame().write(freq_reg + _AD, ad).write(freq_reg + _SR, sr)
-            for _ in range(gap):
-                b.frame()
-        b.frame()
-        return b.df()
-
-    out = {}
-    out["patch_def_set"] = PatchPass().apply(
-        load([(0x09, 0x00, 0)] * 3), args=_args(patch_pass=True)
-    )
-    out["patch_two"] = PatchPass().apply(
-        load([(0x09, 0x00, 0), (0xA5, 0xF0, 0), (0x09, 0x00, 0), (0xA5, 0xF0, 0)]),
-        args=_args(patch_pass=True),
-    )
-    out["patch_rebind"] = PatchPass().apply(
-        load(
-            [
-                (0x09, 0x00, 0),
-                (0x09, 0x00, 0),
-                (0xA5, 0xF0, 0),
-                (0xA5, 0xF0, 0),
-                (0x09, 0x00, 0),
-            ]
-        ),
-        args=_args(patch_pass=True),
-    )
-    return out
-
-
 def _wavetable_streams():
     _FREQ, _CTRL = 0, 4
 
@@ -185,28 +148,6 @@ def _wavetable_streams():
     )
     out["wt_oneshot"] = WavetablePass().apply(
         skel(build([26, 5, 9, 14], [40])), _args(wavetable_pass=True, wt_oneshot=True)
-    )
-    return out
-
-
-def _ctrl_wt_streams():
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-    c1 = int(CTRL_REGS_BY_VOICE[1])
-
-    def build(writes):
-        b = _Builder()
-        for reg, val in writes:
-            b.frame().write(reg, val)
-        b.frame()
-        return b.df()
-
-    out = {}
-    out["ctrl_wt_def_set"] = CtrlWavetablePass().apply(
-        build([(c0, 0x41), (c0, 0x81), (c0, 0x41), (c0, 0x41)]),
-        args=_args(ctrl_wavetable=True),
-    )
-    out["ctrl_wt_cross_voice"] = CtrlWavetablePass().apply(
-        build([(c0, 0x41), (c1, 0x41)]), args=_args(ctrl_wavetable=True)
     )
     return out
 
@@ -253,9 +194,7 @@ def _oneshot_handbuilt_stream():
 def _corpus():
     streams = {}
     streams.update(_stamp_streams())
-    streams.update(_patch_streams())
     streams.update(_wavetable_streams())
-    streams.update(_ctrl_wt_streams())
     streams.update(_instrument_streams())
     streams["dead_ref"] = _dead_ref_stream()
     streams["oneshot_handbuilt"] = _oneshot_handbuilt_stream()

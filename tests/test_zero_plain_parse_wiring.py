@@ -27,7 +27,6 @@ def _args(zero_plain):
         trajectory_anchor_pass=True,
         stamp_pass=True,
         sweep_pass=True,
-        patch_pass=True,
         held_arp=True,
         wavetable_pass=True,
         zero_plain=zero_plain,

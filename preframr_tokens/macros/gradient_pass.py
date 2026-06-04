@@ -2,7 +2,7 @@
 whose values step through a held curve -- and replace each run with GRADIENT atoms carrying
 (value, hold_frames) stages that drain one ffilled value per song frame. The Galway gradient envelope
 generalised across volume (``modevol_gradient``), envelope (``env_gradient``), filter
-(``filter_gradient``) and ctrl (``ctrl_gradient``); an aperiodic CTRL_OSC sibling. Default OFF.
+(``filter_gradient``) and ctrl (``ctrl_gradient``); an aperiodic SWEEP sibling. Default OFF.
 """
 
 __all__ = ["GradientPass"]
