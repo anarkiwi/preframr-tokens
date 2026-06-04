@@ -348,8 +348,6 @@ def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
     regs = reg_df["reg"]
     combined = np.zeros(len(reg_df), dtype=np.int64)
     for i in range(reg_range):
-        # byte i: value of reg+i forward-filled across rows (NA before its first
-        # write -> 0), shifted into its little-endian lane.
         byte = reg_df["val"].where(regs == (reg + i)).ffill().fillna(0).astype("int64")
         combined += np.left_shift(byte.to_numpy(), int(lobits * i))
     reg_df["val"] = combined
@@ -813,13 +811,6 @@ class RegLogParser:
         marker is worth ``round(diff / frame_period)`` units, a DELAY its val; the
         run's final marker (the next content frame) is kept verbatim so its
         voice-order survives. Cycle-preserving by construction."""
-        # Every output row is some input row, optionally with reg/val/diff
-        # overridden (non-markers and the run's trailing FRAME pass through
-        # verbatim; synthesized DELAY/FRAME rows inherit the run's first marker
-        # row and override reg/val/diff). So build the output by gathering source
-        # row indices and recording per-row overrides, instead of materialising
-        # dict-rows and re-inferring a DataFrame. norm_df is not needed -- its
-        # extra columns were discarded -- and the logic reads only reg/val/diff.
         df = orig_df.reset_index(drop=True)
         n = len(df)
         if not n:
@@ -835,8 +826,8 @@ class RegLogParser:
                 return int(val[k])
             return int(round(int(diff[k]) / frame_period)) if frame_period else 1
 
-        src = []  # source row index per output row
-        ov = {}  # output position -> (reg, val, diff) override
+        src = []
+        ov = {}
         i = 0
         while i < n:
             if not is_marker[i]:
@@ -851,7 +842,7 @@ class RegLogParser:
                 if empty > 0:
                     ov[len(src)] = (DELAY_REG, empty, frame_period)
                     src.append(i)
-                src.append(j - 1)  # trailing FRAME marker, verbatim
+                src.append(j - 1)
             else:
                 total = sum(_units(k) for k in range(i, j))
                 if total - 1 > 0:
@@ -1026,9 +1017,6 @@ class RegLogParser:
             assert delay_max <= 256, delay_max
         irq = min(2 ** (IRQ_PDTYPE.itemsize * 8) - 1, irq)
         df["irq"] = irq
-        # Strip the trailing run of frame markers and the leading run of
-        # MODE_VOL_REG==15 rows. Computed as single slices (find the cut index,
-        # slice once) rather than one full-df copy per stripped row.
         reg = df["reg"].to_numpy()
         keep = np.nonzero((reg != FRAME_REG) & (reg != DELAY_REG))[0]
         df = df.iloc[: keep[-1] + 1] if keep.size else df.iloc[:0]
