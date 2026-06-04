@@ -73,17 +73,21 @@ nibble-pair duplicates that A/B will collapse — re-measure after A/B before si
 2. Build B (INIT preamble). Re-measure.                   [DONE — INIT atom]
 4. Held_step singletons-at-onsets (NOT nibble-lane runs). [DONE — ONSET_DEF define-on-first]
 3. Extend C (hard-restart multiload) for the remainder.   [DONE — ENV_MULTILOAD, reuses HARD_RESTART_OP]
-6. FREQ pre-onset preamble (inaudible? audio test).       [TODO — user: freq-before-gate is inaudible]
+6. FREQ pre-onset preamble (inaudible).                   [DONE — PRE_GATE_FREQ drop/relocate, audio-exact]
 7. Nibble-lane SR/AD held (subreg 0/1).                   [TODO — surface design]
 5. Gate green → PR (NO release).
 
-## STATUS (2026-06-04): 444 -> 215 -> 20 -> 11 residual SETs on the sample (-97.5%)
+## STATUS (2026-06-04): 444 -> 215 -> 20 -> 11 -> 6 residual SETs on the sample (-98.6%)
 
-ENV_MULTILOAD (HardRestartPass `env_multiload` flag) drained 20 -> 11 by collapsing the
-same-frame AD/SR double-load into HARD_RESTART_OP (no new op; reg-generic decoder re-emits
-both writes in order). Remaining 11: ~5 FREQ pre-onset preamble (user: inaudible before
-first gate-on — confirm via preframr-audio test, then drop as audio-exact), ~6 nibble-lane
-SR/AD held on subreg 0/1 (CTRL_WT phases filter subreg==-1, so unseen).
+PRE_GATE_FREQ (PreGateFreqPass `pre_gate_freq` flag) drained 11 -> 6. A freq written before a
+voice's first gate-on is inaudible (preframr-audio test); the user-directed rule DROPs it when the
+first gated note sets its own freq, else RELOCATEs it into the gate-on frame for the onset/skeleton
+macros. The FIRST audio-exact (not register-state-exact) drain atom -- in parse_audit._LOSSY_RESETS,
+default OFF; the audible region (gate-on onward) is preserved (unit-tested). Remaining 6: all SR/AD
+held on subreg 0/1 nibble lanes (CTRL_WT phases filter subreg==-1, so unseen) -- nibble-lane mining,
+design to be surfaced.
+
+## STATUS (prior): 444 -> 215 -> 20 -> 11 residual SETs on the sample (-97.5%)
 
 ## STATUS (prior): 444 -> 215 -> 20 residual SETs on the sample (-95%)
 

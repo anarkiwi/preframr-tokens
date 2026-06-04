@@ -56,20 +56,24 @@ docker run --rm -v $PWD:/tok -v /scratch/preframr:/scratch/preframr -v /tmp:/tmp
   (gate-off + reload, the ADSR-bug workaround) into one HARD_RESTART_OP packing both
   bytes. The decoder is reg-generic, so it re-emits both writes in order (raw-write-order-
   exact). Runs in `PASSES` right before SubregPass (full bytes). Default OFF.
+- **PRE_GATE_FREQ** (no new op; `pre_gate_freq_pass.py` `PreGateFreqPass`, flag `pre_gate_freq`):
+  a freq written BEFORE a voice's first gate-on is inaudible (the un-gated voice emits nothing —
+  proven in preframr-audio `test_freq_write_audibility`, with the nuance that the pre-gate freq
+  advances oscillator PHASE so it is only don't-care when the first note resets the osc; the
+  user-directed rule sidesteps this). Rule: if the first gated note sets its own freq, DROP the
+  pre-gate freq; else RELOCATE it into the gate-on frame for the onset/skeleton macros. Runs FIRST
+  in the inline loop. **AUDIO-exact, NOT register-state-exact** (changes the silent pre-gate frames)
+  — the first such drain atom; default OFF, in `parse_audit._LOSSY_RESETS` so the auditor
+  re-baselines. The audible region (gate-on onward register_state) is preserved (unit-tested).
 
-Result: sample 444 -> 215 -> 20 -> **11** residual SETs. Suite green (962 + 4 onset_def +
-5 env_multiload passed, gate excluded; black/pylint 10.00/pyright clean).
+Result: sample 444 -> 215 -> 20 -> 11 -> **6** residual SETs. Suite green (966 passed: +4 onset_def
++5 env_multiload +4 pre_gate_freq; gate excluded; black/pylint 10.00/pyright clean).
 
-## Next, in priority order (all real abstractions, NO catch-all)
-The remaining 11 (digi-excluded stride sample): ~5 FREQ pre-onset preamble, ~6 nibble-lane
-/ misc stragglers (held_step 4 / per_frame 2 on subreg 0/1).
-1. **FREQ pre-onset preamble** (~5): reg0 freq written once at frames 1-4, BEFORE the first
-   gate-on. User insight (2026-06-04): a freq change before any gate-on is INAUDIBLE — so
-   these may be droppable as an AUDIO-exact (not register-state-exact) normalisation rather
-   than needing combined-reg INIT. Audio unit test in `preframr-audio` pending to confirm.
-2. **Nibble-lane stragglers** (~6): SR/AD held automation on subreg 0/1 (post-SubregPass).
-   Every CTRL_WT phase filters subreg==-1, so they are unseen. Needs nibble-lane mining
-   (decoder must re-emit the subreg write) — surface the design before building.
+## Next — the remaining 6 (all nibble-lane; surface design before building)
+The remaining 6 (digi-excluded stride sample) are all SR/AD held automation on subreg 0/1
+(post-SubregPass): held_step 4 (2 AD / 2 SR) + per_frame 2 (SR). Every CTRL_WT phase filters
+subreg==-1, so the nibble lanes are unseen. Drain needs nibble-lane mining keyed on `(reg, subreg)`
+— the decoder must re-emit the subreg write. User asked to surface this design before implementing.
 
 ## Invariants
 - Mine full bytes PRE-SubregPass (inline pass list, `reglogparser.py` ~988) where you
