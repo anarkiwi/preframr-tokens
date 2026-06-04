@@ -69,10 +69,36 @@ Double AD/SR (and ctrl) write in one frame = hard-restart gate-off + reload.
 nibble-pair duplicates that A/B will collapse — re-measure after A/B before sizing.
 
 ## Execution order
-1. Build A (held-step automation codebook). Re-measure.
-2. Build B (INIT preamble). Re-measure (expect multiwrite to fall as nibble pairs go).
-3. Extend C (hard-restart multiload) for the remainder.
-4. Gate green → PR `resid/ornament-and-digi` (NO release).
+1. Build A (held-step automation codebook). Re-measure.   [DONE — GRADIENT atom]
+2. Build B (INIT preamble). Re-measure.                   [DONE — INIT atom]
+3. Extend C (hard-restart multiload) for the remainder.   [TODO]
+4. Nibble-lane held_step (the post-SubregPass remainder). [TODO]
+5. Gate green → PR `resid/ornament-and-digi` (NO release).
+
+## STATUS (2026-06-04): 444 -> 215 residual SETs on the sample (-52%)
+
+Landed on `resid/ornament-and-digi` (default-OFF research flags, NOT in
+REGISTERED_MACROS, register-state-exact, unit-tested, suite green):
+- **GRADIENT atom** (`GRADIENT_OP=76`, `gradient_pass.py`): drains MODEVOL fades +
+  per-frame oscillation (held_step MODEVOL 30->7, per_frame 31->8). Flags
+  modevol_/env_/filter_/ctrl_gradient. Mines full bytes pre-SubregPass.
+- **INIT atom** (`INIT_OP=77`, `init_pass.py`): relabels pre-first-note-on SETs on
+  the single-byte value regs (`SUBREG_REGS`) as INIT; note-on boundary from
+  register_state (robust to note atoms); runs LAST over surviving SETs only (running
+  first drifts frame consolidation -> lossy). Flag init_preamble. Drains
+  init_startup 124->44 AND multiwrite 135->46 (init nibble-pairs vanish: INIT
+  relabels before SubregPass, so SubregPass skips them).
+
+Remaining 215: held_step 117 (SR/AD/CTRL sparse + post-SubregPass NIBBLE LANES,
+subreg 0/1 -- gradient is subreg==-1 only, needs a nibble-lane variant keyed on
+(reg,subreg), OR the writes are isolated singletons not in runs of >=3), init 44
+(mostly FREQ 30 -- combined 16-bit regs excluded from INIT; need combined-reg-aware
+init), multiwrite 46 (hard-restart double AD/SR load -> extend HardRestartPass),
+per_frame_dense 8.
+
+Acceptance gate `tests/test_residual_zero_corpus.py` is kept UNTRACKED (in
+.gitignore) so incremental PRs merge green while it still enforces 0 locally; do
+NOT commit it until the count is actually 0.
 
 ## Driver grounding (design/sid_driver_ornament_reference.md)
 
