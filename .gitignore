@@ -228,3 +228,4 @@ tests/.sid-cache/
 **/*.dump.parquet
 **/*.meta.parquet
 .claude/
+tests/test_residual_zero_corpus.py

@@ -13,6 +13,7 @@ from preframr_tokens.engine_fingerprint import (
 )
 from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
 from preframr_tokens.macros.gradient_pass import GradientPass
+from preframr_tokens.macros.init_pass import InitPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
 from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
@@ -1002,6 +1003,7 @@ class RegLogParser:
             NoteOffPass(),
             CtrlWavetablePass(),
             GradientPass(),
+            InitPass(),
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)

@@ -25,6 +25,7 @@ __all__ = [
     "SweepDecoder",
     "CtrlOscDecoder",
     "GradientDecoder",
+    "InitDecoder",
     "NoteOffDecoder",
 ]
 
@@ -62,6 +63,7 @@ from preframr_tokens.stfconstants import (
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
     GRADIENT_OP,
+    INIT_OP,
     GRADIENT_SUBREG_DUR_BASE,
     GRADIENT_SUBREG_END,
     GRADIENT_SUBREG_NSTAGES,
@@ -877,6 +879,22 @@ class GradientDecoder(MacroDecoder):
         return pre or None
 
 
+class InitDecoder(MacroDecoder):
+    """Decode an INIT atom (InitPass): re-emit the relabelled init-routine register write inline on its
+    reg, byte-identical to the literal pre-first-note-on SET (same reg, value, frame and intra-frame
+    position)."""
+
+    op_code = INIT_OP
+
+    def expand(self, row, state):
+        reg = int(row.reg)
+        pre = state.maybe_flush_for(reg, -1)
+        state.last_val[reg] = int(row.val)
+        state.last_diff[reg] = row.diff
+        own = (reg, int(state.last_val[reg]), row.diff, row.description)
+        return pre + [own]
+
+
 class NoteOffDecoder(MacroDecoder):
     """Decode a NOTE_OFF atom (NoteOffPass): re-emit the stored gate-clear ctrl byte inline on its reg,
     byte-identical to the literal SET it re-labels (same value, frame and intra-frame position).
@@ -921,6 +939,7 @@ DECODERS = {
         SweepDecoder(),
         CtrlOscDecoder(),
         GradientDecoder(),
+        InitDecoder(),
         NoteOffDecoder(),
     )
 }
