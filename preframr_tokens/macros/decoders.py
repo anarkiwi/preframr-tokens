@@ -24,6 +24,7 @@ __all__ = [
     "OrnamentDecoder",
     "SweepDecoder",
     "CtrlOscDecoder",
+    "GradientDecoder",
     "NoteOffDecoder",
 ]
 
@@ -60,6 +61,11 @@ from preframr_tokens.stfconstants import (
     CTRL_OSC_SUBREG_STATE_BASE,
     CTRL_TRIPLE_OP,
     CTRL_UPDATE_OP,
+    GRADIENT_OP,
+    GRADIENT_SUBREG_DUR_BASE,
+    GRADIENT_SUBREG_END,
+    GRADIENT_SUBREG_NSTAGES,
+    GRADIENT_SUBREG_VAL_BASE,
     CTRL_TRIPLE_SUBREG_0,
     CTRL_TRIPLE_SUBREG_1,
     CTRL_TRIPLE_SUBREG_2,
@@ -837,6 +843,40 @@ class CtrlOscDecoder(MacroDecoder):
         return pre or None
 
 
+class GradientDecoder(MacroDecoder):
+    """Decode a GRADIENT atom (GradientPass): NSTAGES opens the buffer, VAL_BASE+i / DUR_BASE+i give
+    each stage's (value, hold_frames), END (terminal) queues value repeated hold times per stage into
+    pending_set_writes -- one drained per song frame, reproducing the staged value-domain automation
+    curve (the Galway gradient envelope) byte-exact at register-state level. A CTRL_OSC sibling whose
+    stages are aperiodic and explicitly held."""
+
+    op_code = GRADIENT_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == GRADIENT_SUBREG_NSTAGES:
+            state.pending_gradient = {"reg": int(row.reg), "fields": {}}
+        pend = state.pending_gradient
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != GRADIENT_SUBREG_END:
+            return None
+        state.pending_gradient = None
+        f = pend["fields"]
+        reg = int(pend["reg"])
+        nstages = int(f.get(GRADIENT_SUBREG_NSTAGES, 0))
+        if nstages <= 0:
+            return None
+        pre = state.maybe_flush_for(reg, -1)
+        for i in range(nstages):
+            val = int(f.get(GRADIENT_SUBREG_VAL_BASE + i, 0))
+            dur = int(f.get(GRADIENT_SUBREG_DUR_BASE + i, 0))
+            for _ in range(dur):
+                state.pending_set_writes[reg].append(val)
+        return pre or None
+
+
 class NoteOffDecoder(MacroDecoder):
     """Decode a NOTE_OFF atom (NoteOffPass): re-emit the stored gate-clear ctrl byte inline on its reg,
     byte-identical to the literal SET it re-labels (same value, frame and intra-frame position).
@@ -880,6 +920,7 @@ DECODERS = {
         OrnamentDecoder(),
         SweepDecoder(),
         CtrlOscDecoder(),
+        GradientDecoder(),
         NoteOffDecoder(),
     )
 }
