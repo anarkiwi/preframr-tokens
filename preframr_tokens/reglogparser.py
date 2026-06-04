@@ -12,6 +12,7 @@ from preframr_tokens.engine_fingerprint import (
     compute_fingerprint,
 )
 from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
+from preframr_tokens.macros.gradient_pass import GradientPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
 from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
@@ -761,6 +762,8 @@ class RegLogParser:
         is_frame = df["reg"] == FRAME_REG
         frame_idx = is_frame.cumsum()
         vol_mask = df["reg"] == MODE_VOL_REG
+        if "op" in df.columns:
+            vol_mask = vol_mask & (df["op"] == SET_OP)
         if vol_mask.any():
             vol_per_frame = frame_idx[vol_mask].value_counts()
             max_vpf = int(vol_per_frame.max())
@@ -998,6 +1001,7 @@ class RegLogParser:
             CtrlOscPass(),
             NoteOffPass(),
             CtrlWavetablePass(),
+            GradientPass(),
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
