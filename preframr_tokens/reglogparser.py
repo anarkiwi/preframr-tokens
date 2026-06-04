@@ -344,14 +344,16 @@ def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
     (a plain-int caller upcasts to float there) before the shift.
     """
     origcols = reg_df.columns
+    reg_df = reg_df.copy()
+    regs = reg_df["reg"]
+    combined = np.zeros(len(reg_df), dtype=np.int64)
     for i in range(reg_range):
-        reg_df[str(i)] = reg_df[reg_df["reg"] == (reg + i)]["val"]
-        reg_df[str(i)] = reg_df[str(i)].ffill().fillna(0).astype("int64")
-        reg_df[str(i)] = np.left_shift(reg_df[str(i)].values, int(lobits * i))
-    reg_df["val"] = 0
+        # byte i: value of reg+i forward-filled across rows (NA before its first
+        # write -> 0), shifted into its little-endian lane.
+        byte = reg_df["val"].where(regs == (reg + i)).ffill().fillna(0).astype("int64")
+        combined += np.left_shift(byte.to_numpy(), int(lobits * i))
+    reg_df["val"] = combined
     reg_df["reg"] = reg
-    for i in range(reg_range):
-        reg_df["val"] = reg_df["val"].astype(dtype) + reg_df[str(i)]
     return reg_df[origcols]
 
 
