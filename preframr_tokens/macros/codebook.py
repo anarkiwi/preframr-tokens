@@ -61,6 +61,7 @@ __all__ = [
     "CodebookDecoder",
     "codebook_decoders",
     "DEAD_REF_POLICY",
+    "_Codebook",
 ]
 
 DEAD_REF_POLICY = "drop"
@@ -201,22 +202,36 @@ def _skel_lut():
     return LUT
 
 
+class _Codebook:
+    """One inline-codebook family's live decode state: the ``id -> entry`` table plus the two pending
+    buffers the unified machine reassembles into (``pending`` for an in-flight DEF, ``pending_ref`` for
+    a multi-row / table-less REF). Collapses the per-family ``pending_*`` fields onto ``DecodeState``.
+    """
+
+    __slots__ = ("table", "pending", "pending_ref")
+
+    def __init__(self):
+        self.table = {}
+        self.pending = None
+        self.pending_ref = None
+
+
 class _Codec:
     """Per-family payload codec lifted verbatim from the legacy per-op decoder. ``CodebookDecoder``
     owns the def/step/commit/ref lifecycle and the id table; the codec only serialises/replays the
-    family's payload onto ``state`` so behaviour is byte-identical to the decoder it replaces.
-    """
+    family's payload onto ``state`` (via the family's ``_Codebook`` ``cb``) so behaviour is
+    byte-identical to the decoder it replaces."""
 
-    def def_open(self, row, state):
+    def def_open(self, row, state, cb):
         raise NotImplementedError
 
-    def step(self, state, row):
+    def step(self, state, row, cb):
         return None
 
-    def commit(self, state, row):
+    def commit(self, state, row, cb):
         return None
 
-    def ref(self, state, row):
+    def ref(self, state, row, cb):
         return None
 
 
@@ -225,11 +240,11 @@ class _StampCodec(_Codec):
     replays it on the target voice and REL_REF additionally adds the per-hit base delta at offset 0.
     """
 
-    def def_open(self, row, state):
-        state.pending_stamp_def = {"id": int(row.val), "frames": [[]]}
+    def def_open(self, row, state, cb):
+        cb.pending = {"id": int(row.val), "frames": [[]]}
 
-    def step(self, state, row):
-        stamp = state.pending_stamp_def
+    def step(self, state, row, cb):
+        stamp = cb.pending
         if stamp is None:
             return None
         if int(row.subreg) == STAMP_SUBREG_FRAME:
@@ -238,17 +253,17 @@ class _StampCodec(_Codec):
             stamp["frames"][-1].append((int(row.subreg), int(row.val)))
         return None
 
-    def commit(self, state, row):
-        stamp = state.pending_stamp_def
+    def commit(self, state, row, cb):
+        stamp = cb.pending
         if stamp is not None:
-            state.stamp_table[int(stamp["id"])] = stamp["frames"]
-            state.pending_stamp_def = None
+            cb.table[int(stamp["id"])] = stamp["frames"]
+            cb.pending = None
         return None
 
-    def ref(self, state, row):
+    def ref(self, state, row, cb):
         if int(row.op) == STAMP_REL_REF_OP:
-            return self._rel_ref(row, state)
-        return self._ref(row, state)
+            return self._rel_ref(row, state, cb)
+        return self._ref(row, state, cb)
 
     @staticmethod
     def _offsets_in_order(frames):
@@ -264,8 +279,8 @@ class _StampCodec(_Codec):
         return offsets
 
     @classmethod
-    def _ref(cls, row, state):
-        frames = state.stamp_table.get(int(row.val))
+    def _ref(cls, row, state, cb):
+        frames = cb.table.get(int(row.val))
         if not frames:
             return None
         base = int(row.reg)
@@ -280,16 +295,16 @@ class _StampCodec(_Codec):
                     state.pending_set_writes[base + off].append(int(cur[off]))
         return pre or None
 
-    def _rel_ref(self, row, state):
+    def _rel_ref(self, row, state, cb):
         subreg = int(row.subreg)
         if subreg == STAMP_REL_SUBREG_ID:
-            state.pending_stamp_rel = {
+            cb.pending_ref = {
                 "id": int(row.val),
                 "reg": int(row.reg),
                 "base": 0,
             }
             return None
-        pend = state.pending_stamp_rel
+        pend = cb.pending_ref
         if pend is None:
             return None
         if subreg == STAMP_REL_SUBREG_BASE_HI:
@@ -298,12 +313,12 @@ class _StampCodec(_Codec):
         if subreg != STAMP_REL_SUBREG_BASE_LO:
             return None
         pend["base"] |= int(row.val) & 0xFF
-        state.pending_stamp_rel = None
-        return self._replay_rel(pend, state)
+        cb.pending_ref = None
+        return self._replay_rel(pend, state, cb)
 
     @classmethod
-    def _replay_rel(cls, pend, state):
-        frames = state.stamp_table.get(int(pend["id"]))
+    def _replay_rel(cls, pend, state, cb):
+        frames = cb.table.get(int(pend["id"]))
         if not frames:
             return None
         base = int(pend["base"])
@@ -330,16 +345,16 @@ class _PatchCodec(_Codec):
     emit it on the def's voice, SET re-emits a defined patch's AD/SR on the ref's voice.
     """
 
-    def def_open(self, row, state):
-        state.pending_patch_def = {
+    def def_open(self, row, state, cb):
+        cb.pending = {
             "id": int(row.val),
             "freq_reg": int(row.reg),
             "ad": None,
             "sr": None,
         }
 
-    def step(self, state, row):
-        pend = state.pending_patch_def
+    def step(self, state, row, cb):
+        pend = cb.pending
         if pend is None:
             return None
         if int(row.subreg) == PATCH_SUBREG_AD:
@@ -348,12 +363,12 @@ class _PatchCodec(_Codec):
             pend["sr"] = int(row.val)
         if pend["ad"] is None or pend["sr"] is None:
             return None
-        state.pending_patch_def = None
-        state.patch_table[int(pend["id"])] = (int(pend["ad"]), int(pend["sr"]))
+        cb.pending = None
+        cb.table[int(pend["id"])] = (int(pend["ad"]), int(pend["sr"]))
         return self._emit(int(pend["freq_reg"]), pend["ad"], pend["sr"], row, state)
 
-    def ref(self, state, row):
-        patch = state.patch_table.get(int(row.val))
+    def ref(self, state, row, cb):
+        patch = cb.table.get(int(row.val))
         if patch is None:
             return None
         return self._emit(int(row.reg), patch[0], patch[1], row, state)
@@ -376,20 +391,20 @@ class _CtrlWtCodec(_Codec):
     """Inline ctrl-state codebook: DEF + STEP buffer a single ctrl byte into the id table and emit it
     on the def's voice, SET re-emits the defined byte on the ref's voice."""
 
-    def def_open(self, row, state):
-        state.pending_ctrl_wt_def = {"id": int(row.val), "reg": int(row.reg)}
+    def def_open(self, row, state, cb):
+        cb.pending = {"id": int(row.val), "reg": int(row.reg)}
 
-    def step(self, state, row):
-        pend = state.pending_ctrl_wt_def
+    def step(self, state, row, cb):
+        pend = cb.pending
         if pend is None or int(row.subreg) != CTRL_WT_SUBREG_VAL:
             return None
-        state.pending_ctrl_wt_def = None
+        cb.pending = None
         val = int(row.val)
-        state.ctrl_wt_table[int(pend["id"])] = val
+        cb.table[int(pend["id"])] = val
         return self._emit(int(pend["reg"]), val, row, state)
 
-    def ref(self, state, row):
-        val = state.ctrl_wt_table.get(int(row.val))
+    def ref(self, state, row, cb):
+        val = cb.table.get(int(row.val))
         if val is None:
             return None
         return self._emit(int(row.reg), int(val), row, state)
@@ -408,11 +423,11 @@ class _WavetableCodec(_Codec):
     both queue base + LUT[note+off] per frame onto last_skel_note via pending_set_writes.
     """
 
-    def def_open(self, row, state):
-        state.pending_wavetable_def = {"id": int(row.val), "steps": [], "loop": 0}
+    def def_open(self, row, state, cb):
+        cb.pending = {"id": int(row.val), "steps": [], "loop": 0}
 
-    def step(self, state, row):
-        wt = state.pending_wavetable_def
+    def step(self, state, row, cb):
+        wt = cb.pending
         if wt is None:
             return None
         subreg = int(row.subreg)
@@ -426,28 +441,28 @@ class _WavetableCodec(_Codec):
             wt["loop"] = int(row.val) & 0xFFFF
         return None
 
-    def commit(self, state, row):
-        wt = state.pending_wavetable_def
+    def commit(self, state, row, cb):
+        wt = cb.pending
         if wt is not None:
-            state.wavetable_table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
-            state.pending_wavetable_def = None
+            cb.table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
+            cb.pending = None
         return None
 
-    def ref(self, state, row):
+    def ref(self, state, row, cb):
         if int(row.op) == WAVETABLE_ONESHOT_OP:
-            return self._oneshot(row, state)
-        return self._wt_ref(row, state)
+            return self._oneshot(row, state, cb)
+        return self._wt_ref(row, state, cb)
 
-    def _oneshot(self, row, state):
+    def _oneshot(self, row, state, cb):
         subreg = int(row.subreg)
         if subreg == WT_ONESHOT_SUBREG_LEN_HI:
-            state.pending_wavetable_oneshot = {
+            cb.pending_ref = {
                 "reg": int(row.reg),
                 "len": (int(row.val) & 0xFF) << 8,
                 "steps": [],
             }
             return None
-        pend = state.pending_wavetable_oneshot
+        pend = cb.pending_ref
         if pend is None:
             return None
         if subreg == WT_ONESHOT_SUBREG_LEN_LO:
@@ -461,11 +476,11 @@ class _WavetableCodec(_Codec):
             if pend["steps"]:
                 pend["steps"][-1][1] = int(row.val) & 0xFFFF
             return None
-        return self._replay_oneshot(pend, state)
+        return self._replay_oneshot(pend, state, cb)
 
     @staticmethod
-    def _replay_oneshot(pend, state):
-        state.pending_wavetable_oneshot = None
+    def _replay_oneshot(pend, state, cb):
+        cb.pending_ref = None
         steps = pend["steps"]
         reg = int(pend["reg"])
         note = int(state.last_skel_note.get(reg, 0))
@@ -477,10 +492,10 @@ class _WavetableCodec(_Codec):
             queue.append(int(lut[max(0, min(127, note + int(off)))]))
         return None
 
-    def _wt_ref(self, row, state):
+    def _wt_ref(self, row, state, cb):
         subreg = int(row.subreg)
         if subreg == WT_REF_SUBREG_ID:
-            state.pending_wavetable_ref = {
+            cb.pending_ref = {
                 "id": int(row.val),
                 "reg": int(row.reg),
                 "len": 0,
@@ -488,7 +503,7 @@ class _WavetableCodec(_Codec):
                 "lead_n": 0,
             }
             return None
-        pend = state.pending_wavetable_ref
+        pend = cb.pending_ref
         if pend is None:
             return None
         if subreg == WT_REF_SUBREG_LEN_HI:
@@ -500,20 +515,20 @@ class _WavetableCodec(_Codec):
         if subreg == WT_REF_SUBREG_LEAD:
             pend["lead_n"] = int(row.val) & 0xFFFF
             if pend["lead_n"] == 0:
-                return self._replay(pend, state)
+                return self._replay(pend, state, cb)
             return None
         if subreg == WT_REF_SUBREG_LEADOFF:
             v = int(row.val) & 0xFF
             pend["lead"].append(v if v < 128 else v - 256)
             if len(pend["lead"]) >= pend["lead_n"]:
-                return self._replay(pend, state)
+                return self._replay(pend, state, cb)
             return None
         return None
 
     @staticmethod
-    def _replay(pend, state):
-        state.pending_wavetable_ref = None
-        program = state.wavetable_table.get(int(pend["id"]))
+    def _replay(pend, state, cb):
+        cb.pending_ref = None
+        program = cb.table.get(int(pend["id"]))
         if program is None:
             return None
         steps, loop = program
@@ -539,29 +554,31 @@ _CODECS: dict[str, _Codec] = {
 class CodebookDecoder:
     """One decoder, instantiated per family, registered for every op the family owns. Routes a row to
     its lifecycle phase from the registry (def opens a pending entry, step/commit make the id live,
-    ref replays it) and delegates the payload codec, so all four families share one machine.
-    """
+    ref replays it) and delegates the payload codec against the family's ``_Codebook``, so all four
+    families share one machine."""
 
     op_code = -1
 
     def __init__(self, family: CodebookFamily, codec: _Codec):
         self.family = family
         self.codec = codec
+        self.table_index = family.table_index
         self._ref_ops = frozenset(r.op for r in family.refs)
         self._step_ops = frozenset(family.step_ops)
 
     def expand(self, row, state):
         op = int(row.op)
         fam = self.family
+        cb = state.codebooks[self.table_index]
         if op == fam.def_op:
-            self.codec.def_open(row, state)
+            self.codec.def_open(row, state, cb)
             return None
         if op in self._ref_ops:
-            return self.codec.ref(state, row)
+            return self.codec.ref(state, row, cb)
         if op in self._step_ops:
-            return self.codec.step(state, row)
+            return self.codec.step(state, row, cb)
         if op == fam.commit_op:
-            return self.codec.commit(state, row)
+            return self.codec.commit(state, row, cb)
         return None
 
 

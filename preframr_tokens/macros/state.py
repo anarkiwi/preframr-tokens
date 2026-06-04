@@ -9,7 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from preframr_tokens.macros.codebook import CODEBOOK_TABLE_NAMES
+from preframr_tokens.macros.codebook import CODEBOOK_TABLE_NAMES, _Codebook
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     FILTER_REG,
@@ -153,7 +153,7 @@ class DecodeState:
         self.last_freq_v0 = {}
         self.last_skel_note = {}
         self.pending_orn = None
-        self.codebooks = {i: {} for i in range(len(CODEBOOK_TABLE_NAMES))}
+        self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_stamp_def = None
         self.pending_stamp_rel = None
         self.pending_sweep = None
@@ -177,19 +177,19 @@ class DecodeState:
 
     @property
     def stamp_table(self):
-        return self.codebooks[_TABLE_IDX["stamp"]]
+        return self.codebooks[_TABLE_IDX["stamp"]].table
 
     @property
     def patch_table(self):
-        return self.codebooks[_TABLE_IDX["patch"]]
+        return self.codebooks[_TABLE_IDX["patch"]].table
 
     @property
     def wavetable_table(self):
-        return self.codebooks[_TABLE_IDX["wavetable"]]
+        return self.codebooks[_TABLE_IDX["wavetable"]].table
 
     @property
     def ctrl_wt_table(self):
-        return self.codebooks[_TABLE_IDX["ctrl_wt"]]
+        return self.codebooks[_TABLE_IDX["ctrl_wt"]].table
 
     def _apply_seed(self, seed):
         """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
