@@ -811,60 +811,60 @@ class RegLogParser:
         marker is worth ``round(diff / frame_period)`` units, a DELAY its val; the
         run's final marker (the next content frame) is kept verbatim so its
         voice-order survives. Cycle-preserving by construction."""
-        rows = norm_df(orig_df.copy()).to_dict("records")
-        n = len(rows)
+        # Every output row is some input row, optionally with reg/val/diff
+        # overridden (non-markers and the run's trailing FRAME pass through
+        # verbatim; synthesized DELAY/FRAME rows inherit the run's first marker
+        # row and override reg/val/diff). So build the output by gathering source
+        # row indices and recording per-row overrides, instead of materialising
+        # dict-rows and re-inferring a DataFrame. norm_df is not needed -- its
+        # extra columns were discarded -- and the logic reads only reg/val/diff.
+        df = orig_df.reset_index(drop=True)
+        n = len(df)
         if not n:
-            return orig_df.reset_index(drop=True)
+            return df
         frame_period = read_initial_irq(orig_df)
+        reg = df["reg"].to_numpy()
+        val = df["val"].to_numpy()
+        diff = df["diff"].to_numpy()
+        is_marker = (reg == FRAME_REG) | (reg == DELAY_REG)
 
-        def _units(r):
-            if int(r["reg"]) == DELAY_REG:
-                return int(r["val"])
-            return int(round(int(r["diff"]) / frame_period)) if frame_period else 1
+        def _units(k):
+            if int(reg[k]) == DELAY_REG:
+                return int(val[k])
+            return int(round(int(diff[k]) / frame_period)) if frame_period else 1
 
-        def _is_marker(r):
-            return int(r["reg"]) in (FRAME_REG, DELAY_REG)
-
-        out = []
+        src = []  # source row index per output row
+        ov = {}  # output position -> (reg, val, diff) override
         i = 0
         while i < n:
-            if not _is_marker(rows[i]):
-                out.append(rows[i])
+            if not is_marker[i]:
+                src.append(i)
                 i += 1
                 continue
             j = i
-            while j < n and _is_marker(rows[j]):
+            while j < n and is_marker[j]:
                 j += 1
-            last = rows[j - 1]
-            if int(last["reg"]) == FRAME_REG:
-                empty = sum(_units(rows[k]) for k in range(i, j - 1))
+            if int(reg[j - 1]) == FRAME_REG:
+                empty = sum(_units(k) for k in range(i, j - 1))
                 if empty > 0:
-                    out.append(
-                        {
-                            **rows[i],
-                            "reg": DELAY_REG,
-                            "val": empty,
-                            "diff": frame_period,
-                        }
-                    )
-                out.append(last)
+                    ov[len(src)] = (DELAY_REG, empty, frame_period)
+                    src.append(i)
+                src.append(j - 1)  # trailing FRAME marker, verbatim
             else:
-                total = sum(_units(rows[k]) for k in range(i, j))
+                total = sum(_units(k) for k in range(i, j))
                 if total - 1 > 0:
-                    out.append(
-                        {
-                            **rows[i],
-                            "reg": DELAY_REG,
-                            "val": total - 1,
-                            "diff": frame_period,
-                        }
-                    )
-                out.append(
-                    {**rows[i], "reg": FRAME_REG, "val": 0, "diff": frame_period}
-                )
+                    ov[len(src)] = (DELAY_REG, total - 1, frame_period)
+                    src.append(i)
+                ov[len(src)] = (FRAME_REG, 0, frame_period)
+                src.append(i)
             i = j
-        df = pd.DataFrame(out)
-        return df[orig_df.columns].astype(orig_df.dtypes).reset_index(drop=True)
+        out = df.iloc[src].reset_index(drop=True)
+        if ov:
+            pos = sorted(ov)
+            out.loc[pos, "reg"] = [ov[p][0] for p in pos]
+            out.loc[pos, "val"] = [ov[p][1] for p in pos]
+            out.loc[pos, "diff"] = [ov[p][2] for p in pos]
+        return out[orig_df.columns].astype(orig_df.dtypes).reset_index(drop=True)
 
     def _squeeze_frame_regs(self, orig_df, regs=(0, 2, 21)):
         df = norm_df(orig_df.copy())
