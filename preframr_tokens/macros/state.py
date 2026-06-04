@@ -9,6 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from preframr_tokens.macros.codebook import CODEBOOK_TABLE_NAMES
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     FILTER_REG,
@@ -114,6 +115,9 @@ _BUNDLE_REGS_FLAT = frozenset(
 )
 
 
+_TABLE_IDX = {name: i for i, name in enumerate(CODEBOOK_TABLE_NAMES)}
+
+
 class DecodeState:
     """Per-stream state shared by all ``MacroDecoder`` invocations."""
 
@@ -149,16 +153,13 @@ class DecodeState:
         self.last_freq_v0 = {}
         self.last_skel_note = {}
         self.pending_orn = None
+        self.codebooks = {i: {} for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_stamp_def = None
-        self.stamp_table = {}
         self.pending_stamp_rel = None
         self.pending_sweep = None
         self.pending_ctrl_osc = None
         self.pending_ctrl_wt_def = None
-        self.ctrl_wt_table = {}
         self.pending_patch_def = None
-        self.patch_table = {}
-        self.wavetable_table = {}
         self.pending_wavetable_def = None
         self.pending_wavetable_ref = None
         self.pending_wavetable_oneshot = None
@@ -173,6 +174,22 @@ class DecodeState:
         self.pending_deferred_post_marker = []
         if seed:
             self._apply_seed(seed)
+
+    @property
+    def stamp_table(self):
+        return self.codebooks[_TABLE_IDX["stamp"]]
+
+    @property
+    def patch_table(self):
+        return self.codebooks[_TABLE_IDX["patch"]]
+
+    @property
+    def wavetable_table(self):
+        return self.codebooks[_TABLE_IDX["wavetable"]]
+
+    @property
+    def ctrl_wt_table(self):
+        return self.codebooks[_TABLE_IDX["ctrl_wt"]]
 
     def _apply_seed(self, seed):
         """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
