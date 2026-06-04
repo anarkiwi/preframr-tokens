@@ -72,7 +72,6 @@ PASSES = [
     GateSlopeShiftPass(),
     TransposePass(),
     DedupSetPass(),
-    DedupSetPass(),
     HardRestartPass(),
     LegatoPerClusterPass(),
     CtrlTriplePass(),
