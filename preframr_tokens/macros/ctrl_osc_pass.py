@@ -163,10 +163,6 @@ class CtrlOscPass(MacroPass):
         run_end = f0 + end
         write_frames = sorted(fr for fr in anchor_row if run_start <= fr <= run_end)
         starts = cls._chunk_starts(write_frames)
-        # The run is periodic with period P over [pos, end] (>= 2P frames), so read the cycle once
-        # from the run start (always in range) and rotate by each chunk's phase -- reading P frames
-        # directly from a chunk start near the run end overflows the timeline and would read past the
-        # periodic span (a crash / a non-byte-exact cycle on runs ending at the tune tail).
         run_cycle = [int(timeline[pos + m]) for m in range(period)]
         new_rows = []
         for ci, cs in enumerate(starts):

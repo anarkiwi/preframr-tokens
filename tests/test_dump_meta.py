@@ -121,8 +121,6 @@ class TestDigiDetection(unittest.TestCase):
             self.assertFalse(meta.is_digi)
 
     def test_high_pw_density_flagged_as_digi(self):
-        # PWM digi signature: dense pulse-width writes ($D402/$D403); is_digi missed
-        # these before (vol/ctrl only). Reg 2 = voice-0 PW lo.
         with tempfile.TemporaryDirectory() as td:
             dump_path = Path(td) / f"pwdigi{DUMP_SUFFIX}"
             df = _pw_raw_df(pw_changes_per_frame=50)
@@ -133,7 +131,6 @@ class TestDigiDetection(unittest.TestCase):
             self.assertGreaterEqual(meta.pw_changes_per_frame_max, 50)
 
     def test_low_pw_density_not_digi(self):
-        # normal-tune PW activity (corpus p99 ~= 12, max observed ~24) stays clean
         with tempfile.TemporaryDirectory() as td:
             dump_path = Path(td) / f"pwclean{DUMP_SUFFIX}"
             df = _pw_raw_df(pw_changes_per_frame=12)

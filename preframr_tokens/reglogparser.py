@@ -1052,6 +1052,8 @@ class RegLogParser:
             audit.after(xdf, "FreqNudgePass")
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
             audit.after(xdf, "CtrlUpdatePass")
+            xdf = CtrlWavetablePass().apply(xdf, args=self.args)
+            audit.after(xdf, "CtrlWavetablePass(post-voice)")
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
             audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)

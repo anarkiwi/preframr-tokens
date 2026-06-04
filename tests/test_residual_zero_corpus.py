@@ -1,16 +1,8 @@
-"""ACCEPTANCE GATE -- residual raw SETs must be ZERO across a real-corpus sample.
-
-Every raw ``SET`` surviving the residual macro arm is an unmodeled driver mechanism
-(the project's non-negotiable principle: nothing is "irreducible/unique"). This test
-parses a deterministic sample of real corpus tunes through the FULL ``RegLogParser.parse``
-(``reparse=True`` -- never the stale ``.parquet`` cache), digi-excluded, and asserts the
-total residual-SET count is 0. On failure it reports each outlier tune + a sample of the
-surviving ``(reg, subreg, val)`` so the unmodeled mechanism can be found and modelled.
-
-This gate is deliberately strict: NO threshold, NO xfail, NO skip-on-residual. It may only
-be removed/weakened by the human, never by an agent. The residual-drain work is done only
-when this test passes. Corpus path: ``$PREFRAMR_RESID_CORPUS`` (default ``/scratch/preframr/hvsc``).
-"""
+"""ACCEPTANCE GATE: residual raw SETs must be ZERO across a real-corpus sample (each is an
+unmodeled mechanism; nothing is "irreducible"). Parses a deterministic corpus sample through
+the full parse() (reparse=True, never the stale cache), digi-excluded, asserts 0 residual SETs,
+reports outliers on failure. Strict -- NO threshold/xfail/skip-on-residual, human-only to weaken.
+Corpus: $PREFRAMR_RESID_CORPUS (default /scratch/preframr/hvsc)."""
 
 import glob
 import os
@@ -20,9 +12,6 @@ from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.tokenizer_config import default_tokenizer_args
 from preframr_tokens.stfconstants import SET_OP
 
-# The residual arm (keep in sync with residual_mechanism.py _BASE + _CODEBOOK). Every
-# byte-exact, default-OFF macro that targets the residual; a SET surviving ALL of these is
-# an unmodeled mechanism.
 _RESIDUAL_ARM = (
     "preset_pass",
     "hard_restart_pass",
@@ -59,7 +48,6 @@ _RESIDUAL_ARM = (
 )
 
 _CORPUS = os.environ.get("PREFRAMR_RESID_CORPUS", "/scratch/preframr/hvsc")
-# Deterministic 1/N stride over the sorted corpus; override for a denser/sparser gate.
 _STRIDE = int(os.environ.get("PREFRAMR_RESID_STRIDE", "1500"))
 
 
@@ -89,7 +77,6 @@ class TestResidualZeroCorpus(unittest.TestCase):
         allf = sorted(
             glob.glob(os.path.join(_CORPUS, "**", "*.dump.parquet"), recursive=True)
         )
-        # A missing corpus is a FAILURE, not a skip -- this gate must never silently pass.
         self.assertTrue(
             allf,
             f"residual-zero gate requires the corpus at {_CORPUS} "
@@ -110,7 +97,7 @@ class TestResidualZeroCorpus(unittest.TestCase):
                 )
             except StopIteration:
                 continue
-            except Exception as e:  # noqa: BLE001  -- a parse crash is an outlier too
+            except Exception as e:  # noqa: BLE001
                 total += 1
                 outliers.append((name, -1, f"PARSE CRASH: {type(e).__name__}: {e}"))
                 continue

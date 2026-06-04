@@ -54,6 +54,19 @@ def _row(reg, op, subreg, val, irq):
     return make_row(reg, val, op=op, subreg=subreg, diff=_MIN_DIFF, irq=irq)
 
 
+def _max_def_id(df):
+    """Largest CTRL_WT codebook id already defined in ``df`` (-1 if none), so a re-mine pass
+    allocates fresh ids above it instead of colliding with committed DEFs."""
+    ops = df["op"].to_numpy()
+    subs = df["subreg"].to_numpy()
+    vals = df["val"].to_numpy()
+    m = -1
+    for i in range(len(df)):
+        if int(ops[i]) == CTRL_WT_DEF_OP and int(subs[i]) == CTRL_WT_SUBREG_ID:
+            m = max(m, int(vals[i]))
+    return m
+
+
 class CtrlWavetablePass(MacroPass):
     """Mine recurring per-reg bytes -- voice ctrl (``ctrl_wavetable``), AD/SR (``env_wavetable``),
     filter cutoff/resonance (``filter_wavetable``), master mode/vol (``modevol_wavetable``) -- and
@@ -96,10 +109,13 @@ class CtrlWavetablePass(MacroPass):
         if "op" not in df.columns:
             df["op"] = int(SET_OP)
         irq = _first_irq(df)
-        events = self._events(df, set(target))
-        claims = self._emit(events, irq)
+        target_set = set(target)
+        base = _max_def_id(df) + 1
+        events = self._events(df, target_set)
+        claims = self._emit(events, irq, start_id=base) if target_set else []
         if onset:
-            claims.extend(self._onset_claims(df, irq, self._next_id(claims)))
+            onset_start = self._next_id(claims) if claims else base
+            claims.extend(self._onset_claims(df, irq, onset_start))
         if not claims:
             return df
         return arbitrate(df, claims, validate=True)
@@ -156,7 +172,7 @@ class CtrlWavetablePass(MacroPass):
         return reg % VOICE_REG_SIZE if reg < 21 else reg
 
     @classmethod
-    def _emit(cls, events, irq):
+    def _emit(cls, events, irq, start_id=0):
         """Two phases sharing one id space. Phase 1 keys per-voice (reg, val) -- always ordering-safe.
         Phase 2 keys the per-voice SINGLETONS cross-voice (reg_class, val) -- a shared instrument used
         once per voice -- emitting a group only when its DEF's frame is strictly earliest (no same-frame
@@ -179,6 +195,7 @@ class CtrlWavetablePass(MacroPass):
         consumed: set = set()
         grouped, next_id = emit_recurring(
             groups,
+            start_id=start_id,
             minrep=CTRL_WT_MINREP,
             group_sort=lambda kv: (min(e["pos"] for e in kv[1]), kv[0]),
             occ_sort=lambda e: e["pos"],
