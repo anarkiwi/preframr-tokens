@@ -6,6 +6,41 @@ added upstream without a family registration)."""
 
 from preframr_tokens.macros import codebook
 from preframr_tokens.macros.op_contracts import CODEBOOK_SPECS, CODEBOOK_TABLES
+from preframr_tokens.stfconstants import (
+    CTRL_WT_DEF_OP,
+    CTRL_WT_SET_OP,
+    CTRL_WT_STEP_OP,
+    CTRL_WT_SUBREG_VAL,
+    PATCH_DEF_OP,
+    PATCH_SET_OP,
+    PATCH_STEP_OP,
+    PATCH_SUBREG_SR,
+    STAMP_DEF_OP,
+    STAMP_END_OP,
+    STAMP_REF_OP,
+    STAMP_REL_REF_OP,
+    STAMP_REL_SUBREG_ID,
+    WAVETABLE_DEF_OP,
+    WAVETABLE_END_OP,
+    WAVETABLE_REF_OP,
+    WT_REF_SUBREG_ID,
+)
+
+FROZEN_LEGACY_SPECS = {
+    STAMP_DEF_OP: ("stamp", "def", None),
+    STAMP_END_OP: ("stamp", "commit", None),
+    STAMP_REF_OP: ("stamp", "ref", None),
+    STAMP_REL_REF_OP: ("stamp", "ref", STAMP_REL_SUBREG_ID),
+    PATCH_DEF_OP: ("patch", "def", None),
+    PATCH_STEP_OP: ("patch", "commit", PATCH_SUBREG_SR),
+    PATCH_SET_OP: ("patch", "ref", None),
+    WAVETABLE_DEF_OP: ("wavetable", "def", None),
+    WAVETABLE_END_OP: ("wavetable", "commit", None),
+    WAVETABLE_REF_OP: ("wavetable", "ref", WT_REF_SUBREG_ID),
+    CTRL_WT_DEF_OP: ("ctrl_wt", "def", None),
+    CTRL_WT_STEP_OP: ("ctrl_wt", "commit", CTRL_WT_SUBREG_VAL),
+    CTRL_WT_SET_OP: ("ctrl_wt", "ref", None),
+}
 
 
 def test_table_names_match_legacy():
@@ -13,18 +48,23 @@ def test_table_names_match_legacy():
 
 
 def test_derived_specs_match_legacy_literal():
-    """codebook.codebook_spec_tuples() reproduces op_contracts.CODEBOOK_SPECS exactly."""
-    legacy = {
+    """The registry-derived spec tuples reproduce the frozen pre-refactor CODEBOOK_SPECS literal."""
+    derived = codebook.codebook_spec_tuples()
+    assert derived == FROZEN_LEGACY_SPECS, (
+        f"registry-derived specs diverge from the frozen legacy literal:\n"
+        f"  only in legacy: {set(FROZEN_LEGACY_SPECS) - set(derived)}\n"
+        f"  only in derived: {set(derived) - set(FROZEN_LEGACY_SPECS)}\n"
+        f"  value mismatches: "
+        f"{ {op: (FROZEN_LEGACY_SPECS[op], derived[op]) for op in set(FROZEN_LEGACY_SPECS) & set(derived) if FROZEN_LEGACY_SPECS[op] != derived[op]} }"
+    )
+
+
+def test_op_contracts_specs_derive_from_registry():
+    """op_contracts.CODEBOOK_SPECS (now derived) equals the frozen pre-refactor literal."""
+    derived = {
         op: (spec.table, spec.kind, spec.subreg) for op, spec in CODEBOOK_SPECS.items()
     }
-    derived = codebook.codebook_spec_tuples()
-    assert derived == legacy, (
-        f"registry-derived specs diverge from legacy literal:\n"
-        f"  only in legacy: {set(legacy) - set(derived)}\n"
-        f"  only in derived: {set(derived) - set(legacy)}\n"
-        f"  value mismatches: "
-        f"{ {op: (legacy[op], derived[op]) for op in set(legacy) & set(derived) if legacy[op] != derived[op]} }"
-    )
+    assert derived == FROZEN_LEGACY_SPECS
 
 
 def test_every_legacy_spec_op_has_a_family():

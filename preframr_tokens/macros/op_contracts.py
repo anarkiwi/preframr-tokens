@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import preframr_tokens.stfconstants as _stfconstants
+from preframr_tokens.macros.codebook import codebook_spec_tuples
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     CTRL_BIGRAM_OP,
@@ -20,7 +21,6 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_DEF_OP,
     CTRL_WT_SET_OP,
     CTRL_WT_STEP_OP,
-    CTRL_WT_SUBREG_VAL,
     DIFF_OP,
     DO_LOOP_OP,
     FC_PRESET_OP,
@@ -54,12 +54,10 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SKEL_OP,
     ORN_OP,
-    PATCH_SUBREG_SR,
     STAMP_DEF_OP,
     STAMP_END_OP,
     STAMP_REF_OP,
     STAMP_REL_REF_OP,
-    STAMP_REL_SUBREG_ID,
     STAMP_STEP_OP,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
@@ -71,7 +69,6 @@ from preframr_tokens.stfconstants import (
     WAVETABLE_REF_OP,
     WAVETABLE_STEP_OP,
     WAVETABLE_SUSTAIN_OP,
-    WT_REF_SUBREG_ID,
 )
 
 __all__ = [
@@ -265,25 +262,8 @@ class CodebookSpec:
 
 
 CODEBOOK_SPECS: dict[int, CodebookSpec] = {
-    STAMP_DEF_OP: CodebookSpec(STAMP_DEF_OP, "stamp", "def"),
-    STAMP_END_OP: CodebookSpec(STAMP_END_OP, "stamp", "commit"),
-    STAMP_REF_OP: CodebookSpec(STAMP_REF_OP, "stamp", "ref"),
-    STAMP_REL_REF_OP: CodebookSpec(
-        STAMP_REL_REF_OP, "stamp", "ref", STAMP_REL_SUBREG_ID
-    ),
-    PATCH_DEF_OP: CodebookSpec(PATCH_DEF_OP, "patch", "def"),
-    PATCH_STEP_OP: CodebookSpec(PATCH_STEP_OP, "patch", "commit", PATCH_SUBREG_SR),
-    PATCH_SET_OP: CodebookSpec(PATCH_SET_OP, "patch", "ref"),
-    WAVETABLE_DEF_OP: CodebookSpec(WAVETABLE_DEF_OP, "wavetable", "def"),
-    WAVETABLE_END_OP: CodebookSpec(WAVETABLE_END_OP, "wavetable", "commit"),
-    WAVETABLE_REF_OP: CodebookSpec(
-        WAVETABLE_REF_OP, "wavetable", "ref", WT_REF_SUBREG_ID
-    ),
-    CTRL_WT_DEF_OP: CodebookSpec(CTRL_WT_DEF_OP, "ctrl_wt", "def"),
-    CTRL_WT_STEP_OP: CodebookSpec(
-        CTRL_WT_STEP_OP, "ctrl_wt", "commit", CTRL_WT_SUBREG_VAL
-    ),
-    CTRL_WT_SET_OP: CodebookSpec(CTRL_WT_SET_OP, "ctrl_wt", "ref"),
+    op: CodebookSpec(op, table, kind, subreg)
+    for op, (table, kind, subreg) in codebook_spec_tuples().items()
 }
 
 
