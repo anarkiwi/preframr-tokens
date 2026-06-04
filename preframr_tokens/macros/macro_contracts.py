@@ -13,6 +13,7 @@ from enum import Enum
 from preframr_tokens.stfconstants import (
     CTRL_OSC_OP,
     CTRL_WT_SET_OP,
+    GRADIENT_OP,
     DIFF_OP,
     FLIP_OP,
     FREQ_TRAJ_OP,
@@ -312,6 +313,7 @@ REPLAY_OPS = frozenset(
         int(WAVETABLE_ONESHOT_OP),
         int(PATCH_SET_OP),
         int(CTRL_OSC_OP),
+        int(GRADIENT_OP),
         int(CTRL_WT_SET_OP),
     }
 )

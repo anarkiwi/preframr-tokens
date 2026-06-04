@@ -163,11 +163,12 @@ class CtrlOscPass(MacroPass):
         run_end = f0 + end
         write_frames = sorted(fr for fr in anchor_row if run_start <= fr <= run_end)
         starts = cls._chunk_starts(write_frames)
+        run_cycle = [int(timeline[pos + m]) for m in range(period)]
         new_rows = []
         for ci, cs in enumerate(starts):
             ce = (starts[ci + 1] - 1) if ci + 1 < len(starts) else run_end
-            base = cs - f0
-            cycle = [int(timeline[base + m]) for m in range(period)]
+            phase = (cs - f0 - pos) % period
+            cycle = [run_cycle[(phase + m) % period] for m in range(period)]
             chunk_pos = anchor_row[cs]
             for r in cls._osc_rows(reg, cycle, period, ce - cs + 1, irq):
                 r["__pos"] = chunk_pos

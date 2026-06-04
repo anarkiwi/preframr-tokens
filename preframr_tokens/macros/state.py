@@ -154,6 +154,7 @@ class DecodeState:
         self.pending_stamp_rel = None
         self.pending_sweep = None
         self.pending_ctrl_osc = None
+        self.pending_gradient = None
         self.pending_ctrl_wt_def = None
         self.ctrl_wt_table = {}
         self.pending_patch_def = None

@@ -12,6 +12,8 @@ from preframr_tokens.engine_fingerprint import (
     compute_fingerprint,
 )
 from preframr_tokens.macros.ctrl_osc_pass import CtrlOscPass
+from preframr_tokens.macros.gradient_pass import GradientPass
+from preframr_tokens.macros.init_pass import InitPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
 from preframr_tokens.macros.ctrl_wavetable_pass import CtrlWavetablePass
 from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
@@ -761,6 +763,8 @@ class RegLogParser:
         is_frame = df["reg"] == FRAME_REG
         frame_idx = is_frame.cumsum()
         vol_mask = df["reg"] == MODE_VOL_REG
+        if "op" in df.columns:
+            vol_mask = vol_mask & (df["op"] == SET_OP)
         if vol_mask.any():
             vol_per_frame = frame_idx[vol_mask].value_counts()
             max_vpf = int(vol_per_frame.max())
@@ -998,6 +1002,8 @@ class RegLogParser:
             CtrlOscPass(),
             NoteOffPass(),
             CtrlWavetablePass(),
+            GradientPass(),
+            InitPass(),
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
@@ -1052,6 +1058,8 @@ class RegLogParser:
             audit.after(xdf, "FreqNudgePass")
             xdf = CtrlUpdatePass().apply(xdf, args=self.args)
             audit.after(xdf, "CtrlUpdatePass")
+            xdf = CtrlWavetablePass().apply(xdf, args=self.args)
+            audit.after(xdf, "CtrlWavetablePass(post-voice)")
             xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
             audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)
