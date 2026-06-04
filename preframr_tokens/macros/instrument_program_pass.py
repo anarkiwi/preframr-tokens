@@ -6,6 +6,7 @@ construction. The (ctrl, AD, SR) twin of StampPass; default OFF (``instrument_pr
 
 __all__ = ["InstrumentProgramPass"]
 
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -45,6 +46,7 @@ class InstrumentProgramPass(MacroPass):
     """Mine each voice's per-frame (ctrl, AD, SR) program from a note onset and replace it with an
     inline INSTR_DEF (define-on-first) + INSTR_REF, consuming every ctrl/AD/SR SET in the span. Default
     OFF; byte-exact via a register_state guard that falls back to the unclaimed stream on divergence.
+    Set PREFRAMR_INSTR_TRUST=1 to skip the guard (faster) once byte-exactness is corpus-proven.
     """
 
     GATE_FLAGS = frozenset({"instrument_program"})
@@ -77,7 +79,8 @@ class InstrumentProgramPass(MacroPass):
                 )
             ],
         )
-        if not self._instr_is_lossless(df, result):
+        skip_guard = bool(os.environ.get("PREFRAMR_INSTR_TRUST"))
+        if not skip_guard and not self._instr_is_lossless(df, result):
             return df
         return result
 
