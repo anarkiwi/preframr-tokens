@@ -11,6 +11,9 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_SET_OP,
     CTRL_WT_STEP_OP,
     CTRL_WT_SUBREG_VAL,
+    INSTR_DEF_OP,
+    INSTR_END_OP,
+    INSTR_REF_OP,
     PATCH_DEF_OP,
     PATCH_SET_OP,
     PATCH_STEP_OP,
@@ -40,6 +43,9 @@ FROZEN_LEGACY_SPECS = {
     CTRL_WT_DEF_OP: ("ctrl_wt", "def", None),
     CTRL_WT_STEP_OP: ("ctrl_wt", "commit", CTRL_WT_SUBREG_VAL),
     CTRL_WT_SET_OP: ("ctrl_wt", "ref", None),
+    INSTR_DEF_OP: ("instrument", "def", None),
+    INSTR_END_OP: ("instrument", "commit", None),
+    INSTR_REF_OP: ("instrument", "ref", None),
 }
 
 

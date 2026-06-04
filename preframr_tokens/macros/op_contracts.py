@@ -31,6 +31,10 @@ from preframr_tokens.stfconstants import (
     FREQ_ONSET_OP,
     FREQ_TRAJ_OP,
     HARD_RESTART_OP,
+    INSTR_DEF_OP,
+    INSTR_END_OP,
+    INSTR_REF_OP,
+    INSTR_STEP_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
@@ -161,6 +165,10 @@ _CONTRACT_LIST = (
     OpContract(CTRL_WT_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(CTRL_WT_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(CTRL_WT_SET_OP, MaskRole.CODEBOOK_REF),
+    OpContract(INSTR_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(INSTR_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(INSTR_END_OP, MaskRole.CODEBOOK_END),
+    OpContract(INSTR_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(WAVETABLE_ONESHOT_OP, MaskRole.ATOM),
     OpContract(STAMP_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(STAMP_STEP_OP, MaskRole.CODEBOOK_STEP),
@@ -249,7 +257,13 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
     "overlay_count",
 )
 
-CODEBOOK_TABLES: tuple[str, ...] = ("stamp", "patch", "wavetable", "ctrl_wt")
+CODEBOOK_TABLES: tuple[str, ...] = (
+    "stamp",
+    "patch",
+    "wavetable",
+    "ctrl_wt",
+    "instrument",
+)
 
 
 @dataclass(frozen=True)
@@ -290,6 +304,10 @@ OP_PRODUCER: dict[int, str] = {
     CTRL_WT_DEF_OP: "CtrlWavetablePass",
     CTRL_WT_STEP_OP: "CtrlWavetablePass",
     CTRL_WT_SET_OP: "CtrlWavetablePass",
+    INSTR_DEF_OP: "InstrumentProgramPass",
+    INSTR_STEP_OP: "InstrumentProgramPass",
+    INSTR_END_OP: "InstrumentProgramPass",
+    INSTR_REF_OP: "InstrumentProgramPass",
 }
 
 _REFERENCE_ROLES = frozenset(

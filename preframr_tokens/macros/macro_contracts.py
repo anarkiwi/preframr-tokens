@@ -17,6 +17,7 @@ from preframr_tokens.stfconstants import (
     DIFF_OP,
     FLIP_OP,
     FREQ_TRAJ_OP,
+    INSTR_REF_OP,
     MODE_VOL_REG,
     ORN_OP,
     PATCH_SET_OP,
@@ -221,6 +222,14 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
+            "InstrumentProgramPass",
+            frozenset({(_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL)}),
+            frozenset(),
+            frozenset(),
+            FrameEffect.ANCHORED_REPLAY,
+            True,
+        ),
+        MacroContract(
             "frame_consolidation",
             frozenset(),
             frozenset(),
@@ -240,6 +249,7 @@ PIPELINE_ORDER = (
     "FreqTrajectoryPass",
     "FreqOnsetPass",
     "PerRegBurstPass",
+    "InstrumentProgramPass",
     "PatchPass",
     "ReleaseUpdatePass",
     "CtrlOscPass",
@@ -292,6 +302,7 @@ def interaction_mismatches():
 KNOWN_MISMATCHES = frozenset(
     {
         Mismatch("frame_anchor", "StampPass", "frame_consolidation", None),
+        Mismatch("frame_anchor", "InstrumentProgramPass", "frame_consolidation", None),
     }
 )
 
@@ -315,6 +326,7 @@ REPLAY_OPS = frozenset(
         int(CTRL_OSC_OP),
         int(GRADIENT_OP),
         int(CTRL_WT_SET_OP),
+        int(INSTR_REF_OP),
     }
 )
 

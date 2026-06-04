@@ -18,6 +18,12 @@ from preframr_tokens.stfconstants import (
     CTRL_WT_SUBREG_ID_NIB0,
     CTRL_WT_SUBREG_ID_NIB1,
     CTRL_WT_SUBREG_VAL,
+    INSTR_DEF_OP,
+    INSTR_END_OP,
+    INSTR_OFF_CTRL,
+    INSTR_REF_OP,
+    INSTR_STEP_OP,
+    INSTR_SUBREG_FRAME,
     PATCH_AD_OFFSET,
     PATCH_DEF_OP,
     PATCH_SET_OP,
@@ -69,7 +75,13 @@ __all__ = [
 
 DEAD_REF_POLICY = "drop"
 
-CODEBOOK_TABLE_NAMES: tuple[str, ...] = ("stamp", "patch", "wavetable", "ctrl_wt")
+CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
+    "stamp",
+    "patch",
+    "wavetable",
+    "ctrl_wt",
+    "instrument",
+)
 
 
 @dataclass(frozen=True)
@@ -168,6 +180,15 @@ CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
         commit_subreg=CTRL_WT_SUBREG_VAL,
         refs=(RefSpec(CTRL_WT_SET_OP),),
         def_emits=True,
+    ),
+    "instrument": CodebookFamily(
+        name="instrument",
+        def_op=INSTR_DEF_OP,
+        step_ops=(INSTR_STEP_OP,),
+        commit_op=INSTR_END_OP,
+        commit_subreg=None,
+        refs=(RefSpec(INSTR_REF_OP),),
+        def_emits=False,
     ),
 }
 
@@ -572,11 +593,66 @@ class _WavetableCodec(_Codec):
         return None
 
 
+class _InstrumentCodec(_Codec):
+    """Note-onset timbre program: DEF/STEP/END buffer a per-frame ``(ctrl, AD, SR)`` walk into the id
+    table, REF replays it on the target voice -- each frame's fields queue onto the voice's ctrl/AD/SR
+    regs (voice base ``reg - INSTR_OFF_CTRL`` plus the field's voice-relative subreg), one drained per
+    frame tick. The (ctrl, AD, SR) twin of the voice-relative ``_StampCodec``."""
+
+    def def_open(self, row, state, cb):
+        cb.pending = {"id": int(row.val), "frames": [[]]}
+
+    def step(self, state, row, cb):
+        prog = cb.pending
+        if prog is None:
+            return None
+        if int(row.subreg) == INSTR_SUBREG_FRAME:
+            prog["frames"].append([])
+        else:
+            prog["frames"][-1].append((int(row.subreg), int(row.val)))
+        return None
+
+    def commit(self, state, row, cb):
+        prog = cb.pending
+        if prog is not None:
+            cb.table[int(prog["id"])] = prog["frames"]
+            cb.pending = None
+        return None
+
+    @staticmethod
+    def _offsets_in_order(frames):
+        """Voice-relative subregs in first-write order across the buffered frames."""
+        offsets, seen = [], set()
+        for fr in frames:
+            for sub, _val in fr:
+                if sub not in seen:
+                    seen.add(sub)
+                    offsets.append(sub)
+        return offsets
+
+    def ref(self, state, row, cb):
+        frames = cb.table.get(int(row.val))
+        if not frames:
+            return None
+        base = int(row.reg) - INSTR_OFF_CTRL
+        offsets = self._offsets_in_order(frames)
+        pre = state.maybe_flush_for(int(row.reg), -1)
+        cur = {}
+        for fr in frames:
+            for sub, val in fr:
+                cur[sub] = val
+            for sub in offsets:
+                if sub in cur:
+                    state.pending_set_writes[base + sub].append(int(cur[sub]))
+        return pre or None
+
+
 _CODECS: dict[str, _Codec] = {
     "stamp": _StampCodec(),
     "patch": _PatchCodec(),
     "wavetable": _WavetableCodec(),
     "ctrl_wt": _CtrlWtCodec(),
+    "instrument": _InstrumentCodec(),
 }
 
 
