@@ -17,6 +17,7 @@ from preframr_tokens.macros.passes import (
 from preframr_tokens.macros.note_off_pass import NoteOffPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
+from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
@@ -53,6 +54,7 @@ FREQ_BLOCK_PASSES = [
     FreqTrajectoryPass(),
     PerRegBurstPass(),
     InstrumentProgramPass(),
+    GeneratorPass(),
     NoteOffPass(),
 ]
 

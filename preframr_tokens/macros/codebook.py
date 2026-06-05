@@ -9,8 +9,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from preframr_tokens.macros.generator_fit import recon
 from preframr_tokens.macros.wavetable import unroll as wt_unroll
 from preframr_tokens.stfconstants import (
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_MODE_NOTE,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_BASE_NOTE,
+    GEN_TABLE_REF_SUBREG_ID,
+    GEN_TABLE_REF_SUBREG_LEN_HI,
+    GEN_TABLE_REF_SUBREG_LEN_LO,
+    GEN_TABLE_STEP_OP,
+    GEN_TABLE_SUBREG_ABS_HI,
+    GEN_TABLE_SUBREG_ABS_LO,
+    GEN_TABLE_SUBREG_BASE_NOTE,
+    GEN_TABLE_SUBREG_MODE,
+    GEN_TABLE_SUBREG_OFFSET,
+    GEN_TABLE_SUBREG_PERIOD,
+    GEN_TABLE_SUBREG_RESID_HI,
+    GEN_TABLE_SUBREG_RESID_LO,
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_OFF_CTRL,
@@ -65,6 +83,7 @@ CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
     "stamp",
     "wavetable",
     "instrument",
+    "generator",
 )
 
 
@@ -154,6 +173,15 @@ CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
         commit_op=INSTR_END_OP,
         commit_subreg=None,
         refs=(RefSpec(INSTR_REF_OP),),
+        def_emits=False,
+    ),
+    "generator": CodebookFamily(
+        name="generator",
+        def_op=GEN_TABLE_DEF_OP,
+        step_ops=(GEN_TABLE_STEP_OP,),
+        commit_op=GEN_TABLE_END_OP,
+        commit_subreg=None,
+        refs=(RefSpec(GEN_TABLE_REF_OP, id_subreg=GEN_TABLE_REF_SUBREG_ID),),
         def_emits=False,
     ),
 }
@@ -510,10 +538,113 @@ class _InstrumentCodec(_Codec):
         return pre or None
 
 
+class _GeneratorCodec(_Codec):
+    """Generator-MDL TABLE codebook: DEF/STEP/END buffer one periodic cycle (absolute byte cycle for
+    scalar channels, or note-relative offset+residual cycle for freq) into the id table; the multi-row
+    REF carries the per-instance base_note + LEN and queues ``cycle[k % P]`` for LEN frames onto its
+    reg. The note-relative decode is ``recon(base_note + offset[k], ref) + resid[k]`` -- exact, with
+    ``ref`` the per-tune semitone-LUT offset a ``GEN_TUNING`` atom stored on the state.
+    """
+
+    def def_open(self, row, state, cb):
+        cb.pending = {
+            "id": int(row.val),
+            "period": 0,
+            "mode": 0,
+            "base_note": 0,
+            "abs": [],
+            "off": [],
+            "resid": [],
+            "_lo": None,
+        }
+
+    def step(self, state, row, cb):
+        gen = cb.pending
+        if gen is None:
+            return None
+        sub = int(row.subreg)
+        val = int(row.val)
+        if sub == GEN_TABLE_SUBREG_PERIOD:
+            gen["period"] = val
+        elif sub == GEN_TABLE_SUBREG_MODE:
+            gen["mode"] = val
+        elif sub == GEN_TABLE_SUBREG_BASE_NOTE:
+            gen["base_note"] = val
+        elif sub == GEN_TABLE_SUBREG_ABS_LO:
+            gen["_lo"] = val & 0xFF
+        elif sub == GEN_TABLE_SUBREG_ABS_HI:
+            gen["abs"].append(((val & 0xFF) << 8) | (gen["_lo"] or 0))
+            gen["_lo"] = None
+        elif sub == GEN_TABLE_SUBREG_OFFSET:
+            v = val & 0xFF
+            gen["off"].append(v - 256 if v >= 128 else v)
+        elif sub == GEN_TABLE_SUBREG_RESID_LO:
+            gen["_lo"] = val & 0xFF
+        elif sub == GEN_TABLE_SUBREG_RESID_HI:
+            raw = ((val & 0xFF) << 8) | (gen["_lo"] or 0)
+            gen["resid"].append(raw - 0x10000 if raw >= 0x8000 else raw)
+            gen["_lo"] = None
+        return None
+
+    def commit(self, state, row, cb):
+        gen = cb.pending
+        if gen is not None:
+            cb.table[int(gen["id"])] = gen
+            cb.pending = None
+        return None
+
+    def ref(self, state, row, cb):
+        sub = int(row.subreg)
+        val = int(row.val)
+        if sub == GEN_TABLE_REF_SUBREG_ID:
+            cb.pending_ref = {"id": val, "reg": int(row.reg), "base_note": 0, "len": 0}
+            return None
+        pend = cb.pending_ref
+        if pend is None:
+            return None
+        if sub == GEN_TABLE_REF_SUBREG_BASE_NOTE:
+            pend["base_note"] = val
+            return None
+        if sub == GEN_TABLE_REF_SUBREG_LEN_HI:
+            pend["len"] |= (val & 0xFF) << 8
+            return None
+        if sub != GEN_TABLE_REF_SUBREG_LEN_LO:
+            return None
+        pend["len"] |= val & 0xFF
+        cb.pending_ref = None
+        return self._replay(pend, state, cb)
+
+    @staticmethod
+    def _replay(pend, state, cb):
+        gen = cb.table.get(int(pend["id"]))
+        if gen is None:
+            return None
+        period = int(gen["period"])
+        if period <= 0:
+            return None
+        reg = int(pend["reg"])
+        ref = float(getattr(state, "gen_ref", 0.0))
+        base = int(pend["base_note"])
+        pre = state.maybe_flush_for(reg, -1)
+        queue = state.pending_set_writes[reg]
+        if int(gen["mode"]) == GEN_TABLE_MODE_NOTE:
+            for k in range(int(pend["len"])):
+                m = k % period
+                queue.append(
+                    (recon(base + gen["off"][m], ref) + gen["resid"][m]) & 0xFFFF
+                )
+        else:
+            cyc = gen["abs"]
+            for k in range(int(pend["len"])):
+                queue.append(int(cyc[k % period]))
+        return pre or None
+
+
 _CODECS: dict[str, _Codec] = {
     "stamp": _StampCodec(),
     "wavetable": _WavetableCodec(),
     "instrument": _InstrumentCodec(),
+    "generator": _GeneratorCodec(),
 }
 
 

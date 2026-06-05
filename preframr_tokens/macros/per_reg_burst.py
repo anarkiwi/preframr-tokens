@@ -140,7 +140,10 @@ class PerRegBurstPass(MacroPass):
     def apply(self, df, args=None):
         from preframr_tokens.reglogparser import norm_df
 
-        if args is not None and getattr(args, "freq_trajectory_pass", True):
+        if args is not None and (
+            getattr(args, "freq_trajectory_pass", True)
+            or getattr(args, "generator_pass", False)
+        ):
             if df is not None and "op" not in df.columns:
                 df = df.copy()
                 df["op"] = int(SET_OP)

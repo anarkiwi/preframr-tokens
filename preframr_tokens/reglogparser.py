@@ -20,6 +20,7 @@ from preframr_tokens.parse_audit import make_pass_audit
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
+from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
@@ -966,7 +967,9 @@ class RegLogParser:
         df = self._combine_regs(df)
         if self._anchor_enabled():
             df = self._stash_freq_unq(df)
-        if not getattr(self.args, "skeleton_pass", False):
+        if not getattr(self.args, "skeleton_pass", False) and not getattr(
+            self.args, "generator_pass", False
+        ):
             df = self._quantize_freq_to_cents(df)
         df = self._simplify_ctrl(df)
         df = self._simplify_pcm(df)
@@ -993,6 +996,7 @@ class RegLogParser:
             PerRegBurstPass(),
             GateSlopeShiftPass(),
             InstrumentProgramPass(),
+            GeneratorPass(),
             NoteOffPass(),
             GradientPass(),
             GlobalOscPass(),

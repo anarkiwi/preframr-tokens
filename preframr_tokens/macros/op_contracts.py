@@ -16,6 +16,12 @@ from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     GRADIENT_OP,
     GLOBAL_OSC_OP,
+    GEN_TRI_OP,
+    GEN_TUNING_OP,
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_STEP_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_REF_OP,
     INIT_OP,
     DIFF_OP,
     DO_LOOP_OP,
@@ -141,6 +147,12 @@ _CONTRACT_LIST = (
     OpContract(SWEEP_OP, MaskRole.ATOM),
     OpContract(GRADIENT_OP, MaskRole.ATOM),
     OpContract(GLOBAL_OSC_OP, MaskRole.ATOM),
+    OpContract(GEN_TRI_OP, MaskRole.ATOM),
+    OpContract(GEN_TUNING_OP, MaskRole.ATOM),
+    OpContract(GEN_TABLE_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(GEN_TABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(GEN_TABLE_END_OP, MaskRole.CODEBOOK_END),
+    OpContract(GEN_TABLE_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(INIT_OP, MaskRole.ATOM),
     OpContract(NOTE_OFF_OP, MaskRole.ATOM),
     OpContract(NOTE_ON_OP, MaskRole.ATOM),
@@ -237,6 +249,7 @@ CODEBOOK_TABLES: tuple[str, ...] = (
     "stamp",
     "wavetable",
     "instrument",
+    "generator",
 )
 
 
@@ -276,6 +289,10 @@ OP_PRODUCER: dict[int, str] = {
     INSTR_STEP_OP: "InstrumentProgramPass",
     INSTR_END_OP: "InstrumentProgramPass",
     INSTR_REF_OP: "InstrumentProgramPass",
+    GEN_TABLE_DEF_OP: "GeneratorPass",
+    GEN_TABLE_STEP_OP: "GeneratorPass",
+    GEN_TABLE_END_OP: "GeneratorPass",
+    GEN_TABLE_REF_OP: "GeneratorPass",
 }
 
 _REFERENCE_ROLES = frozenset(
