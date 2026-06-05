@@ -79,6 +79,7 @@ REGISTERED_MACROS = (
     "pw_sweep",
     "filter_sweep",
     "filter_gradient",
+    "global_osc",
 )
 
 NAMED_CONFIGS = {

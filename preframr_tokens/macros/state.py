@@ -153,6 +153,7 @@ class DecodeState:
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
         self.pending_gradient = None
+        self.pending_global_osc = None
         self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()

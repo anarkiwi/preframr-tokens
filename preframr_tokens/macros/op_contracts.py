@@ -15,6 +15,7 @@ from preframr_tokens.macros.codebook import codebook_spec_tuples
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
     GRADIENT_OP,
+    GLOBAL_OSC_OP,
     INIT_OP,
     DIFF_OP,
     DO_LOOP_OP,
@@ -139,6 +140,7 @@ _CONTRACT_LIST = (
     OpContract(ORN_OP, MaskRole.ATOM),
     OpContract(SWEEP_OP, MaskRole.ATOM),
     OpContract(GRADIENT_OP, MaskRole.ATOM),
+    OpContract(GLOBAL_OSC_OP, MaskRole.ATOM),
     OpContract(INIT_OP, MaskRole.ATOM),
     OpContract(NOTE_OFF_OP, MaskRole.ATOM),
     OpContract(NOTE_ON_OP, MaskRole.ATOM),
