@@ -34,6 +34,8 @@ _VOICE0_AD = 5
 _VOICE0_SR = 6
 _FC_LO = 21
 _FC_HI = 22
+_RES_FILT = 23
+_MODE_VOL = 24
 
 
 def parse_args(**over):
@@ -104,6 +106,16 @@ class DumpBuilder:
         """Write the global filter cutoff lo+hi (reg 21/22), the way a cutoff sweep pokes it."""
         self._write(_FC_LO, value & 0xFF)
         self._write(_FC_HI, (value >> 8) & 0xFF)
+        return self
+
+    def resfilt(self, value):
+        """Write the global resonance/filter-routing register (reg 23, RES_FILT)."""
+        self._write(_RES_FILT, value & 0xFF)
+        return self
+
+    def modevol(self, value):
+        """Write the global filter-mode/master-volume register (reg 24, MODE_VOL)."""
+        self._write(_MODE_VOL, value & 0xFF)
         return self
 
     def note(self, per_frame_fns, gate=True):
