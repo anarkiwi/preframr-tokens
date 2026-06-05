@@ -10,7 +10,7 @@ import pandas as pd
 
 from preframr_tokens import pipeline_trace as pt
 from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
+from preframr_tokens.macros.gradient_pass import GradientPass
 
 _IRQ_PERIOD = 19656
 
@@ -53,9 +53,8 @@ _FULL_MACROS_SPEC = {
     ]
 }
 _ABSORBERS = [
-    "--freq-nudge-pass",
-    "--release-update-pass",
-    "--lonely-catch-all",
+    "--env-gradient",
+    "--filter-gradient",
 ]
 
 
@@ -67,7 +66,7 @@ class TestBuildArgs(unittest.TestCase):
         self.assertTrue(args.freq_trajectory_pass)
         self.assertTrue(args.preset_pass)
         self.assertTrue(args.voice_canonical_block_order)
-        self.assertTrue(args.lonely_catch_all)
+        self.assertTrue(args.env_gradient)
         self.assertEqual(unknown_names, [])
         self.assertEqual(unknown_flags, [])
         self.assertIn(("freq_trajectory", "freq_trajectory_pass", True), resolution)
@@ -93,8 +92,8 @@ class TestBuildArgs(unittest.TestCase):
         self.assertFalse(any(getattr(args, f) for f in pt.macro_flag_names()))
 
     def test_cargs_negation(self):
-        args, _, _, _ = pt.build_args(None, ["--no-lonely-catch-all"], {})
-        self.assertFalse(args.lonely_catch_all)
+        args, _, _, _ = pt.build_args(None, ["--no-env-gradient"], {})
+        self.assertFalse(args.env_gradient)
 
     def test_overrides_applied(self):
         args, _, _, _ = pt.build_args(None, [], {"min_song_tokens": 7})
@@ -131,20 +130,18 @@ class TestHelpers(unittest.TestCase):
         self.assertFalse(records[2]["branch"])
 
     def test_flag_report(self):
-        args, _, _, _ = pt.build_args(
-            None, ["--lonely-catch-all", "--release-update-pass"], {}
-        )
+        args, _, _, _ = pt.build_args(None, ["--env-gradient"], {})
         records = [
             {
-                "stage": "ReleaseUpdatePass",
-                "gate_flags": {"release_update_pass": True, "lonely_catch_all": True},
+                "stage": "GradientPass",
+                "gate_flags": {"env_gradient": True, "modevol_gradient": False},
                 "status": "FIRED",
             },
             {"stage": "Other", "gate_flags": {}, "status": "FIRED"},
         ]
         rep = pt.flag_report(records, args)
-        self.assertTrue(rep["lonely_catch_all"]["effective"])
-        self.assertEqual(rep["lonely_catch_all"]["fired_in"], ["ReleaseUpdatePass"])
+        self.assertTrue(rep["env_gradient"]["effective"])
+        self.assertEqual(rep["env_gradient"]["fired_in"], ["GradientPass"])
 
     def test_decode_rows(self):
         df = pd.DataFrame([{"reg": 21, "op": 36, "val": 256, "subreg": -1}])
@@ -190,11 +187,11 @@ class TestTracerInstrumentation(unittest.TestCase):
 
     def test_gate_off_pass_records_skip(self):
         args, _, _, _ = pt.build_args(None, [], {})
-        env_set = pd.DataFrame(
+        fc_set = pd.DataFrame(
             [
                 {
-                    "reg": 6,
-                    "val": 240,
+                    "reg": 21,
+                    "val": 100,
                     "op": 0,
                     "subreg": -1,
                     "diff": 0,
@@ -204,7 +201,7 @@ class TestTracerInstrumentation(unittest.TestCase):
             ]
         )
         with pt.Tracer(args) as tracer:
-            ReleaseUpdatePass().apply(env_set, args=args)
+            GradientPass().apply(fc_set, args=args)
         self.assertEqual(tracer.records[0]["status"], "skip(off)")
 
 
@@ -262,15 +259,15 @@ class TestEndToEnd(unittest.TestCase):
         by_stage = {r["stage"]: r for r in records}
         self.assertEqual(by_stage["FreqTrajectoryPass"]["status"], "FIRED")
         self.assertIn("FREQ_TRAJ", by_stage["FreqTrajectoryPass"]["op_delta"])
-        self.assertEqual(by_stage["ReleaseUpdatePass"]["status"], "FIRED")
+        self.assertEqual(by_stage["GradientPass"]["status"], "FIRED")
         self.assertEqual(by_stage["combine_regs"]["kind"], "parser")
 
-    def test_isolate_localizes_lonely_catch_all(self):
+    def test_isolate_localizes_env_gradient(self):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
-        iso = pt.isolate(self.dump, args, "lonely_catch_all", 1)
+        iso = pt.isolate(self.dump, args, "env_gradient", 1)
         sites = {d["stage"] for d in iso["sites"]}
-        self.assertIn("ReleaseUpdatePass", sites)
-        self.assertIn("RELEASE_UPDATE", iso["net"]["op"])
+        self.assertIn("GradientPass", sites)
+        self.assertIn("GRADIENT", iso["net"]["op"])
 
     def test_main_json_runs(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as spec_f:
@@ -306,7 +303,7 @@ class TestEndToEnd(unittest.TestCase):
                 "--min-irq",
                 "0",
                 "--isolate",
-                "lonely_catch_all",
+                "env_gradient",
                 "--full",
                 "--head",
                 "300",

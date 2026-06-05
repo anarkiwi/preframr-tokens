@@ -219,8 +219,6 @@ def trajectory_coverage(xdf, tier="freq"):
     from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE, PWM_REGS_BY_VOICE
     from preframr_tokens.stfconstants import (
         FC_LO_REG,
-        FREQ_NUDGE_OP,
-        FREQ_NUDGE_SUBREG_MODE,
         FREQ_TRAJ_OP,
         FT_SUBREG_FLAGS,
         OSC_MAX_GAP,
@@ -255,15 +253,7 @@ def trajectory_coverage(xdf, tier="freq"):
         (subregs == FT_SUBREG_FLAGS) if subregs is not None else np.ones_like(in_regs)
     )
     structural = int(np.sum(in_regs & (ops == FREQ_TRAJ_OP) & head))
-    nudge_head = (
-        (subregs == FREQ_NUDGE_SUBREG_MODE)
-        if subregs is not None
-        else np.ones_like(in_regs)
-    )
-    mopup = int(
-        np.sum(in_regs & (ops == FREQ_NUDGE_OP) & nudge_head)
-        + np.sum(in_regs & (ops == SET_OP))
-    )
+    mopup = int(np.sum(in_regs & (ops == SET_OP)))
     denom = structural + mopup
     return {
         "tier": tier,

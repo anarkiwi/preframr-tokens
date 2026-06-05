@@ -10,9 +10,6 @@ from typing import Optional
 import numpy as np
 
 from preframr_tokens.macros import iter_self_contained_row_blocks, self_contain_slice
-from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
-from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
-from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.validators import validate_stream
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reglogparser import (
@@ -135,7 +132,7 @@ def glob_dumps(
 def iter_voiced_blocks(
     raw_df, seq_len, parser, reg_widths, frames_per_block=None, stride=None
 ):
-    """Yield each self-contained block as a post-voice-reg row df. Used by RegDataset.make_tokens to build the token alphabet from blocks (so the alphabet covers exactly the (op, reg, subreg, val) tuples training will see), and by parser_worker for the per-dump block list. After ``_add_voice_reg`` the post-voice passes (FreqNudgePass, CtrlUpdatePass, LonelyWriteValidatorPass) re-fire to mirror ``RegLogParser.parse`` -- expand_to_literal_form drops them and ``run_passes`` only re-applies pre-voice-reg passes, so the block stream would otherwise enter the tokenizer with no freq macros."""
+    """Yield each self-contained block as a post-voice-reg row df. Used by RegDataset.make_tokens to build the token alphabet from blocks (so the alphabet covers exactly the (op, reg, subreg, val) tuples training will see), and by parser_worker for the per-dump block list. The freq + pre-norm macros re-fire inside ``iter_self_contained_row_blocks`` (after ``expand_to_literal_form`` decompiles them) so the block stream mirrors ``RegLogParser.parse``."""
     if frames_per_block is None:
         frames_per_block = max(1, seq_len // 2)
     abs_df, _ = remove_voice_reg(raw_df.copy(), reg_widths)
@@ -150,9 +147,6 @@ def iter_voiced_blocks(
             )
         except Exception:  # pylint: disable=broad-except
             continue
-        voiced = FreqNudgePass().apply(voiced, args=parser.args)
-        voiced = CtrlUpdatePass().apply(voiced, args=parser.args)
-        voiced = LonelyWriteValidatorPass().apply(voiced, args=parser.args)
         validate_stream(voiced, prompt_frame_count=0)
         yield voiced
 

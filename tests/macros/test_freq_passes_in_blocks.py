@@ -1,8 +1,8 @@
 """Regression guard: ``iter_self_contained_row_blocks`` calls ``run_freq_block_passes``
-after ``expand_to_literal_form`` so FREQ_TRAJ/FREQ_ONSET/etc atoms re-appear in the
-encoded stream. Without this, every freq macro produced by ``RegLogParser.parse`` is
-silently decompiled to literal SETs before tokenization and the model never trains
-on op45/47/48 (the bug that zeroed melody from mini A/Bs)."""
+after ``expand_to_literal_form`` so FREQ_TRAJ atoms re-appear in the encoded stream.
+Without this, every freq macro produced by ``RegLogParser.parse`` is silently
+decompiled to literal SETs before tokenization and the model never trains on op45
+(the bug that zeroed melody from mini A/Bs)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ import pandas as pd
 
 from preframr_tokens import macros
 from preframr_tokens.macros.blocks import iter_self_contained_row_blocks
-from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
-from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.stfconstants import (
     FRAME_REG,
@@ -36,13 +34,8 @@ class FakeArgs:
     fuzzy_loop_pass = False
     preset_pass = True
     freq_trajectory_pass = True
-    freq_onset_pass = False
     trajectory_anchor_pass = False
-    release_update_pass = True
     freq_v0_interval = False
-    freq_nudge_pass = False
-    ctrl_update_pass = False
-    lonely_catch_all = False
 
 
 def _frame_row(diff=19656):
@@ -84,9 +77,7 @@ class TestFreqBlockPassesContract(unittest.TestCase):
         required = {
             TrajectoryAnchorPass,
             FreqTrajectoryPass,
-            FreqOnsetPass,
             PerRegBurstPass,
-            ReleaseUpdatePass,
         }
         missing = required - present
         self.assertFalse(

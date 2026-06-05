@@ -72,7 +72,6 @@ from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
-from preframr_tokens.macros.lonely_validator import classify_carveout
 from preframr_tokens.regtokenizer import (
     RegTokenizer,
     is_freq_onset_atom,
@@ -153,7 +152,6 @@ __all__ = [
     "validate_pattern_overlays",
     "validate_stream",
     "codebook_live_ids",
-    "classify_carveout",
     "load_palettes_attrs",
     "dump_palettes_attrs",
     "PAD_ID",

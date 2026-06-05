@@ -148,7 +148,6 @@ class TestRegisterOrderFidelity(unittest.TestCase):
                 skeleton_pass=True,
                 loop_pass=True,
                 loop_transposed=True,
-                lonely_catch_all=True,
                 parse_audit="raise",
             )
         )

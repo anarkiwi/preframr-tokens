@@ -14,11 +14,8 @@ from preframr_tokens.engine_fingerprint import (
 from preframr_tokens.macros.gradient_pass import GradientPass
 from preframr_tokens.macros.init_pass import InitPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
-from preframr_tokens.macros.ctrl_update_pass import CtrlUpdatePass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
-from preframr_tokens.macros.freq_nudge_pass import FreqNudgePass
-from preframr_tokens.macros.freq_onset_pass import FreqOnsetPass
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
@@ -27,11 +24,9 @@ from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.sweep_pass import SweepPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.wavetable_pass import WavetablePass
-from preframr_tokens.macros.lonely_validator import LonelyWriteValidatorPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
-from preframr_tokens.macros.release_update_pass import ReleaseUpdatePass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
@@ -993,12 +988,10 @@ class RegLogParser:
             SkeletonPass(),
             WavetablePass(),
             FreqTrajectoryPass(),
-            FreqOnsetPass(),
             PresetPass(),
             PerRegBurstPass(),
             GateSlopeShiftPass(),
             InstrumentProgramPass(),
-            ReleaseUpdatePass(),
             NoteOffPass(),
             GradientPass(),
             InitPass(),
@@ -1052,12 +1045,6 @@ class RegLogParser:
             audit.after(xdf, "run_post_norm_pre_voice_passes")
             xdf = self._add_voice_reg(xdf, zero_voice_reg=True)
             audit.after(xdf, "_add_voice_reg")
-            xdf = FreqNudgePass().apply(xdf, args=self.args)
-            audit.after(xdf, "FreqNudgePass")
-            xdf = CtrlUpdatePass().apply(xdf, args=self.args)
-            audit.after(xdf, "CtrlUpdatePass")
-            xdf = LonelyWriteValidatorPass().apply(xdf, args=self.args)
-            audit.after(xdf, "LonelyWriteValidatorPass")
             xdf = xdf.reset_index(drop=True)
             for k in TOKEN_KEYS:
                 if k not in xdf.columns:

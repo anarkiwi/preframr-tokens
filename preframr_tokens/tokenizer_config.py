@@ -74,10 +74,11 @@ REGISTERED_MACROS = (
     "voice_canonical_block_order",
     "loop_pass",
     "loop_transposed",
-    "freq_nudge_pass",
-    "release_update_pass",
     "instrument_program",
-    "lonely_catch_all",
+    "sweep_pass",
+    "pw_sweep",
+    "filter_sweep",
+    "filter_gradient",
 )
 
 NAMED_CONFIGS = {

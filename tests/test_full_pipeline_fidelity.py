@@ -107,10 +107,9 @@ class TestFullPipelineFidelity(unittest.TestCase):
             self.fixture_wide,
             {
                 "freq_trajectory": dict(freq_trajectory_pass=True),
-                "freq_traj_nudge": dict(
+                "freq_traj_sweep": dict(
                     freq_trajectory_pass=True,
-                    freq_nudge_pass=True,
-                    lonely_catch_all=True,
+                    sweep_pass=True,
                 ),
             },
         )
