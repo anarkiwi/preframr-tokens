@@ -19,6 +19,7 @@ __all__ = [
     "OrnamentDecoder",
     "SweepDecoder",
     "GradientDecoder",
+    "GlobalOscDecoder",
     "InitDecoder",
     "NoteOffDecoder",
 ]
@@ -49,6 +50,10 @@ from preframr_tokens.stfconstants import (
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     GRADIENT_OP,
+    GLOBAL_OSC_OP,
+    GLOBAL_OSC_SUBREG_LEN,
+    GLOBAL_OSC_SUBREG_PERIOD,
+    GLOBAL_OSC_SUBREG_STATE_BASE,
     INIT_OP,
     GRADIENT_SUBREG_DUR_BASE,
     GRADIENT_SUBREG_END,
@@ -688,6 +693,41 @@ class GradientDecoder(MacroDecoder):
         return pre or None
 
 
+class GlobalOscDecoder(MacroDecoder):
+    """Decode a GLOBAL_OSC atom (GlobalOscPass): PERIOD opens the buffer, STATE_BASE+m the P cycle bytes,
+    LEN (terminal) queues cycle[k % P] for LEN frames into pending_set_writes -- one drained per song
+    frame, reproducing the exact per-frame global-reg oscillation. A SWEEP twin with an explicit byte
+    cycle."""
+
+    op_code = GLOBAL_OSC_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == GLOBAL_OSC_SUBREG_PERIOD:
+            state.pending_global_osc = {"reg": int(row.reg), "fields": {}}
+        pend = state.pending_global_osc
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != GLOBAL_OSC_SUBREG_LEN:
+            return None
+        state.pending_global_osc = None
+        f = pend["fields"]
+        reg = int(pend["reg"])
+        period = int(f.get(GLOBAL_OSC_SUBREG_PERIOD, 0))
+        length = int(f.get(GLOBAL_OSC_SUBREG_LEN, 0))
+        if period <= 0:
+            return None
+        cycle = [
+            int(f.get(GLOBAL_OSC_SUBREG_STATE_BASE + m, 0)) & 0xFF
+            for m in range(period)
+        ]
+        pre = state.maybe_flush_for(reg, -1)
+        for k in range(length):
+            state.pending_set_writes[reg].append(cycle[k % period])
+        return pre or None
+
+
 class InitDecoder(MacroDecoder):
     """Decode an INIT atom (InitPass): re-emit the relabelled init-routine register write inline on its
     reg, byte-identical to the literal pre-first-note-on SET (same reg, value, frame and intra-frame
@@ -741,6 +781,7 @@ DECODERS = {
         OrnamentDecoder(),
         SweepDecoder(),
         GradientDecoder(),
+        GlobalOscDecoder(),
         InitDecoder(),
         NoteOffDecoder(),
     )

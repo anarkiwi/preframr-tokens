@@ -12,6 +12,7 @@ from preframr_tokens.engine_fingerprint import (
     compute_fingerprint,
 )
 from preframr_tokens.macros.gradient_pass import GradientPass
+from preframr_tokens.macros.global_osc_pass import GlobalOscPass
 from preframr_tokens.macros.init_pass import InitPass
 from preframr_tokens.macros.note_off_pass import NoteOffPass
 from preframr_tokens.macros.decode import expand_ops
@@ -994,6 +995,7 @@ class RegLogParser:
             InstrumentProgramPass(),
             NoteOffPass(),
             GradientPass(),
+            GlobalOscPass(),
             InitPass(),
         ):
             df = macro_pass.apply(df, args=self.args)
