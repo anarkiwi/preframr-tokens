@@ -327,7 +327,7 @@ class SkeletonPass(MacroPass):
     """Dense skeleton + ornament: segment each freq reg into notes (semitone-run + MIN_HOLD UNION
     gate-on, then held-gate de-merge of giant-RESID phrases into their constituent notes), emit one
     SKEL atom per note and one ORN descriptor collapsing its intra-note arps/vibrato/slide.
-    Requires ``freq_trajectory_pass`` / ``freq_onset_pass`` OFF (skeleton owns the freq channel).
+    Requires ``freq_trajectory_pass`` OFF (skeleton owns the freq channel).
     """
 
     GATE_FLAGS = frozenset(

@@ -89,7 +89,7 @@ class TestPassAudit(unittest.TestCase):
         try:
             audit.after(_stream([100, 110]), "run_passes")
             audit.after(_stream([100, 110]), "_add_voice_reg")
-            audit.after(_stream([100, 110]), "CtrlUpdatePass")
+            audit.after(_stream([100, 110]), "LoopPass")
         finally:
             validators.validate_stream = original
         self.assertEqual(calls, [1, 1, 1], "ref check should run after every pass")

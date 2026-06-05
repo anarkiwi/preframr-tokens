@@ -43,7 +43,6 @@ def parse_args(**over):
     cfg.update(
         skeleton_pass=False,
         freq_trajectory_pass=False,
-        freq_onset_pass=False,
         trajectory_anchor_pass=False,
         loop_pass=False,
         loop_transposed=False,

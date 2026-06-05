@@ -27,14 +27,11 @@ FLAG_REQUIRES = {
     "sweep_loop": frozenset({"sweep_pass"}),
     "pw_sweep": frozenset({"sweep_pass"}),
     "filter_sweep": frozenset({"sweep_pass"}),
-    "strict_lonely": frozenset({"lonely_catch_all"}),
 }
 FLAG_CONFLICTS = {
     "skeleton_pass": frozenset(
         {
             "freq_trajectory_pass",
-            "freq_onset_pass",
-            "freq_nudge_pass",
             "freq_v0_interval",
         }
     ),

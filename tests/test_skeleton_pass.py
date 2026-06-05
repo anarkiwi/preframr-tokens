@@ -58,7 +58,7 @@ _FREQ_REG = 0
 
 def _args(**over):
     """Args namespace with skeleton on and the mutually-excluded freq passes off."""
-    cfg = dict(skeleton_pass=True, freq_trajectory_pass=False, freq_onset_pass=False)
+    cfg = dict(skeleton_pass=True, freq_trajectory_pass=False)
     cfg.update(over)
     return SimpleNamespace(**cfg)
 

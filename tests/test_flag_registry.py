@@ -40,7 +40,6 @@ class TestFlagRegistry(unittest.TestCase):
         for flag in (
             "gate_slope_shift_pass",
             "voice_track_pass",
-            "strict_lonely",
         ):
             self.assertIn(flag, MACRO_FLAGS, flag)
 
@@ -53,6 +52,11 @@ class TestFlagRegistry(unittest.TestCase):
             "voice_trajectory_distributed_pass",
             "set_to_diff_pass",
             "motif_pass",
+            "freq_nudge_pass",
+            "freq_onset_pass",
+            "release_update_pass",
+            "lonely_catch_all",
+            "strict_lonely",
         ):
             self.assertNotIn(flag, MACRO_FLAGS, flag)
 

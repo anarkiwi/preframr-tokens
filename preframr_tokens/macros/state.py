@@ -146,7 +146,6 @@ class DecodeState:
         self.interval_links = []
         self.pending_track_links = []
         self.pending_track_fields = {}
-        self.pending_nudge_fields = {}
         self.pending_ft = None
         self.last_freq_v0 = {}
         self.last_skel_note = {}

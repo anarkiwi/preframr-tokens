@@ -28,7 +28,6 @@ from preframr_tokens.macros.skeleton_pass import LUT
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import (
-    FREQ_ONSET_OP,
     FREQ_TRAJ_OP,
     ORN_OP,
     SKEL_OP,
@@ -94,15 +93,14 @@ class TestParsePipelineSmoke(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_skeleton_config_owns_freq_channel(self):
-        """skeleton on => SKEL(op54)>0 and ORN(op55)>0, and the freq-trajectory /
-        freq-onset channels are silent (op45==0, op48==0). This is the config that
-        would have caught the cent-index no-op: a SkeletonPass reading the cent-index
-        ``val`` rather than the 16-bit ``freq_unq`` emits no op54/op55 here."""
+        """skeleton on => SKEL(op54)>0 and ORN(op55)>0, and the freq-trajectory
+        channel is silent (op45==0). This is the config that would have caught the
+        cent-index no-op: a SkeletonPass reading the cent-index ``val`` rather than
+        the 16-bit ``freq_unq`` emits no op54/op55 here."""
         counts = block_op_counts(self.dump, _skeleton_args())
         self.assertGreater(counts[SKEL_OP], 0, counts)
         self.assertGreater(counts[ORN_OP], 0, counts)
         self.assertEqual(counts[FREQ_TRAJ_OP], 0, counts)
-        self.assertEqual(counts[FREQ_ONSET_OP], 0, counts)
 
     def test_default_freq_trajectory_fires(self):
         """The default freq encoder (freq_trajectory) emits op45 on real per-frame
@@ -112,11 +110,6 @@ class TestParsePipelineSmoke(unittest.TestCase):
             parse_args(freq_trajectory_pass=True, trajectory_anchor_pass=True),
         )
         self.assertGreater(counts[FREQ_TRAJ_OP], 0, counts)
-
-    def test_freq_onset_fires(self):
-        """freq_onset on => the onset channel (op48) tags the residual freq SETs."""
-        counts = block_op_counts(self.dump, parse_args(freq_onset_pass=True))
-        self.assertGreater(counts[FREQ_ONSET_OP], 0, counts)
 
     def test_skeleton_roundtrip_to_content_floor(self):
         """The skeleton-encoded stream decodes (via the public expand_ops path) to a

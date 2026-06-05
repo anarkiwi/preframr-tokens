@@ -10,9 +10,6 @@ __all__ = [
     "HardRestartDecoder",
     "FreqTrajectoryDecoder",
     "TrackRefDecoder",
-    "FreqNudgeDecoder",
-    "ReleaseUpdateDecoder",
-    "CtrlUpdateDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
     "SubregFlushDecoder",
@@ -51,7 +48,6 @@ from preframr_tokens.stfconstants import (
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
-    CTRL_UPDATE_OP,
     GRADIENT_OP,
     INIT_OP,
     GRADIENT_SUBREG_DUR_BASE,
@@ -62,16 +58,8 @@ from preframr_tokens.stfconstants import (
     FC_LO_REG,
     FC_PRESET_TABLE,
     FLIP_OP,
-    FREQ_NUDGE_DELTA_ESCAPE,
-    FREQ_NUDGE_MODE_ABSOLUTE,
-    FREQ_NUDGE_MODE_DELTA,
-    FREQ_NUDGE_OP,
-    FREQ_ONSET_OP,
     NOTE_OFF_OP,
     NOTE_ON_OP,
-    FREQ_NUDGE_SUBREG_DELTA,
-    FREQ_NUDGE_SUBREG_HI,
-    FREQ_NUDGE_SUBREG_MODE,
     FREQ_TRAJ_OP,
     FT_DELTA_ESCAPE,
     FT_PERIODIC_BIT,
@@ -98,7 +86,6 @@ from preframr_tokens.stfconstants import (
     PWM_PRESET_OP,
     PWM_PRESET_TABLE,
     PWM_SUSTAIN_OP,
-    RELEASE_UPDATE_OP,
     SET_OP,
     SHIFTED_TO_BASE_OP,
     SKEL_OP,
@@ -307,58 +294,6 @@ class TrackRefDecoder(MacroDecoder):
         return pre or None
 
 
-class FreqNudgeDecoder(MacroDecoder):
-    """Decode a FREQ_NUDGE atom: mode then a signed-byte delta (delta mode,
-    escape FREQ_NUDGE_DELTA_ESCAPE -> 16-bit hi/lo) or hi/lo absolute (absolute
-    mode); one write on the final subreg."""
-
-    op_code = FREQ_NUDGE_OP
-
-    def expand(self, row, state):
-        subreg = int(row.subreg)
-        val = int(row.val) & 0xFF
-        reg = int(row.reg)
-        if subreg == FREQ_NUDGE_SUBREG_MODE:
-            state.pending_nudge_fields = {"mode": val, "esc": False}
-            return None
-        f = state.pending_nudge_fields
-        if not f:
-            return None
-        if subreg == FREQ_NUDGE_SUBREG_DELTA:
-            if val == FREQ_NUDGE_DELTA_ESCAPE:
-                f["esc"] = True
-                return None
-            state.pending_nudge_fields = {}
-            return self._apply(
-                row, state, reg, FREQ_NUDGE_MODE_DELTA, val if val < 128 else val - 256
-            )
-        if subreg == FREQ_NUDGE_SUBREG_HI:
-            f["hi"] = val
-            return None
-        payload = (f.get("hi", 0) << 8) | val
-        delta_mode = f.get("mode", 0) == FREQ_NUDGE_MODE_DELTA or f.get("esc", False)
-        state.pending_nudge_fields = {}
-        if delta_mode:
-            return self._apply(
-                row,
-                state,
-                reg,
-                FREQ_NUDGE_MODE_DELTA,
-                payload if payload < 0x8000 else payload - 0x10000,
-            )
-        return self._apply(row, state, reg, FREQ_NUDGE_MODE_ABSOLUTE, payload)
-
-    @staticmethod
-    def _apply(row, state, reg, mode, payload):
-        pre = state.maybe_flush_for(reg, -1)
-        if mode == FREQ_NUDGE_MODE_DELTA:
-            state.last_val[reg] += payload
-        else:
-            state.last_val[reg] = payload
-        own = (reg, int(state.last_val[reg]), row.diff, row.description)
-        return pre + [own]
-
-
 class FreqTrajectoryDecoder(MacroDecoder):
     """Decode a FREQ_TRAJ atom (op 45) for any slope reg: FLAGS selects SUBTYPE,
     MONOTONE_RAMP replays SLOPE's terminal+runtime ramp, OSCILLATE/RUN replay a
@@ -485,44 +420,6 @@ class FreqTrajectoryDecoder(MacroDecoder):
             cur = cur + sv if kind == "rel" else sv
             state.pending_set_writes[reg].append(int(cur))
         return list(pre)
-
-
-class _SetEquivalentDecoder(MacroDecoder):
-    """Base for ops that decode exactly like a plain SET on ``row.reg`` (flush pending, update
-    last_val/last_diff, emit the single write) but carry a distinct op so the atom channels as a
-    recognised, non-lonely write. Subclasses set ``op_code`` only."""
-
-    op_code = -1
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, int(row.val), row.diff, row.description)]
-
-
-class FreqOnsetDecoder(_SetEquivalentDecoder):
-    """Decode a FREQ_ONSET atom: an isolated TRAJ_REG (freq/PW/filter) write, equivalent to a
-    SET on that register but tagged as a melodic/timbral onset (so it lives in the onset
-    channel, not op0 SET)."""
-
-    op_code = FREQ_ONSET_OP
-
-
-class ReleaseUpdateDecoder(_SetEquivalentDecoder):
-    """Decode a RELEASE_UPDATE atom: a single isolated SR/AD envelope write,
-    equivalent to a SET on that register but tagged as a recognised op."""
-
-    op_code = RELEASE_UPDATE_OP
-
-
-class CtrlUpdateDecoder(_SetEquivalentDecoder):
-    """Decode a CTRL_UPDATE atom: a single residual CTRL write the bigram/triple
-    passes did not take, equivalent to a SET on that register but tagged as a
-    recognised op so it is not a lonely write."""
-
-    op_code = CTRL_UPDATE_OP
 
 
 class PresetDecoder(MacroDecoder):
@@ -840,10 +737,6 @@ DECODERS = {
         WavetableSustainDecoder(),
         FreqTrajectoryDecoder(),
         TrackRefDecoder(),
-        FreqNudgeDecoder(),
-        FreqOnsetDecoder(),
-        ReleaseUpdateDecoder(),
-        CtrlUpdateDecoder(),
         SkeletonDecoder(),
         OrnamentDecoder(),
         SweepDecoder(),
