@@ -9,8 +9,8 @@ import unittest
 
 from preframr_tokens.melody_audit import (
     ceiling_2gram,
-    extract_sequences,
     measure,
+    measure_triage,
     transfer_accuracy,
 )
 
@@ -44,6 +44,22 @@ class TestTransferCorpus(unittest.TestCase):
             result["interval_transfer"],
             result["absolute_transfer"],
             f"interval must transfer better than absolute: {result}",
+        )
+
+    def test_layer3_demux_pre_screen_helps(self):
+        paths = sorted(
+            glob.glob(os.path.join(_HVSC, "**", "*.dump.parquet"), recursive=True)
+        )
+        if not paths:
+            self.skipTest("HVSC corpus unavailable")
+        sample = paths[:: max(1, len(paths) // 60)][:60]
+        triage = measure_triage(sample)
+        if triage["voice_major_transfer"] == 0:
+            self.skipTest("too few melodic onsets in sample")
+        self.assertGreaterEqual(
+            triage["voice_major_transfer"],
+            triage["frame_major_transfer"],
+            f"de-mux must not hurt next-interval transfer: {triage}",
         )
 
 

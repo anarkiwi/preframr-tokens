@@ -19,7 +19,14 @@ from preframr_tokens.stfconstants import (
 )
 from preframr_tokens.tokenizer_config import default_tokenizer_args
 
-__all__ = ["extract_sequences", "transfer_accuracy", "ceiling_2gram", "measure"]
+__all__ = [
+    "extract_sequences",
+    "extract_interleaved",
+    "transfer_accuracy",
+    "ceiling_2gram",
+    "measure",
+    "measure_triage",
+]
 
 
 def extract_sequences(df):
@@ -58,6 +65,37 @@ def extract_sequences(df):
             out[voice]["notes"].append(cur[voice])
             pend = None
     return dict(out)
+
+
+def extract_interleaved(df):
+    """One per-tune interval sequence in raw EMISSION (frame-major) order -- voices interleaved as the
+    deployed model sees them before any de-multiplexing. The layer-3 triage baseline; a melody-onset's
+    own previous interval is far away (other voices intervene), so next-interval transfer is degraded.
+    """
+    ops = df["op"].to_numpy()
+    subs = df["subreg"].to_numpy()
+    vals = df["val"].to_numpy()
+    cur = {}
+    out = []
+    pend = None
+    for i in range(len(df)):
+        if int(ops[i]) != MELODY_INTERVAL_OP:
+            continue
+        sub = int(subs[i])
+        if sub == MELODY_INTERVAL_SUBREG_VOICE:
+            pend = {"voice": int(vals[i]), "first": 0, "hi": 0, "lo": 0}
+        if pend is None:
+            continue
+        if sub == MELODY_INTERVAL_SUBREG_FIRST:
+            pend["first"] = int(vals[i])
+        elif sub == MELODY_INTERVAL_SUBREG_INTERVAL_HI:
+            pend["hi"] = int(vals[i])
+        elif sub == MELODY_INTERVAL_SUBREG_INTERVAL_LO:
+            token = ((pend["hi"] & 0xFF) << 8) | (int(vals[i]) & 0xFF)
+            if not pend["first"]:
+                out.append(unzig(token))
+            pend = None
+    return {"intervals": out, "notes": out}
 
 
 def _markov_table(seqs, key):
@@ -118,4 +156,29 @@ def measure(paths, min_len=4):
         "interval_transfer": transfer_accuracy(train, test, "intervals"),
         "absolute_transfer": transfer_accuracy(train, test, "notes"),
         "interval_ceiling": ceiling_2gram(train + test, "intervals"),
+    }
+
+
+def measure_triage(paths, min_len=4):
+    """Layer-3 pre-screen: held-out next-interval transfer for the de-multiplexed VOICE-major lanes vs
+    the deployed FRAME-major interleaved stream. de_mux_gain > 0 means contiguous voice lanes surface
+    the melody's own history and justify the byte-exact reorder (the work order's mandatory gate).
+    """
+    vm_train, vm_test, fm_train, fm_test = [], [], [], []
+    for k, path in enumerate(paths):
+        df = _parse(path)
+        if df is None:
+            continue
+        for seq in extract_sequences(df).values():
+            if len(seq["intervals"]) >= min_len:
+                (vm_train if k % 2 == 0 else vm_test).append(seq)
+        inter = extract_interleaved(df)
+        if len(inter["intervals"]) >= min_len:
+            (fm_train if k % 2 == 0 else fm_test).append(inter)
+    voice_major = transfer_accuracy(vm_train, vm_test, "intervals")
+    frame_major = transfer_accuracy(fm_train, fm_test, "intervals")
+    return {
+        "frame_major_transfer": frame_major,
+        "voice_major_transfer": voice_major,
+        "de_mux_gain": voice_major - frame_major,
     }
