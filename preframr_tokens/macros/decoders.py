@@ -12,10 +12,21 @@ __all__ = [
     "SweepDecoder",
     "GenTriDecoder",
     "GenTuningDecoder",
+    "MelodyIntervalDecoder",
 ]
 
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
+    MELODY_INTERVAL_OP,
+    MELODY_INTERVAL_SUBREG_DELTA_HI,
+    MELODY_INTERVAL_SUBREG_DELTA_LO,
+    MELODY_INTERVAL_SUBREG_FIRST,
+    MELODY_INTERVAL_SUBREG_INTERVAL_HI,
+    MELODY_INTERVAL_SUBREG_INTERVAL_LO,
+    MELODY_INTERVAL_SUBREG_LEN,
+    MELODY_INTERVAL_SUBREG_RESID_HI,
+    MELODY_INTERVAL_SUBREG_RESID_LO,
+    MELODY_INTERVAL_SUBREG_VOICE,
     GEN_TRI_OP,
     GEN_TRI_SUBREG_DIR,
     GEN_TRI_SUBREG_HI_HI,
@@ -49,7 +60,12 @@ from preframr_tokens.stfconstants import (
     VOICES,
 )
 from preframr_tokens.macros.codebook import codebook_decoders
-from preframr_tokens.macros.generator_fit import _tri_seq
+from preframr_tokens.macros.generator_fit import _tri_seq, recon, unzig
+
+
+def _s16(raw):
+    raw &= 0xFFFF
+    return raw if raw < 0x8000 else raw - 0x10000
 
 
 class MacroDecoder:
@@ -300,6 +316,52 @@ class GenTriDecoder(MacroDecoder):
         return pre or None
 
 
+class MelodyIntervalDecoder(MacroDecoder):
+    """Decode a MELODY_INTERVAL atom (melody-skeleton layer 2): a freq note-onset re-keyed off the
+    voice's previous note. FIRST sets ``cur_note`` absolute, else ``cur_note += unzig(interval)``; the
+    onset freq is ``recon(cur_note, gen_ref) + resid`` and the carried HOLD/ACCUM delta replays LEN
+    per-frame freqs onto the voice's freq reg -- byte-exact, the running interval sum reproducing the
+    absolute note."""
+
+    op_code = MELODY_INTERVAL_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == MELODY_INTERVAL_SUBREG_VOICE:
+            state.pending_melody_interval = {"fields": {}}
+        pend = state.pending_melody_interval
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != MELODY_INTERVAL_SUBREG_LEN:
+            return None
+        state.pending_melody_interval = None
+        f = pend["fields"]
+        voice = int(f.get(MELODY_INTERVAL_SUBREG_VOICE, 0)) % VOICES
+        reg = int(FREQ_REGS_BY_VOICE[voice])
+        raw_iv = ((f.get(MELODY_INTERVAL_SUBREG_INTERVAL_HI, 0) & 0xFF) << 8) | (
+            f.get(MELODY_INTERVAL_SUBREG_INTERVAL_LO, 0) & 0xFF
+        )
+        if int(f.get(MELODY_INTERVAL_SUBREG_FIRST, 0)):
+            cur_note = raw_iv
+        else:
+            cur_note = state.melody_interval_cur_note[voice] + unzig(raw_iv)
+        state.melody_interval_cur_note[voice] = cur_note
+        resid = _s16(
+            ((f.get(MELODY_INTERVAL_SUBREG_RESID_HI, 0) & 0xFF) << 8)
+            | (f.get(MELODY_INTERVAL_SUBREG_RESID_LO, 0) & 0xFF)
+        )
+        delta = _s16(
+            ((f.get(MELODY_INTERVAL_SUBREG_DELTA_HI, 0) & 0xFF) << 8)
+            | (f.get(MELODY_INTERVAL_SUBREG_DELTA_LO, 0) & 0xFF)
+        )
+        start = (recon(cur_note, state.gen_ref) + resid) & 0xFFFF
+        pre = state.maybe_flush_for(reg, -1)
+        for k in range(int(f.get(MELODY_INTERVAL_SUBREG_LEN, 0))):
+            state.pending_set_writes[reg].append((start + k * delta) & 0xFFFF)
+        return pre or None
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -316,6 +378,7 @@ DECODERS = {
         SweepDecoder(),
         GenTriDecoder(),
         GenTuningDecoder(),
+        MelodyIntervalDecoder(),
     )
 }
 DECODERS.update(codebook_decoders())

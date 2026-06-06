@@ -78,6 +78,20 @@ def note_of(f, ref):
     return idx - 1 if (f - int(lut[idx - 1])) <= (int(lut[idx]) - f) else idx
 
 
+def zig(n):
+    """Zig-zag bias map: signed semitone interval -> small non-negative token (0,-1,1,-2 -> 0,1,2,3),
+    so a melody's clustered-near-zero intervals stay low-cardinality. Inverse of ``unzig``.
+    """
+    n = int(n)
+    return (n << 1) ^ (n >> 63)
+
+
+def unzig(z):
+    """Inverse of ``zig``: non-negative token -> signed semitone interval."""
+    z = int(z)
+    return (z >> 1) ^ -(z & 1)
+
+
 def gen_hold(s, i, n):
     v = s[i]
     j = i
