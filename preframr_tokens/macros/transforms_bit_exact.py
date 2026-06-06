@@ -17,9 +17,11 @@ from preframr_tokens.macros.passes import (
 from preframr_tokens.macros.transform import (
     PassBackedTransform,
     RowExpandingTransform,
+    Transform,
     _row_to_dict,
     register,
 )
+from preframr_tokens.macros.voice_lane import forward_df, inverse_df
 from preframr_tokens.stfconstants import (
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
@@ -121,3 +123,28 @@ class VoiceBlockOrderTransform(PassBackedTransform):
     IDEMPOTENT = True
     REQUIRES_ARGS = frozenset({"voice_canonical_block_order"})
     PASS_CLASS = VoiceBlockOrderPass
+
+
+@register("voice_lane")
+class VoiceLaneTransform(Transform):
+    """Layer-3 de-multiplex (AGENT_TASK_melody_skeleton.md §4B): reorder a frame-major block into
+    voice-major lanes so a melody onset's own predecessor is positionally local. Default OFF; bit-exact
+    (forward/inverse restore the canonical render order). MUST_FOLLOW voice_block_order so lanes map to a
+    stable canonical voice order."""
+
+    NAME = "voice_lane"
+    TIER = "bit_exact"
+    OP_CODES = frozenset()
+    LOSS_TIER = "structural"
+    REQUIRES_ARGS = frozenset({"voice_lane"})
+    MUST_FOLLOW = frozenset({"voice_block_order"})
+
+    def forward(self, df, args=None):
+        if args is None or not getattr(args, "voice_lane", False):
+            return df
+        return forward_df(df)
+
+    def inverse(self, df, args=None):
+        if args is None or not getattr(args, "voice_lane", False):
+            return df
+        return inverse_df(df)

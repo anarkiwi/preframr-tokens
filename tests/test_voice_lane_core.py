@@ -162,5 +162,63 @@ class TestVoiceLaneDf(unittest.TestCase):
             self.skipTest("no corpus tunes parsed")
 
 
+class TestVoiceLaneTransform(unittest.TestCase):
+    def test_registered_and_is_a_flag(self):
+        from preframr_tokens.macros.transform import (
+            ensure_default_transforms_registered,
+            get_transform_class,
+        )
+        from preframr_tokens.macros.flag_registry import macro_flag_names
+
+        ensure_default_transforms_registered()
+        cls = get_transform_class("voice_lane")
+        self.assertEqual(cls.TIER, "bit_exact")
+        self.assertIn("voice_block_order", cls.MUST_FOLLOW)
+        self.assertIn("voice_lane", macro_flag_names())
+
+    def test_default_off_is_identity(self):
+        from preframr_tokens.macros.transform import get_transform_class
+        from preframr_tokens.tokenizer_config import default_tokenizer_args
+        import pandas as pd
+
+        t = get_transform_class("voice_lane")()
+        df = pd.DataFrame([_rec(FRAME_REG, 6), _rec(0, 1)])
+        args = default_tokenizer_args()
+        pd.testing.assert_frame_equal(t.forward(df, args=args), df)
+
+    def test_round_trip_on_corpus_df(self):
+        paths = sorted(
+            glob.glob(os.path.join(_HVSC, "**", "*.dump.parquet"), recursive=True)
+        )
+        if not paths:
+            self.skipTest("HVSC corpus unavailable")
+        from preframr_tokens.macros.transform import get_transform_class
+        from preframr_tokens.reglogparser import RegLogParser
+        from preframr_tokens.tokenizer_config import default_tokenizer_args
+
+        t = get_transform_class("voice_lane")()
+        args = default_tokenizer_args(
+            generator_pass=True,
+            instrument_program=True,
+            melody_skeleton=True,
+            voice_lane=True,
+        )
+        checked = 0
+        for path in paths[:: max(1, len(paths) // 20)][:6]:
+            df = next(
+                RegLogParser(args=args).parse(
+                    path, max_perm=1, require_pq=False, reparse=True
+                ),
+                None,
+            )
+            if df is None:
+                continue
+            checked += 1
+            self.assertTrue(t.round_trip_check(df, args=args))
+            self.assertGreater(len(t.forward(df, args=args)), len(df))
+        if checked == 0:
+            self.skipTest("no corpus tunes parsed")
+
+
 if __name__ == "__main__":
     unittest.main()

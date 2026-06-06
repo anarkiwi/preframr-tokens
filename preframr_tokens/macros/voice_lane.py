@@ -6,6 +6,8 @@ canonical frame-major order. The marker-agnostic heart the pipeline wiring drive
 
 from __future__ import annotations
 
+import pandas as pd
+
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     FRAME_REG,
@@ -20,6 +22,8 @@ __all__ = [
     "round_trips",
     "df_to_voice_major",
     "df_to_frame_major",
+    "forward_df",
+    "inverse_df",
 ]
 
 VLANE_REG = RESERVED_REG_NEG124
@@ -151,3 +155,19 @@ def df_to_frame_major(records):
         out.append(r)
         out.extend(groups.get((slot, frame), []))
     return out
+
+
+def forward_df(df):
+    """df-level frame-major -> voice-major (dtypes preserved), for the bit_exact ``voice_lane`` Transform."""
+    if df is None or len(df) == 0:
+        return df
+    out = df_to_voice_major(df.to_dict("records"))
+    return pd.DataFrame(out, columns=df.columns).astype(df.dtypes.to_dict())
+
+
+def inverse_df(df):
+    """df-level voice-major -> frame-major, the exact inverse of ``forward_df`` (restores canonical order)."""
+    if df is None or len(df) == 0:
+        return df
+    out = df_to_frame_major(df.to_dict("records"))
+    return pd.DataFrame(out, columns=df.columns).astype(df.dtypes.to_dict())
