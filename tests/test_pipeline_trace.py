@@ -204,38 +204,38 @@ class TestRenderText(unittest.TestCase):
         report = {
             "dump": "x.parquet",
             "max_perm": 1,
-            "resolution": [("preset", "preset_pass", True)],
+            "resolution": [("hard_restart", "hard_restart_pass", True)],
             "unknown_names": ["slope"],
             "unknown_flags": [],
-            "active_flags": {"preset_pass": True},
+            "active_flags": {"hard_restart_pass": True},
             "records": [
                 {
                     "idx": 0,
-                    "stage": "PresetPass",
-                    "gate_flags": {"preset_pass": True},
+                    "stage": "HardRestartPass",
+                    "gate_flags": {"hard_restart_pass": True},
                     "rows_after": 5,
                     "delta": -1,
-                    "op_delta": {"PWM_PRESET": 1, "SET": -1},
+                    "op_delta": {"HARD_RESTART": 1, "SET": -2},
                     "status": "FIRED",
                     "branch": False,
                 }
             ],
             "flag_report": {
-                "preset_pass": {
-                    "read_by": ["PresetPass"],
-                    "fired_in": ["PresetPass"],
+                "hard_restart_pass": {
+                    "read_by": ["HardRestartPass"],
+                    "fired_in": ["HardRestartPass"],
                     "effective": True,
                 }
             },
             "final_rows": 5,
-            "final_op_hist": {"PWM_PRESET": 1},
+            "final_op_hist": {"HARD_RESTART": 1},
             "final_decoded": [],
             "isolation": None,
             "isolate_flag": "",
         }
         text = pt.render_text(report, full=False, show_rows=80)
         self.assertIn("UNRECOGNIZED spec name 'slope'", text)
-        self.assertIn("PresetPass", text)
+        self.assertIn("HardRestartPass", text)
         self.assertIn("EFFECTIVE", text)
 
 
