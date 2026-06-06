@@ -66,8 +66,7 @@ def default_tokenizer_args(**overrides) -> SimpleNamespace:
 
 
 REGISTERED_MACROS = (
-    "freq_trajectory_pass",
-    "preset_pass",
+    "generator_pass",
     "hard_restart_pass",
     "legato_pass_c2",
     "legato_pass_c4",
@@ -75,11 +74,6 @@ REGISTERED_MACROS = (
     "loop_pass",
     "loop_transposed",
     "instrument_program",
-    "sweep_pass",
-    "pw_sweep",
-    "filter_sweep",
-    "filter_gradient",
-    "global_osc",
 )
 
 NAMED_CONFIGS = {
