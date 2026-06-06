@@ -19,7 +19,6 @@ def _args(**kw):
         hard_restart_pass=True,
         voice_canonical_block_order=True,
         freq_trajectory_pass=True,
-        preset_pass=True,
         loop_pass=True,
     )
     base.update(kw)
@@ -189,12 +188,12 @@ class TestPipelineTier(unittest.TestCase):
         self.assertEqual(p_bitexact.tier, "bit_exact")
         spec2 = {
             "transforms": [
-                {"name": "preset"},
+                {"name": "dedup_set"},
                 {"name": "hard_restart"},
                 {"name": "voice_block_order"},
             ]
         }
-        p_audio = TransformPipeline.from_spec(spec2, args=_args(preset_pass=True))
+        p_audio = TransformPipeline.from_spec(spec2, args=_args())
         self.assertEqual(p_audio.tier, "audio_bit_exact")
 
 
@@ -232,7 +231,6 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
             voice_canonical_block_order=True,
             hard_restart_pass=True,
             freq_trajectory_pass=True,
-            preset_pass=True,
             loop_pass=True,
         )
         for name, cls in _REGISTRY.items():
@@ -264,9 +262,7 @@ class TestHardcodedPassesSeedAccumulator(unittest.TestCase):
 
         hardcoded = _hardcoded_emits_non_set_regs()
         self.assertIn(0, hardcoded)
-        self.assertIn(2, hardcoded)
         self.assertIn(4, hardcoded)
-        self.assertIn(21, hardcoded)
 
     def test_consumer_with_no_handles_errors_against_hardcoded_seed(self):
         from preframr_tokens.macros import (  # noqa: F401
@@ -316,11 +312,11 @@ class TestRegisterStateContract(unittest.TestCase):
         try:
             spec = {
                 "transforms": [
-                    {"name": "preset"},
+                    {"name": "transpose"},
                     {"name": "_test_motion_consumer"},
                 ]
             }
-            errors = validate_pipeline_spec(spec, args=_args(preset_pass=True))
+            errors = validate_pipeline_spec(spec, args=_args())
             self.assertTrue(
                 any("EXPECTS_SET_ON_REGS" in e for e in errors),
                 msg=f"expected EXPECTS_SET_ON_REGS error, got {errors}",

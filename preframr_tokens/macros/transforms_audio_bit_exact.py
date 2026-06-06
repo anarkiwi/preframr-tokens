@@ -5,9 +5,7 @@ from __future__ import annotations
 from preframr_tokens.macros.decoders import (
     DiffDecoder,
     FlipDecoder,
-    PresetDecoder,
     SetDecoder,
-    ShiftedDecoder,
     TransposeDecoder,
 )
 from preframr_tokens.macros.loop_pass import LoopPass
@@ -17,7 +15,6 @@ from preframr_tokens.macros.passes import (
     TransposePass,
 )
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
-from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.transform import (
     PassBackedTransform,
     Transform,
@@ -26,43 +23,14 @@ from preframr_tokens.macros.transform import (
 from preframr_tokens.stfconstants import (
     DIFF_OP,
     DO_LOOP_OP,
-    FC_PRESET_OP,
     FLIP_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
     PATTERN_REPLAY_SUBREG_DIST_LO,
-    PWM_PRESET_OP,
-    PWM_PRESET_SHIFTED_OP,
     SET_OP,
     TRANSPOSE_OP,
 )
-
-_PRESET_OPS = (PWM_PRESET_OP, FC_PRESET_OP, PWM_PRESET_SHIFTED_OP)
-
-
-@register("preset")
-class PresetTransform(PassBackedTransform):
-    TIER = "audio_bit_exact"
-    OP_CODES = frozenset(_PRESET_OPS)
-    SUBSTITUTABLE_OP_SUBREGS = frozenset((int(op), -1) for op in _PRESET_OPS)
-    OPERATES_ON_VOICE_REGS = True
-    LOSS_TIER = "content"
-    REQUIRES_ARGS = frozenset({"preset_pass"})
-    PROVIDES_OPS = frozenset(_PRESET_OPS)
-    EMITS_NON_SET_REGS = frozenset({2, 21})
-    PASS_CLASS = PresetPass
-    DECODER_CLASS = PresetDecoder
-
-    def __init__(self, **params):
-        super().__init__(**params)
-        self._shifted_decoder = ShiftedDecoder()
-
-    def expand_atom(self, row, state):
-        op = int(getattr(row, "op"))
-        if op == PWM_PRESET_SHIFTED_OP:
-            return self._shifted_decoder.expand(row, state)
-        return self._decoder.expand(row, state)
 
 
 @register("per_reg_burst")

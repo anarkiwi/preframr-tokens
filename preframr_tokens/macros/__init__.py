@@ -17,8 +17,6 @@ from preframr_tokens.macros.passes import (
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
-from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
-from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
     OVERLAY_BODY_FREQ_DELTA_BIN,
@@ -46,8 +44,6 @@ FREQ_BLOCK_PASSES = [
 
 
 PASSES = [
-    PresetPass(),
-    GateSlopeShiftPass(),
     TransposePass(),
     DedupSetPass(),
     DedupSetPass(),

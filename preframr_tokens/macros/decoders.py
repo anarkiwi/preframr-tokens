@@ -8,10 +8,7 @@ __all__ = [
     "FlipDecoder",
     "TransposeDecoder",
     "HardRestartDecoder",
-    "PresetDecoder",
-    "ShiftedDecoder",
     "SubregFlushDecoder",
-    "PwmSustainDecoder",
     "SweepDecoder",
     "GenTriDecoder",
     "GenTuningDecoder",
@@ -33,21 +30,13 @@ from preframr_tokens.stfconstants import (
     GEN_TUNING_OP,
     GEN_TUNING_SUBREG_REF,
     DIFF_OP,
-    FC_LO_REG,
-    FC_PRESET_TABLE,
     FLIP_OP,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
     LEGATO_OP_CLUSTER_4,
     LEGATO_OP_CLUSTER_7,
-    PRESET_OPS,
-    PRESET_SHIFTED_OPS,
-    PWM_PRESET_OP,
-    PWM_PRESET_TABLE,
-    PWM_SUSTAIN_OP,
     SET_OP,
-    SHIFTED_TO_BASE_OP,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
     SWEEP_SUBREG_DELTA_HI,
@@ -210,52 +199,6 @@ class _LegatoClusterByteDecoder(MacroDecoder):
         return writes
 
 
-class PresetDecoder(MacroDecoder):
-    """Decode PRESET_OP rows: emit a SET-equivalent write with table-snapped val."""
-
-    op_code = -1
-
-    def expand(self, row, state):
-        op = int(row.op)
-        reg = int(row.reg)
-        preset_id = int(row.val)
-        if op == PWM_PRESET_OP:
-            val = int(PWM_PRESET_TABLE[preset_id])
-        else:
-            val = int(FC_PRESET_TABLE[preset_id])
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = val
-        own = (reg, val, row.diff, row.description)
-        return pre + [own]
-
-
-class ShiftedDecoder(MacroDecoder):
-    """Defer a preset op by one frame: stash a rewritten row with the base op
-    into the post-marker queue (inline SET); FrameWalker drains it at the next
-    FRAME or DELAY marker."""
-
-    op_code = -1
-
-    def expand(self, row, state):
-        base_op = SHIFTED_TO_BASE_OP[int(row.op)]
-        deferred = _FastRowProxy(row, op=base_op)
-        state.pending_deferred_post_marker.append((base_op, deferred))
-        return None
-
-
-class _FastRowProxy:
-    __slots__ = ("reg", "val", "op", "subreg", "diff", "description", "Index")
-
-    def __init__(self, src, op):
-        self.reg = int(src.reg)
-        self.val = int(src.val)
-        self.op = int(op)
-        self.subreg = int(src.subreg)
-        self.diff = int(src.diff)
-        self.description = int(src.description)
-        self.Index = int(src.Index)
-
-
 class SubregFlushDecoder(MacroDecoder):
     """Force-flush deferred subreg state. Inserted by SubregPass between two
     consecutive subreg rows that are on the same reg, touch different
@@ -266,21 +209,6 @@ class SubregFlushDecoder(MacroDecoder):
 
     def expand(self, row, state):
         return state.flush_pending_subreg() or None
-
-
-class PwmSustainDecoder(MacroDecoder):
-    """Lonely-PWM sustain-frame macro: decoder emits the PWM_PRESET-equivalent SET on the voice's PW reg. Voice is recovered upstream by remove_voice_reg via FRAME_REG svt (frame is single-voice-only by construction; no VOICE_REG marker)."""
-
-    op_code = PWM_SUSTAIN_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        preset_id = int(row.val)
-        val = int(PWM_PRESET_TABLE[preset_id])
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = val
-        own = (reg, val, row.diff, row.description)
-        return pre + [own]
 
 
 class SweepDecoder(MacroDecoder):
@@ -385,16 +313,9 @@ DECODERS = {
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_3),
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
         _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
-        PwmSustainDecoder(),
         SweepDecoder(),
         GenTriDecoder(),
         GenTuningDecoder(),
     )
 }
 DECODERS.update(codebook_decoders())
-_PRESET_DECODER = PresetDecoder()
-for _op in PRESET_OPS:
-    DECODERS[_op] = _PRESET_DECODER
-_SHIFTED_DECODER = ShiftedDecoder()
-for _op in PRESET_SHIFTED_OPS:
-    DECODERS[_op] = _SHIFTED_DECODER

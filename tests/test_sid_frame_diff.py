@@ -106,7 +106,7 @@ class TestFrameDiffUnit(unittest.TestCase):
 class TestFlagResolver(unittest.TestCase):
     def test_requires_passthrough(self):
         """With no FLAG_REQUIRES relationships, a flag set resolves to itself."""
-        self.assertEqual(resolve_flags({"preset_pass"}), {"preset_pass"})
+        self.assertEqual(resolve_flags({"hard_restart_pass"}), {"hard_restart_pass"})
 
     def test_minimal_configs_cover_every_flag(self):
         for flag, cfg in minimal_configs().items():

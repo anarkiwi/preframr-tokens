@@ -14,10 +14,8 @@ from preframr_tokens.engine_fingerprint import (
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
-from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
-from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reg_match import (
@@ -51,7 +49,6 @@ from preframr_tokens.stfconstants import (
     SUBREG_PDTYPE,
     TOKEN_KEYS,
     VAL_PDTYPE,
-    PWM_SUSTAIN_OP,
     VOICES,
     VOICE_REG,
     VOICE_REG_SIZE,
@@ -63,8 +60,6 @@ __all__ = [
     "prepare_df_for_audio",
     "read_initial_irq",
 ]
-
-_SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP)}
 
 FRAME_DTYPES = {
     "reg": REG_PDTYPE,
@@ -252,7 +247,7 @@ def remove_voice_reg(orig_df, reg_widths):
     df["f"] = 0
     df.loc[df["reg"] == FRAME_REG, "f"] = 1
     df["f"] = df["f"].cumsum()
-    m = df["reg"].isin({FRAME_REG, VOICE_REG}) | df["op"].isin(_SUSTAIN_MARKER_OPS)
+    m = df["reg"].isin({FRAME_REG, VOICE_REG})
     df.loc[m, "fn"] = 1
     df["fn"] = df.groupby("f")["fn"].cumsum()
     df["fn"] -= 1
@@ -948,9 +943,7 @@ class RegLogParser:
         audit = make_pass_audit(self.args)
         audit.start(df)
         for macro_pass in (
-            PresetPass(),
             PerRegBurstPass(),
-            GateSlopeShiftPass(),
             InstrumentProgramPass(),
             GeneratorPass(),
         ):

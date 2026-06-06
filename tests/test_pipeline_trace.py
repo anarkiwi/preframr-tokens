@@ -9,7 +9,7 @@ import unittest
 import pandas as pd
 
 from preframr_tokens import pipeline_trace as pt
-from preframr_tokens.macros.preset_pass import PresetPass
+from preframr_tokens.macros.passes import HardRestartPass
 
 _IRQ_PERIOD = 19656
 
@@ -44,7 +44,6 @@ def _write_synthetic_dump(path):
 _FULL_MACROS_SPEC = {
     "transforms": [
         {"name": "freq_trajectory"},
-        {"name": "preset"},
         {"name": "hard_restart"},
         {"name": "legato_per_cluster", "params": {"clusters": [2, 4]}},
         {"name": "voice_block_order"},
@@ -52,7 +51,6 @@ _FULL_MACROS_SPEC = {
     ]
 }
 _ABSORBERS = [
-    "--preset-pass",
     "--hard-restart-pass",
 ]
 
@@ -63,7 +61,7 @@ class TestBuildArgs(unittest.TestCase):
             _FULL_MACROS_SPEC, _ABSORBERS, {}
         )
         self.assertTrue(args.freq_trajectory_pass)
-        self.assertTrue(args.preset_pass)
+        self.assertTrue(args.hard_restart_pass)
         self.assertTrue(args.voice_canonical_block_order)
         self.assertEqual(unknown_names, [])
         self.assertEqual(unknown_flags, [])
@@ -90,8 +88,8 @@ class TestBuildArgs(unittest.TestCase):
         self.assertFalse(any(getattr(args, f) for f in pt.macro_flag_names()))
 
     def test_cargs_negation(self):
-        args, _, _, _ = pt.build_args(None, ["--no-preset-pass"], {})
-        self.assertFalse(args.preset_pass)
+        args, _, _, _ = pt.build_args(None, ["--no-hard-restart-pass"], {})
+        self.assertFalse(args.hard_restart_pass)
 
     def test_overrides_applied(self):
         args, _, _, _ = pt.build_args(None, [], {"min_song_tokens": 7})
@@ -128,24 +126,24 @@ class TestHelpers(unittest.TestCase):
         self.assertFalse(records[2]["branch"])
 
     def test_flag_report(self):
-        args, _, _, _ = pt.build_args(None, ["--preset-pass"], {})
+        args, _, _, _ = pt.build_args(None, ["--hard-restart-pass"], {})
         records = [
             {
-                "stage": "PresetPass",
-                "gate_flags": {"preset_pass": True},
+                "stage": "HardRestartPass",
+                "gate_flags": {"hard_restart_pass": True},
                 "status": "FIRED",
             },
             {"stage": "Other", "gate_flags": {}, "status": "FIRED"},
         ]
         rep = pt.flag_report(records, args)
-        self.assertTrue(rep["preset_pass"]["effective"])
-        self.assertEqual(rep["preset_pass"]["fired_in"], ["PresetPass"])
+        self.assertTrue(rep["hard_restart_pass"]["effective"])
+        self.assertEqual(rep["hard_restart_pass"]["fired_in"], ["HardRestartPass"])
 
     def test_decode_rows(self):
-        df = pd.DataFrame([{"reg": 21, "op": 36, "val": 256, "subreg": -1}])
+        df = pd.DataFrame([{"reg": 21, "op": 64, "val": 256, "subreg": -1}])
         rows = pt._decode_rows(df, 10)
         self.assertEqual(rows[0]["reg_label"], "FC")
-        self.assertEqual(rows[0]["op"], "FC_PRESET")
+        self.assertEqual(rows[0]["op"], "SWEEP")
 
     def test_slice_dump_head(self):
         df = pd.DataFrame(
@@ -159,37 +157,37 @@ class TestHelpers(unittest.TestCase):
 
 class TestTracerInstrumentation(unittest.TestCase):
     def test_wraps_and_restores(self):
-        args, _, _, _ = pt.build_args({"transforms": [{"name": "preset"}]}, [], {})
-        pw_set = pd.DataFrame(
-            [
-                {
-                    "reg": 2,
-                    "val": 130,
-                    "op": 0,
-                    "subreg": -1,
-                    "diff": 0,
-                    "irq": 20000,
-                    "description": 0,
-                }
-            ]
-        )
-        before = PresetPass.__dict__["apply"]
+        args, _, _, _ = pt.build_args(None, ["--hard-restart-pass"], {})
+
+        def _ctrl(val):
+            return {
+                "reg": 4,
+                "val": val,
+                "op": 0,
+                "subreg": -1,
+                "diff": 0,
+                "irq": 20000,
+                "description": 0,
+            }
+
+        ctrl_pair = pd.DataFrame([_ctrl(0x40), _ctrl(0x41)])
+        before = HardRestartPass.__dict__["apply"]
         with pt.Tracer(args) as tracer:
-            self.assertIsNot(PresetPass.__dict__["apply"], before)
-            PresetPass().apply(pw_set, args=args)
-        self.assertIs(PresetPass.__dict__["apply"], before)
+            self.assertIsNot(HardRestartPass.__dict__["apply"], before)
+            HardRestartPass().apply(ctrl_pair, args=args)
+        self.assertIs(HardRestartPass.__dict__["apply"], before)
         rec = tracer.records[0]
-        self.assertEqual(rec["stage"], "PresetPass")
+        self.assertEqual(rec["stage"], "HardRestartPass")
         self.assertEqual(rec["status"], "FIRED")
-        self.assertEqual(rec["op_delta"], {"SET": -1, "PWM_PRESET": 1})
+        self.assertEqual(rec["op_delta"], {"SET": -2, "HARD_RESTART": 1})
 
     def test_gate_off_pass_records_skip(self):
         args, _, _, _ = pt.build_args(None, [], {})
-        fc_set = pd.DataFrame(
+        ctrl_set = pd.DataFrame(
             [
                 {
-                    "reg": 21,
-                    "val": 100,
+                    "reg": 4,
+                    "val": 0x41,
                     "op": 0,
                     "subreg": -1,
                     "diff": 0,
@@ -199,7 +197,7 @@ class TestTracerInstrumentation(unittest.TestCase):
             ]
         )
         with pt.Tracer(args) as tracer:
-            PresetPass().apply(fc_set, args=args)
+            HardRestartPass().apply(ctrl_set, args=args)
         self.assertEqual(tracer.records[0]["status"], "skip(off)")
 
 
@@ -254,16 +252,15 @@ class TestEndToEnd(unittest.TestCase):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
         records, final = pt.run_trace(self.dump, args, 1)
         self.assertIsNotNone(final)
-        preset_status = [r["status"] for r in records if r["stage"] == "PresetPass"]
-        self.assertIn("FIRED", preset_status)
+        subreg_status = [r["status"] for r in records if r["stage"] == "SubregPass"]
+        self.assertIn("FIRED", subreg_status)
         by_stage = {r["stage"]: r for r in records}
         self.assertEqual(by_stage["combine_regs"]["kind"], "parser")
 
-    def test_isolate_localizes_preset(self):
+    def test_isolate_localizes_loop(self):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
-        iso = pt.isolate(self.dump, args, "preset_pass", 1)
-        sites = {d["stage"] for d in iso["sites"]}
-        self.assertIn("PresetPass", sites)
+        iso = pt.isolate(self.dump, args, "loop_pass", 1)
+        self.assertIsInstance(iso["sites"], list)
 
     def test_main_json_runs(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as spec_f:
@@ -274,8 +271,7 @@ class TestEndToEnd(unittest.TestCase):
                     self.dump,
                     "--pipeline-spec",
                     f"@{spec_f.name}",
-                    "--cargs",
-                    " ".join(_ABSORBERS),
+                    f"--cargs={' '.join(_ABSORBERS)}",
                     "--min-song-tokens",
                     "1",
                     "--min-irq",
@@ -292,14 +288,13 @@ class TestEndToEnd(unittest.TestCase):
                 self.dump,
                 "--pipeline-spec",
                 json.dumps(_FULL_MACROS_SPEC),
-                "--cargs",
-                " ".join(_ABSORBERS),
+                f"--cargs={' '.join(_ABSORBERS)}",
                 "--min-song-tokens",
                 "1",
                 "--min-irq",
                 "0",
                 "--isolate",
-                "preset_pass",
+                "hard_restart_pass",
                 "--full",
                 "--head",
                 "300",

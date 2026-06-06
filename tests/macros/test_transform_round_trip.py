@@ -48,12 +48,10 @@ class TestSubstitutabilityRegistry(unittest.TestCase):
     def test_collects_substitutable_op_subregs(self):
         subregs = collect_substitutable_op_subregs()
         from preframr_tokens.stfconstants import (
-            PWM_PRESET_OP,
             PATTERN_REPLAY_OP,
             PATTERN_REPLAY_SUBREG_DIST_HI,
         )
 
-        self.assertIn((int(PWM_PRESET_OP), -1), subregs)
         self.assertIn(
             (int(PATTERN_REPLAY_OP), int(PATTERN_REPLAY_SUBREG_DIST_HI)), subregs
         )

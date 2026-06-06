@@ -8,7 +8,6 @@ from preframr_tokens.macros.decoders import (
     _LegatoClusterByteDecoder,
     _LegatoClusterNibbleDecoder,
 )
-from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.passes import (
     HardRestartPass,
     LegatoPerClusterPass,
@@ -64,14 +63,6 @@ class HardRestartTransform(RowExpandingTransform):
         second = dict(base)
         second["val"] = int(b)
         return [first, second]
-
-
-@register("gate_slope_shift")
-class GateSlopeShiftTransform(PassBackedTransform):
-    TIER = "bit_exact"
-    OP_CODES = frozenset()
-    OPERATES_ON_VOICE_REGS = True
-    PASS_CLASS = GateSlopeShiftPass
 
 
 @register("subreg_flush")
