@@ -24,9 +24,6 @@ FLAG_REQUIRES = {
     "slide_wide": frozenset({"skeleton_pass"}),
     "slide_landing": frozenset({"skeleton_pass"}),
     "held_arp": frozenset({"skeleton_pass"}),
-    "sweep_loop": frozenset({"sweep_pass"}),
-    "pw_sweep": frozenset({"sweep_pass"}),
-    "filter_sweep": frozenset({"sweep_pass"}),
 }
 FLAG_CONFLICTS = {
     "skeleton_pass": frozenset(

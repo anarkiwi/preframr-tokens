@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from preframr_tokens.stfconstants import (
-    GRADIENT_OP,
     DIFF_OP,
     FLIP_OP,
     FREQ_TRAJ_OP,
@@ -130,14 +129,6 @@ CONTRACTS = {
             True,
         ),
         MacroContract(
-            "SweepPass",
-            frozenset({(_FREQ, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            False,
-        ),
-        MacroContract(
             "SkeletonPass",
             frozenset({(_FREQ, _RPL)}),
             frozenset(),
@@ -166,14 +157,6 @@ CONTRACTS = {
             frozenset({(_FREQ, _REL), (_PWM, _REL), (_FILT, _REL)}),
             frozenset(),
             frozenset({"StampPass"}),
-            FrameEffect.PRESERVES,
-            False,
-        ),
-        MacroContract(
-            "NoteOffPass",
-            frozenset({(_CTRL, _ABS)}),
-            frozenset(),
-            frozenset(),
             FrameEffect.PRESERVES,
             False,
         ),
@@ -207,14 +190,12 @@ CONTRACTS = {
 PIPELINE_ORDER = (
     "TrajectoryAnchorPass",
     "StampPass",
-    "SweepPass",
     "SkeletonPass",
     "WavetablePass",
     "FreqTrajectoryPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
     "GeneratorPass",
-    "NoteOffPass",
     "frame_consolidation",
 )
 
@@ -283,7 +264,6 @@ REPLAY_OPS = frozenset(
         int(TRACK_REF_OP),
         int(WAVETABLE_REF_OP),
         int(WAVETABLE_ONESHOT_OP),
-        int(GRADIENT_OP),
         int(INSTR_REF_OP),
         int(GEN_TABLE_REF_OP),
     }

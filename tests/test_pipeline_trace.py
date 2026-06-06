@@ -10,7 +10,6 @@ import pandas as pd
 
 from preframr_tokens import pipeline_trace as pt
 from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.gradient_pass import GradientPass
 
 _IRQ_PERIOD = 19656
 
@@ -53,8 +52,8 @@ _FULL_MACROS_SPEC = {
     ]
 }
 _ABSORBERS = [
-    "--env-gradient",
-    "--filter-gradient",
+    "--preset-pass",
+    "--hard-restart-pass",
 ]
 
 
@@ -66,7 +65,6 @@ class TestBuildArgs(unittest.TestCase):
         self.assertTrue(args.freq_trajectory_pass)
         self.assertTrue(args.preset_pass)
         self.assertTrue(args.voice_canonical_block_order)
-        self.assertTrue(args.env_gradient)
         self.assertEqual(unknown_names, [])
         self.assertEqual(unknown_flags, [])
         self.assertIn(("freq_trajectory", "freq_trajectory_pass", True), resolution)
@@ -92,8 +90,8 @@ class TestBuildArgs(unittest.TestCase):
         self.assertFalse(any(getattr(args, f) for f in pt.macro_flag_names()))
 
     def test_cargs_negation(self):
-        args, _, _, _ = pt.build_args(None, ["--no-env-gradient"], {})
-        self.assertFalse(args.env_gradient)
+        args, _, _, _ = pt.build_args(None, ["--no-preset-pass"], {})
+        self.assertFalse(args.preset_pass)
 
     def test_overrides_applied(self):
         args, _, _, _ = pt.build_args(None, [], {"min_song_tokens": 7})
@@ -130,18 +128,18 @@ class TestHelpers(unittest.TestCase):
         self.assertFalse(records[2]["branch"])
 
     def test_flag_report(self):
-        args, _, _, _ = pt.build_args(None, ["--env-gradient"], {})
+        args, _, _, _ = pt.build_args(None, ["--preset-pass"], {})
         records = [
             {
-                "stage": "GradientPass",
-                "gate_flags": {"env_gradient": True, "modevol_gradient": False},
+                "stage": "PresetPass",
+                "gate_flags": {"preset_pass": True},
                 "status": "FIRED",
             },
             {"stage": "Other", "gate_flags": {}, "status": "FIRED"},
         ]
         rep = pt.flag_report(records, args)
-        self.assertTrue(rep["env_gradient"]["effective"])
-        self.assertEqual(rep["env_gradient"]["fired_in"], ["GradientPass"])
+        self.assertTrue(rep["preset_pass"]["effective"])
+        self.assertEqual(rep["preset_pass"]["fired_in"], ["PresetPass"])
 
     def test_decode_rows(self):
         df = pd.DataFrame([{"reg": 21, "op": 36, "val": 256, "subreg": -1}])
@@ -201,7 +199,7 @@ class TestTracerInstrumentation(unittest.TestCase):
             ]
         )
         with pt.Tracer(args) as tracer:
-            GradientPass().apply(fc_set, args=args)
+            PresetPass().apply(fc_set, args=args)
         self.assertEqual(tracer.records[0]["status"], "skip(off)")
 
 
@@ -259,15 +257,14 @@ class TestEndToEnd(unittest.TestCase):
         by_stage = {r["stage"]: r for r in records}
         self.assertEqual(by_stage["FreqTrajectoryPass"]["status"], "FIRED")
         self.assertIn("FREQ_TRAJ", by_stage["FreqTrajectoryPass"]["op_delta"])
-        self.assertEqual(by_stage["GradientPass"]["status"], "FIRED")
         self.assertEqual(by_stage["combine_regs"]["kind"], "parser")
 
-    def test_isolate_localizes_env_gradient(self):
+    def test_isolate_localizes_freq_trajectory(self):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
-        iso = pt.isolate(self.dump, args, "env_gradient", 1)
+        iso = pt.isolate(self.dump, args, "freq_trajectory_pass", 1)
         sites = {d["stage"] for d in iso["sites"]}
-        self.assertIn("GradientPass", sites)
-        self.assertIn("GRADIENT", iso["net"]["op"])
+        self.assertIn("FreqTrajectoryPass", sites)
+        self.assertIn("FREQ_TRAJ", iso["net"]["op"])
 
     def test_main_json_runs(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as spec_f:
@@ -303,7 +300,7 @@ class TestEndToEnd(unittest.TestCase):
                 "--min-irq",
                 "0",
                 "--isolate",
-                "env_gradient",
+                "freq_trajectory_pass",
                 "--full",
                 "--head",
                 "300",

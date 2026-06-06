@@ -18,12 +18,8 @@ __all__ = [
     "SkeletonDecoder",
     "OrnamentDecoder",
     "SweepDecoder",
-    "GradientDecoder",
-    "GlobalOscDecoder",
     "GenTriDecoder",
     "GenTuningDecoder",
-    "InitDecoder",
-    "NoteOffDecoder",
 ]
 
 from preframr_tokens.macros.skeleton_pass import (
@@ -51,11 +47,6 @@ from preframr_tokens.stfconstants import (
 )
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
-    GRADIENT_OP,
-    GLOBAL_OSC_OP,
-    GLOBAL_OSC_SUBREG_LEN,
-    GLOBAL_OSC_SUBREG_PERIOD,
-    GLOBAL_OSC_SUBREG_STATE_BASE,
     GEN_TRI_OP,
     GEN_TRI_SUBREG_DIR,
     GEN_TRI_SUBREG_HI_HI,
@@ -69,17 +60,10 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
     GEN_TUNING_SUBREG_REF,
-    INIT_OP,
-    GRADIENT_SUBREG_DUR_BASE,
-    GRADIENT_SUBREG_END,
-    GRADIENT_SUBREG_NSTAGES,
-    GRADIENT_SUBREG_VAL_BASE,
     DIFF_OP,
     FC_LO_REG,
     FC_PRESET_TABLE,
     FLIP_OP,
-    NOTE_OFF_OP,
-    NOTE_ON_OP,
     FREQ_TRAJ_OP,
     FT_DELTA_ESCAPE,
     FT_PERIODIC_BIT,
@@ -675,75 +659,6 @@ class SweepDecoder(MacroDecoder):
         return pre or None
 
 
-class GradientDecoder(MacroDecoder):
-    """Decode a GRADIENT atom (GradientPass): NSTAGES opens the buffer, VAL_BASE+i / DUR_BASE+i give
-    each stage's (value, hold_frames), END (terminal) queues value repeated hold times per stage into
-    pending_set_writes -- one drained per song frame, reproducing the staged value-domain automation
-    curve (the Galway gradient envelope) byte-exact at register-state level. A SWEEP sibling whose
-    stages are aperiodic and explicitly held."""
-
-    op_code = GRADIENT_OP
-
-    def expand(self, row, state):
-        sub = int(row.subreg)
-        if sub == GRADIENT_SUBREG_NSTAGES:
-            state.pending_gradient = {"reg": int(row.reg), "fields": {}}
-        pend = state.pending_gradient
-        if pend is None:
-            return None
-        pend["fields"][sub] = int(row.val)
-        if sub != GRADIENT_SUBREG_END:
-            return None
-        state.pending_gradient = None
-        f = pend["fields"]
-        reg = int(pend["reg"])
-        nstages = int(f.get(GRADIENT_SUBREG_NSTAGES, 0))
-        if nstages <= 0:
-            return None
-        pre = state.maybe_flush_for(reg, -1)
-        for i in range(nstages):
-            val = int(f.get(GRADIENT_SUBREG_VAL_BASE + i, 0))
-            dur = int(f.get(GRADIENT_SUBREG_DUR_BASE + i, 0))
-            for _ in range(dur):
-                state.pending_set_writes[reg].append(val)
-        return pre or None
-
-
-class GlobalOscDecoder(MacroDecoder):
-    """Decode a GLOBAL_OSC atom (GlobalOscPass): PERIOD opens the buffer, STATE_BASE+m the P cycle bytes,
-    LEN (terminal) queues cycle[k % P] for LEN frames into pending_set_writes -- one drained per song
-    frame, reproducing the exact per-frame global-reg oscillation. A SWEEP twin with an explicit byte
-    cycle."""
-
-    op_code = GLOBAL_OSC_OP
-
-    def expand(self, row, state):
-        sub = int(row.subreg)
-        if sub == GLOBAL_OSC_SUBREG_PERIOD:
-            state.pending_global_osc = {"reg": int(row.reg), "fields": {}}
-        pend = state.pending_global_osc
-        if pend is None:
-            return None
-        pend["fields"][sub] = int(row.val)
-        if sub != GLOBAL_OSC_SUBREG_LEN:
-            return None
-        state.pending_global_osc = None
-        f = pend["fields"]
-        reg = int(pend["reg"])
-        period = int(f.get(GLOBAL_OSC_SUBREG_PERIOD, 0))
-        length = int(f.get(GLOBAL_OSC_SUBREG_LEN, 0))
-        if period <= 0:
-            return None
-        cycle = [
-            int(f.get(GLOBAL_OSC_SUBREG_STATE_BASE + m, 0)) & 0xFF
-            for m in range(period)
-        ]
-        pre = state.maybe_flush_for(reg, -1)
-        for k in range(length):
-            state.pending_set_writes[reg].append(cycle[k % period])
-        return pre or None
-
-
 class GenTuningDecoder(MacroDecoder):
     """Decode a GEN_TUNING atom (GeneratorPass): store the per-tune semitone-LUT offset
     ``ref = ref_q / 256`` on the decode state for the note-relative freq TABLE codebook, emit no
@@ -797,38 +712,6 @@ class GenTriDecoder(MacroDecoder):
         return pre or None
 
 
-class InitDecoder(MacroDecoder):
-    """Decode an INIT atom (InitPass): re-emit the relabelled init-routine register write inline on its
-    reg, byte-identical to the literal pre-first-note-on SET (same reg, value, frame and intra-frame
-    position)."""
-
-    op_code = INIT_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        own = (reg, int(state.last_val[reg]), row.diff, row.description)
-        return pre + [own]
-
-
-class NoteOffDecoder(MacroDecoder):
-    """Decode a NOTE_OFF atom (NoteOffPass): re-emit the stored gate-clear ctrl byte inline on its reg,
-    byte-identical to the literal SET it re-labels (same value, frame and intra-frame position).
-    """
-
-    op_code = NOTE_OFF_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = int(row.val)
-        state.last_diff[reg] = row.diff
-        own = (reg, int(state.last_val[reg]), row.diff, row.description)
-        return pre + [own]
-
-
 DECODERS = {
     d.op_code: d
     for d in (
@@ -849,15 +732,10 @@ DECODERS = {
         SkeletonDecoder(),
         OrnamentDecoder(),
         SweepDecoder(),
-        GradientDecoder(),
-        GlobalOscDecoder(),
         GenTriDecoder(),
         GenTuningDecoder(),
-        InitDecoder(),
-        NoteOffDecoder(),
     )
 }
-DECODERS[NOTE_ON_OP] = DECODERS[NOTE_OFF_OP]
 DECODERS.update(codebook_decoders())
 _PRESET_DECODER = PresetDecoder()
 for _op in PRESET_OPS:

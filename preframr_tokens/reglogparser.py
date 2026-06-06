@@ -11,10 +11,7 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
-from preframr_tokens.macros.gradient_pass import GradientPass
-from preframr_tokens.macros.global_osc_pass import GlobalOscPass
-from preframr_tokens.macros.init_pass import InitPass
-from preframr_tokens.macros.note_off_pass import NoteOffPass
+from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
@@ -23,10 +20,8 @@ from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
-from preframr_tokens.macros.sweep_pass import SweepPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.wavetable_pass import WavetablePass
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
@@ -988,7 +983,6 @@ class RegLogParser:
             VoiceTrackPass(),
             TrajectoryAnchorPass(),
             StampPass(),
-            SweepPass(),
             SkeletonPass(),
             WavetablePass(),
             FreqTrajectoryPass(),
@@ -997,10 +991,6 @@ class RegLogParser:
             GateSlopeShiftPass(),
             InstrumentProgramPass(),
             GeneratorPass(),
-            NoteOffPass(),
-            GradientPass(),
-            GlobalOscPass(),
-            InitPass(),
         ):
             df = macro_pass.apply(df, args=self.args)
             assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
