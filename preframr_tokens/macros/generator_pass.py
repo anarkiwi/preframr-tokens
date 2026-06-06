@@ -98,9 +98,7 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
-    REQUIRES_ARGS = frozenset(
-        {"melody_skeleton", "universal_pitch", "universal_freq"}
-    )
+    REQUIRES_ARGS = frozenset({"melody_skeleton", "universal_pitch", "universal_freq"})
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -194,16 +192,11 @@ class GeneratorPass(MacroPass):
 
     @classmethod
     def _melody_context(cls, state, ref, universal=False, freq_bulk=False):
-        """Per freq reg: ``{voice, onsets, melodic, note, tuning, universal, universal_freq}`` for the
-        interval re-keying. ``onsets`` is the note-onset frame set (pass-1 sustained-pitch-change U gate-on,
-        waveform-agnostic); ``melodic`` gates whether the voice settles to a stable note grid; ``note``
-        carries the running keyed note. With ``universal`` (the ``universal_pitch`` flag), ``tuning`` is the
-        PER-VOICE pitch_grid tuning so the interval is keyed off the universal note index (correct under
-        chorus/detune, transferable) -- byte-exact via the unchanged residual/decoder. With ``freq_bulk``
-        (the ``universal_freq`` probe), the interval re-keying extends from melodic ONSETS to EVERY sounding
-        freq HOLD/ACCUM atom on the melodic voices (the bulk pitched-freq stream, not just sparse onsets) --
-        same atom, same byte-exact residual. Non-melodic (noise/percussion) voices stay raw SWEEP: their
-        freq register is not a pitch, so note-interval re-keying would only inject high-cardinality junk.
+        """Per freq reg: ``{voice, onsets, melodic, note, tuning, tuning_q, universal, universal_freq}`` for
+        the interval re-keying. ``universal`` (the ``universal_pitch`` flag) sets the PER-VOICE pitch_grid
+        ``tuning`` so the interval keys off the universal note index (transferable under chorus/detune);
+        ``freq_bulk`` (the ``universal_freq`` probe) extends the re-keying from melodic ONSETS to every
+        sounding HOLD/ACCUM atom on the melodic voices -- the bulk pitched-freq stream. Byte-exact either way.
         """
         ctx = {}
         n = int(state.shape[0])

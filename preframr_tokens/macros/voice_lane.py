@@ -98,11 +98,10 @@ def _marker_row(template, val, subreg, diff):
 
 def df_to_voice_major(records, ranks=None):
     """Frame-major token records -> ``[marker skeleton verbatim] + [per-slot lanes]``. Each lane is a slot's
-    content across frames (contiguous = de-multiplexed), led by a LANE marker, each frame-group preceded by
-    a FTAG carrying its frame index. The skeleton (FRAME/DELAY/VOICE rows, verbatim) preserves the exact
-    sval/DELAY bytes so the inverse regenerates the frame structure bit-exact. ``ranks`` (from
-    ``lane_rank(role_lane.roles_for(...))``) orders the lanes accompaniment->melody (causal-DAG, melody-last)
-    -- the lane ORDER is recorded in the LANE markers so the inverse is unaffected (byte-neutral).
+    content across frames (contiguous = de-multiplexed), led by a LANE marker, each frame-group preceded by a
+    FTAG carrying its frame index. The verbatim skeleton (FRAME/DELAY/VOICE rows) keeps sval/DELAY bytes so
+    the inverse regenerates structure bit-exact. ``ranks`` (``lane_rank(roles_for(...))``) orders lanes
+    accompaniment->melody (causal-DAG), recorded in the LANE markers so the inverse stays byte-neutral.
     """
     ann = _annotate(records)
     skeleton = [r for r, (is_m, _f, _s) in zip(records, ann) if is_m]

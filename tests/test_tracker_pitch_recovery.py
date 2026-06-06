@@ -1,9 +1,9 @@
 """Pitch-recovery acceptance (strict): render real SWM + defMON tunes through their players and assert
-(1) the decomposition reproduces the tracker's EXACT 16-bit pitches bit-for-bit, and (2) on stable
-(sustained) frames the recovered note index equals the tracker's OWN table index (FREQTBL / NOTE_PITCH)
-up to a constant per-voice offset -- i.e. the exact notes AND exact pitches, not an approximation.
-Skips without the optional tracker deps. Hubbard/Galway (no Python player) use the detuned-ET bit-exact
-test below + the corpus measurement /scratch/tmp/hubbard_galway_pitch.py."""
+(1) the decomposition reproduces the tracker's EXACT 16-bit pitches bit-for-bit, and (2) on sustained
+frames the recovered note index equals the tracker's OWN table index (FREQTBL / NOTE_PITCH) up to a
+constant per-voice offset -- exact notes AND pitches, not an approximation. Skips without the tracker
+deps; Hubbard/Galway use the detuned-ET bit-exact test below + /scratch/tmp/hubbard_galway_pitch.py.
+"""
 
 import glob
 import os
