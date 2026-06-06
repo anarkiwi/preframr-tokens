@@ -43,6 +43,16 @@ def note_index(freq, tuning=0.0):
     return out
 
 
+def note_freq(note, tuning=0.0):
+    """The grid 16-bit freq for a note index at ``tuning`` -- the shared recon the encoder and decoder
+    both use (``freq = note_freq(note, tuning) + residual`` is byte-exact). Inverse-consistent with
+    note_index: ``note_index(note_freq(n, t), t) == n``."""
+    n = np.asarray(note, dtype=np.float64)
+    return np.clip(np.round(_ANCHOR * 2.0 ** ((n + tuning) / 12.0)), 0, 65535).astype(
+        np.int64
+    )
+
+
 def recover_table(freqs, tuning=None):
     """Per-voice note->freq table: the EXACT 16-bit freq each note maps to (modal over the voice's
     frames = the tracker's table entry), with the per-voice ``tuning`` applied so detuned tunes

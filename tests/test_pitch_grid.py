@@ -88,6 +88,15 @@ class TestPitchGrid(unittest.TestCase):
         self.assertEqual(idx, list(range(idx[0], idx[0] + len(notes))))
         self.assertGreater(dec["tuning"], 0.3)
 
+    def test_note_freq_is_inverse_of_note_index(self):
+        """The shared grid recon: note_index(note_freq(n, t), t) == n across notes and tunings -- the
+        encode/decode anchor both sides use; the residual closes the exact freq."""
+        for t in (-0.4, 0.0, 0.32, 0.44):
+            notes = np.arange(12, 92)
+            freqs = pg.note_freq(notes, t)
+            self.assertTrue((freqs < 65535).all())
+            self.assertTrue(np.array_equal(pg.note_index(freqs, t), notes))
+
     def test_small_table_and_silence(self):
         """The recovered table is the distinct notes used; unvoiced frames round-trip as zero."""
         dec = self._assert_lossless(
