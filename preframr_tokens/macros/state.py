@@ -141,6 +141,8 @@ class DecodeState:
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
         self.pending_gen_tri = None
+        self.pending_melody_interval = None
+        self.melody_interval_cur_note = {v: 0 for v in range(VOICES)}
         self.gen_ref = 0.0
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()

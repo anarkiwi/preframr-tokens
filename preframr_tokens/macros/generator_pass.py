@@ -15,7 +15,9 @@ from preframr_tokens.macros.generator_fit import (
     note_of,
     recon,
     tune_ref,
+    zig,
 )
+from preframr_tokens.macros.melody_segment import note_onsets
 from preframr_tokens.macros.passes_base import (
     _ensure_subreg,
     _first_irq,
@@ -58,6 +60,17 @@ from preframr_tokens.stfconstants import (
     GEN_TUNING_SUBREG_REF,
     GEN_FREQ_REGS,
     GEN_SCALAR_REGS,
+    INSTR_OFF_CTRL,
+    MELODY_INTERVAL_OP,
+    MELODY_INTERVAL_SUBREG_DELTA_HI,
+    MELODY_INTERVAL_SUBREG_DELTA_LO,
+    MELODY_INTERVAL_SUBREG_FIRST,
+    MELODY_INTERVAL_SUBREG_INTERVAL_HI,
+    MELODY_INTERVAL_SUBREG_INTERVAL_LO,
+    MELODY_INTERVAL_SUBREG_LEN,
+    MELODY_INTERVAL_SUBREG_RESID_HI,
+    MELODY_INTERVAL_SUBREG_RESID_LO,
+    MELODY_INTERVAL_SUBREG_VOICE,
     SET_OP,
     SWEEP_OP,
     SWEEP_SUBREG_DELTA_HI,
@@ -81,6 +94,7 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
+    REQUIRES_ARGS = frozenset({"melody_skeleton"})
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -101,6 +115,11 @@ class GeneratorPass(MacroPass):
         frame_rows = self._frame_marker_rows(df)
         ref_q = max(0, min(255, int(round(tune_ref(all_freqs(state)) * 256.0)))) & 0xFF
         ref = ref_q / 256.0
+        mel_ctx = (
+            self._melody_context(state, ref)
+            if getattr(args, "melody_skeleton", False)
+            else {}
+        )
         claims = [self._tuning_claim(ref_q, irq)]
         bank = {}
         def_rows = []
@@ -116,6 +135,7 @@ class GeneratorPass(MacroPass):
                     bank,
                     def_rows,
                     irq,
+                    mel_ctx.get(int(reg)),
                 )
             )
         if def_rows:
@@ -141,6 +161,46 @@ class GeneratorPass(MacroPass):
         return Claim(
             writes=(), tokens=[row], priority=_GEN_PRIORITY, label="gen_tuning"
         )
+
+    @classmethod
+    def _melody_context(cls, state, ref):
+        """Per freq reg: ``{voice, onsets, melodic, note}`` for the interval re-keying. ``onsets`` is the
+        note-onset frame set (pass-1 sustained-pitch-change U gate-on, waveform-agnostic); ``melodic``
+        gates whether the voice settles to a stable note grid (a swept/percussion voice passes through as
+        raw generator atoms); ``note`` carries the running keyed note across the channel's atoms.
+        """
+        ctx = {}
+        n = int(state.shape[0])
+        for b in GEN_FREQ_REGS:
+            freq = (
+                state[:, b].astype("int64") + 256 * state[:, b + 1].astype("int64")
+            ).tolist()
+            ctrl = (state[:, b + INSTR_OFF_CTRL].astype("int64") & 1).tolist()
+            gate_on = [i for i in range(n) if ctrl[i] and (i == 0 or not ctrl[i - 1])]
+            per_frame = [int(f) if f > 0 else None for f in freq]
+            ctx[int(b)] = {
+                "voice": int(b) // 7,
+                "onsets": set(note_onsets(per_frame, gate_on)),
+                "melodic": cls._stability(freq, ref),
+                "note": None,
+            }
+        return ctx
+
+    @staticmethod
+    def _stability(freq, ref):
+        """True iff most sounding frames sit near a LUT note (small fraction of the local semitone gap),
+        i.e. the voice settles to a stable note grid -- the cheap, waveform-agnostic melodic test.
+        """
+        sounding = [int(f) for f in freq if f > 8]
+        if len(sounding) < 8:
+            return False
+        good = 0
+        for f in sounding:
+            nt = note_of(f, ref)
+            span = max(1, recon(nt + 1, ref) - recon(nt, ref))
+            if abs(f - recon(nt, ref)) <= 0.3 * span:
+                good += 1
+        return good / len(sounding) >= 0.6
 
     @staticmethod
     def _collect_writes(df, target_regs):
@@ -189,7 +249,17 @@ class GeneratorPass(MacroPass):
 
     @classmethod
     def _channel_claims(
-        cls, reg, is_freq, series, writes, frame_rows, ref, bank, def_rows, irq
+        cls,
+        reg,
+        is_freq,
+        series,
+        writes,
+        frame_rows,
+        ref,
+        bank,
+        def_rows,
+        irq,
+        mel=None,
     ):
         """Walk one channel's timeline left-to-right (first write -> the global final frame), re-fitting
         the longest generator from each ANCHORED frame and emitting one Claim for it. A write-less frame
@@ -222,7 +292,18 @@ class GeneratorPass(MacroPass):
             seg = [int(series[f]) for f in range(i, b + 1)]
             drop = tuple(ri for fr in range(i, b + 1) for ri in drop_at.get(fr, ()))
             rows = cls._atom_rows(
-                reg, is_freq, kind, params, seg, length, ref, bank, def_rows, irq
+                reg,
+                is_freq,
+                kind,
+                params,
+                seg,
+                length,
+                ref,
+                bank,
+                def_rows,
+                irq,
+                i,
+                mel,
             )
             if rows is not None:
                 for r in rows:
@@ -240,12 +321,35 @@ class GeneratorPass(MacroPass):
 
     @classmethod
     def _atom_rows(
-        cls, reg, is_freq, kind, params, seg, length, ref, bank, def_rows, irq
+        cls,
+        reg,
+        is_freq,
+        kind,
+        params,
+        seg,
+        length,
+        ref,
+        bank,
+        def_rows,
+        irq,
+        i=0,
+        mel=None,
     ):
         """The token rows (REF/atom) for one generator segment. HOLD/ACCUM -> SWEEP_OP (delta 0 for
         HOLD), TRI -> GEN_TRI_OP, TABLE -> a GEN_TABLE REF (the matching DEF is appended to ``def_rows``
-        at the stream head on first sight of its bank key, so no REF can precede its DEF).
+        at the stream head on first sight of its bank key, so no REF can precede its DEF). With the
+        melody-skeleton ``mel`` context, a HOLD/ACCUM onset on a melodic voice is re-keyed to a
+        MELODY_INTERVAL atom (note-relative), the writes unchanged.
         """
+        if (
+            mel is not None
+            and is_freq
+            and mel["melodic"]
+            and kind in ("HOLD", "ACCUM")
+            and int(i) in mel["onsets"]
+        ):
+            delta = int(params) if kind == "ACCUM" else 0
+            return cls._melody_rows(mel, int(seg[0]), delta, length, ref, irq)
         if kind == "HOLD":
             return cls._sweep_rows(reg, seg[0], 0, length, irq)
         if kind == "ACCUM":
@@ -258,6 +362,67 @@ class GeneratorPass(MacroPass):
                 reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq
             )
         return None
+
+    @staticmethod
+    def _melody_rows(mel, onset_freq, delta, length, ref, irq):
+        """The MELODY_INTERVAL atom for a re-keyed freq onset: the note as FIRST-absolute or a zig-zag
+        interval from the voice's previous keyed note, the exact residual, and the HOLD/ACCUM delta. The
+        decoder's running interval sum + residual reproduces ``onset_freq`` bit-exact.
+        """
+        note = note_of(onset_freq, ref)
+        resid = (onset_freq - recon(note, ref)) & 0xFFFF
+        prev = mel["note"]
+        if prev is None:
+            first, token = 1, note & 0xFFFF
+        else:
+            first, token = 0, zig(note - prev) & 0xFFFF
+        mel["note"] = note
+        d = delta & 0xFFFF
+        voice = mel["voice"]
+        reg = voice * 7
+        return [
+            _row(reg, MELODY_INTERVAL_OP, MELODY_INTERVAL_SUBREG_VOICE, voice, irq),
+            _row(reg, MELODY_INTERVAL_OP, MELODY_INTERVAL_SUBREG_FIRST, first, irq),
+            _row(
+                reg,
+                MELODY_INTERVAL_OP,
+                MELODY_INTERVAL_SUBREG_INTERVAL_HI,
+                (token >> 8) & 0xFF,
+                irq,
+            ),
+            _row(
+                reg,
+                MELODY_INTERVAL_OP,
+                MELODY_INTERVAL_SUBREG_INTERVAL_LO,
+                token & 0xFF,
+                irq,
+            ),
+            _row(
+                reg,
+                MELODY_INTERVAL_OP,
+                MELODY_INTERVAL_SUBREG_RESID_HI,
+                (resid >> 8) & 0xFF,
+                irq,
+            ),
+            _row(
+                reg,
+                MELODY_INTERVAL_OP,
+                MELODY_INTERVAL_SUBREG_RESID_LO,
+                resid & 0xFF,
+                irq,
+            ),
+            _row(
+                reg,
+                MELODY_INTERVAL_OP,
+                MELODY_INTERVAL_SUBREG_DELTA_HI,
+                (d >> 8) & 0xFF,
+                irq,
+            ),
+            _row(
+                reg, MELODY_INTERVAL_OP, MELODY_INTERVAL_SUBREG_DELTA_LO, d & 0xFF, irq
+            ),
+            _row(reg, MELODY_INTERVAL_OP, MELODY_INTERVAL_SUBREG_LEN, length, irq),
+        ]
 
     @staticmethod
     def _sweep_rows(reg, start, delta, length, irq):
