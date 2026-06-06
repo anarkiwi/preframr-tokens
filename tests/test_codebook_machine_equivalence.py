@@ -13,6 +13,7 @@ import pytest
 from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
+from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
@@ -172,6 +173,28 @@ def _instrument_streams():
     return out
 
 
+def _generator_streams():
+    """A freq arp (period-3 TABLE) reused across two transposed notes -- exercises the GEN_TABLE
+    codebook DEF/STEP/END/REF + the GEN_TUNING head atom."""
+
+    def build(arps):
+        b = _Builder()
+        for arp in arps:
+            for i in range(9):
+                b.frame().write(0, int(arp[i % 3]))
+        for _ in range(4):
+            b.frame()
+        return b.df()
+
+    arp_a = [int(LUT[60]), int(LUT[64]), int(LUT[67])]
+    arp_b = [int(LUT[62]), int(LUT[66]), int(LUT[69])]
+    out = {}
+    out["generator_table"] = GeneratorPass().apply(
+        build([arp_a, arp_b]), args=_args(generator_pass=True)
+    )
+    return out
+
+
 def _dead_ref_stream():
     """A STAMP_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
     return _Builder().frame().write(0, 99, op=STAMP_REF_OP).frame().df()
@@ -196,6 +219,7 @@ def _corpus():
     streams.update(_stamp_streams())
     streams.update(_wavetable_streams())
     streams.update(_instrument_streams())
+    streams.update(_generator_streams())
     streams["dead_ref"] = _dead_ref_stream()
     streams["oneshot_handbuilt"] = _oneshot_handbuilt_stream()
     return streams

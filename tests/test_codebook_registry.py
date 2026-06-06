@@ -7,6 +7,10 @@ added upstream without a family registration)."""
 from preframr_tokens.macros import codebook
 from preframr_tokens.macros.op_contracts import CODEBOOK_SPECS, CODEBOOK_TABLES
 from preframr_tokens.stfconstants import (
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_ID,
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_REF_OP,
@@ -32,6 +36,9 @@ FROZEN_LEGACY_SPECS = {
     INSTR_DEF_OP: ("instrument", "def", None),
     INSTR_END_OP: ("instrument", "commit", None),
     INSTR_REF_OP: ("instrument", "ref", None),
+    GEN_TABLE_DEF_OP: ("generator", "def", None),
+    GEN_TABLE_END_OP: ("generator", "commit", None),
+    GEN_TABLE_REF_OP: ("generator", "ref", GEN_TABLE_REF_SUBREG_ID),
 }
 
 

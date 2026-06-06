@@ -20,6 +20,8 @@ __all__ = [
     "SweepDecoder",
     "GradientDecoder",
     "GlobalOscDecoder",
+    "GenTriDecoder",
+    "GenTuningDecoder",
     "InitDecoder",
     "NoteOffDecoder",
 ]
@@ -54,6 +56,19 @@ from preframr_tokens.stfconstants import (
     GLOBAL_OSC_SUBREG_LEN,
     GLOBAL_OSC_SUBREG_PERIOD,
     GLOBAL_OSC_SUBREG_STATE_BASE,
+    GEN_TRI_OP,
+    GEN_TRI_SUBREG_DIR,
+    GEN_TRI_SUBREG_HI_HI,
+    GEN_TRI_SUBREG_HI_LO,
+    GEN_TRI_SUBREG_LEN,
+    GEN_TRI_SUBREG_LO_HI,
+    GEN_TRI_SUBREG_LO_LO,
+    GEN_TRI_SUBREG_START_HI,
+    GEN_TRI_SUBREG_START_LO,
+    GEN_TRI_SUBREG_STEP_HI,
+    GEN_TRI_SUBREG_STEP_LO,
+    GEN_TUNING_OP,
+    GEN_TUNING_SUBREG_REF,
     INIT_OP,
     GRADIENT_SUBREG_DUR_BASE,
     GRADIENT_SUBREG_END,
@@ -114,6 +129,7 @@ from preframr_tokens.stfconstants import (
     WAVETABLE_SUSTAIN_OP,
 )
 from preframr_tokens.macros.codebook import codebook_decoders
+from preframr_tokens.macros.generator_fit import _tri_seq
 
 
 class MacroDecoder:
@@ -728,6 +744,59 @@ class GlobalOscDecoder(MacroDecoder):
         return pre or None
 
 
+class GenTuningDecoder(MacroDecoder):
+    """Decode a GEN_TUNING atom (GeneratorPass): store the per-tune semitone-LUT offset
+    ``ref = ref_q / 256`` on the decode state for the note-relative freq TABLE codebook, emit no
+    register write."""
+
+    op_code = GEN_TUNING_OP
+
+    def expand(self, row, state):
+        if int(row.subreg) == GEN_TUNING_SUBREG_REF:
+            state.gen_ref = (int(row.val) & 0xFF) / 256.0
+        return None
+
+
+class GenTriDecoder(MacroDecoder):
+    """Decode a GEN_TRI atom (GeneratorPass): START/STEP/LO/HI/DIR/LEN replay the bounded reversing
+    zigzag ``_tri_seq`` (vibrato / PW auto-reverse / filter triangle) and queue its LEN per-frame values
+    onto the reg, one drained per song frame -- the byte-exact triangle generator."""
+
+    op_code = GEN_TRI_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == GEN_TRI_SUBREG_START_HI:
+            state.pending_gen_tri = {"reg": int(row.reg), "fields": {}}
+        pend = state.pending_gen_tri
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != GEN_TRI_SUBREG_LEN:
+            return None
+        state.pending_gen_tri = None
+        f = pend["fields"]
+        reg = int(pend["reg"])
+        start = ((f.get(GEN_TRI_SUBREG_START_HI, 0) & 0xFF) << 8) | (
+            f.get(GEN_TRI_SUBREG_START_LO, 0) & 0xFF
+        )
+        step = ((f.get(GEN_TRI_SUBREG_STEP_HI, 0) & 0xFF) << 8) | (
+            f.get(GEN_TRI_SUBREG_STEP_LO, 0) & 0xFF
+        )
+        lo = ((f.get(GEN_TRI_SUBREG_LO_HI, 0) & 0xFF) << 8) | (
+            f.get(GEN_TRI_SUBREG_LO_LO, 0) & 0xFF
+        )
+        hi = ((f.get(GEN_TRI_SUBREG_HI_HI, 0) & 0xFF) << 8) | (
+            f.get(GEN_TRI_SUBREG_HI_LO, 0) & 0xFF
+        )
+        d = 1 if int(f.get(GEN_TRI_SUBREG_DIR, 1)) >= 1 else -1
+        length = int(f.get(GEN_TRI_SUBREG_LEN, 0))
+        pre = state.maybe_flush_for(reg, -1)
+        for v in _tri_seq(start, step, lo, hi, d, length):
+            state.pending_set_writes[reg].append(int(v) & 0xFFFF)
+        return pre or None
+
+
 class InitDecoder(MacroDecoder):
     """Decode an INIT atom (InitPass): re-emit the relabelled init-routine register write inline on its
     reg, byte-identical to the literal pre-first-note-on SET (same reg, value, frame and intra-frame
@@ -782,6 +851,8 @@ DECODERS = {
         SweepDecoder(),
         GradientDecoder(),
         GlobalOscDecoder(),
+        GenTriDecoder(),
+        GenTuningDecoder(),
         InitDecoder(),
         NoteOffDecoder(),
     )

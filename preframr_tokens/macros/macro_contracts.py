@@ -15,6 +15,7 @@ from preframr_tokens.stfconstants import (
     DIFF_OP,
     FLIP_OP,
     FREQ_TRAJ_OP,
+    GEN_TABLE_REF_OP,
     INSTR_REF_OP,
     MODE_VOL_REG,
     ORN_OP,
@@ -185,6 +186,14 @@ CONTRACTS = {
             True,
         ),
         MacroContract(
+            "GeneratorPass",
+            frozenset({(_FREQ, _RPL), (_PWM, _RPL), (_FILT, _RPL)}),
+            frozenset(),
+            frozenset(),
+            FrameEffect.ANCHORED_REPLAY,
+            True,
+        ),
+        MacroContract(
             "frame_consolidation",
             frozenset(),
             frozenset(),
@@ -204,6 +213,7 @@ PIPELINE_ORDER = (
     "FreqTrajectoryPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
+    "GeneratorPass",
     "NoteOffPass",
     "frame_consolidation",
 )
@@ -253,6 +263,7 @@ KNOWN_MISMATCHES = frozenset(
     {
         Mismatch("frame_anchor", "StampPass", "frame_consolidation", None),
         Mismatch("frame_anchor", "InstrumentProgramPass", "frame_consolidation", None),
+        Mismatch("frame_anchor", "GeneratorPass", "frame_consolidation", None),
     }
 )
 
@@ -274,6 +285,7 @@ REPLAY_OPS = frozenset(
         int(WAVETABLE_ONESHOT_OP),
         int(GRADIENT_OP),
         int(INSTR_REF_OP),
+        int(GEN_TABLE_REF_OP),
     }
 )
 
