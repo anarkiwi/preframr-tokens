@@ -137,7 +137,7 @@ class VoiceLaneTransform(Transform):
     OP_CODES = frozenset()
     LOSS_TIER = "structural"
     REQUIRES_ARGS = frozenset({"voice_lane"})
-    MUST_FOLLOW = frozenset({"voice_block_order"})
+    MUST_FOLLOW = frozenset({"voice_block_order", "add_voice_reg"})
 
     def forward(self, df, args=None):
         if args is None or not getattr(args, "voice_lane", False):
