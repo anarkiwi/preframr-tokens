@@ -65,7 +65,6 @@ from preframr_tokens.macros import (
     validate_stream,
 )
 from preframr_tokens.macros.op_contracts import op_name_by_id, op_name_tiers
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.reglogparser import (
     RegLogParser,
@@ -98,7 +97,6 @@ __all__ = [
     "PassBackedTransform",
     "RowExpandingTransform",
     "DistancePairSpec",
-    "PerRegBurstPass",
     "register",
     "get_transform_class",
     "ensure_default_transforms_registered",

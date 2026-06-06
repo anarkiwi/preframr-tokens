@@ -43,7 +43,6 @@ def _write_synthetic_dump(path):
 
 _FULL_MACROS_SPEC = {
     "transforms": [
-        {"name": "freq_trajectory"},
         {"name": "hard_restart"},
         {"name": "legato_per_cluster", "params": {"clusters": [2, 4]}},
         {"name": "voice_block_order"},
@@ -60,12 +59,11 @@ class TestBuildArgs(unittest.TestCase):
         args, resolution, unknown_names, unknown_flags = pt.build_args(
             _FULL_MACROS_SPEC, _ABSORBERS, {}
         )
-        self.assertTrue(args.freq_trajectory_pass)
         self.assertTrue(args.hard_restart_pass)
         self.assertTrue(args.voice_canonical_block_order)
         self.assertEqual(unknown_names, [])
         self.assertEqual(unknown_flags, [])
-        self.assertIn(("freq_trajectory", "freq_trajectory_pass", True), resolution)
+        self.assertIn(("hard_restart", "hard_restart_pass", True), resolution)
 
     def test_legato_clusters_expand(self):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, [], {})

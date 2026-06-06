@@ -14,7 +14,6 @@ from preframr_tokens.macros.passes import (
     DedupSetPass,
     TransposePass,
 )
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.transform import (
     PassBackedTransform,
     Transform,
@@ -31,14 +30,6 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     TRANSPOSE_OP,
 )
-
-
-@register("per_reg_burst")
-class PerRegBurstTransform(PassBackedTransform):
-    TIER = "audio_bit_exact"
-    OP_CODES = frozenset()
-    OPERATES_ON_VOICE_REGS = True
-    PASS_CLASS = PerRegBurstPass
 
 
 @register("transpose")

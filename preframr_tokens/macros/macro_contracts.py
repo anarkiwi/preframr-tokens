@@ -103,14 +103,6 @@ CONTRACTS = {
     c.name: c
     for c in (
         MacroContract(
-            "PerRegBurstPass",
-            frozenset({(_FREQ, _REL), (_PWM, _REL), (_FILT, _REL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.PRESERVES,
-            False,
-        ),
-        MacroContract(
             "InstrumentProgramPass",
             frozenset({(_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL)}),
             frozenset(),
@@ -138,7 +130,6 @@ CONTRACTS = {
 }
 
 PIPELINE_ORDER = (
-    "PerRegBurstPass",
     "InstrumentProgramPass",
     "GeneratorPass",
     "frame_consolidation",

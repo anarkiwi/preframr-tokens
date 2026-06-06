@@ -14,7 +14,6 @@ from preframr_tokens.macros.passes import (
     TransposePass,
     VoiceBlockOrderPass,
 )
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.loops import (
@@ -37,7 +36,6 @@ from preframr_tokens.macros.validators import (
 )
 
 FREQ_BLOCK_PASSES = [
-    PerRegBurstPass(),
     InstrumentProgramPass(),
     GeneratorPass(),
 ]
@@ -54,8 +52,8 @@ PASSES = [
 
 
 def run_freq_block_passes(df, args=None):
-    """Freq-encoder passes (PerRegBurst / InstrumentProgram / Generator) that encode
-    literal SETs. Run once at the start of each self-contained block (after
+    """Freq-encoder passes (InstrumentProgram / Generator) that encode literal SETs.
+    Run once at the start of each self-contained block (after
     ``expand_to_literal_form`` decompiles everything) and once at parse-time before rotation
     -- kept out of ``PASSES`` so they don't re-fire on already-encoded atoms inside the
     rotation loop."""

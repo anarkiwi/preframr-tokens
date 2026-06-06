@@ -11,7 +11,6 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
@@ -939,11 +938,13 @@ class RegLogParser:
         if not self._filter(df, name):
             return
         df = self._squeeze_frame_regs(df)
+        if "op" not in df.columns:
+            df = df.copy()
+            df["op"] = int(SET_OP)
         elapsed = elapsed_frames(df)
         audit = make_pass_audit(self.args)
         audit.start(df)
         for macro_pass in (
-            PerRegBurstPass(),
             InstrumentProgramPass(),
             GeneratorPass(),
         ):

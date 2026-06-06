@@ -13,7 +13,6 @@ DEFAULT_PIPELINE_SPEC = {
         {"name": "add_frame_reg"},
         {"name": "filter"},
         {"name": "squeeze_frame_regs"},
-        {"name": "per_reg_burst"},
         {"name": "consolidate_frames"},
         {"name": "cap_delay"},
         {"name": "rotate_voice_augment"},

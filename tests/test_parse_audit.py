@@ -45,24 +45,24 @@ class TestPassAudit(unittest.TestCase):
     def test_off_is_noop(self):
         audit = PassAudit(None)
         audit.start(_stream([100, 110]))
-        audit.after(_stream([100, 999]), "PerRegBurstPass")
+        audit.after(_stream([100, 999]), "InstrumentProgramPass")
 
     def test_lossless_pass_preserving_state_is_silent(self):
         audit = PassAudit("raise")
         audit.start(_stream([100, 110, 105]))
-        audit.after(_stream([100, 110, 105]), "PerRegBurstPass")
+        audit.after(_stream([100, 110, 105]), "InstrumentProgramPass")
 
     def test_lossless_pass_changing_state_raises(self):
         audit = PassAudit("raise")
         audit.start(_stream([100, 110, 105]))
         with self.assertRaises(AssertionError):
-            audit.after(_stream([100, 120, 105]), "PerRegBurstPass")
+            audit.after(_stream([100, 120, 105]), "InstrumentProgramPass")
 
     def test_elapsed_frame_budget_change_raises(self):
         audit = PassAudit("raise")
         audit.start(_stream([100, None], delays=[None, 5]))
         with self.assertRaises(AssertionError):
-            audit.after(_stream([100, None], delays=[None, 3]), "PerRegBurstPass")
+            audit.after(_stream([100, None], delays=[None, 3]), "InstrumentProgramPass")
 
     def test_lossy_pass_rebaselines(self):
         """A frame-rebasing stage (``_consolidate_frames``) re-baselines the audit, not raises,
@@ -70,9 +70,9 @@ class TestPassAudit(unittest.TestCase):
         audit = PassAudit("raise")
         audit.start(_stream([100, 110]))
         audit.after(_stream([100, 120]), "_consolidate_frames")
-        audit.after(_stream([100, 120]), "PerRegBurstPass")
+        audit.after(_stream([100, 120]), "InstrumentProgramPass")
         with self.assertRaises(AssertionError):
-            audit.after(_stream([100, 130]), "PerRegBurstPass")
+            audit.after(_stream([100, 130]), "InstrumentProgramPass")
 
     def test_ref_check_runs_after_every_pass(self):
         """validate_back_refs is loop-aware (counts DO_LOOP-expanded frames), so the audit runs the ref

@@ -13,7 +13,6 @@ from preframr_tokens.reg_match import (
     pcm_match,
     sr_match,
 )
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.reglogparser import (
     RegLogParser,
     chain_delay,
@@ -325,39 +324,6 @@ class TestRegLogParser(unittest.TestCase):
         )
         result_df = list(last_reg_val_frame(test_df, [0]))[0].reset_index(drop=True)
         self.assertTrue(last_df.equals(result_df), result_df.to_string())
-
-    def test_add_change_regs_flip_only(self):
-        test_df = pd.DataFrame(
-            [
-                {"reg": FRAME_REG, "val": 0, "diff": 19000},
-                {"reg": 7, "val": 1, "diff": 32},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000},
-                {"reg": 7, "val": 0, "diff": 32},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000},
-                {"reg": 7, "val": 1, "diff": 32},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000},
-                {"reg": 7, "val": 65, "diff": 32},
-            ],
-            dtype=MODEL_PDTYPE,
-        )
-        change_df = pd.DataFrame(
-            [
-                {"reg": FRAME_REG, "val": 0, "diff": 19000, "op": 0},
-                {"reg": 7, "val": 1, "diff": 32, "op": FLIP_OP},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000, "op": 0},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000, "op": 0},
-                {"reg": 7, "val": 0, "diff": 32, "op": FLIP_OP},
-                {"reg": FRAME_REG, "val": 0, "diff": 19000, "op": 0},
-                {"reg": 7, "val": 65, "diff": 32, "op": SET_OP},
-            ],
-            dtype=MODEL_PDTYPE,
-        )
-        result_df = (
-            PerRegBurstPass(opcodes=[DIFF_OP, FLIP_OP])
-            .apply(test_df, args=FakeArgs(cents=50, freq_trajectory_pass=False))
-            .astype(MODEL_PDTYPE)
-        )
-        self.assertTrue(change_df.equals(result_df))
 
     def test_norm_pr_order(self):
         loader = RegLogParser(FakeArgs())
