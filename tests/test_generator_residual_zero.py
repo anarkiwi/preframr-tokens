@@ -162,6 +162,42 @@ def test_generator_table_resid_split_byte_exact():
     ), "split must carry residuals on the per-instance REF"
 
 
+def test_generator_table_resid_split_universal_byte_exact():
+    """``table_resid_split`` + ``universal_pitch`` (design item #4): a freq GEN_TABLE keys its OFFSET
+    cycle off the PER-VOICE ``note_index`` (DEF mode NOTE_UNIV) and carries the residual on the REF, so
+    static-note residuals go ~0. Byte-exact under the strict arbiter and a NOTE_UNIV DEF is emitted.
+    """
+    from preframr_tokens.stfconstants import (
+        GEN_TABLE_MODE_NOTE_UNIV as _UNIV,
+        GEN_TABLE_STEP_OP as _STEP,
+        GEN_TABLE_SUBREG_MODE as _MODE,
+    )
+
+    prev = os.environ.get("PREFRAMR_ARBITER_STRICT")
+    os.environ["PREFRAMR_ARBITER_STRICT"] = "1"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _multi_feature_dump(os.path.join(tmp, "mf.dump.parquet"))
+            item4 = _parse(
+                path, melody_skeleton=True, universal_pitch=True, table_resid_split=True
+            )
+    finally:
+        if prev is None:
+            del os.environ["PREFRAMR_ARBITER_STRICT"]
+        else:
+            os.environ["PREFRAMR_ARBITER_STRICT"] = prev
+    assert item4 is not None
+    assert not _raw_gen_sets(
+        item4
+    ), "item #4 left un-modelled generator-channel raw SET"
+    n_univ = sum(
+        1
+        for o, s, v in zip(item4["op"], item4["subreg"], item4["val"])
+        if int(o) == _STEP and int(s) == _MODE and int(v) == _UNIV
+    )
+    assert n_univ > 0, "expected a per-voice NOTE_UNIV GEN_TABLE DEF"
+
+
 def test_generator_length1_only_at_final_frame():
     """A length-1 generator atom (a degenerate SWEEP/TRI LEN=1) may occur only on the final frame F-1 --
     no interior length-1, the work order's entire 'tail' story (no GEN_END op)."""

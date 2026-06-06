@@ -34,6 +34,7 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_END_OP,
     GEN_TABLE_MODE_ABS,
     GEN_TABLE_MODE_NOTE,
+    GEN_TABLE_MODE_NOTE_UNIV,
     GEN_TABLE_REF_OP,
     GEN_TABLE_REF_SUBREG_BASE_NOTE,
     GEN_TABLE_REF_SUBREG_ID,
@@ -404,7 +405,17 @@ class GeneratorPass(MacroPass):
             return cls._tri_rows(reg, seg[0], step, lo, hi, dir0, length, irq)
         if kind == "TABLE":
             return cls._table_rows(
-                reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq, split
+                reg,
+                is_freq,
+                int(params),
+                seg,
+                length,
+                ref,
+                bank,
+                def_rows,
+                irq,
+                split,
+                mel,
             )
         return None
 
@@ -506,16 +517,51 @@ class GeneratorPass(MacroPass):
 
     @classmethod
     def _table_rows(
-        cls, reg, is_freq, period, seg, length, ref, bank, def_rows, irq, split=False
+        cls,
+        reg,
+        is_freq,
+        period,
+        seg,
+        length,
+        ref,
+        bank,
+        def_rows,
+        irq,
+        split=False,
+        mel=None,
     ):
-        """A GEN_TABLE REF for a periodic TABLE cycle; the DEF is appended to ``def_rows`` on first sight
-        of the bank key (stream head) so no REF precedes its DEF. Scalar keys absolutely; freq keys
-        note-relative on (offset, residual) cycles. With ``split`` (``table_resid_split``) the freq DEF
-        keys on OFFSETS ALONE and the residual moves onto the per-instance REF, so same-shape arps with
-        different residuals collapse to one DEF (de-fragments the bank); decode stays bit-exact.
-        """
+        """A GEN_TABLE REF for a periodic TABLE cycle; the DEF appends to ``def_rows`` on first sight of
+        its bank key. ``split`` keys the freq DEF on OFFSETS ALONE and moves the residual to the
+        per-instance REF (de-fragments); ``split``+universal computes offsets/residual off the PER-VOICE
+        ``note_index`` (item #4, mode NOTE_UNIV) so static residuals go ~0, decoded via the voice tuning.
+        Scalar keys absolutely. All paths byte-exact."""
         cycle = seg[:period]
-        if is_freq:
+        univ = bool(
+            split
+            and is_freq
+            and mel is not None
+            and mel.get("universal")
+            and mel.get("tuning") is not None
+        )
+        mode = GEN_TABLE_MODE_ABS
+        if univ:
+            tuning = mel["tuning"]
+            notes = [
+                int(pitch_grid.note_index(np.asarray([int(c)]), tuning)[0])
+                for c in cycle
+            ]
+            base_note = notes[0]
+            offs = [n - base_note for n in notes]
+            resids = [
+                int(c) - pitch_grid.note_freq_at(n, tuning)
+                for c, n in zip(cycle, notes)
+            ]
+            if 0 <= base_note <= 255 and all(-128 <= o <= 127 for o in offs):
+                key = ("noteU", tuple(offs))
+                mode = GEN_TABLE_MODE_NOTE_UNIV
+            else:
+                univ = False
+        if is_freq and not univ:
             base_note = note_of(cycle[0], ref)
             offs, resids = [], []
             for c in cycle:
@@ -525,7 +571,8 @@ class GeneratorPass(MacroPass):
             key = (
                 ("note", tuple(offs)) if split else ("note", tuple(offs), tuple(resids))
             )
-        else:
+            mode = GEN_TABLE_MODE_NOTE
+        elif not is_freq:
             base_note = 0
             offs = resids = None
             key = ("abs", reg, tuple(int(c) for c in cycle))
@@ -534,7 +581,7 @@ class GeneratorPass(MacroPass):
             bank[key] = cb_id
             def_resids = None if (split and is_freq) else resids
             for r in cls._def_rows(
-                cb_id, is_freq, period, base_note, cycle, offs, def_resids, irq, split
+                cb_id, is_freq, period, base_note, cycle, offs, def_resids, irq, mode
             ):
                 r["__pos"] = -1
                 def_rows.append(r)
@@ -544,17 +591,16 @@ class GeneratorPass(MacroPass):
         return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq, ref_resids)
 
     @staticmethod
-    def _def_rows(
-        cb_id, is_freq, period, base_note, cycle, offs, resids, irq, split=False
-    ):
+    def _def_rows(cb_id, is_freq, period, base_note, cycle, offs, resids, irq, mode):
         rows = [_row(0, GEN_TABLE_DEF_OP, -1, cb_id, irq)]
 
         def step(subreg, val):
             rows.append(_row(0, GEN_TABLE_STEP_OP, subreg, val, irq))
 
+        split = resids is None and mode != GEN_TABLE_MODE_ABS
         step(GEN_TABLE_SUBREG_PERIOD, period)
         if is_freq:
-            step(GEN_TABLE_SUBREG_MODE, GEN_TABLE_MODE_NOTE)
+            step(GEN_TABLE_SUBREG_MODE, mode)
             if not split:
                 step(GEN_TABLE_SUBREG_BASE_NOTE, base_note & 0xFF)
             for m in range(period):

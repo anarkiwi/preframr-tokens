@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.generator_fit import recon
 from preframr_tokens.stfconstants import (
     GEN_TABLE_DEF_OP,
     GEN_TABLE_END_OP,
     GEN_TABLE_MODE_NOTE,
+    GEN_TABLE_MODE_NOTE_UNIV,
     GEN_TABLE_REF_OP,
     GEN_TABLE_REF_SUBREG_BASE_NOTE,
     GEN_TABLE_REF_SUBREG_ID,
@@ -351,7 +353,17 @@ class _GeneratorCodec(_Codec):
         resid = pend["resid"] if pend.get("resid") else gen["resid"]
         pre = state.maybe_flush_for(reg, -1)
         queue = state.pending_set_writes[reg]
-        if int(gen["mode"]) == GEN_TABLE_MODE_NOTE:
+        mode = int(gen["mode"])
+        if mode == GEN_TABLE_MODE_NOTE_UNIV:
+            voice = reg // 7
+            tuning = getattr(state, "gen_ref_by_voice", {}).get(voice, 0.0)
+            for k in range(int(pend["len"])):
+                m = k % period
+                queue.append(
+                    (pitch_grid.note_freq_at(base + gen["off"][m], tuning) + resid[m])
+                    & 0xFFFF
+                )
+        elif mode == GEN_TABLE_MODE_NOTE:
             for k in range(int(pend["len"])):
                 m = k % period
                 queue.append((recon(base + gen["off"][m], ref) + resid[m]) & 0xFFFF)
