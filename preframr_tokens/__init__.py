@@ -68,7 +68,6 @@ from preframr_tokens.macros import (
 )
 from preframr_tokens.macros.op_contracts import op_name_by_id, op_name_tiers
 from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
-from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
@@ -111,7 +110,6 @@ __all__ = [
     "is_freq_onset_atom",
     "is_melody_pitch_atom",
     "FreqTrajectoryPass",
-    "SkeletonPass",
     "PresetPass",
     "PerRegBurstPass",
     "GateSlopeShiftPass",

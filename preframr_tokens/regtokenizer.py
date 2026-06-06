@@ -21,10 +21,8 @@ from preframr_tokens.stfconstants import (
     FT_SUBREG_V0_LO,
     is_codebook_id_atom,
     OP_PDTYPE,
-    ORN_OP,
     PAD_REG,
     SET_OP,
-    SKEL_OP,
     SUBREG_PDTYPE,
     TOKEN_KEYS,
     TOKEN_PDTYPE,
@@ -38,17 +36,15 @@ _FT_V0_SUBREGS = frozenset({FT_SUBREG_V0_HI, FT_SUBREG_V0_LO})
 
 
 def is_melody_pitch_atom(op, reg, subreg) -> bool:
-    """True for a melodic-pitch atom: op45 V0 (FT_SUBREG_V0_HI/LO) or op54 SKEL or op55 ORN
-    (pitch-ornament) -- all restricted to freq regs (FREQ_TRAJ_REGS = 0/7/14). The
-    melody-merge-split rule uses this predicate to detect cross-boundary Unigram merges.
+    """True for a melodic-pitch atom: op45 V0 (FT_SUBREG_V0_HI/LO) -- restricted to freq regs
+    (FREQ_TRAJ_REGS = 0/7/14). The melody-merge-split rule uses this predicate to detect
+    cross-boundary Unigram merges.
     """
     if int(reg) not in _FREQ_REGS_FROZEN:
         return False
     op = int(op)
     subreg = int(subreg)
     if op == FREQ_TRAJ_OP and subreg in _FT_V0_SUBREGS:
-        return True
-    if op in (SKEL_OP, ORN_OP):
         return True
     return False
 

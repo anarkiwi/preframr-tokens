@@ -123,7 +123,6 @@ class TestRegisterOrderFidelity(unittest.TestCase):
 
         parser = RegLogParser(
             args=default_tokenizer_args(
-                skeleton_pass=True,
                 loop_pass=True,
                 loop_transposed=True,
                 parse_audit="raise",
@@ -187,14 +186,7 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         """Every intra-frame decoded write must carry the nominal `_MIN_DIFF`; a
         frame-scale `diff` (the `diff=irq` class) drives the FRAME budget
         negative and drops samples. Guards that fix across the full stack."""
-        flags = dict(
-            {f: True for f in REGISTERED_MACROS},
-            skeleton_pass=True,
-            held_arp=True,
-            zero_plain=True,
-            slide_wide=True,
-            slide_landing=True,
-        )
+        flags = {f: True for f in REGISTERED_MACROS}
         _frames, bad_diffs = _decoded_frames(self.dump, flags)
         self.assertEqual(
             bad_diffs,

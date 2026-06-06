@@ -17,8 +17,6 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_REF_OP,
     INSTR_REF_OP,
     MODE_VOL_REG,
-    ORN_OP,
-    SKEL_OP,
     SWEEP_OP,
     TRACK_REF_OP,
     VOICE_REG_SIZE,
@@ -58,7 +56,7 @@ class RegClass(Enum):
 class Effect(Enum):
     """How a decode op sets a register: ABSOLUTE = a state-independent value (SET/preset/onset);
     RELATIVE = a function of the register's prior decode value (DIFF/FLIP) -- needs a stable base;
-    REPLAY = regenerated from a codebook/trajectory (INSTR_REF/SKEL/...) -- opaque to a delta encoder.
+    REPLAY = regenerated from a codebook/trajectory (INSTR_REF/SWEEP/...) -- opaque to a delta encoder.
     """
 
     ABSOLUTE = "absolute"
@@ -115,14 +113,6 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
-            "SkeletonPass",
-            frozenset({(_FREQ, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            False,
-        ),
-        MacroContract(
             "FreqTrajectoryPass",
             frozenset({(_FREQ, _RPL)}),
             frozenset(),
@@ -167,7 +157,6 @@ CONTRACTS = {
 
 PIPELINE_ORDER = (
     "TrajectoryAnchorPass",
-    "SkeletonPass",
     "FreqTrajectoryPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
@@ -227,8 +216,6 @@ KNOWN_MISMATCHES = frozenset(
 RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
-        int(SKEL_OP),
-        int(ORN_OP),
         int(SWEEP_OP),
         int(FREQ_TRAJ_OP),
         int(TRACK_REF_OP),

@@ -14,36 +14,11 @@ __all__ = [
     "ShiftedDecoder",
     "SubregFlushDecoder",
     "PwmSustainDecoder",
-    "SkeletonDecoder",
-    "OrnamentDecoder",
     "SweepDecoder",
     "GenTriDecoder",
     "GenTuningDecoder",
 ]
 
-from preframr_tokens.macros.freq_lut import LUT as SKEL_LUT
-from preframr_tokens.macros.skeleton_pass import (
-    cycle_frame_offsets,
-    held_cycle_offsets,
-    slide_frame_offsets,
-    slide2_frame_offsets,
-    vib_frame_offsets,
-)
-from preframr_tokens.stfconstants import (
-    ORN_OP,
-    ORN_SUBREG_HOLD,
-    ORN_SUBREG_P1,
-    ORN_SUBREG_P2,
-    ORN_SUBREG_TYPE,
-    ORN_TYPE_ARP,
-    ORN_TYPE_HELD_ARP,
-    ORN_TYPE_OCTAVE,
-    ORN_TYPE_PLAIN,
-    ORN_TYPE_RESID,
-    ORN_TYPE_SLIDE,
-    ORN_TYPE_SLIDE2,
-    ORN_TYPE_VIB,
-)
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     GEN_TRI_OP,
@@ -91,8 +66,6 @@ from preframr_tokens.stfconstants import (
     PWM_SUSTAIN_OP,
     SET_OP,
     SHIFTED_TO_BASE_OP,
-    SKEL_OP,
-    SKEL_SUBREG_ABS,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
     SWEEP_SUBREG_DELTA_HI,
@@ -498,108 +471,6 @@ class PwmSustainDecoder(MacroDecoder):
         return pre + [own]
 
 
-class SkeletonDecoder(MacroDecoder):
-    """Decode a SKEL atom (op54): one clean held freq note. The note is absolute
-    (subreg=SKEL_SUBREG_ABS) for the first claimed note on a reg, else a signed semitone
-    interval (two's-complement byte) from the prior note on that reg; the decoded freq is
-    LUT[note] (content-tier cents snap)."""
-
-    op_code = SKEL_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        if int(row.subreg) == SKEL_SUBREG_ABS:
-            note = int(row.val)
-        else:
-            v = int(row.val) & 0xFF
-            signed = v if v < 128 else v - 256
-            note = int(state.last_skel_note.get(reg, 0)) + signed
-        state.last_skel_note[reg] = note
-        freq = int(SKEL_LUT[max(0, min(127, note))])
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = freq
-        state.last_diff[reg] = row.diff
-        return pre + [(reg, freq, row.diff, row.description)]
-
-
-class OrnamentDecoder(MacroDecoder):
-    """Decode an ORN atom (op55): replay one note's driver-native pitch ornament onto the
-    skeleton freq at the semitone floor. TYPE selects the primitive; PLAIN replays nothing;
-    OCTAVE/ARP/SLIDE/VIB carry a small signed-P1 param list (cycle period / slide target+rate
-    / vib depth+rate) terminated by a P2 length; RESID is a P2 count then one P1 offset/frame.
-    Each offset becomes LUT[skel_note+off], queued after a base re-assert, one per frame tick.
-    """
-
-    op_code = ORN_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        subreg = int(row.subreg)
-        val = int(row.val) & 0xFF
-        if subreg == ORN_SUBREG_TYPE:
-            state.pending_orn = {
-                "reg": reg,
-                "type": val,
-                "params": [],
-                "holds": [],
-                "length": None,
-            }
-            if val == ORN_TYPE_PLAIN:
-                state.pending_orn = None
-            return None
-        orn = state.pending_orn
-        if orn is None or orn["reg"] != reg:
-            return None
-        if orn["type"] == ORN_TYPE_RESID:
-            return self._resid(state, orn, subreg, val, int(row.val))
-        if subreg == ORN_SUBREG_P1:
-            orn["params"].append(val if val < 128 else val - 256)
-            return None
-        if subreg == ORN_SUBREG_HOLD:
-            orn["holds"].append(int(row.val) & 0xFF)
-            return None
-        orn["length"] = int(row.val) & 0xFFFF
-        return self._queue(state, orn, self._offsets(orn))
-
-    def _resid(self, state, orn, subreg, val, raw):
-        if orn["length"] is None and subreg == ORN_SUBREG_P2:
-            orn["length"] = raw & 0xFFFF
-            if orn["length"] == 0:
-                state.pending_orn = None
-            return None
-        if subreg == ORN_SUBREG_P1:
-            orn["params"].append(val if val < 128 else val - 256)
-            if len(orn["params"]) >= (orn["length"] or 0):
-                return self._queue(state, orn, list(orn["params"]))
-        return None
-
-    @staticmethod
-    def _offsets(orn):
-        t, params, length = orn["type"], orn["params"], orn["length"] or 0
-        if t == ORN_TYPE_HELD_ARP and params and orn["holds"]:
-            return held_cycle_offsets(params, orn["holds"])
-        if t in (ORN_TYPE_OCTAVE, ORN_TYPE_ARP):
-            return cycle_frame_offsets(params, length)
-        if t == ORN_TYPE_SLIDE and len(params) >= 2:
-            return slide_frame_offsets(params[0], params[1], length)
-        if t == ORN_TYPE_SLIDE2 and len(params) >= 2:
-            return slide2_frame_offsets(params[0], params[1], length)
-        if t == ORN_TYPE_VIB and len(params) >= 2:
-            return vib_frame_offsets(params[0], params[1], length)
-        return [0] * length
-
-    @staticmethod
-    def _queue(state, orn, offsets):
-        reg = orn["reg"]
-        state.pending_orn = None
-        note = int(state.last_skel_note.get(reg, 0))
-        queue = state.pending_set_writes[reg]
-        queue.append(int(SKEL_LUT[max(0, min(127, note))]))
-        for off in offsets:
-            queue.append(int(SKEL_LUT[max(0, min(127, note + int(off)))]))
-        return None
-
-
 class SweepDecoder(MacroDecoder):
     """Decode a SWEEP atom (design SoundMonitor/skydive): START_HI/LO, signed-16 DELTA_HI/LO, LEN
     buffer a constant-raw-freq-delta ramp; on LEN the per-frame freqs (start + k*delta) queue into
@@ -705,8 +576,6 @@ DECODERS = {
         PwmSustainDecoder(),
         FreqTrajectoryDecoder(),
         TrackRefDecoder(),
-        SkeletonDecoder(),
-        OrnamentDecoder(),
         SweepDecoder(),
         GenTriDecoder(),
         GenTuningDecoder(),

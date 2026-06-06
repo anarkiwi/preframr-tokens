@@ -12,19 +12,14 @@ from preframr_tokens.stfconstants import (
     FREQ_TRAJ_OP,
     FT_SUBREG_V0_HI,
     FT_SUBREG_V0_LO,
-    ORN_OP,
-    SKEL_OP,
 )
 
 
 def test_is_melody_pitch_atom():
     assert is_melody_pitch_atom(FREQ_TRAJ_OP, 0, FT_SUBREG_V0_HI)
     assert is_melody_pitch_atom(FREQ_TRAJ_OP, 7, FT_SUBREG_V0_LO)
-    assert is_melody_pitch_atom(SKEL_OP, 14, -1)
-    assert is_melody_pitch_atom(ORN_OP, 0, -1)
     assert not is_melody_pitch_atom(FREQ_TRAJ_OP, 0, 6)
     assert not is_melody_pitch_atom(FREQ_TRAJ_OP, 2, FT_SUBREG_V0_HI)
-    assert not is_melody_pitch_atom(SKEL_OP, 2, -1)
     assert not is_melody_pitch_atom(0, 0, -1)
 
 
