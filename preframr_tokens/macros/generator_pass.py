@@ -103,10 +103,25 @@ class GeneratorPass(MacroPass):
         ref = ref_q / 256.0
         claims = [self._tuning_claim(ref_q, irq)]
         bank = {}
+        def_rows = []
         for reg, is_freq, series in channels(state):
             claims.extend(
                 self._channel_claims(
-                    reg, is_freq, series, writes[reg], frame_rows, ref, bank, irq
+                    reg,
+                    is_freq,
+                    series,
+                    writes[reg],
+                    frame_rows,
+                    ref,
+                    bank,
+                    def_rows,
+                    irq,
+                )
+            )
+        if def_rows:
+            claims.append(
+                Claim(
+                    writes=(), tokens=def_rows, priority=_GEN_PRIORITY, label="gen_defs"
                 )
             )
         if len(claims) <= 1:
@@ -118,9 +133,11 @@ class GeneratorPass(MacroPass):
         """One head GEN_TUNING atom carrying ``ref_q = round(ref*256)`` (0..255); decoded first (``__pos``
         before every row) so the note-relative freq TABLE replays resolve against it. Consumes no rows.
         The encoder keys note_of/recon off ``ref_q/256`` (the SAME value the decoder reads) so the stored
-        residuals are bit-exact under the 8-bit ref quantization."""
+        residuals are bit-exact under the 8-bit ref quantization. ``__pos`` -2 puts it before the head
+        DEFs (-1) and all content, so the tuning ref is set before any DEF buffers or any REF replays.
+        """
         row = _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_REF, ref_q, irq)
-        row["__pos"] = -1
+        row["__pos"] = -2
         return Claim(
             writes=(), tokens=[row], priority=_GEN_PRIORITY, label="gen_tuning"
         )
@@ -171,7 +188,9 @@ class GeneratorPass(MacroPass):
         return out
 
     @classmethod
-    def _channel_claims(cls, reg, is_freq, series, writes, frame_rows, ref, bank, irq):
+    def _channel_claims(
+        cls, reg, is_freq, series, writes, frame_rows, ref, bank, def_rows, irq
+    ):
         """Walk one channel's timeline left-to-right (first write -> the global final frame), re-fitting
         the longest generator from each ANCHORED frame and emitting one Claim for it. A write-less frame
         with no marker row (a held value mid-DELAY-span) carries no write to drop and its value is already
@@ -203,7 +222,7 @@ class GeneratorPass(MacroPass):
             seg = [int(series[f]) for f in range(i, b + 1)]
             drop = tuple(ri for fr in range(i, b + 1) for ri in drop_at.get(fr, ()))
             rows = cls._atom_rows(
-                reg, is_freq, kind, params, seg, length, ref, bank, irq
+                reg, is_freq, kind, params, seg, length, ref, bank, def_rows, irq
             )
             if rows is not None:
                 for r in rows:
@@ -220,9 +239,12 @@ class GeneratorPass(MacroPass):
         return claims
 
     @classmethod
-    def _atom_rows(cls, reg, is_freq, kind, params, seg, length, ref, bank, irq):
-        """The token rows for one generator segment. HOLD/ACCUM -> SWEEP_OP (delta 0 for HOLD), TRI ->
-        GEN_TRI_OP, TABLE -> a GEN_TABLE DEF (first sight of its bank key) + REF, else a bare REF.
+    def _atom_rows(
+        cls, reg, is_freq, kind, params, seg, length, ref, bank, def_rows, irq
+    ):
+        """The token rows (REF/atom) for one generator segment. HOLD/ACCUM -> SWEEP_OP (delta 0 for
+        HOLD), TRI -> GEN_TRI_OP, TABLE -> a GEN_TABLE REF (the matching DEF is appended to ``def_rows``
+        at the stream head on first sight of its bank key, so no REF can precede its DEF).
         """
         if kind == "HOLD":
             return cls._sweep_rows(reg, seg[0], 0, length, irq)
@@ -233,7 +255,7 @@ class GeneratorPass(MacroPass):
             return cls._tri_rows(reg, seg[0], step, lo, hi, dir0, length, irq)
         if kind == "TABLE":
             return cls._table_rows(
-                reg, is_freq, int(params), seg, length, ref, bank, irq
+                reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq
             )
         return None
 
@@ -267,10 +289,11 @@ class GeneratorPass(MacroPass):
         ]
 
     @classmethod
-    def _table_rows(cls, reg, is_freq, period, seg, length, ref, bank, irq):
-        """DEF+REF (first sight of the bank key) or a bare REF for a periodic TABLE cycle. Scalar channels
-        key absolutely on the raw cycle bytes; freq keys note-relative on (offset cycle, residual cycle)
-        so transposed arps share one entry, the per-instance base_note riding on the REF.
+    def _table_rows(cls, reg, is_freq, period, seg, length, ref, bank, def_rows, irq):
+        """A GEN_TABLE REF for a periodic TABLE cycle; on first sight of the bank key the matching DEF is
+        appended to ``def_rows`` (``__pos`` -1, the stream head) so a cross-voice REF can never precede
+        its DEF. Scalar channels key absolutely on the raw cycle bytes; freq keys note-relative on (offset
+        cycle, residual cycle) so transposed arps share one entry, the per-instance base_note on the REF.
         """
         cycle = seg[:period]
         if is_freq:
@@ -285,19 +308,17 @@ class GeneratorPass(MacroPass):
             base_note = 0
             offs = resids = None
             key = ("abs", reg, tuple(int(c) for c in cycle))
-        rows = []
         if key not in bank:
             cb_id = len(bank)
             bank[key] = cb_id
-            rows.extend(
-                cls._def_rows(
-                    cb_id, is_freq, period, base_note, cycle, offs, resids, irq
-                )
-            )
+            for r in cls._def_rows(
+                cb_id, is_freq, period, base_note, cycle, offs, resids, irq
+            ):
+                r["__pos"] = -1
+                def_rows.append(r)
         else:
             cb_id = bank[key]
-        rows.extend(cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq))
-        return rows
+        return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq)
 
     @staticmethod
     def _def_rows(cb_id, is_freq, period, base_note, cycle, offs, resids, irq):
