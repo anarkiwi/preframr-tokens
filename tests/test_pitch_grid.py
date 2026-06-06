@@ -48,15 +48,32 @@ class TestPitchGrid(unittest.TestCase):
         self.assertEqual(pg.pure_fraction(db), 1.0)
 
     def test_vibrato_is_one_note_plus_modulation(self):
-        """A vibrato on a held note is one NOTE index plus a nonzero residual trajectory, lossless."""
+        """A vibrato on a held note is one NOTE index plus a nonzero CENTS trajectory, lossless."""
         t = np.arange(400)
         vib = np.round(
             pg._ANCHOR * 2.0 ** (60.0 / 12.0) * 2.0 ** (20.0 * np.sin(t / 6.0) / 1200.0)
         ).astype(np.int64)
         dec = self._assert_lossless(vib)
         self.assertEqual(len({int(n) for n in dec["note"][dec["voiced"]]}), 1)
-        self.assertGreater(int((dec["resid"] != 0).sum()), 0)
+        self.assertGreater(int((dec["mod"] != 0).sum()), 0)
         self.assertLess(pg.pure_fraction(dec), 1.0)
+
+    def test_modulation_is_tuning_invariant(self):
+        """The SAME +/-Xc vibrato gesture at two DIFFERENT tunings yields the SAME cents trajectory
+        (model learns "X cents", not absolute freq) -- the transferability requirement.
+        """
+        t = np.arange(200)
+        gesture = np.concatenate(
+            [np.ones(120), 2.0 ** (20.0 * np.sin(t / 5.0) / 1200.0)]
+        )
+        low = np.round(pg._ANCHOR * 2.0 ** (36.0 / 12.0) * gesture).astype(np.int64)
+        high = np.round(pg._ANCHOR * 2.0 ** (72.0 / 12.0) * gesture).astype(np.int64)
+        dl = pg.decompose_voice(low)
+        dh = pg.decompose_voice(high)
+        self.assertLessEqual(int(np.abs(dl["mod"] - dh["mod"]).max()), 2)
+        raw_l = low - pg._table_vec(dl["table"], dl["note"])
+        raw_h = high - pg._table_vec(dh["table"], dh["note"])
+        self.assertGreater(int(np.abs(raw_l - raw_h).max()), 20)
 
     def test_small_table_and_silence(self):
         """The recovered table is the distinct notes used; unvoiced frames round-trip as zero."""

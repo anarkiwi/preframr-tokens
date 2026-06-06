@@ -42,28 +42,45 @@ def _table_vec(table, note):
     return np.array([table.get(int(n), 0) for n in note], dtype=np.int64)
 
 
+def _approx(ref, mod):
+    return np.where(ref > 0, np.round(ref * 2.0 ** (mod / 1200.0)), 0).astype(np.int64)
+
+
 def decompose_voice(freqs, table=None):
-    """Lossless per-frame decomposition: note[] (shared-grid index), resid[] (freq - table[note]; 0 for
-    static notes, the modulation otherwise), voiced[], table. Defaults to ``recover_table(freqs)``.
+    """Lossless per-frame decomposition: note[] (shared-grid index), mod[] (modulation in CENTS relative
+    to the note's table entry -- TUNING-INVARIANT, so +Xc is the same value at any tuning; 0 for static
+    notes), closure[] (exact residue, 0 for static), voiced[], table. Defaults to recover_table.
     """
     f = np.asarray(freqs, dtype=np.int64)
     if table is None:
         table = recover_table(f)
     voiced = f > 8
     note = note_index(f)
-    resid = np.where(voiced, f - _table_vec(table, note), 0)
+    ref = _table_vec(table, note)
+    moved = voiced & (f != ref) & (ref > 0)
+    mod = np.zeros_like(f)
+    mod[moved] = np.round(1200.0 * np.log2(f[moved] / ref[moved])).astype(np.int64)
+    closure = np.where(voiced, f - _approx(ref, mod), 0)
     note = np.where(voiced, note, 0)
-    return {"note": note, "resid": resid, "voiced": voiced, "table": table}
+    return {
+        "note": note,
+        "mod": mod,
+        "closure": closure,
+        "voiced": voiced,
+        "table": table,
+    }
 
 
 def reconstruct(dec):
     """Bit-exact inverse of ``decompose_voice``."""
-    f = _table_vec(dec["table"], dec["note"]) + dec["resid"]
+    ref = _table_vec(dec["table"], dec["note"])
+    f = _approx(ref, dec["mod"]) + dec["closure"]
     return np.where(dec["voiced"], np.clip(f, 0, 65535), 0).astype(np.int64)
 
 
 def pure_fraction(dec):
-    """Voiced frames that are an exact table note (resid==0) -- the structural-only, pure-note share."""
+    """Voiced frames that are an exact static table note (no modulation, no closure)."""
     v = dec["voiced"]
+    pure = (dec["mod"] == 0) & (dec["closure"] == 0) & v
     n = int(v.sum())
-    return float(((dec["resid"] == 0) & v).sum()) / n if n else 0.0
+    return float(pure.sum()) / n if n else 0.0
