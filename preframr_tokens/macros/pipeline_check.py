@@ -38,8 +38,6 @@ _KNOWN_PHANTOM_NAMES = frozenset(
 _HARDCODED_PRE_NORM_TRANSFORM_NAMES = frozenset(
     {
         "slope",
-        "preset",
-        "gate_slope_shift",
         "flip2",
         "transpose",
         "dedup_set",

@@ -1,6 +1,6 @@
 """Codebook REF liveness mask (RESID_ZERO_PHASE3 §4 B2/B3): the constrained-decode mask forbids an
-inline-codebook STAMP/WAVETABLE REF whose id is not live (defined + committed), a DEF stashes the pending
-id and a COMMIT makes it live, a later DEF rebinds it, and an out-of-window DEF can be seeded via
+inline-codebook INSTRUMENT/GENERATOR REF whose id is not live (defined + committed), a DEF stashes the
+pending id and a COMMIT makes it live, a later DEF rebinds it, and an out-of-window DEF can be seeded via
 init_codebook_ids -- so the DEF->REF backref can no longer silently vanish at inference.
 """
 
@@ -16,15 +16,15 @@ from preframr_tokens.macros.validators import (
 )
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_ID,
+    INSTR_DEF_OP,
+    INSTR_END_OP,
+    INSTR_REF_OP,
     PAD_REG,
     SET_OP,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_REF_OP,
-    WT_REF_SUBREG_ID,
 )
 
 PAD, FRAME, STAMP_DEF3, STAMP_END3, STAMP_REF3, STAMP_REF7 = 0, 1, 2, 3, 4, 5
@@ -33,13 +33,13 @@ WT_DEF9, WT_END9, WT_REF9 = 6, 7, 8
 _ROWS = [
     {"op": SET_OP, "reg": PAD_REG, "subreg": -1, "val": 0},
     {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11},
-    {"op": STAMP_DEF_OP, "reg": 0, "subreg": -1, "val": 3},
-    {"op": STAMP_END_OP, "reg": 0, "subreg": -1, "val": 3},
-    {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 3},
-    {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 7},
-    {"op": WAVETABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
-    {"op": WAVETABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
-    {"op": WAVETABLE_REF_OP, "reg": 0, "subreg": WT_REF_SUBREG_ID, "val": 9},
+    {"op": INSTR_DEF_OP, "reg": 4, "subreg": -1, "val": 3},
+    {"op": INSTR_END_OP, "reg": 4, "subreg": -1, "val": 3},
+    {"op": INSTR_REF_OP, "reg": 4, "subreg": -1, "val": 3},
+    {"op": INSTR_REF_OP, "reg": 4, "subreg": -1, "val": 7},
+    {"op": GEN_TABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": GEN_TABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": GEN_TABLE_REF_OP, "reg": 0, "subreg": GEN_TABLE_REF_SUBREG_ID, "val": 9},
 ]
 
 
@@ -94,23 +94,23 @@ def _df(*token_ids):
     return pd.DataFrame([_ROWS[t] for t in token_ids])
 
 
-class TestWavetableCodebookMask(unittest.TestCase):
-    def test_wavetable_ref_liveness(self):
+class TestGeneratorCodebookMask(unittest.TestCase):
+    def test_generator_ref_liveness(self):
         state = _state()
         self.assertTrue(_masked(state, WT_REF9), "ref illegal before def+commit")
         state.update(WT_DEF9)
         self.assertTrue(_masked(state, WT_REF9), "ref illegal before commit")
         state.update(WT_END9)
-        self.assertFalse(_masked(state, WT_REF9), "ref legal after WAVETABLE_END")
+        self.assertFalse(_masked(state, WT_REF9), "ref legal after GEN_TABLE_END")
 
-    def test_wavetable_validation(self):
+    def test_generator_validation(self):
         self.assertTrue(validate_codebook_refs(_df(WT_DEF9, WT_END9, WT_REF9)))
         with self.assertRaises(AssertionError):
             validate_codebook_refs(_df(WT_REF9))
 
-    def test_wavetable_live_ids_table_index(self):
+    def test_generator_live_ids_table_index(self):
         live = codebook_live_ids(_df(WT_DEF9, WT_END9))
-        self.assertEqual(live[1], {9}, "wavetable is table index 1")
+        self.assertEqual(live[1], {9}, "generator is table index 1")
 
 
 class TestCodebookValidation(unittest.TestCase):
@@ -164,19 +164,23 @@ class TestDecoderSnapshotSeed(unittest.TestCase):
     def test_seed_renders_out_of_window_ref(self):
         from preframr_tokens.macros.decode import expand_ops
 
+        from preframr_tokens.stfconstants import INSTR_OFF_CTRL
+
         rows = [
             {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
-            {"op": STAMP_REF_OP, "reg": 0, "subreg": -1, "val": 3, "diff": 100},
+            {"op": INSTR_REF_OP, "reg": 4, "subreg": -1, "val": 3, "diff": 100},
             {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
             {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 11, "diff": 100},
         ]
         df = pd.DataFrame(rows)
         unseeded = expand_ops(df)
-        seeded = expand_ops(df, codebook_seed={"stamp_table": {3: [[(0, 100)]]}})
-        self.assertEqual(int((unseeded["reg"] == 0).sum()), 0, "ref drops without seed")
-        seeded_reg0 = seeded[seeded["reg"] == 0]
-        self.assertGreater(len(seeded_reg0), 0, "ref renders with seed")
-        self.assertEqual(int(seeded_reg0["val"].iloc[0]), 100)
+        seeded = expand_ops(
+            df, codebook_seed={"instrument_table": {3: [[(INSTR_OFF_CTRL, 100)]]}}
+        )
+        self.assertEqual(int((unseeded["reg"] == 4).sum()), 0, "ref drops without seed")
+        seeded_reg4 = seeded[seeded["reg"] == 4]
+        self.assertGreater(len(seeded_reg4), 0, "ref renders with seed")
+        self.assertEqual(int(seeded_reg4["val"].iloc[0]), 100)
 
 
 if __name__ == "__main__":

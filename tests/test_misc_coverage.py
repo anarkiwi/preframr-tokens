@@ -48,52 +48,6 @@ class TestReadMetaCorruptParquet(unittest.TestCase):
             self.assertIsNone(read_meta(dump_path))
 
 
-class TestVoiceOfShiftable(unittest.TestCase):
-    def test_fc_preset_returns_none(self):
-        from preframr_tokens.macros.gate_slope_shift_pass import _voice_of_shiftable
-        from preframr_tokens.stfconstants import FC_PRESET_OP, PWM_PRESET_OP
-
-        self.assertIsNone(_voice_of_shiftable(0, FC_PRESET_OP))
-        self.assertEqual(_voice_of_shiftable(0, PWM_PRESET_OP), 0)
-        self.assertEqual(_voice_of_shiftable(7, PWM_PRESET_OP), 1)
-
-    def test_out_of_voice_range_returns_none(self):
-        from preframr_tokens.macros.gate_slope_shift_pass import _voice_of_shiftable
-        from preframr_tokens.stfconstants import PWM_PRESET_OP
-
-        self.assertIsNone(_voice_of_shiftable(99, PWM_PRESET_OP))
-
-
-class TestGateSlopeShiftPassEarlyExits(unittest.TestCase):
-    def _pass(self, **flags):
-        from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
-
-        return GateSlopeShiftPass(), _FakeArgs(**flags)
-
-    def test_empty_df_returns_unchanged(self):
-        gp, args = self._pass(gate_slope_shift_pass=True)
-        empty = pd.DataFrame()
-        self.assertTrue(gp.apply(empty, args=args) is empty)
-
-    def test_flag_disabled_returns_unchanged(self):
-        gp, args = self._pass(gate_slope_shift_pass=False)
-        df = pd.DataFrame([{"reg": 0, "val": 1, "op": 0, "diff": 32}])
-        out = gp.apply(df, args=args)
-        self.assertTrue(out.equals(df))
-
-    def test_no_frame_markers_returns_unchanged(self):
-        gp, args = self._pass(gate_slope_shift_pass=True)
-        df = pd.DataFrame([{"reg": 0, "val": 1, "op": 0, "diff": 32}])
-        out = gp.apply(df, args=args)
-        self.assertTrue(out.equals(df.reset_index(drop=True).copy()))
-
-
-class _FakeArgs:
-    def __init__(self, **flags):
-        for k, v in flags.items():
-            setattr(self, k, v)
-
-
 class TestSnapGroup(unittest.TestCase):
     def test_empty_sorted_vals_passes_through(self):
         from preframr_tokens.alphabet_projection import _snap_group

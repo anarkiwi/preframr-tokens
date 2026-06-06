@@ -12,7 +12,7 @@ import numpy as np
 
 __all__ = ["make_pass_audit", "PassAudit"]
 
-_LOSSY_RESETS = frozenset({"SkeletonPass", "PreGateFreqPass"})
+_LOSSY_RESETS: frozenset[str] = frozenset()
 _FRAME_REBASE = frozenset({"_consolidate_frames"})
 
 
@@ -43,7 +43,7 @@ def make_pass_audit(args=None):
 class PassAudit:
     """Tracks the expected per-frame register_state and elapsed-frame budget across the pass chain and
     flags the first transform that violates losslessness, the frame budget, or reference integrity.
-    Lossy-by-design passes (SkeletonPass RESID-snap; consolidation/cap timeline) re-baseline instead.
+    Lossy-by-design stages (consolidation/cap timeline) re-baseline instead.
     """
 
     def __init__(self, mode):

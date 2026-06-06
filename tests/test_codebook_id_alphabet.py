@@ -13,12 +13,11 @@ from preframr_tokens.alphabet_projection import project_df
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_ID,
+    INSTR_DEF_OP,
     MODEL_PDTYPE,
     SET_OP,
-    STAMP_CHAR_HAT,
-    STAMP_DEF_OP,
-    STAMP_REL_SUBREG_ID,
-    STAMP_REL_REF_OP,
 )
 
 
@@ -69,14 +68,14 @@ def _df(rows):
 class TestProjectDfSkipsCodebookIds(unittest.TestCase):
     def test_codebook_id_passes_through_content_snaps(self):
         table = {
-            (STAMP_DEF_OP, 0, STAMP_CHAR_HAT): np.array([0, 1, 2], dtype=np.int64),
+            (INSTR_DEF_OP, 4, -1): np.array([0, 1, 2], dtype=np.int64),
             (SET_OP, 21, -1): np.array([64], dtype=np.int64),
         }
         df = pd.DataFrame(
             {
-                "op": [STAMP_DEF_OP, SET_OP],
-                "reg": [0, 21],
-                "subreg": [STAMP_CHAR_HAT, -1],
+                "op": [INSTR_DEF_OP, SET_OP],
+                "reg": [4, 21],
+                "subreg": [-1, -1],
                 "val": [5, 50],
             }
         )
@@ -86,16 +85,16 @@ class TestProjectDfSkipsCodebookIds(unittest.TestCase):
 
     def test_rel_ref_id_subreg_skips_but_base_subreg_snaps(self):
         table = {
-            (STAMP_REL_REF_OP, 0, STAMP_REL_SUBREG_ID): np.array(
+            (GEN_TABLE_REF_OP, 0, GEN_TABLE_REF_SUBREG_ID): np.array(
                 [0, 1], dtype=np.int64
             ),
-            (STAMP_REL_REF_OP, 0, 2): np.array([100], dtype=np.int64),
+            (GEN_TABLE_REF_OP, 0, 2): np.array([100], dtype=np.int64),
         }
         df = pd.DataFrame(
             {
-                "op": [STAMP_REL_REF_OP, STAMP_REL_REF_OP],
+                "op": [GEN_TABLE_REF_OP, GEN_TABLE_REF_OP],
                 "reg": [0, 0],
-                "subreg": [STAMP_REL_SUBREG_ID, 2],
+                "subreg": [GEN_TABLE_REF_SUBREG_ID, 2],
                 "val": [7, 50],
             }
         )
@@ -110,23 +109,23 @@ class TestMakeTokensCodebookIdCoverage(unittest.TestCase):
         tokens = pd.DataFrame(
             [
                 {
-                    "op": STAMP_DEF_OP,
-                    "reg": 0,
-                    "subreg": STAMP_CHAR_HAT,
+                    "op": INSTR_DEF_OP,
+                    "reg": 4,
+                    "subreg": -1,
                     "val": 0,
                     "count": 1,
                 },
                 {
-                    "op": STAMP_DEF_OP,
-                    "reg": 0,
-                    "subreg": STAMP_CHAR_HAT,
+                    "op": INSTR_DEF_OP,
+                    "reg": 4,
+                    "subreg": -1,
                     "val": 1,
                     "count": 1,
                 },
                 {
-                    "op": STAMP_DEF_OP,
-                    "reg": 0,
-                    "subreg": STAMP_CHAR_HAT,
+                    "op": INSTR_DEF_OP,
+                    "reg": 4,
+                    "subreg": -1,
                     "val": 5,
                     "count": 1,
                 },
@@ -135,7 +134,7 @@ class TestMakeTokensCodebookIdCoverage(unittest.TestCase):
         )
         out = tk._add_codebook_id_coverage(tokens)
         ids = sorted(
-            int(v) for o, v in zip(out["op"], out["val"]) if int(o) == STAMP_DEF_OP
+            int(v) for o, v in zip(out["op"], out["val"]) if int(o) == INSTR_DEF_OP
         )
         self.assertEqual(ids, [0, 1, 2, 3, 4, 5])
         self.assertEqual(sum(1 for o in out["op"] if int(o) == SET_OP), 1)
@@ -147,11 +146,11 @@ class TestMergeRaisesOnOovCodebookId(unittest.TestCase):
         tokens = _tokens(
             [
                 (SET_OP, FRAME_REG, -1, 0),
-                (STAMP_DEF_OP, 0, STAMP_CHAR_HAT, 0),
-                (STAMP_DEF_OP, 0, STAMP_CHAR_HAT, 1),
+                (INSTR_DEF_OP, 4, -1, 0),
+                (INSTR_DEF_OP, 4, -1, 1),
             ]
         )
-        df = _df([(STAMP_DEF_OP, 0, STAMP_CHAR_HAT, 99)])
+        df = _df([(INSTR_DEF_OP, 4, -1, 99)])
         with self.assertRaises(KeyError):
             tk.merge_token_df(tokens, df)
 

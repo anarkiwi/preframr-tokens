@@ -1,7 +1,7 @@
 """Completeness tests for the OpContract registry (RESID_ZERO_PHASE3 §4 B0): every op the model can emit
 -- the DECODERS atom ops plus the loop ops -- must have exactly one OpContract, so a decoder added
 without a constrained-decode contract fails here at unit-test time rather than silently shipping (the
-STAMP/PATCH drift the registry exists to prevent). The registry bites: a dummy emittable op surfaces as
+codebook-family drift the registry exists to prevent). The registry bites: a dummy emittable op surfaces as
 missing."""
 
 import unittest

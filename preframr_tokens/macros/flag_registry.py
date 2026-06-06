@@ -16,23 +16,8 @@ __all__ = [
     "FLAG_CONFLICTS",
 ]
 
-FLAG_REQUIRES = {
-    "wavetable_pass": frozenset({"skeleton_pass"}),
-    "wt_short": frozenset({"wavetable_pass", "skeleton_pass"}),
-    "wt_oneshot": frozenset({"wavetable_pass", "skeleton_pass"}),
-    "zero_plain": frozenset({"skeleton_pass"}),
-    "slide_wide": frozenset({"skeleton_pass"}),
-    "slide_landing": frozenset({"skeleton_pass"}),
-    "held_arp": frozenset({"skeleton_pass"}),
-}
-FLAG_CONFLICTS = {
-    "skeleton_pass": frozenset(
-        {
-            "freq_trajectory_pass",
-            "freq_v0_interval",
-        }
-    ),
-}
+FLAG_REQUIRES: dict[str, frozenset[str]] = {}
+FLAG_CONFLICTS: dict[str, frozenset[str]] = {}
 
 
 def resolve_flags(flags):

@@ -19,7 +19,6 @@ from preframr_tokens.macros.roles import (
     DistancePairSpec,
     distance_pair_role,
     frame_weight_role,
-    slope_subreg_role,
 )
 from preframr_tokens.audit_primitives import (
     detect_tail_cycle,
@@ -27,7 +26,6 @@ from preframr_tokens.audit_primitives import (
     op_atom_profile,
     register_state,
     tier_accuracy,
-    trajectory_coverage,
 )
 from preframr_tokens.tokenizer_config import (
     default_tokenizer_args,
@@ -67,16 +65,7 @@ from preframr_tokens.macros import (
     validate_stream,
 )
 from preframr_tokens.macros.op_contracts import op_name_by_id, op_name_tiers
-from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
-from preframr_tokens.macros.skeleton_pass import SkeletonPass
-from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
-from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
-from preframr_tokens.regtokenizer import (
-    RegTokenizer,
-    is_freq_onset_atom,
-    is_melody_pitch_atom,
-)
+from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.reglogparser import (
     RegLogParser,
     combine_reg,
@@ -108,13 +97,6 @@ __all__ = [
     "PassBackedTransform",
     "RowExpandingTransform",
     "DistancePairSpec",
-    "is_freq_onset_atom",
-    "is_melody_pitch_atom",
-    "FreqTrajectoryPass",
-    "SkeletonPass",
-    "PresetPass",
-    "PerRegBurstPass",
-    "GateSlopeShiftPass",
     "register",
     "get_transform_class",
     "ensure_default_transforms_registered",
@@ -141,11 +123,9 @@ __all__ = [
     "distinct_n",
     "register_state",
     "op_atom_profile",
-    "trajectory_coverage",
     "default_tokenizer_args",
     "named_config",
     "distance_pair_role",
-    "slope_subreg_role",
     "frame_weight_role",
     "validate_back_refs",
     "validate_codebook_refs",

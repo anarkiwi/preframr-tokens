@@ -1,5 +1,5 @@
 """Shared recurring-codebook emission: the MINE -> GROUP -> DEF-once -> REF-per-occurrence skeleton
-common to the inline codebook passes (StampPass, WavetablePass). Centralises the DEF-before-REF ``__pos``
+common to the inline codebook passes (InstrumentProgramPass). Centralises the DEF-before-REF ``__pos``
 invariant -- every emitted row is stamped with its occurrence position so ``_splice_rows`` orders a
 def strictly before its refs -- so that byte-exactness rule lives in one place instead of being
 re-derived per pass."""

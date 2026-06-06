@@ -1,6 +1,5 @@
 """Shared primitives for generalization audits and tokenizer profiling: tier
-accuracy, tail-cycle, distinct-n, decoded register state, per-op atom profile,
-and FREQ/PW/FC trajectory coverage."""
+accuracy, tail-cycle, distinct-n, decoded register state, and per-op atom profile."""
 
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ __all__ = [
     "tier_accuracy",
     "register_state",
     "op_atom_profile",
-    "trajectory_coverage",
 ]
 
 
@@ -199,69 +197,4 @@ def op_atom_profile(xdf):
         "delta_fits_byte_pct": (
             float(np.mean(np.abs(deltas) <= 127)) if deltas.size else 1.0
         ),
-    }
-
-
-def _record_segment(seq, seg, run_lengths, gaps, alternations):
-    run_lengths.append(len(seg))
-    gaps.extend(b - a for a, b in zip(seg, seg[1:]))
-    vals = [int(seq[f]) for f in seg]
-    nz = [b - a for a, b in zip(vals, vals[1:]) if b != a]
-    if len(nz) >= 2:
-        changes = sum(1 for x, y in zip(nz, nz[1:]) if (x > 0) != (y > 0))
-        alternations.append(changes / (len(nz) - 1))
-
-
-def trajectory_coverage(xdf, tier="freq"):
-    """Segment each register's per-frame motion gap-tolerantly (from register_state)
-    and report structural FREQ_TRAJ coverage vs mop-ups plus run-length / gap /
-    alternation distributions for the ``freq`` / ``pw`` / ``fc`` register family."""
-    from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE, PWM_REGS_BY_VOICE
-    from preframr_tokens.stfconstants import (
-        FC_LO_REG,
-        FREQ_TRAJ_OP,
-        FT_SUBREG_FLAGS,
-        OSC_MAX_GAP,
-        SET_OP,
-    )
-
-    regs = {
-        "freq": tuple(FREQ_REGS_BY_VOICE),
-        "pw": tuple(PWM_REGS_BY_VOICE),
-        "fc": (int(FC_LO_REG),),
-    }[tier]
-    state = register_state(xdf)
-    run_lengths, gaps, alternations = [], [], []
-    for reg in regs:
-        seq = state[:, reg]
-        changed = [f for f in range(1, len(seq)) if int(seq[f]) != int(seq[f - 1])]
-        if not changed:
-            continue
-        seg = [changed[0]]
-        for f in changed[1:]:
-            if f - seg[-1] <= OSC_MAX_GAP:
-                seg.append(f)
-                continue
-            _record_segment(seq, seg, run_lengths, gaps, alternations)
-            seg = [f]
-        _record_segment(seq, seg, run_lengths, gaps, alternations)
-    ops = xdf["op"].to_numpy()
-    xregs = xdf["reg"].to_numpy()
-    subregs = xdf["subreg"].to_numpy() if "subreg" in xdf.columns else None
-    in_regs = np.isin(xregs, np.asarray(regs, dtype=np.int64))
-    head = (
-        (subregs == FT_SUBREG_FLAGS) if subregs is not None else np.ones_like(in_regs)
-    )
-    structural = int(np.sum(in_regs & (ops == FREQ_TRAJ_OP) & head))
-    mopup = int(np.sum(in_regs & (ops == SET_OP)))
-    denom = structural + mopup
-    return {
-        "tier": tier,
-        "n_segments": len(run_lengths),
-        "run_length_mean": float(np.mean(run_lengths)) if run_lengths else 0.0,
-        "gap_mean": float(np.mean(gaps)) if gaps else 0.0,
-        "alternation_mean": float(np.mean(alternations)) if alternations else 0.0,
-        "structural_atoms": structural,
-        "mopup_atoms": mopup,
-        "captured_frac": structural / denom if denom else 0.0,
     }

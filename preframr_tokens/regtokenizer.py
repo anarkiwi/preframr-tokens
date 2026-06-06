@@ -15,16 +15,10 @@ from preframr_tokens.macros.loops import (
 from preframr_tokens.stfconstants import (
     DUMP_SUFFIX,
     FRAME_REG,
-    FREQ_TRAJ_OP,
-    FREQ_TRAJ_REGS,
-    FT_SUBREG_V0_HI,
-    FT_SUBREG_V0_LO,
     is_codebook_id_atom,
     OP_PDTYPE,
-    ORN_OP,
     PAD_REG,
     SET_OP,
-    SKEL_OP,
     SUBREG_PDTYPE,
     TOKEN_KEYS,
     TOKEN_PDTYPE,
@@ -32,36 +26,6 @@ from preframr_tokens.stfconstants import (
     UNI_SUFFIX,
     VAL_PDTYPE,
 )
-
-_FREQ_REGS_FROZEN = frozenset(FREQ_TRAJ_REGS)
-_FT_V0_SUBREGS = frozenset({FT_SUBREG_V0_HI, FT_SUBREG_V0_LO})
-
-
-def is_melody_pitch_atom(op, reg, subreg) -> bool:
-    """True for a melodic-pitch atom: op45 V0 (FT_SUBREG_V0_HI/LO) or op54 SKEL or op55 ORN
-    (pitch-ornament) -- all restricted to freq regs (FREQ_TRAJ_REGS = 0/7/14). The
-    melody-merge-split rule uses this predicate to detect cross-boundary Unigram merges.
-    """
-    if int(reg) not in _FREQ_REGS_FROZEN:
-        return False
-    op = int(op)
-    subreg = int(subreg)
-    if op == FREQ_TRAJ_OP and subreg in _FT_V0_SUBREGS:
-        return True
-    if op in (SKEL_OP, ORN_OP):
-        return True
-    return False
-
-
-def is_freq_onset_atom(op, reg, subreg) -> bool:
-    """A FREQ_TRAJ V0 onset atom: op45, freq reg (0/7/14), V0_HI/V0_LO subreg.
-    Strict subset of ``is_melody_pitch_atom``; the onset-loss-weight buffer uses this
-    narrower predicate to up-weight only the FREQ_TRAJ V0 class."""
-    return (
-        int(op) == FREQ_TRAJ_OP
-        and int(reg) in _FREQ_REGS_FROZEN
-        and int(subreg) in _FT_V0_SUBREGS
-    )
 
 
 def split_cross_boundary_merges(
@@ -161,43 +125,6 @@ class RegTokenizer:
         if self.tkmodel:
             return self.decode_unicode(self.tkmodel.decode(encoded_tokens), dtype=dtype)
         return encoded_tokens
-
-    def split_melody_merges(self, seq):
-        """Expand Unigram merges that cross the melody/non-melody atom boundary; pure-melody
-        and pure-non-melody merges are kept. Opt-in (``args.melody_merge_split``); byte-exact
-        (decode is the inverse of merge in the Unigram vocab). Caches per-tokenizer maps on
-        first call so subsequent block encodes are O(seq)."""
-        if not self.tkmodel or self.tokens is None or not len(self.tokens):
-            return seq
-        if not hasattr(self, "_melody_atom_unigram_id"):
-            n_atoms = len(self.tokens)
-            atom_ns = self.tokens["n"].astype(np.int64).to_numpy()
-            uni_ids = [None] * n_atoms
-            for i in range(n_atoms):
-                ch = chr(UNICODE_BASE + int(atom_ns[i]))
-                uni_ids[i] = self.tkmodel.token_to_id(ch)
-            self._melody_atom_unigram_id = uni_ids
-            self._melody_atom_mask = [
-                is_melody_pitch_atom(
-                    self.tokens.iloc[i]["op"],
-                    self.tokens.iloc[i]["reg"],
-                    self.tokens.iloc[i]["subreg"],
-                )
-                for i in range(n_atoms)
-            ]
-        n_atoms = len(self.tokens)
-        return split_cross_boundary_merges(
-            seq,
-            decode_to_base_ids=lambda uid: self.decode([uid]),
-            base_to_unigram_id=lambda b: (
-                self._melody_atom_unigram_id[b] if 0 <= b < n_atoms else None
-            ),
-            is_melody=lambda b: (
-                self._melody_atom_mask[b] if 0 <= b < n_atoms else False
-            ),
-            n_atoms=n_atoms,
-            dtype=seq.dtype,
-        )
 
     def _all_atom_chars(self):
         """Every unique atom char that ``encode_unicode`` can emit for

@@ -1,4 +1,4 @@
-"""Single source of truth for the inline-codebook families (STAMP, WAVETABLE, INSTRUMENT).
+"""Single source of truth for the inline-codebook families (INSTRUMENT, GENERATOR).
 Each shares one machine: DEF opens a pending entry, STEP(s) accumulate its payload, a COMMIT
 (an END op or a STEP at a terminal subreg) makes the id live in an ``id -> entry`` table, and
 REF(s) replay a live id. This leaf (stfconstants only) declares that as ``CodebookFamily``
@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from preframr_tokens.macros.generator_fit import recon
-from preframr_tokens.macros.wavetable import unroll as wt_unroll
 from preframr_tokens.stfconstants import (
     GEN_TABLE_DEF_OP,
     GEN_TABLE_END_OP,
@@ -35,32 +34,6 @@ from preframr_tokens.stfconstants import (
     INSTR_REF_OP,
     INSTR_STEP_OP,
     INSTR_SUBREG_FRAME,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-    STAMP_REL_SUBREG_BASE_HI,
-    STAMP_REL_SUBREG_BASE_LO,
-    STAMP_REL_SUBREG_ID,
-    STAMP_STEP_OP,
-    STAMP_SUBREG_FRAME,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_ONESHOT_OP,
-    WAVETABLE_REF_OP,
-    WAVETABLE_STEP_OP,
-    WT_ONESHOT_SUBREG_HOLD,
-    WT_ONESHOT_SUBREG_LEN_HI,
-    WT_ONESHOT_SUBREG_LEN_LO,
-    WT_ONESHOT_SUBREG_OFFSET,
-    WT_REF_SUBREG_ID,
-    WT_REF_SUBREG_LEAD,
-    WT_REF_SUBREG_LEADOFF,
-    WT_REF_SUBREG_LEN_HI,
-    WT_REF_SUBREG_LEN_LO,
-    WT_STEP_SUBREG_HOLD,
-    WT_STEP_SUBREG_LOOP,
-    WT_STEP_SUBREG_OFFSET,
 )
 
 __all__ = [
@@ -80,8 +53,6 @@ __all__ = [
 DEAD_REF_POLICY = "drop"
 
 CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
-    "stamp",
-    "wavetable",
     "instrument",
     "generator",
 )
@@ -90,9 +61,9 @@ CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
 @dataclass(frozen=True)
 class RefSpec:
     """One REF op of a family. ``id_subreg`` is the subreg carrying the codebook id (a
-    multi-row ref like WAVETABLE_REF/STAMP_REL_REF) or ``None`` when the op's own row carries
-    it (a single-row ref like STAMP_REF). ``table_less`` marks a ref that
-    carries its payload inline and looks up no id (WAVETABLE_ONESHOT); such ops are not
+    multi-row ref like GEN_TABLE_REF) or ``None`` when the op's own row carries
+    it (a single-row ref like INSTR_REF). ``table_less`` marks a ref that
+    carries its payload inline and looks up no id; such ops are not
     liveness-tracked and stay out of the spec table."""
 
     op: int
@@ -142,30 +113,6 @@ class CodebookFamily:
 
 
 CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
-    "stamp": CodebookFamily(
-        name="stamp",
-        def_op=STAMP_DEF_OP,
-        step_ops=(STAMP_STEP_OP,),
-        commit_op=STAMP_END_OP,
-        commit_subreg=None,
-        refs=(
-            RefSpec(STAMP_REF_OP),
-            RefSpec(STAMP_REL_REF_OP, id_subreg=STAMP_REL_SUBREG_ID),
-        ),
-        def_emits=False,
-    ),
-    "wavetable": CodebookFamily(
-        name="wavetable",
-        def_op=WAVETABLE_DEF_OP,
-        step_ops=(WAVETABLE_STEP_OP,),
-        commit_op=WAVETABLE_END_OP,
-        commit_subreg=None,
-        refs=(
-            RefSpec(WAVETABLE_REF_OP, id_subreg=WT_REF_SUBREG_ID),
-            RefSpec(WAVETABLE_ONESHOT_OP, table_less=True),
-        ),
-        def_emits=False,
-    ),
     "instrument": CodebookFamily(
         name="instrument",
         def_op=INSTR_DEF_OP,
@@ -210,16 +157,6 @@ def codebook_spec_tuples() -> dict[int, tuple[str, str, int | None]]:
     return out
 
 
-def _skel_lut():
-    """The skeleton freq LUT, imported lazily to break the codebook->skeleton_pass->passes_base->
-    state->codebook import cycle (this leaf must load before state finishes initialising).
-    """
-    # pylint: disable=import-outside-toplevel
-    from preframr_tokens.macros.skeleton_pass import LUT
-
-    return LUT
-
-
 class _Codebook:
     """One inline-codebook family's live decode state: the ``id -> entry`` table plus the two pending
     buffers the unified machine reassembles into (``pending`` for an in-flight DEF, ``pending_ref`` for
@@ -253,242 +190,11 @@ class _Codec:
         return None
 
 
-class _StampCodec(_Codec):
-    """Voice-relative percussion stamp: DEF/STEP/END buffer a write-series into the id table, REF
-    replays it on the target voice and REL_REF additionally adds the per-hit base delta at offset 0.
-    """
-
-    def def_open(self, row, state, cb):
-        cb.pending = {"id": int(row.val), "frames": [[]]}
-
-    def step(self, state, row, cb):
-        stamp = cb.pending
-        if stamp is None:
-            return None
-        if int(row.subreg) == STAMP_SUBREG_FRAME:
-            stamp["frames"].append([])
-        else:
-            stamp["frames"][-1].append((int(row.subreg), int(row.val)))
-        return None
-
-    def commit(self, state, row, cb):
-        stamp = cb.pending
-        if stamp is not None:
-            cb.table[int(stamp["id"])] = stamp["frames"]
-            cb.pending = None
-        return None
-
-    def ref(self, state, row, cb):
-        if int(row.op) == STAMP_REL_REF_OP:
-            return self._rel_ref(row, state, cb)
-        return self._ref(row, state, cb)
-
-    @staticmethod
-    def _offsets_in_order(frames):
-        """Voice-relative offsets in first-write order across the buffered frames -- preserves the
-        drum's intra-frame freq<->ctrl order (the per-frame drain emits regs in insertion order).
-        """
-        offsets, seen = [], set()
-        for fr in frames:
-            for off, _val in fr:
-                if off not in seen:
-                    seen.add(off)
-                    offsets.append(off)
-        return offsets
-
-    @classmethod
-    def _ref(cls, row, state, cb):
-        frames = cb.table.get(int(row.val))
-        if not frames:
-            return None
-        base = int(row.reg)
-        offsets = cls._offsets_in_order(frames)
-        pre = state.maybe_flush_for(base, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off in cur:
-                    state.pending_set_writes[base + off].append(int(cur[off]))
-        return pre or None
-
-    def _rel_ref(self, row, state, cb):
-        subreg = int(row.subreg)
-        if subreg == STAMP_REL_SUBREG_ID:
-            cb.pending_ref = {
-                "id": int(row.val),
-                "reg": int(row.reg),
-                "base": 0,
-            }
-            return None
-        pend = cb.pending_ref
-        if pend is None:
-            return None
-        if subreg == STAMP_REL_SUBREG_BASE_HI:
-            pend["base"] |= (int(row.val) & 0xFF) << 8
-            return None
-        if subreg != STAMP_REL_SUBREG_BASE_LO:
-            return None
-        pend["base"] |= int(row.val) & 0xFF
-        cb.pending_ref = None
-        return self._replay_rel(pend, state, cb)
-
-    @classmethod
-    def _replay_rel(cls, pend, state, cb):
-        frames = cb.table.get(int(pend["id"]))
-        if not frames:
-            return None
-        base = int(pend["base"])
-        voice = int(pend["reg"])
-        offsets = cls._offsets_in_order(frames)
-        pre = state.maybe_flush_for(voice, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off not in cur:
-                    continue
-                val = int(cur[off])
-                if off == 0:
-                    signed = val if val < 0x8000 else val - 0x10000
-                    val = (base + signed) & 0xFFFF
-                state.pending_set_writes[voice + off].append(val)
-        return pre or None
-
-
-class _WavetableCodec(_Codec):
-    """Note-relative wavetable codebook: DEF/STEP/END buffer an RLE offset program into the id table,
-    REF unrolls it to LEN frames after the per-hit LEAD, ONESHOT carries an inline program with no id;
-    both queue base + LUT[note+off] per frame onto last_skel_note via pending_set_writes.
-    """
-
-    def def_open(self, row, state, cb):
-        cb.pending = {"id": int(row.val), "steps": [], "loop": 0}
-
-    def step(self, state, row, cb):
-        wt = cb.pending
-        if wt is None:
-            return None
-        subreg = int(row.subreg)
-        if subreg == WT_STEP_SUBREG_OFFSET:
-            v = int(row.val) & 0xFF
-            wt["steps"].append([v if v < 128 else v - 256, 1])
-        elif subreg == WT_STEP_SUBREG_HOLD:
-            if wt["steps"]:
-                wt["steps"][-1][1] = int(row.val) & 0xFFFF
-        elif subreg == WT_STEP_SUBREG_LOOP:
-            wt["loop"] = int(row.val) & 0xFFFF
-        return None
-
-    def commit(self, state, row, cb):
-        wt = cb.pending
-        if wt is not None:
-            cb.table[int(wt["id"])] = (wt["steps"], int(wt["loop"]))
-            cb.pending = None
-        return None
-
-    def ref(self, state, row, cb):
-        if int(row.op) == WAVETABLE_ONESHOT_OP:
-            return self._oneshot(row, state, cb)
-        return self._wt_ref(row, state, cb)
-
-    def _oneshot(self, row, state, cb):
-        subreg = int(row.subreg)
-        if subreg == WT_ONESHOT_SUBREG_LEN_HI:
-            cb.pending_ref = {
-                "reg": int(row.reg),
-                "len": (int(row.val) & 0xFF) << 8,
-                "steps": [],
-            }
-            return None
-        pend = cb.pending_ref
-        if pend is None:
-            return None
-        if subreg == WT_ONESHOT_SUBREG_LEN_LO:
-            pend["len"] |= int(row.val) & 0xFF
-            return None
-        if subreg == WT_ONESHOT_SUBREG_OFFSET:
-            v = int(row.val) & 0xFF
-            pend["steps"].append([v if v < 128 else v - 256, 1])
-            return None
-        if subreg == WT_ONESHOT_SUBREG_HOLD:
-            if pend["steps"]:
-                pend["steps"][-1][1] = int(row.val) & 0xFFFF
-            return None
-        return self._replay_oneshot(pend, state, cb)
-
-    @staticmethod
-    def _replay_oneshot(pend, state, cb):
-        cb.pending_ref = None
-        steps = pend["steps"]
-        reg = int(pend["reg"])
-        note = int(state.last_skel_note.get(reg, 0))
-        offsets = wt_unroll(steps, len(steps), int(pend["len"]), [])
-        lut = _skel_lut()
-        queue = state.pending_set_writes[reg]
-        queue.append(int(lut[max(0, min(127, note))]))
-        for off in offsets:
-            queue.append(int(lut[max(0, min(127, note + int(off)))]))
-        return None
-
-    def _wt_ref(self, row, state, cb):
-        subreg = int(row.subreg)
-        if subreg == WT_REF_SUBREG_ID:
-            cb.pending_ref = {
-                "id": int(row.val),
-                "reg": int(row.reg),
-                "len": 0,
-                "lead": [],
-                "lead_n": 0,
-            }
-            return None
-        pend = cb.pending_ref
-        if pend is None:
-            return None
-        if subreg == WT_REF_SUBREG_LEN_HI:
-            pend["len"] |= (int(row.val) & 0xFF) << 8
-            return None
-        if subreg == WT_REF_SUBREG_LEN_LO:
-            pend["len"] |= int(row.val) & 0xFF
-            return None
-        if subreg == WT_REF_SUBREG_LEAD:
-            pend["lead_n"] = int(row.val) & 0xFFFF
-            if pend["lead_n"] == 0:
-                return self._replay(pend, state, cb)
-            return None
-        if subreg == WT_REF_SUBREG_LEADOFF:
-            v = int(row.val) & 0xFF
-            pend["lead"].append(v if v < 128 else v - 256)
-            if len(pend["lead"]) >= pend["lead_n"]:
-                return self._replay(pend, state, cb)
-            return None
-        return None
-
-    @staticmethod
-    def _replay(pend, state, cb):
-        cb.pending_ref = None
-        program = cb.table.get(int(pend["id"]))
-        if program is None:
-            return None
-        steps, loop = program
-        reg = int(pend["reg"])
-        note = int(state.last_skel_note.get(reg, 0))
-        offsets = wt_unroll(steps, loop, int(pend["len"]), pend["lead"])
-        lut = _skel_lut()
-        queue = state.pending_set_writes[reg]
-        queue.append(int(lut[max(0, min(127, note))]))
-        for off in offsets:
-            queue.append(int(lut[max(0, min(127, note + int(off)))]))
-        return None
-
-
 class _InstrumentCodec(_Codec):
     """Note-onset timbre program: DEF/STEP/END buffer a per-frame ``(ctrl, AD, SR)`` walk into the id
     table, REF replays it on the target voice -- each frame's fields queue onto the voice's ctrl/AD/SR
     regs (voice base ``reg - INSTR_OFF_CTRL`` plus the field's voice-relative subreg), one drained per
-    frame tick. The (ctrl, AD, SR) twin of the voice-relative ``_StampCodec``."""
+    frame tick. A voice-relative per-frame write-series codebook."""
 
     def def_open(self, row, state, cb):
         cb.pending = {"id": int(row.val), "frames": [[]]}
@@ -641,8 +347,6 @@ class _GeneratorCodec(_Codec):
 
 
 _CODECS: dict[str, _Codec] = {
-    "stamp": _StampCodec(),
-    "wavetable": _WavetableCodec(),
     "instrument": _InstrumentCodec(),
     "generator": _GeneratorCodec(),
 }

@@ -25,8 +25,6 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
-    FREQ_TRAJ_OP,
-    FT_SUBREG_FLAGS,
 )
 
 
@@ -140,7 +138,7 @@ MULTI_ROW_MACRO_EMITTERS = (
 
 MULTI_ROW_MACRO_HEAD_OPS = tuple((op, sr) for _fn, op, sr in MULTI_ROW_MACRO_EMITTERS)
 
-EXTRA_ISOLATION_HEAD_OPS = ((FREQ_TRAJ_OP, FT_SUBREG_FLAGS),)
+EXTRA_ISOLATION_HEAD_OPS: tuple[tuple[int, int], ...] = ()
 
 
 _FREQ_REGS_VOICED = frozenset(FREQ_REGS_BY_VOICE)

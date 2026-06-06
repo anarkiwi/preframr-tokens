@@ -17,7 +17,7 @@ from preframr_tokens.macros.flag_registry import (
     resolve_flags,
     valid_combo,
 )
-from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.sid_frame_diff import (
     diff_dump_vs_pipeline,
@@ -29,18 +29,8 @@ from tests.parse_probes import parse_args
 
 _KNOWN_FREQ_LOSSY: set[str] = set()
 _STACK_FLAGS = {
-    "skeleton_pass",
-    "trajectory_anchor_pass",
-    "stamp_pass",
-    "sweep_pass",
-    "held_arp",
-    "wavetable_pass",
-    "zero_plain",
-    "wt_short",
-    "wt_oneshot",
-    "slide_wide",
-    "slide_landing",
-    "sweep_loop",
+    "hard_restart_pass",
+    "instrument_program",
 }
 
 
@@ -115,15 +105,9 @@ class TestFrameDiffUnit(unittest.TestCase):
 
 
 class TestFlagResolver(unittest.TestCase):
-    def test_requires_expanded(self):
-        self.assertEqual(
-            resolve_flags({"wt_oneshot"}),
-            {"wt_oneshot", "wavetable_pass", "skeleton_pass"},
-        )
-
-    def test_conflict_raises(self):
-        with self.assertRaises(ValueError):
-            resolve_flags({"skeleton_pass", "freq_trajectory_pass"})
+    def test_requires_passthrough(self):
+        """With no FLAG_REQUIRES relationships, a flag set resolves to itself."""
+        self.assertEqual(resolve_flags({"hard_restart_pass"}), {"hard_restart_pass"})
 
     def test_minimal_configs_cover_every_flag(self):
         for flag, cfg in minimal_configs().items():
@@ -213,18 +197,15 @@ class TestFrameDiffReleaseGate(unittest.TestCase):
         self.assertEqual(res["freq_fail"], [], f"macro stack diverges on pitch: {res}")
 
     def _matrix(self):
-        """Every gated flag in a minimal valid pipeline and (where compatible) paired with the skeleton
-        base, plus the full macro stack. Pairing with skeleton catches interaction bugs a single-flag
-        config misses, e.g. a freq pass that only corrupts pitch once skeleton owns the freq channel.
-        """
+        """Every gated flag in a minimal valid pipeline, plus the full macro stack -- so a single-flag
+        config and the combined stack are both checked frame-exact."""
         seen = {}
         for flag in sorted(minimal_configs()):
-            for extra in ((), ("skeleton_pass",)):
-                try:
-                    cfg = frozenset(resolve_flags({flag, *extra}))
-                except ValueError:
-                    continue
-                seen.setdefault(cfg, f"{flag}{'+skeleton' if extra else ''}")
+            try:
+                cfg = frozenset(resolve_flags({flag}))
+            except ValueError:
+                continue
+            seen.setdefault(cfg, flag)
         seen.setdefault(frozenset(resolve_flags(_STACK_FLAGS)), "full-stack")
         return seen
 
@@ -262,12 +243,12 @@ class TestFrameDiffReleaseGate(unittest.TestCase):
         )
 
     def test_known_freq_lossy_passes_still_flagged(self):
-        """Keep the tracking list honest: each _KNOWN_FREQ_LOSSY pass, on the skeleton base where it
-        corrupts pitch, must still fail the freq check. A pass that now passes should be removed from the
-        list so the gate enforces it."""
+        """Keep the tracking list honest: each _KNOWN_FREQ_LOSSY pass must still fail the freq check.
+        A pass that now passes should be removed from the list so the gate enforces it.
+        """
         stale = []
         for flag in sorted(_KNOWN_FREQ_LOSSY):
-            cfg = resolve_flags({flag, "skeleton_pass"})
+            cfg = resolve_flags({flag})
             xdf = self._parse(parse_args(**{f: True for f in cfg}), self.dump)
             res = diff_dump_vs_pipeline(self.dump, xdf)
             if not res["freq_fail"]:

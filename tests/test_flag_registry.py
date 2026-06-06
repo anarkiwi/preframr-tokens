@@ -38,13 +38,17 @@ class TestFlagRegistry(unittest.TestCase):
 
     def test_surfaced_flags_present(self):
         for flag in (
-            "gate_slope_shift_pass",
-            "voice_track_pass",
+            "hard_restart_pass",
+            "instrument_program",
         ):
             self.assertIn(flag, MACRO_FLAGS, flag)
 
     def test_dead_flags_absent(self):
         for flag in (
+            "preset_pass",
+            "gate_slope_shift_pass",
+            "voice_track_pass",
+            "pre_gate_freq",
             "mode_vol_flip_pass",
             "legato_pass_c3",
             "super_frame_pass",

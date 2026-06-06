@@ -12,17 +12,12 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_DIST_LO,
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
-    FREQ_TRAJ_OP,
-    FT_SUBREG_RUNTIME,
-    FT_SUBREG_TERMINAL_HI,
-    FT_SUBREG_TERMINAL_LO,
 )
 
 __all__ = [
     "DistancePairSpec",
     "DISTANCE_PAIR_OPS",
     "distance_pair_role",
-    "slope_subreg_role",
     "frame_weight_role",
 ]
 
@@ -49,9 +44,6 @@ DISTANCE_PAIR_OPS: dict[int, DistancePairSpec] = {
 }
 
 
-_SLOPE_OP_SET = frozenset({FREQ_TRAJ_OP})
-
-
 def distance_pair_role(op: int, subreg: int) -> Optional[str]:
     """``"dist_hi" | "dist_lo" | "len" | "ov_count" | None`` for distance-pair ops; ``None`` if ``op`` is not a distance-pair op or ``subreg`` doesn't match any slot."""
     spec = DISTANCE_PAIR_OPS.get(int(op))
@@ -69,28 +61,12 @@ def distance_pair_role(op: int, subreg: int) -> Optional[str]:
     return None
 
 
-def slope_subreg_role(op: int, subreg: int) -> Optional[str]:
-    """``"terminal_hi" | "terminal_lo" | "runtime" | None`` for slope ops; ``None`` otherwise."""
-    if int(op) not in _SLOPE_OP_SET:
-        return None
-    sr = int(subreg)
-    if sr == FT_SUBREG_TERMINAL_HI:
-        return "terminal_hi"
-    if sr == FT_SUBREG_TERMINAL_LO:
-        return "terminal_lo"
-    if sr == FT_SUBREG_RUNTIME:
-        return "runtime"
-    return None
-
-
 def frame_weight_role(op: int, subreg: int) -> Optional[str]:
-    """``"pattern_replay_len" | "do_loop_len" | "slope_runtime" | None`` for the three op-side weight sources (the reg-side DELAY / FRAME ones live in ``token_weighting``)."""
+    """``"pattern_replay_len" | "do_loop_len" | None`` for the op-side weight sources (the reg-side DELAY / FRAME ones live in ``token_weighting``)."""
     op = int(op)
     sr = int(subreg)
     if op == PATTERN_REPLAY_OP and sr == PATTERN_REPLAY_SUBREG_LEN:
         return "pattern_replay_len"
     if op == DO_LOOP_OP and sr == 0:
         return "do_loop_len"
-    if op in _SLOPE_OP_SET and sr == FT_SUBREG_RUNTIME:
-        return "slope_runtime"
     return None

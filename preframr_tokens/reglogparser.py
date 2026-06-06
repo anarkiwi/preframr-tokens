@@ -11,20 +11,10 @@ from preframr_tokens.engine_fingerprint import (
     UNKNOWN_CLUSTER,
     compute_fingerprint,
 )
-from preframr_tokens.macros.per_reg_burst import PerRegBurstPass
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
-from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
-from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
-from preframr_tokens.macros.skeleton_pass import SkeletonPass
-from preframr_tokens.macros.stamp_pass import StampPass
-from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
-from preframr_tokens.macros.wavetable_pass import WavetablePass
-from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
-from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reg_match import (
@@ -58,11 +48,9 @@ from preframr_tokens.stfconstants import (
     SUBREG_PDTYPE,
     TOKEN_KEYS,
     VAL_PDTYPE,
-    PWM_SUSTAIN_OP,
     VOICES,
     VOICE_REG,
     VOICE_REG_SIZE,
-    WAVETABLE_SUSTAIN_OP,
 )
 
 __all__ = [
@@ -71,8 +59,6 @@ __all__ = [
     "prepare_df_for_audio",
     "read_initial_irq",
 ]
-
-_SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP), int(WAVETABLE_SUSTAIN_OP)}
 
 FRAME_DTYPES = {
     "reg": REG_PDTYPE,
@@ -260,7 +246,7 @@ def remove_voice_reg(orig_df, reg_widths):
     df["f"] = 0
     df.loc[df["reg"] == FRAME_REG, "f"] = 1
     df["f"] = df["f"].cumsum()
-    m = df["reg"].isin({FRAME_REG, VOICE_REG}) | df["op"].isin(_SUSTAIN_MARKER_OPS)
+    m = df["reg"].isin({FRAME_REG, VOICE_REG})
     df.loc[m, "fn"] = 1
     df["fn"] = df.groupby("f")["fn"].cumsum()
     df["fn"] -= 1
@@ -436,27 +422,10 @@ class RegLogParser:
             df["description"] = 0
         return df
 
-    def _anchor_enabled(self):
-        """Whether TrajectoryAnchorPass will run for this parse (mirrors the
-        pass's own gate), so ``freq_unq`` is only stashed when it is consumed."""
-        return self.args is None or getattr(self.args, "trajectory_anchor_pass", True)
-
-    @staticmethod
-    def _stash_freq_unq(df):
-        """Copy the full-precision 16-bit freq into a ``freq_unq`` side column
-        before lossy cent-quantization, so TrajectoryAnchorPass detects pitch
-        origins at semitone resolution; carried through the later row-wise
-        transforms and dropped with the other side columns at token-emit time."""
-        df = df.copy()
-        df["freq_unq"] = df["val"]
-        return df
-
     def _squeeze_changes(self, df):
         prev = df.groupby("reg")["val"].shift()
         mask = prev.isna() | (prev != df["val"])
         cols = ["clock", "irq", "reg", "val"]
-        if "freq_unq" in df.columns:
-            cols.append("freq_unq")
         return df.loc[mask, cols].reset_index(drop=True)
 
     def _combine_val(self, reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
@@ -520,8 +489,6 @@ class RegLogParser:
         irq_df.loc[irq_df["reg"] == DELAY_REG, "diff"] = 0
         irq_df.loc[irq_df["reg"] == FRAME_REG, "val"] = 0
         out_cols = ["reg", "val", "diff"]
-        if "freq_unq" in df.columns:
-            out_cols.append("freq_unq")
         df = (
             pd.concat([df, irq_df], ignore_index=True)
             .sort_values(["i"])[out_cols + ["i"]]
@@ -960,11 +927,7 @@ class RegLogParser:
         )
         df = self._squeeze_changes(df)
         df = self._combine_regs(df)
-        if self._anchor_enabled():
-            df = self._stash_freq_unq(df)
-        if not getattr(self.args, "skeleton_pass", False) and not getattr(
-            self.args, "generator_pass", False
-        ):
+        if not getattr(self.args, "generator_pass", False):
             df = self._quantize_freq_to_cents(df)
         df = self._simplify_ctrl(df)
         df = self._simplify_pcm(df)
@@ -975,20 +938,13 @@ class RegLogParser:
         if not self._filter(df, name):
             return
         df = self._squeeze_frame_regs(df)
+        if "op" not in df.columns:
+            df = df.copy()
+            df["op"] = int(SET_OP)
         elapsed = elapsed_frames(df)
         audit = make_pass_audit(self.args)
         audit.start(df)
         for macro_pass in (
-            PreGateFreqPass(),
-            VoiceTrackPass(),
-            TrajectoryAnchorPass(),
-            StampPass(),
-            SkeletonPass(),
-            WavetablePass(),
-            FreqTrajectoryPass(),
-            PresetPass(),
-            PerRegBurstPass(),
-            GateSlopeShiftPass(),
             InstrumentProgramPass(),
             GeneratorPass(),
         ):

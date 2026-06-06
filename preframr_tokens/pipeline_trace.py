@@ -39,8 +39,6 @@ _SPECIAL_REG = {
 _PIPELINE_NAME_TO_FLAG = {
     "hard_restart": "hard_restart_pass",
     "voice_block_order": "voice_canonical_block_order",
-    "freq_trajectory": "freq_trajectory_pass",
-    "preset": "preset_pass",
     "loop": "loop_pass",
     "coarsen": "coarsen_pass",
     "fuzzy_loop": "fuzzy_loop_pass",
