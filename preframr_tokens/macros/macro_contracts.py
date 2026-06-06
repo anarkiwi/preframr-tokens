@@ -17,7 +17,6 @@ from preframr_tokens.stfconstants import (
     INSTR_REF_OP,
     MODE_VOL_REG,
     SWEEP_OP,
-    TRACK_REF_OP,
     VOICE_REG_SIZE,
     VOICES,
 )
@@ -198,7 +197,6 @@ RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
         int(SWEEP_OP),
-        int(TRACK_REF_OP),
         int(INSTR_REF_OP),
         int(GEN_TABLE_REF_OP),
     }

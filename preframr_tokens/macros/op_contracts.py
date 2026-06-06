@@ -48,7 +48,6 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
-    TRACK_REF_OP,
     TRANSPOSE_OP,
 )
 
@@ -120,7 +119,6 @@ _CONTRACT_LIST = (
     OpContract(FC_PRESET_OP, MaskRole.ATOM),
     OpContract(PWM_PRESET_SHIFTED_OP, MaskRole.ATOM),
     OpContract(PWM_SUSTAIN_OP, MaskRole.ATOM),
-    OpContract(TRACK_REF_OP, MaskRole.ATOM),
     OpContract(SWEEP_OP, MaskRole.ATOM),
     OpContract(GEN_TRI_OP, MaskRole.ATOM),
     OpContract(GEN_TUNING_OP, MaskRole.ATOM),

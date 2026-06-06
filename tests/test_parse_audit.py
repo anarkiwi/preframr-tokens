@@ -65,11 +65,11 @@ class TestPassAudit(unittest.TestCase):
             audit.after(_stream([100, None], delays=[None, 3]), "PerRegBurstPass")
 
     def test_lossy_pass_rebaselines(self):
-        """PreGateFreqPass is lossy by design -- the audit must re-baseline on it, not raise,
-        and then hold the next lossless pass to the new state."""
+        """A frame-rebasing stage (``_consolidate_frames``) re-baselines the audit, not raises,
+        then holds the next lossless pass to the new state."""
         audit = PassAudit("raise")
         audit.start(_stream([100, 110]))
-        audit.after(_stream([100, 120]), "PreGateFreqPass")
+        audit.after(_stream([100, 120]), "_consolidate_frames")
         audit.after(_stream([100, 120]), "PerRegBurstPass")
         with self.assertRaises(AssertionError):
             audit.after(_stream([100, 130]), "PerRegBurstPass")

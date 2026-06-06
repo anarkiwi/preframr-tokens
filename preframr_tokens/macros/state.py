@@ -138,14 +138,10 @@ class DecodeState:
         self.strict = strict
         self.pending_diffs = defaultdict(list)
         self.pending_set_writes = defaultdict(list)
-        self.interval_links = []
-        self.pending_track_links = []
-        self.pending_track_fields = {}
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
         self.pending_gen_tri = None
         self.gen_ref = 0.0
-        self.prev_frame_val = np.zeros(MAX_REG + 1, dtype=np.int64)
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
         self.last_ctrl = {v: 0 for v in range(VOICES)}
@@ -233,31 +229,6 @@ class DecodeState:
                 del self.pending_set_writes[reg]
             self.last_val[reg] = val
             writes.append((reg, val, self.diff_for(reg)))
-        for link in list(self.interval_links):
-            cur_src = int(self.last_val[link["src"]])
-            prev_src = int(self.prev_frame_val[link["src"]])
-            delta = cur_src - prev_src
-            if delta != 0:
-                self.last_val[link["tgt"]] += delta
-                writes.append(
-                    (
-                        link["tgt"],
-                        int(self.last_val[link["tgt"]]),
-                        self.diff_for(link["tgt"]),
-                    )
-                )
-            link["remaining"] -= 1
-            if link["remaining"] <= 0:
-                self.interval_links.remove(link)
-        for link in list(self.pending_track_links):
-            lead = int(self.last_val[link["src"]])
-            tgt_val = int(round(lead * link["ratio"])) + link["detune"]
-            self.last_val[link["tgt"]] = tgt_val
-            writes.append((link["tgt"], tgt_val, self.diff_for(link["tgt"])))
-            link["remaining"] -= 1
-            if link["remaining"] <= 0:
-                self.pending_track_links.remove(link)
-        np.copyto(self.prev_frame_val, self.last_val)
         return writes
 
 

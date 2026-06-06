@@ -8,7 +8,6 @@ __all__ = [
     "FlipDecoder",
     "TransposeDecoder",
     "HardRestartDecoder",
-    "TrackRefDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
     "SubregFlushDecoder",
@@ -57,12 +56,6 @@ from preframr_tokens.stfconstants import (
     SWEEP_SUBREG_PERIOD,
     SWEEP_SUBREG_START_HI,
     SWEEP_SUBREG_START_LO,
-    TRACK_INTERVAL_RATIOS,
-    TRACK_REF_OP,
-    TRACK_REF_SUBREG_DETUNE,
-    TRACK_REF_SUBREG_DURATION,
-    TRACK_REF_SUBREG_INTERVAL,
-    TRACK_REF_SUBREG_LEAD,
     TRANSPOSE_OP,
     VOICES,
 )
@@ -215,42 +208,6 @@ class _LegatoClusterByteDecoder(MacroDecoder):
         state.last_val[ctrl_reg] = new_byte
         writes.append((ctrl_reg, new_byte, row.diff, row.description))
         return writes
-
-
-class TrackRefDecoder(MacroDecoder):
-    """Decode a TRACK_REF atom (4 subreg rows): the tracker voice's FREQ is
-    ``round(lead_freq * interval_ratio) + detune`` for ``duration`` frames.
-    The first frame is written directly; later frames are reconstructed by a
-    ``pending_track_links`` entry drained per frame by ``tick_frame``."""
-
-    op_code = TRACK_REF_OP
-
-    def expand(self, row, state):
-        subreg = int(row.subreg)
-        state.pending_track_fields[subreg] = int(row.val)
-        if subreg != TRACK_REF_SUBREG_DURATION:
-            return None
-        f = state.pending_track_fields
-        state.pending_track_fields = {}
-        tracker_reg = int(row.reg)
-        lead_reg = int(FREQ_REGS_BY_VOICE[f.get(TRACK_REF_SUBREG_LEAD, 0)])
-        ratio = TRACK_INTERVAL_RATIOS[f.get(TRACK_REF_SUBREG_INTERVAL, 0)]
-        detune = f.get(TRACK_REF_SUBREG_DETUNE, 0) & 0xFF
-        if detune >= 128:
-            detune -= 256
-        duration = max(1, int(f.get(TRACK_REF_SUBREG_DURATION, 1)))
-        pre = state.maybe_flush_for(tracker_reg, -1)
-        state.last_diff[tracker_reg] = row.diff
-        state.pending_track_links.append(
-            {
-                "src": lead_reg,
-                "tgt": tracker_reg,
-                "ratio": ratio,
-                "detune": detune,
-                "remaining": duration,
-            }
-        )
-        return pre or None
 
 
 class PresetDecoder(MacroDecoder):
@@ -429,7 +386,6 @@ DECODERS = {
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
         _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
         PwmSustainDecoder(),
-        TrackRefDecoder(),
         SweepDecoder(),
         GenTriDecoder(),
         GenTuningDecoder(),

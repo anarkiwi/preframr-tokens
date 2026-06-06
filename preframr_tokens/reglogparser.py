@@ -18,8 +18,6 @@ from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.preset_pass import PresetPass
-from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
-from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reg_match import (
@@ -950,8 +948,6 @@ class RegLogParser:
         audit = make_pass_audit(self.args)
         audit.start(df)
         for macro_pass in (
-            PreGateFreqPass(),
-            VoiceTrackPass(),
             PresetPass(),
             PerRegBurstPass(),
             GateSlopeShiftPass(),
