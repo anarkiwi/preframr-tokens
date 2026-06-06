@@ -61,6 +61,7 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
     GEN_TUNING_SUBREG_REF,
+    GEN_TUNING_SUBREG_VOICE,
     GEN_FREQ_REGS,
     GEN_SCALAR_REGS,
     INSTR_OFF_CTRL,
@@ -126,6 +127,9 @@ class GeneratorPass(MacroPass):
             else {}
         )
         claims = [self._tuning_claim(ref_q, irq)]
+        for m in mel_ctx.values():
+            if m.get("tuning_q") is not None:
+                claims.append(self._voice_tuning_claim(m["voice"], m["tuning_q"], irq))
         bank = {}
         def_rows = []
         for reg, is_freq, series in channels(state):
@@ -167,6 +171,22 @@ class GeneratorPass(MacroPass):
             writes=(), tokens=[row], priority=_GEN_PRIORITY, label="gen_tuning"
         )
 
+    @staticmethod
+    def _voice_tuning_claim(voice, tuning_q, irq):
+        """A per-voice GEN_TUNING atom (``universal_pitch``): VOICE then REF=tuning_q, head-decoded so
+        the voice's ``note_freq`` recon is set before any MELODY_INTERVAL replay -- the per-voice tuning
+        makes the melody onset residual ~0 (pure note) under chorus/detune. Contiguous (one Claim).
+        """
+        rows = [
+            _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_VOICE, voice, irq),
+            _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_REF, tuning_q, irq),
+        ]
+        for r in rows:
+            r["__pos"] = -2
+        return Claim(
+            writes=(), tokens=rows, priority=_GEN_PRIORITY, label="gen_voice_tuning"
+        )
+
     @classmethod
     def _melody_context(cls, state, ref, universal=False):
         """Per freq reg: ``{voice, onsets, melodic, note, tuning, universal}`` for the interval re-keying.
@@ -186,14 +206,18 @@ class GeneratorPass(MacroPass):
             ctrl = (state[:, b + INSTR_OFF_CTRL].astype("int64") & 1).tolist()
             gate_on = [i for i in range(n) if ctrl[i] and (i == 0 or not ctrl[i - 1])]
             per_frame = [int(f) if f > 0 else None for f in freq]
+            if universal:
+                tq = pitch_grid.tuning_to_q(pitch_grid.voice_tuning(freqarr))
+                tuning = pitch_grid.q_to_tuning(tq)
+            else:
+                tq, tuning = None, None
             ctx[int(b)] = {
                 "voice": int(b) // 7,
                 "onsets": set(note_onsets(per_frame, gate_on)),
                 "melodic": cls._stability(freq, ref),
                 "note": None,
-                "tuning": (
-                    float(pitch_grid.voice_tuning(freqarr)) if universal else None
-                ),
+                "tuning": tuning,
+                "tuning_q": tq,
                 "universal": universal,
             }
         return ctx
@@ -385,9 +409,10 @@ class GeneratorPass(MacroPass):
             note = int(
                 pitch_grid.note_index(np.asarray([onset_freq]), mel["tuning"])[0]
             )
+            resid = (onset_freq - pitch_grid.note_freq_at(note, mel["tuning"])) & 0xFFFF
         else:
             note = note_of(onset_freq, ref)
-        resid = (onset_freq - recon(note, ref)) & 0xFFFF
+            resid = (onset_freq - recon(note, ref)) & 0xFFFF
         prev = mel["note"]
         if prev is None:
             first, token = 1, note & 0xFFFF

@@ -53,6 +53,26 @@ def note_freq(note, tuning=0.0):
     )
 
 
+_TUNING_Q = 256.0
+
+
+def tuning_to_q(tuning):
+    """Quantize a per-voice tuning (-0.5..0.5 semitone) to a byte the atom carries; encode + decode
+    share this + ``q_to_tuning`` so the grid-recon (``note_freq``) matches and the residual stays exact.
+    """
+    return int(max(0, min(255, round((float(tuning) + 0.5) * _TUNING_Q))))
+
+
+def q_to_tuning(q):
+    """Inverse of ``tuning_to_q``: byte -> tuning fraction."""
+    return (int(q) & 0xFF) / _TUNING_Q - 0.5
+
+
+def note_freq_at(note, tuning):
+    """Scalar ``note_freq`` for one note (decoder convenience)."""
+    return int(note_freq(np.asarray([int(note)]), tuning)[0])
+
+
 def recover_table(freqs, tuning=None):
     """Per-voice note->freq table: the EXACT 16-bit freq each note maps to (modal over the voice's
     frames = the tracker's table entry), with the per-voice ``tuning`` applied so detuned tunes

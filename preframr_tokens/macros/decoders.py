@@ -40,6 +40,7 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
     GEN_TUNING_SUBREG_REF,
+    GEN_TUNING_SUBREG_VOICE,
     DIFF_OP,
     FLIP_OP,
     HARD_RESTART_OP,
@@ -59,6 +60,7 @@ from preframr_tokens.stfconstants import (
     TRANSPOSE_OP,
     VOICES,
 )
+from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.codebook import codebook_decoders
 from preframr_tokens.macros.generator_fit import _tri_seq, recon, unzig
 
@@ -271,8 +273,17 @@ class GenTuningDecoder(MacroDecoder):
     op_code = GEN_TUNING_OP
 
     def expand(self, row, state):
-        if int(row.subreg) == GEN_TUNING_SUBREG_REF:
-            state.gen_ref = (int(row.val) & 0xFF) / 256.0
+        sub = int(row.subreg)
+        if sub == GEN_TUNING_SUBREG_VOICE:
+            state.pending_gen_tuning_voice = int(row.val)
+            return None
+        if sub == GEN_TUNING_SUBREG_REF:
+            voice = state.pending_gen_tuning_voice
+            if voice is None:
+                state.gen_ref = (int(row.val) & 0xFF) / 256.0
+            else:
+                state.gen_ref_by_voice[voice] = pitch_grid.q_to_tuning(int(row.val))
+                state.pending_gen_tuning_voice = None
         return None
 
 
@@ -355,7 +366,11 @@ class MelodyIntervalDecoder(MacroDecoder):
             ((f.get(MELODY_INTERVAL_SUBREG_DELTA_HI, 0) & 0xFF) << 8)
             | (f.get(MELODY_INTERVAL_SUBREG_DELTA_LO, 0) & 0xFF)
         )
-        start = (recon(cur_note, state.gen_ref) + resid) & 0xFFFF
+        if voice in state.gen_ref_by_voice:
+            base = pitch_grid.note_freq_at(cur_note, state.gen_ref_by_voice[voice])
+        else:
+            base = recon(cur_note, state.gen_ref)
+        start = (base + resid) & 0xFFFF
         pre = state.maybe_flush_for(reg, -1)
         for k in range(int(f.get(MELODY_INTERVAL_SUBREG_LEN, 0))):
             state.pending_set_writes[reg].append((start + k * delta) & 0xFFFF)
