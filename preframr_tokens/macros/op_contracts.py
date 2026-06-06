@@ -60,6 +60,7 @@ __all__ = [
     "CODEBOOK_SPECS",
     "CODEBOOK_TABLES",
     "OP_PRODUCER",
+    "MACRO_OP_LOSS_TIERS",
     "non_atom_ops",
     "reference_ops",
     "reference_op_producers",
@@ -130,6 +131,28 @@ _CONTRACT_LIST = (
 )
 
 OP_CONTRACTS: dict[int, OpContract] = {int(c.op_code): c for c in _CONTRACT_LIST}
+
+
+MACRO_OP_LOSS_TIERS: dict[int, str] = {
+    int(SWEEP_OP): "content",
+    int(GEN_TRI_OP): "content",
+    int(MELODY_INTERVAL_OP): "content",
+    int(GEN_TABLE_STEP_OP): "content",
+    int(INSTR_STEP_OP): "content",
+    int(GEN_TUNING_OP): "structural",
+    int(GEN_TABLE_DEF_OP): "structural",
+    int(GEN_TABLE_END_OP): "structural",
+    int(GEN_TABLE_REF_OP): "structural",
+    int(INSTR_DEF_OP): "structural",
+    int(INSTR_END_OP): "structural",
+    int(INSTR_REF_OP): "structural",
+}
+"""Loss tier for the generator/codebook ops, which are MacroPass-emitted (not ``Transform`` classes) so
+``collect_op_loss_tiers`` cannot read a ``LOSS_TIER`` off them. Value-bearing atoms (the freq/pitch
+trajectories + the codebook DEF body STEP) are ``content``; the codebook markers/pointers (DEF/END/REF)
+and the per-voice tuning config (GEN_TUNING) are ``structural`` scaffolding. Merged into
+``collect_op_loss_tiers`` so the per-tier loss / ``content_over_structural`` gate stops counting the
+codebook + tuning structure as content."""
 
 
 @dataclass(frozen=True)

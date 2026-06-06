@@ -110,5 +110,42 @@ class TestBuildVocabTierMap(unittest.TestCase):
         self.assertEqual(m, {0: "content", 1: "content", 2: "content"})
 
 
+class TestGeneratorOpsTiered(unittest.TestCase):
+    """The generator/codebook ops are MacroPass-emitted (no Transform class), so they must be tiered via
+    op_contracts.MACRO_OP_LOSS_TIERS -- not silently default to content, which would let the
+    content_over_structural gate count codebook + tuning structure as content."""
+
+    def test_every_generator_op_has_an_explicit_tier(self):
+        from preframr_tokens.macros.flag_registry import ensure_passes_registered
+        from preframr_tokens.macros.transform import collect_op_loss_tiers
+        from preframr_tokens.stfconstants import (
+            GEN_TABLE_DEF_OP,
+            GEN_TABLE_END_OP,
+            GEN_TABLE_REF_OP,
+            GEN_TABLE_STEP_OP,
+            GEN_TRI_OP,
+            GEN_TUNING_OP,
+            MELODY_INTERVAL_OP,
+            SWEEP_OP,
+        )
+
+        ensure_passes_registered()
+        tiers = collect_op_loss_tiers()
+        for op in (
+            SWEEP_OP,
+            GEN_TRI_OP,
+            GEN_TABLE_DEF_OP,
+            GEN_TABLE_STEP_OP,
+            GEN_TABLE_END_OP,
+            GEN_TABLE_REF_OP,
+            GEN_TUNING_OP,
+            MELODY_INTERVAL_OP,
+        ):
+            self.assertIn(int(op), tiers, f"op {int(op)} silently defaults to content")
+        self.assertEqual(tiers[int(GEN_TABLE_DEF_OP)], "structural")
+        self.assertEqual(tiers[int(GEN_TUNING_OP)], "structural")
+        self.assertEqual(tiers[int(MELODY_INTERVAL_OP)], "content")
+
+
 if __name__ == "__main__":
     unittest.main()
