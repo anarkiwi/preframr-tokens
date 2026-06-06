@@ -217,3 +217,65 @@ def test_generator_scalar_channel_oscillation_abs_table():
             del os.environ["PREFRAMR_ARBITER_STRICT"]
         else:
             os.environ["PREFRAMR_ARBITER_STRICT"] = prev
+
+
+def test_generator_zeroes_whole_chip_singleton_regs():
+    """The irregular Res/Filt(23) + Mode/Vol(24) singletons the deployed default leaves as raw SET
+    (test_whole_chip_no_singleton_set, the deferred whole-chip tail) ARE modelled to zero by the
+    generator -- a one-off global write is an ordinary HOLD generator, not an un-modelled straggler.
+    Runs the whole-chip gate's own tune through the generator config (real parse, not a post-split df).
+    """
+    from preframr_tokens.macros.skeleton_pass import LUT
+
+    prev = os.environ.get("PREFRAMR_ARBITER_STRICT")
+    os.environ["PREFRAMR_ARBITER_STRICT"] = "1"
+    try:
+        b = DumpBuilder().adsr().pw(0x800).modevol(0x0F).resfilt(0x00)
+        b.note([LUT[60]] * 5)
+        b.note([LUT[55]] * 4)
+        b.modevol(0x1F)
+        b.note([LUT[57]] * 4)
+        b.resfilt(0xF1)
+        b.note([LUT[52]] * 4)
+        b.note([LUT[48]] * 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            df = _parse(write_dump(b, os.path.join(tmp, "wc.dump.parquet")))
+        assert df is not None
+        offenders = _raw_gen_sets(df)
+        assert (
+            not offenders
+        ), f"generator left raw SET on (reg->count): {dict(offenders)}"
+    finally:
+        if prev is None:
+            del os.environ["PREFRAMR_ARBITER_STRICT"]
+        else:
+            os.environ["PREFRAMR_ARBITER_STRICT"] = prev
+
+
+def test_generator_long_hold_survives_consolidation():
+    """A long HOLD atom (a channel held constant while another changes every frame) stays byte-exact
+    through frame consolidation + the now-lossless _cap_delay -- no MAX_SPAN chunking needed (cap_delay
+    is chain_delay, frame-preserving, not the old truncate-to-255 that dropped long atoms).
+    """
+    prev = os.environ.get("PREFRAMR_ARBITER_STRICT")
+    os.environ["PREFRAMR_ARBITER_STRICT"] = "1"
+    try:
+        b = DumpBuilder().adsr().pw(0x800).modevol(0x1F)
+        b.note([cents_to_fn(40, 0) + 7 * i for i in range(200)])
+        with tempfile.TemporaryDirectory() as tmp:
+            df = _parse(write_dump(b, os.path.join(tmp, "long.dump.parquet")))
+        assert df is not None
+        assert not _raw_gen_sets(df)
+        lens = [
+            int(v)
+            for o, s, v in zip(df["op"], df["subreg"], df["val"])
+            if int(o) == SWEEP_OP and int(s) == SWEEP_SUBREG_LEN
+        ]
+        assert (
+            max(lens) > 100
+        ), f"expected a long (>100) HOLD atom, got max LEN {max(lens or [0])}"
+    finally:
+        if prev is None:
+            del os.environ["PREFRAMR_ARBITER_STRICT"]
+        else:
+            os.environ["PREFRAMR_ARBITER_STRICT"] = prev
