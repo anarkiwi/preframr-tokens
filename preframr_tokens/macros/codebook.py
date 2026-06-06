@@ -19,6 +19,8 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_REF_SUBREG_ID,
     GEN_TABLE_REF_SUBREG_LEN_HI,
     GEN_TABLE_REF_SUBREG_LEN_LO,
+    GEN_TABLE_REF_SUBREG_RESID_HI,
+    GEN_TABLE_REF_SUBREG_RESID_LO,
     GEN_TABLE_STEP_OP,
     GEN_TABLE_SUBREG_ABS_HI,
     GEN_TABLE_SUBREG_ABS_LO,
@@ -303,13 +305,28 @@ class _GeneratorCodec(_Codec):
         sub = int(row.subreg)
         val = int(row.val)
         if sub == GEN_TABLE_REF_SUBREG_ID:
-            cb.pending_ref = {"id": val, "reg": int(row.reg), "base_note": 0, "len": 0}
+            cb.pending_ref = {
+                "id": val,
+                "reg": int(row.reg),
+                "base_note": 0,
+                "len": 0,
+                "resid": [],
+                "_rlo": None,
+            }
             return None
         pend = cb.pending_ref
         if pend is None:
             return None
         if sub == GEN_TABLE_REF_SUBREG_BASE_NOTE:
             pend["base_note"] = val
+            return None
+        if sub == GEN_TABLE_REF_SUBREG_RESID_LO:
+            pend["_rlo"] = val & 0xFF
+            return None
+        if sub == GEN_TABLE_REF_SUBREG_RESID_HI:
+            raw = ((val & 0xFF) << 8) | (pend["_rlo"] or 0)
+            pend["resid"].append(raw - 0x10000 if raw >= 0x8000 else raw)
+            pend["_rlo"] = None
             return None
         if sub == GEN_TABLE_REF_SUBREG_LEN_HI:
             pend["len"] |= (val & 0xFF) << 8
@@ -331,14 +348,13 @@ class _GeneratorCodec(_Codec):
         reg = int(pend["reg"])
         ref = float(getattr(state, "gen_ref", 0.0))
         base = int(pend["base_note"])
+        resid = pend["resid"] if pend.get("resid") else gen["resid"]
         pre = state.maybe_flush_for(reg, -1)
         queue = state.pending_set_writes[reg]
         if int(gen["mode"]) == GEN_TABLE_MODE_NOTE:
             for k in range(int(pend["len"])):
                 m = k % period
-                queue.append(
-                    (recon(base + gen["off"][m], ref) + gen["resid"][m]) & 0xFFFF
-                )
+                queue.append((recon(base + gen["off"][m], ref) + resid[m]) & 0xFFFF)
         else:
             cyc = gen["abs"]
             for k in range(int(pend["len"])):

@@ -36,6 +36,8 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_REF_SUBREG_ID,
     GEN_TABLE_REF_SUBREG_LEN_HI,
     GEN_TABLE_REF_SUBREG_LEN_LO,
+    GEN_TABLE_REF_SUBREG_RESID_HI,
+    GEN_TABLE_REF_SUBREG_RESID_LO,
     GEN_TABLE_STEP_OP,
     GEN_TABLE_SUBREG_ABS_HI,
     GEN_TABLE_SUBREG_ABS_LO,
@@ -94,7 +96,7 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
-    REQUIRES_ARGS = frozenset({"melody_skeleton"})
+    REQUIRES_ARGS = frozenset({"melody_skeleton", "table_resid_split"})
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -120,6 +122,7 @@ class GeneratorPass(MacroPass):
             if getattr(args, "melody_skeleton", False)
             else {}
         )
+        split = bool(getattr(args, "table_resid_split", False))
         claims = [self._tuning_claim(ref_q, irq)]
         bank = {}
         def_rows = []
@@ -136,6 +139,7 @@ class GeneratorPass(MacroPass):
                     def_rows,
                     irq,
                     mel_ctx.get(int(reg)),
+                    split,
                 )
             )
         if def_rows:
@@ -260,6 +264,7 @@ class GeneratorPass(MacroPass):
         def_rows,
         irq,
         mel=None,
+        split=False,
     ):
         """Walk one channel's timeline left-to-right (first write -> the global final frame), re-fitting
         the longest generator from each ANCHORED frame and emitting one Claim for it. A write-less frame
@@ -304,6 +309,7 @@ class GeneratorPass(MacroPass):
                 irq,
                 i,
                 mel,
+                split,
             )
             if rows is not None:
                 for r in rows:
@@ -334,6 +340,7 @@ class GeneratorPass(MacroPass):
         irq,
         i=0,
         mel=None,
+        split=False,
     ):
         """The token rows (REF/atom) for one generator segment. HOLD/ACCUM -> SWEEP_OP (delta 0 for
         HOLD), TRI -> GEN_TRI_OP, TABLE -> a GEN_TABLE REF (the matching DEF is appended to ``def_rows``
@@ -359,7 +366,7 @@ class GeneratorPass(MacroPass):
             return cls._tri_rows(reg, seg[0], step, lo, hi, dir0, length, irq)
         if kind == "TABLE":
             return cls._table_rows(
-                reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq
+                reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq, split
             )
         return None
 
@@ -454,11 +461,14 @@ class GeneratorPass(MacroPass):
         ]
 
     @classmethod
-    def _table_rows(cls, reg, is_freq, period, seg, length, ref, bank, def_rows, irq):
-        """A GEN_TABLE REF for a periodic TABLE cycle; on first sight of the bank key the matching DEF is
-        appended to ``def_rows`` (``__pos`` -1, the stream head) so a cross-voice REF can never precede
-        its DEF. Scalar channels key absolutely on the raw cycle bytes; freq keys note-relative on (offset
-        cycle, residual cycle) so transposed arps share one entry, the per-instance base_note on the REF.
+    def _table_rows(
+        cls, reg, is_freq, period, seg, length, ref, bank, def_rows, irq, split=False
+    ):
+        """A GEN_TABLE REF for a periodic TABLE cycle; the DEF is appended to ``def_rows`` on first sight
+        of the bank key (stream head) so no REF precedes its DEF. Scalar keys absolutely; freq keys
+        note-relative on (offset, residual) cycles. With ``split`` (``table_resid_split``) the freq DEF
+        keys on OFFSETS ALONE and the residual moves onto the per-instance REF, so same-shape arps with
+        different residuals collapse to one DEF (de-fragments the bank); decode stays bit-exact.
         """
         cycle = seg[:period]
         if is_freq:
@@ -468,7 +478,9 @@ class GeneratorPass(MacroPass):
                 nt = note_of(c, ref)
                 offs.append(nt - base_note)
                 resids.append(int(c) - recon(nt, ref))
-            key = ("note", tuple(offs), tuple(resids))
+            key = (
+                ("note", tuple(offs)) if split else ("note", tuple(offs), tuple(resids))
+            )
         else:
             base_note = 0
             offs = resids = None
@@ -476,17 +488,21 @@ class GeneratorPass(MacroPass):
         if key not in bank:
             cb_id = len(bank)
             bank[key] = cb_id
+            def_resids = None if (split and is_freq) else resids
             for r in cls._def_rows(
-                cb_id, is_freq, period, base_note, cycle, offs, resids, irq
+                cb_id, is_freq, period, base_note, cycle, offs, def_resids, irq, split
             ):
                 r["__pos"] = -1
                 def_rows.append(r)
         else:
             cb_id = bank[key]
-        return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq)
+        ref_resids = resids if (split and is_freq) else None
+        return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq, ref_resids)
 
     @staticmethod
-    def _def_rows(cb_id, is_freq, period, base_note, cycle, offs, resids, irq):
+    def _def_rows(
+        cb_id, is_freq, period, base_note, cycle, offs, resids, irq, split=False
+    ):
         rows = [_row(0, GEN_TABLE_DEF_OP, -1, cb_id, irq)]
 
         def step(subreg, val):
@@ -495,12 +511,14 @@ class GeneratorPass(MacroPass):
         step(GEN_TABLE_SUBREG_PERIOD, period)
         if is_freq:
             step(GEN_TABLE_SUBREG_MODE, GEN_TABLE_MODE_NOTE)
-            step(GEN_TABLE_SUBREG_BASE_NOTE, base_note & 0xFF)
+            if not split:
+                step(GEN_TABLE_SUBREG_BASE_NOTE, base_note & 0xFF)
             for m in range(period):
                 step(GEN_TABLE_SUBREG_OFFSET, offs[m] & 0xFF)
-                r = resids[m] & 0xFFFF
-                step(GEN_TABLE_SUBREG_RESID_LO, r & 0xFF)
-                step(GEN_TABLE_SUBREG_RESID_HI, (r >> 8) & 0xFF)
+                if resids is not None:
+                    r = resids[m] & 0xFFFF
+                    step(GEN_TABLE_SUBREG_RESID_LO, r & 0xFF)
+                    step(GEN_TABLE_SUBREG_RESID_HI, (r >> 8) & 0xFF)
         else:
             step(GEN_TABLE_SUBREG_MODE, GEN_TABLE_MODE_ABS)
             for m in range(period):
@@ -511,7 +529,7 @@ class GeneratorPass(MacroPass):
         return rows
 
     @staticmethod
-    def _ref_rows(reg, cb_id, is_freq, base_note, length, irq):
+    def _ref_rows(reg, cb_id, is_freq, base_note, length, irq, resids=None):
         rows = [_row(reg, GEN_TABLE_REF_OP, GEN_TABLE_REF_SUBREG_ID, cb_id, irq)]
         if is_freq:
             rows.append(
@@ -523,6 +541,27 @@ class GeneratorPass(MacroPass):
                     irq,
                 )
             )
+        if resids is not None:
+            for r in resids:
+                rq = int(r) & 0xFFFF
+                rows.append(
+                    _row(
+                        reg,
+                        GEN_TABLE_REF_OP,
+                        GEN_TABLE_REF_SUBREG_RESID_LO,
+                        rq & 0xFF,
+                        irq,
+                    )
+                )
+                rows.append(
+                    _row(
+                        reg,
+                        GEN_TABLE_REF_OP,
+                        GEN_TABLE_REF_SUBREG_RESID_HI,
+                        (rq >> 8) & 0xFF,
+                        irq,
+                    )
+                )
         rows.append(
             _row(
                 reg,

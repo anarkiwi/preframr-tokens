@@ -17,6 +17,7 @@ __all__ = [
 ]
 
 FLAG_REQUIRES: dict[str, frozenset[str]] = {
+    "table_resid_split": frozenset({"generator_pass"}),
     "melody_skeleton": frozenset({"generator_pass"}),
 }
 FLAG_CONFLICTS: dict[str, frozenset[str]] = {}
