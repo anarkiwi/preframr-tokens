@@ -11,7 +11,7 @@ from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.generator_fit import (
     all_freqs,
     channels,
-    decompose,
+    fit_run,
     note_of,
     recon,
     tune_ref,
@@ -98,13 +98,16 @@ class GeneratorPass(MacroPass):
         state = register_state(df)
         regs = tuple(int(r) for r in GEN_FREQ_REGS + GEN_SCALAR_REGS)
         writes = self._collect_writes(df, regs)
+        frame_rows = self._frame_marker_rows(df)
         ref_q = max(0, min(255, int(round(tune_ref(all_freqs(state)) * 256.0)))) & 0xFF
         ref = ref_q / 256.0
         claims = [self._tuning_claim(ref_q, irq)]
         bank = {}
         for reg, is_freq, series in channels(state):
             claims.extend(
-                self._channel_claims(reg, is_freq, series, writes[reg], ref, bank, irq)
+                self._channel_claims(
+                    reg, is_freq, series, writes[reg], frame_rows, ref, bank, irq
+                )
             )
         if len(claims) <= 1:
             return df
@@ -145,11 +148,35 @@ class GeneratorPass(MacroPass):
                 out[reg].append((rf, int(i), int(vals[i])))
         return out
 
+    @staticmethod
+    def _frame_marker_rows(df):
+        """``real_frame -> the marker row a spliced atom decodes inside for that frame``. A generator
+        segment that ends INTO a held value starts on a write-less frame, so it has no SET-row anchor;
+        it splices at that frame's marker row instead. A marker-group's body dispatches in its LAST
+        unrolled frame (the walker runs a DELAY's unroll ticks first, then the body), so a FRAME owns the
+        next frame and a DELAY(v) owns its span's LAST frame -- mapping that, mirroring the walker.
+        """
+        regs = df["reg"].to_numpy()
+        vals = df["val"].to_numpy()
+        out = {0: 0}
+        rf = 0
+        for i in range(len(df)):
+            reg = int(regs[i])
+            if reg == FRAME_REG:
+                rf += 1
+                out[rf] = int(i)
+            elif reg == DELAY_REG:
+                rf += int(vals[i])
+                out[rf] = int(i)
+        return out
+
     @classmethod
-    def _channel_claims(cls, reg, is_freq, series, writes, ref, bank, irq):
-        """Decompose one channel's ``[first_write, last_write]`` timeline and emit one Claim per
-        generator. Every segment starts on a value-change frame (a written frame), so each atom anchors
-        on a real SET row; the bank (shared across channels) interns TABLE cycles for DEF->REF reuse.
+    def _channel_claims(cls, reg, is_freq, series, writes, frame_rows, ref, bank, irq):
+        """Walk one channel's timeline left-to-right (first write -> the global final frame), re-fitting
+        the longest generator from each ANCHORED frame and emitting one Claim for it. A write-less frame
+        with no marker row (a held value mid-DELAY-span) carries no write to drop and its value is already
+        held by the prior drain, so it is skipped; every actual write sits on an anchored frame and is
+        therefore covered. The bank (shared across channels) interns TABLE cycles for DEF->REF reuse.
         """
         if not writes:
             return []
@@ -161,28 +188,35 @@ class GeneratorPass(MacroPass):
         drop_at = {}
         for frame, ri, _v in writes:
             drop_at.setdefault(int(frame), []).append(int(ri))
-        sub = series[f0 : f1 + 1]
         claims = []
-        for kind, rel, length, params in decompose(sub):
-            a = f0 + rel
-            b = a + length - 1
-            pos = anchor.get(a)
+        i = f0
+        while i <= f1:
+            pos = anchor.get(i)
             if pos is None:
+                pos = frame_rows.get(i)
+            if pos is None:
+                i += 1
                 continue
-            drop = tuple(ri for fr in range(a, b + 1) for ri in drop_at.get(fr, ()))
-            seg = [int(series[f]) for f in range(a, b + 1)]
+            kind, length, params = fit_run(series, i)
+            length = max(1, length)
+            b = i + length - 1
+            seg = [int(series[f]) for f in range(i, b + 1)]
+            drop = tuple(ri for fr in range(i, b + 1) for ri in drop_at.get(fr, ()))
             rows = cls._atom_rows(
                 reg, is_freq, kind, params, seg, length, ref, bank, irq
             )
-            if rows is None:
-                continue
-            for r in rows:
-                r["__pos"] = pos
-            claims.append(
-                Claim(
-                    writes=drop, tokens=rows, priority=_GEN_PRIORITY, label="generator"
+            if rows is not None:
+                for r in rows:
+                    r["__pos"] = pos
+                claims.append(
+                    Claim(
+                        writes=drop,
+                        tokens=rows,
+                        priority=_GEN_PRIORITY,
+                        label="generator",
+                    )
                 )
-            )
+            i = b + 1
         return claims
 
     @classmethod
