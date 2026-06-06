@@ -72,6 +72,31 @@ def decompose_voice(freqs, sub):
     }
 
 
+_SUB_CANDIDATES = (16, 32, 64, 128)
+_SUB_FLOOR = 16
+
+
+def _sub_cost(voices, sub):
+    """Combined symbol alphabet of the note/sub_dev/lsb streams under ``sub`` -- the token-cost proxy
+    minimized per tune (smaller = fewer distinct atoms = more learnable + compact)."""
+    notes, devs, lsbs = set(), set(), set()
+    for fr in voices:
+        dec = decompose_voice(fr, sub)
+        notes.update(int(x) for x in dec["note"])
+        devs.update(int(x) for x in dec["sub_dev"])
+        lsbs.update(int(x) for x in dec["lsb"])
+    return len(notes) + len(devs) + len(lsbs)
+
+
+def choose_sub(voices, candidates=_SUB_CANDIDATES, floor=_SUB_FLOOR):
+    """Per-tune fine resolution: the alphabet-minimizing ``sub`` among ``candidates``, floored so the
+    finest musical detune (chorus) stays resolvable. Cost is U-shaped in ``sub`` (LSB tail shrinks but
+    the sub-grid alphabet grows), so an interior optimum exists; the floor keeps chorus voices apart.
+    """
+    cands = [s for s in candidates if s >= floor] or [floor]
+    return min(cands, key=lambda s: _sub_cost(voices, s))
+
+
 def reconstruct(dec):
     """Bit-exact inverse of ``decompose_voice``."""
     sub, vt = dec["sub"], dec["tuning"]

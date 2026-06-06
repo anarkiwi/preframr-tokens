@@ -61,6 +61,15 @@ class TestPitchGrid(unittest.TestCase):
         """Zero/unvoiced frames stay zero through decompose/reconstruct."""
         self._assert_lossless(np.array([0, 0, 4455, 0, 8910, 0], dtype=np.int64))
 
+    def test_choose_sub_respects_chorus_floor(self):
+        """Per-tune sub selection stays at/above the chorus floor, keeping a +12c voice resolvable."""
+        rng = np.random.RandomState(3)
+        base = _melody_freqs(rng.randint(30, 80, 200))
+        det = np.round(base * 2.0 ** (12.0 / 1200.0)).astype(np.int64)
+        sub = pg.choose_sub([base, det, np.zeros_like(base)])
+        self.assertGreaterEqual(sub, pg._SUB_FLOOR)
+        self.assertNotEqual(pg.voice_tuning(base, sub), pg.voice_tuning(det, sub))
+
 
 if __name__ == "__main__":
     unittest.main()
