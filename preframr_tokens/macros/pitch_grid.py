@@ -19,11 +19,14 @@ def voice_tuning(freqs):
     voice's detune (chorus). Circular mean of the fractional semitone so a tune tuned ~half a semitone
     (e.g. Galway +0.44) still assigns notes to the right semitone, and chorus voices keep distinct
     tunings. Notes stay UNIVERSAL (the offset is emitted, not baked into the index)."""
-    f = np.asarray(freqs, dtype=np.float64)
+    f = np.asarray(freqs, dtype=np.int64)
     f = f[f > 8]
     if f.size < 8:
         return 0.0
-    frac = (12.0 * (np.log2(f) - _LOG_ANCHOR)) % 1.0
+    vals, cnt = np.unique(f, return_counts=True)
+    held = vals[cnt >= max(2, int(0.01 * f.size))]
+    vals = held if held.size >= 4 else vals
+    frac = (12.0 * (np.log2(vals.astype(np.float64)) - _LOG_ANCHOR)) % 1.0
     ang = 2.0 * math.pi * frac
     off = math.atan2(np.sin(ang).mean(), np.cos(ang).mean()) / (2.0 * math.pi)
     return ((off + 0.5) % 1.0) - 0.5
