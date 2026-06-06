@@ -31,8 +31,6 @@ _KNOWN_FREQ_LOSSY: set[str] = set()
 _STACK_FLAGS = {
     "skeleton_pass",
     "trajectory_anchor_pass",
-    "stamp_pass",
-    "sweep_pass",
     "held_arp",
     "wavetable_pass",
     "zero_plain",
@@ -40,7 +38,6 @@ _STACK_FLAGS = {
     "wt_oneshot",
     "slide_wide",
     "slide_landing",
-    "sweep_loop",
 }
 
 

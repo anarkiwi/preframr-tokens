@@ -1,8 +1,8 @@
 """First-principles register/frame contracts per macro pass + a static reasoner that surfaces latent
 interaction mismatches at test time. A pass's decode effect on a shared resource (a register's value
 timeline, or the frame timeline) can violate a later pass's unstated assumption -- the class of bug
-where StampPass replays a freq a later delta-encoder bases on. Passes declare their effects here so the
-reasoner can flag the mismatches by construction, and a stream check verifies the code honours them.
+where a codebook pass replays a freq a later delta-encoder bases on. Passes declare their effects here
+so the reasoner can flag the mismatches by construction, and a stream check verifies the code honours.
 """
 
 from __future__ import annotations
@@ -19,8 +19,6 @@ from preframr_tokens.stfconstants import (
     MODE_VOL_REG,
     ORN_OP,
     SKEL_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
     SWEEP_OP,
     TRACK_REF_OP,
     VOICE_REG_SIZE,
@@ -62,7 +60,7 @@ class RegClass(Enum):
 class Effect(Enum):
     """How a decode op sets a register: ABSOLUTE = a state-independent value (SET/preset/onset);
     RELATIVE = a function of the register's prior decode value (DIFF/FLIP) -- needs a stable base;
-    REPLAY = regenerated from a codebook/trajectory (STAMP_REF/SKEL/...) -- opaque to a delta encoder.
+    REPLAY = regenerated from a codebook/trajectory (WAVETABLE_REF/SKEL/...) -- opaque to a delta encoder.
     """
 
     ABSOLUTE = "absolute"
@@ -119,16 +117,6 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
-            "StampPass",
-            frozenset(
-                {(_FREQ, _RPL), (_PWM, _RPL), (_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL)}
-            ),
-            frozenset({_FREQ, _PWM}),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            True,
-        ),
-        MacroContract(
             "SkeletonPass",
             frozenset({(_FREQ, _RPL)}),
             frozenset(),
@@ -156,7 +144,7 @@ CONTRACTS = {
             "PerRegBurstPass",
             frozenset({(_FREQ, _REL), (_PWM, _REL), (_FILT, _REL)}),
             frozenset(),
-            frozenset({"StampPass"}),
+            frozenset(),
             FrameEffect.PRESERVES,
             False,
         ),
@@ -189,7 +177,6 @@ CONTRACTS = {
 
 PIPELINE_ORDER = (
     "TrajectoryAnchorPass",
-    "StampPass",
     "SkeletonPass",
     "WavetablePass",
     "FreqTrajectoryPass",
@@ -242,21 +229,15 @@ def interaction_mismatches():
 
 KNOWN_MISMATCHES = frozenset(
     {
-        Mismatch("frame_anchor", "StampPass", "frame_consolidation", None),
         Mismatch("frame_anchor", "InstrumentProgramPass", "frame_consolidation", None),
         Mismatch("frame_anchor", "GeneratorPass", "frame_consolidation", None),
     }
 )
 
 
-LOSSLESS_PASSES = frozenset({"StampPass"})
-
-
 RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
-        int(STAMP_REF_OP),
-        int(STAMP_REL_REF_OP),
         int(SKEL_OP),
         int(ORN_OP),
         int(SWEEP_OP),

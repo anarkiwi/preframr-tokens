@@ -2,7 +2,7 @@
 op the model can emit -- the atom ops in ``DECODERS`` plus the loop ops ``expand_loops`` consumes -- so
 the sampling mask, the stream validators, and the precompute arrays dispatch on one source of truth
 instead of three hand-kept copies. Each op declares its ``MaskRole`` (how constrained decode treats it);
-the completeness test goes red if any emittable op lacks a contract (the STAMP drift, caught).
+the completeness test goes red if any emittable op lacks a contract (codebook-family drift, caught).
 """
 
 from __future__ import annotations
@@ -49,11 +49,6 @@ from preframr_tokens.stfconstants import (
     SET_OP,
     SKEL_OP,
     ORN_OP,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-    STAMP_STEP_OP,
     SUBREG_FLUSH_OP,
     SWEEP_OP,
     TRACK_REF_OP,
@@ -151,11 +146,6 @@ _CONTRACT_LIST = (
     OpContract(INSTR_END_OP, MaskRole.CODEBOOK_END),
     OpContract(INSTR_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(WAVETABLE_ONESHOT_OP, MaskRole.ATOM),
-    OpContract(STAMP_DEF_OP, MaskRole.CODEBOOK_DEF),
-    OpContract(STAMP_STEP_OP, MaskRole.CODEBOOK_STEP),
-    OpContract(STAMP_END_OP, MaskRole.CODEBOOK_END),
-    OpContract(STAMP_REF_OP, MaskRole.CODEBOOK_REF),
-    OpContract(STAMP_REL_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(WAVETABLE_DEF_OP, MaskRole.CODEBOOK_DEF),
     OpContract(WAVETABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(WAVETABLE_END_OP, MaskRole.CODEBOOK_END),
@@ -236,7 +226,6 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
 )
 
 CODEBOOK_TABLES: tuple[str, ...] = (
-    "stamp",
     "wavetable",
     "instrument",
     "generator",
@@ -266,11 +255,6 @@ OP_PRODUCER: dict[int, str] = {
     PATTERN_REPLAY_OP: "LoopPass",
     PATTERN_OVERLAY_OP: "LoopPass",
     DO_LOOP_OP: "LoopPass",
-    STAMP_DEF_OP: "StampPass",
-    STAMP_STEP_OP: "StampPass",
-    STAMP_END_OP: "StampPass",
-    STAMP_REF_OP: "StampPass",
-    STAMP_REL_REF_OP: "StampPass",
     WAVETABLE_DEF_OP: "WavetablePass",
     WAVETABLE_STEP_OP: "WavetablePass",
     WAVETABLE_END_OP: "WavetablePass",

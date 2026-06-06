@@ -1,4 +1,4 @@
-"""Single source of truth for the inline-codebook families (STAMP, WAVETABLE, INSTRUMENT).
+"""Single source of truth for the inline-codebook families (WAVETABLE, INSTRUMENT, GENERATOR).
 Each shares one machine: DEF opens a pending entry, STEP(s) accumulate its payload, a COMMIT
 (an END op or a STEP at a terminal subreg) makes the id live in an ``id -> entry`` table, and
 REF(s) replay a live id. This leaf (stfconstants only) declares that as ``CodebookFamily``
@@ -35,15 +35,6 @@ from preframr_tokens.stfconstants import (
     INSTR_REF_OP,
     INSTR_STEP_OP,
     INSTR_SUBREG_FRAME,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-    STAMP_REL_SUBREG_BASE_HI,
-    STAMP_REL_SUBREG_BASE_LO,
-    STAMP_REL_SUBREG_ID,
-    STAMP_STEP_OP,
-    STAMP_SUBREG_FRAME,
     WAVETABLE_DEF_OP,
     WAVETABLE_END_OP,
     WAVETABLE_ONESHOT_OP,
@@ -80,7 +71,6 @@ __all__ = [
 DEAD_REF_POLICY = "drop"
 
 CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
-    "stamp",
     "wavetable",
     "instrument",
     "generator",
@@ -90,8 +80,8 @@ CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
 @dataclass(frozen=True)
 class RefSpec:
     """One REF op of a family. ``id_subreg`` is the subreg carrying the codebook id (a
-    multi-row ref like WAVETABLE_REF/STAMP_REL_REF) or ``None`` when the op's own row carries
-    it (a single-row ref like STAMP_REF). ``table_less`` marks a ref that
+    multi-row ref like WAVETABLE_REF) or ``None`` when the op's own row carries
+    it (a single-row ref like INSTR_REF). ``table_less`` marks a ref that
     carries its payload inline and looks up no id (WAVETABLE_ONESHOT); such ops are not
     liveness-tracked and stay out of the spec table."""
 
@@ -142,18 +132,6 @@ class CodebookFamily:
 
 
 CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
-    "stamp": CodebookFamily(
-        name="stamp",
-        def_op=STAMP_DEF_OP,
-        step_ops=(STAMP_STEP_OP,),
-        commit_op=STAMP_END_OP,
-        commit_subreg=None,
-        refs=(
-            RefSpec(STAMP_REF_OP),
-            RefSpec(STAMP_REL_REF_OP, id_subreg=STAMP_REL_SUBREG_ID),
-        ),
-        def_emits=False,
-    ),
     "wavetable": CodebookFamily(
         name="wavetable",
         def_op=WAVETABLE_DEF_OP,
@@ -250,111 +228,6 @@ class _Codec:
 
     def ref(self, state, row, cb):
         return None
-
-
-class _StampCodec(_Codec):
-    """Voice-relative percussion stamp: DEF/STEP/END buffer a write-series into the id table, REF
-    replays it on the target voice and REL_REF additionally adds the per-hit base delta at offset 0.
-    """
-
-    def def_open(self, row, state, cb):
-        cb.pending = {"id": int(row.val), "frames": [[]]}
-
-    def step(self, state, row, cb):
-        stamp = cb.pending
-        if stamp is None:
-            return None
-        if int(row.subreg) == STAMP_SUBREG_FRAME:
-            stamp["frames"].append([])
-        else:
-            stamp["frames"][-1].append((int(row.subreg), int(row.val)))
-        return None
-
-    def commit(self, state, row, cb):
-        stamp = cb.pending
-        if stamp is not None:
-            cb.table[int(stamp["id"])] = stamp["frames"]
-            cb.pending = None
-        return None
-
-    def ref(self, state, row, cb):
-        if int(row.op) == STAMP_REL_REF_OP:
-            return self._rel_ref(row, state, cb)
-        return self._ref(row, state, cb)
-
-    @staticmethod
-    def _offsets_in_order(frames):
-        """Voice-relative offsets in first-write order across the buffered frames -- preserves the
-        drum's intra-frame freq<->ctrl order (the per-frame drain emits regs in insertion order).
-        """
-        offsets, seen = [], set()
-        for fr in frames:
-            for off, _val in fr:
-                if off not in seen:
-                    seen.add(off)
-                    offsets.append(off)
-        return offsets
-
-    @classmethod
-    def _ref(cls, row, state, cb):
-        frames = cb.table.get(int(row.val))
-        if not frames:
-            return None
-        base = int(row.reg)
-        offsets = cls._offsets_in_order(frames)
-        pre = state.maybe_flush_for(base, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off in cur:
-                    state.pending_set_writes[base + off].append(int(cur[off]))
-        return pre or None
-
-    def _rel_ref(self, row, state, cb):
-        subreg = int(row.subreg)
-        if subreg == STAMP_REL_SUBREG_ID:
-            cb.pending_ref = {
-                "id": int(row.val),
-                "reg": int(row.reg),
-                "base": 0,
-            }
-            return None
-        pend = cb.pending_ref
-        if pend is None:
-            return None
-        if subreg == STAMP_REL_SUBREG_BASE_HI:
-            pend["base"] |= (int(row.val) & 0xFF) << 8
-            return None
-        if subreg != STAMP_REL_SUBREG_BASE_LO:
-            return None
-        pend["base"] |= int(row.val) & 0xFF
-        cb.pending_ref = None
-        return self._replay_rel(pend, state, cb)
-
-    @classmethod
-    def _replay_rel(cls, pend, state, cb):
-        frames = cb.table.get(int(pend["id"]))
-        if not frames:
-            return None
-        base = int(pend["base"])
-        voice = int(pend["reg"])
-        offsets = cls._offsets_in_order(frames)
-        pre = state.maybe_flush_for(voice, -1)
-        cur = {}
-        for fr in frames:
-            for off, val in fr:
-                cur[off] = val
-            for off in offsets:
-                if off not in cur:
-                    continue
-                val = int(cur[off])
-                if off == 0:
-                    signed = val if val < 0x8000 else val - 0x10000
-                    val = (base + signed) & 0xFFFF
-                state.pending_set_writes[voice + off].append(val)
-        return pre or None
 
 
 class _WavetableCodec(_Codec):
@@ -487,7 +360,7 @@ class _InstrumentCodec(_Codec):
     """Note-onset timbre program: DEF/STEP/END buffer a per-frame ``(ctrl, AD, SR)`` walk into the id
     table, REF replays it on the target voice -- each frame's fields queue onto the voice's ctrl/AD/SR
     regs (voice base ``reg - INSTR_OFF_CTRL`` plus the field's voice-relative subreg), one drained per
-    frame tick. The (ctrl, AD, SR) twin of the voice-relative ``_StampCodec``."""
+    frame tick. A voice-relative per-frame write-series codebook."""
 
     def def_open(self, row, state, cb):
         cb.pending = {"id": int(row.val), "frames": [[]]}
@@ -640,7 +513,6 @@ class _GeneratorCodec(_Codec):
 
 
 _CODECS: dict[str, _Codec] = {
-    "stamp": _StampCodec(),
     "wavetable": _WavetableCodec(),
     "instrument": _InstrumentCodec(),
     "generator": _GeneratorCodec(),

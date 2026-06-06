@@ -25,8 +25,6 @@ def _args(zero_plain):
     return parse_args(
         skeleton_pass=True,
         trajectory_anchor_pass=True,
-        stamp_pass=True,
-        sweep_pass=True,
         held_arp=True,
         wavetable_pass=True,
         zero_plain=zero_plain,

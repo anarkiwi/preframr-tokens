@@ -14,11 +14,6 @@ from preframr_tokens.stfconstants import (
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_REF_OP,
-    STAMP_DEF_OP,
-    STAMP_END_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
-    STAMP_REL_SUBREG_ID,
     WAVETABLE_DEF_OP,
     WAVETABLE_END_OP,
     WAVETABLE_REF_OP,
@@ -26,10 +21,6 @@ from preframr_tokens.stfconstants import (
 )
 
 FROZEN_LEGACY_SPECS = {
-    STAMP_DEF_OP: ("stamp", "def", None),
-    STAMP_END_OP: ("stamp", "commit", None),
-    STAMP_REF_OP: ("stamp", "ref", None),
-    STAMP_REL_REF_OP: ("stamp", "ref", STAMP_REL_SUBREG_ID),
     WAVETABLE_DEF_OP: ("wavetable", "def", None),
     WAVETABLE_END_OP: ("wavetable", "commit", None),
     WAVETABLE_REF_OP: ("wavetable", "ref", WT_REF_SUBREG_ID),

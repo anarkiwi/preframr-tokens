@@ -16,22 +16,21 @@ from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
-from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    INSTR_OFF_CTRL,
+    INSTR_REF_OP,
     SET_OP,
     SKEL_OP,
     SKEL_SUBREG_ABS,
-    STAMP_REF_OP,
     WAVETABLE_ONESHOT_OP,
     WT_ONESHOT_SUBREG_END,
     WT_ONESHOT_SUBREG_LEN_HI,
     WT_ONESHOT_SUBREG_LEN_LO,
     WT_ONESHOT_SUBREG_OFFSET,
 )
-from preframr_tokens.macros.freq_lut import midi_to_fn
 
 _IRQ = 19656
 _CODEBOOK_OPS = sorted({op for fam in CODEBOOK_FAMILIES.values() for op in fam.ops})
@@ -83,48 +82,6 @@ class _Builder:
 
     def df(self):
         return pd.DataFrame(self.rows)
-
-
-def _stamp_streams():
-    _FREQ, _CTRL = 0, 4
-    hat = [(2000, 0x81), (2000, 0x80), (2000, 0x80)]
-    kick = [
-        (midi_to_fn(60), 0x41),
-        (midi_to_fn(48), 0x41),
-        (midi_to_fn(40), 0x41),
-        (midi_to_fn(36), 0x40),
-    ]
-
-    def gesture(base):
-        return [(base, 0x41), (base + 100, 0x41), (base + 50, 0x40)]
-
-    def build(hits, gap=3):
-        b = _Builder()
-        last_fn = last_ctrl = None
-        for series in hits:
-            for fn, ctrl in series:
-                b.frame()
-                if ctrl != last_ctrl:
-                    b.write(_CTRL, ctrl)
-                    last_ctrl = ctrl
-                if fn != last_fn:
-                    b.write(_FREQ, fn)
-                    last_fn = fn
-            for _ in range(gap):
-                b.frame()
-        b.frame()
-        return b.df()
-
-    out = {}
-    out["stamp_abs"] = StampPass().apply(build([hat] * 4), args=_args(stamp_pass=True))
-    out["stamp_two_defs"] = StampPass().apply(
-        build([hat, kick, hat, kick, hat, kick]), args=_args(stamp_pass=True)
-    )
-    out["stamp_rel"] = StampPass().apply(
-        build([gesture(b) for b in (1000, 2000, 3000, 4000)]),
-        args=_args(stamp_pass=True),
-    )
-    return out
 
 
 def _wavetable_streams():
@@ -197,8 +154,9 @@ def _generator_streams():
 
 
 def _dead_ref_stream():
-    """A STAMP_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
-    return _Builder().frame().write(0, 99, op=STAMP_REF_OP).frame().df()
+    """An INSTR_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
+    c0 = int(CTRL_REGS_BY_VOICE[0])
+    return _Builder().frame().write(c0, 99, op=INSTR_REF_OP).frame().df()
 
 
 def _oneshot_handbuilt_stream():
@@ -217,7 +175,6 @@ def _oneshot_handbuilt_stream():
 
 def _corpus():
     streams = {}
-    streams.update(_stamp_streams())
     streams.update(_wavetable_streams())
     streams.update(_instrument_streams())
     streams.update(_generator_streams())
@@ -254,6 +211,9 @@ def test_golden_covers_corpus():
 def test_seed_materialized_ref_matches_golden():
     """A REF whose DEF preceded the window resolves from the codebook_seed snapshot, byte-identical to
     the pre-refactor decoder."""
-    df = _Builder().frame().write(0, 7, op=STAMP_REF_OP).frame().df()
-    seed = {"stamp_table": {7: [[(0, 1234), (4, 0x41)]]}}
+    c0 = int(CTRL_REGS_BY_VOICE[0])
+    df = _Builder().frame().write(c0, 7, op=INSTR_REF_OP).frame().df()
+    seed = {
+        "instrument_table": {7: [[(INSTR_OFF_CTRL, 0x41), (INSTR_OFF_CTRL + 1, 0x09)]]}
+    }
     assert _cols(_decode(df, seed=seed)) == _GOLDEN["seed_materialized"]

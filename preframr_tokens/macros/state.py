@@ -122,8 +122,8 @@ class DecodeState:
     """Per-stream state shared by all ``MacroDecoder`` invocations."""
 
     _SEED_TABLE_KEYS = (
-        "stamp_table",
         "wavetable_table",
+        "instrument_table",
         "last_skel_note",
         "last_freq_v0",
     )
@@ -166,16 +166,16 @@ class DecodeState:
             self._apply_seed(seed)
 
     @property
-    def stamp_table(self):
-        return self.codebooks[_TABLE_IDX["stamp"]].table
-
-    @property
     def wavetable_table(self):
         return self.codebooks[_TABLE_IDX["wavetable"]].table
 
+    @property
+    def instrument_table(self):
+        return self.codebooks[_TABLE_IDX["instrument"]].table
+
     def _apply_seed(self, seed):
         """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
-        §4 B3): a STAMP/WAVETABLE REF whose DEF preceded the window resolves from the snapshot
+        §4 B3): a WAVETABLE/INSTRUMENT REF whose DEF preceded the window resolves from the snapshot
         instead of silently dropping. Only tables this build defines are seeded."""
         for key in self._SEED_TABLE_KEYS:
             if key in seed and hasattr(self, key):

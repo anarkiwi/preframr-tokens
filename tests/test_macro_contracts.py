@@ -1,14 +1,12 @@
 """Macro interaction contracts: first-principles register/frame requirements declared per pass, a
 static reasoner that surfaces latent mismatches by construction, and a stream check that verifies the
-code honours the declarations. Guards the class of bug where one pass's decode effect (StampPass
+code honours the declarations. Guards the class of bug where one pass's decode effect (a codebook pass
 replaying a freq) violates a later pass's encode assumption (PerRegBurst delta-basing on it).
 """
 
 import unittest
 
 import pandas as pd
-
-from tests.sid_fixtures import FixtureUnavailable, grid_runner_dumps
 
 from preframr_tokens.macros import FREQ_BLOCK_PASSES
 from preframr_tokens.macros.macro_contracts import (
@@ -17,17 +15,13 @@ from preframr_tokens.macros.macro_contracts import (
     PIPELINE_ORDER,
     REPLAY_OPS,
     interaction_mismatches,
-    relative_base_unsound,
 )
 from preframr_tokens.macros.op_contracts import CODEBOOK_SPECS
 from preframr_tokens.reglogparser import (
-    RegLogParser,
     assert_elapsed_frames,
     elapsed_frames,
-    remove_voice_reg,
 )
 from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG
-from preframr_tokens.tokenizer_config import default_tokenizer_args
 
 
 class TestContractCompleteness(unittest.TestCase):
@@ -57,7 +51,7 @@ class TestStaticReasoner(unittest.TestCase):
         """The reasoner's surfaced mismatches must equal the documented KNOWN set exactly. A NEW
         latent mismatch (a new replay/relative pair without a barrier, or an anchored replay before a
         frame mutator) goes red here; resolving a known one without removing it from KNOWN also goes
-        red. R1 (relative_base) must be empty -- PerRegBurst declares its StampPass barrier.
+        red. R1 (relative_base) must be empty.
         """
         found = set(interaction_mismatches())
         self.assertEqual(
@@ -70,27 +64,6 @@ class TestStaticReasoner(unittest.TestCase):
             [m for m in found if m.kind == "relative_base"],
             "a relative-base mismatch is unbarriered",
         )
-
-
-class TestRelativeBaseSoundnessOnStream(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        try:
-            _head, wide = grid_runner_dumps()
-        except FixtureUnavailable as err:
-            raise unittest.SkipTest(f"Grid Runner dump unavailable: {err}")
-        cls.dump = str(wide)
-
-    def test_stamp_stream_has_no_relative_write_across_a_replay(self):
-        """The code backing the R1 contract: parse Grid Runner with stamp_pass and assert no DIFF/FLIP
-        decodes against a register a STAMP_REF replayed (the 46-vs-86 bug). Empty iff PerRegBurst's
-        barrier actually fires -- catches a code regression the static reasoner (declarations only)
-        cannot."""
-        parser = RegLogParser(args=default_tokenizer_args(stamp_pass=True))
-        xdf = next(parser.parse(self.dump, max_perm=1, require_pq=False, reparse=True))
-        df, _ = remove_voice_reg(xdf.copy(), {})
-        bad = relative_base_unsound(df)
-        self.assertEqual(bad, [], f"relative writes straddle a replay: {bad[:5]}")
 
 
 class TestElapsedFrameConservation(unittest.TestCase):

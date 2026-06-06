@@ -1,7 +1,7 @@
 """InstrumentProgramPass: intern each voice's per-frame timbre PROGRAM -- the forward-filled
 ``(ctrl, AD, SR)`` walk over a note span -- as a define-on-first INSTR_DEF + exact INSTR_REF, so every
 onset-associated ctrl/AD/SR raw SET is consumed and the ctrl/AD/SR residual drains to zero by
-construction. The (ctrl, AD, SR) twin of StampPass; default OFF (``instrument_program``).
+construction. A voice-relative per-frame write-series codebook (``instrument_program``).
 """
 
 __all__ = ["InstrumentProgramPass"]
@@ -87,7 +87,7 @@ class InstrumentProgramPass(MacroPass):
     @staticmethod
     def _instr_is_lossless(df_in, df_out):
         """Decode both streams and require byte-exact per-frame register_state; on any divergence the
-        caller drops the whole claim and keeps the literal stream (mirrors StampPass._stamp_is_lossless).
+        caller drops the whole claim and keeps the literal stream.
         """
         from preframr_tokens.audit_primitives import register_state
 

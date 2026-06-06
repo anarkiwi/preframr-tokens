@@ -14,36 +14,8 @@ from preframr_tokens.stfconstants import (
     FC_LO_REG,
     FLIP_OP,
     SET_OP,
-    STAMP_REF_OP,
-    STAMP_REL_REF_OP,
     VOICE_REG_SIZE,
-    VOICES,
 )
-
-_STAMP_REF_OPS = (STAMP_REF_OP, STAMP_REL_REF_OP)
-
-
-def _stamp_barrier_sets(reg, op, frame):
-    """(reg, frame) of voice freq/PWM SETs whose previous write on that voice was a STAMP_REF/REL:
-    the stamp replays its own value at decode, so delta-encoding the SET against the prior literal
-    SET (which the stamp consumed) mis-bases it -- keep these absolute so the value lands exactly.
-    """
-    reg = np.asarray(reg)
-    op = np.asarray(op)
-    frame = np.asarray(frame)
-    barrier = set()
-    for v in range(VOICES):
-        base = v * VOICE_REG_SIZE
-        is_stamp = (reg == base) & np.isin(op, _STAMP_REF_OPS)
-        for off in (0, 2):
-            is_set = (reg == base + off) & (op == SET_OP)
-            idx = np.nonzero(is_stamp | is_set)[0]
-            if idx.size == 0:
-                continue
-            prev_stamp = np.concatenate(([False], is_stamp[idx][:-1]))
-            for i in idx[is_set[idx] & prev_stamp]:
-                barrier.add((base + off, int(frame[i])))
-    return barrier
 
 
 def _classify_runs(frames, vals, use_flip):
@@ -154,10 +126,7 @@ class PerRegBurstPass(MacroPass):
         nd = norm_df(orig_df)
         if not had_op:
             nd["op"] = SET_OP
-        barrier = _stamp_barrier_sets(
-            nd["reg"].to_numpy(), nd["op"].to_numpy(), nd["f"].to_numpy()
-        )
-        return self._encode(orig_df, nd, had_op, cents, barrier)
+        return self._encode(orig_df, nd, had_op, cents, set())
 
     def _encode(self, orig_df, nd, had_op, cents, barrier):
         from preframr_tokens.audit_primitives import register_state

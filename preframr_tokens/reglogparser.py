@@ -19,7 +19,6 @@ from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
-from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.preset_pass import PresetPass
@@ -982,7 +981,6 @@ class RegLogParser:
             PreGateFreqPass(),
             VoiceTrackPass(),
             TrajectoryAnchorPass(),
-            StampPass(),
             SkeletonPass(),
             WavetablePass(),
             FreqTrajectoryPass(),

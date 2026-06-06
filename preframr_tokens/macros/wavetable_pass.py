@@ -1,4 +1,4 @@
-"""WavetablePass: the pitched twin of StampPass (design/wavetable_codebook_encoding). The dominant
+"""WavetablePass: a note-relative inline codebook (design/wavetable_codebook_encoding). The dominant
 wavetable engines drive pitch ornament from a recurring per-frame note-relative offset program; this
 post-skeleton proposer mines the SkeletonPass ORN-RESID dumps into an inline-redefinable WAVETABLE_DEF +
 per-note WAVETABLE_REF codebook (held-ARP generalised to a cross-note loop), byte-identically replaying

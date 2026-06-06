@@ -21,7 +21,6 @@ from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.gate_slope_shift_pass import GateSlopeShiftPass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
-from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
 from preframr_tokens.macros.loops import (
@@ -45,7 +44,6 @@ from preframr_tokens.macros.validators import (
 
 FREQ_BLOCK_PASSES = [
     TrajectoryAnchorPass(),
-    StampPass(),
     SkeletonPass(),
     WavetablePass(),
     FreqTrajectoryPass(),

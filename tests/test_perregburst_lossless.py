@@ -15,7 +15,6 @@ from preframr_tokens.stfconstants import (
     DELAY_REG,
     FRAME_REG,
     SET_OP,
-    STAMP_REF_OP,
     _MIN_DIFF,
 )
 from preframr_tokens.tokenizer_config import default_tokenizer_args
@@ -144,36 +143,6 @@ class TestPerRegBurstGapPval(unittest.TestCase):
         n = min(len(gt), len(dec))
         bad = [(i, int(gt[i]), int(dec[i])) for i in range(n) if gt[i] != dec[i]]
         self.assertEqual(bad, [], f"DIFF mis-based across a DELAY-carried gap: {bad}")
-
-
-class TestPerRegBurstEmptyCandBarrier(unittest.TestCase):
-    """Regression: a non-empty stamp barrier with an empty candidate set must not
-    crash ``_encode``. The old ``cand[[<bool list>]]`` filter, on an empty ``cand``,
-    selected empty COLUMNS (``cand[[]]``) -> (0, 0) -> ``change_df["val"]`` KeyError.
-    Triggered by a STAMP_REF before a freq SET with zero PWM writes (empty pcm
-    candidate); aborted the codebook parse on the first such song.
-    """
-
-    def test_empty_pcm_candidate_with_barrier_does_not_crash(self):
-        def row(reg, val, op=SET_OP):
-            return {
-                "reg": int(reg),
-                "val": int(val),
-                "op": int(op),
-                "diff": int(_MIN_DIFF),
-            }
-
-        df = pd.DataFrame(
-            [
-                row(FRAME_REG, 0),
-                row(0, 100, op=STAMP_REF_OP),
-                row(FRAME_REG, 0),
-                row(0, 120),
-            ]
-        )
-        out = PerRegBurstPass().apply(df.copy(), args=_ARGS)
-        self.assertIn("val", out.columns)
-        self.assertFalse(out.empty)
 
 
 if __name__ == "__main__":

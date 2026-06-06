@@ -108,28 +108,6 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         parser = RegLogParser(args=default_tokenizer_args(**flags))
         return next(parser.parse(self.dump, max_perm=1, require_pq=False, reparse=True))
 
-    def test_stamp_byte_exact_register_state_vs_baseline(self):
-        """stamp_pass must be byte-exact lossless: per-frame decoded register_state with stamp must
-        equal the no-macro baseline (freq included). Guards the PerRegBurst rebasing bug where a freq
-        DIFF after a consumed STAMP_REF mis-based against the pre-drum SET (Grid Runner v1 46 vs 86).
-        """
-        from preframr_tokens.audit_primitives import register_state
-        from preframr_tokens.stfconstants import STAMP_REF_OP, STAMP_REL_REF_OP
-
-        sx = self._parse(dict(stamp_pass=True))
-        refs = int(
-            (sx["op"] == STAMP_REF_OP).sum() + (sx["op"] == STAMP_REL_REF_OP).sum()
-        )
-        self.assertGreater(
-            refs, 0, "stamp_pass did not fire (fallback?) -- nothing validated"
-        )
-        base, stamp = register_state(self._parse({})), register_state(sx)
-        n = min(len(base), len(stamp))
-        cells = int((base[:n] != stamp[:n]).sum())
-        self.assertEqual(
-            cells, 0, f"{cells} register_state cells diverge stamp vs baseline"
-        )
-
     def test_parse_audit_silent_through_post_rotation_loops(self):
         """The byte-exact pipeline must stay lossless END TO END, including the POST-rotation passes
         where LoopPass (in run_post_norm_pre_voice_passes) mints PATTERN_REPLAY/DO_LOOP refs. Parse a
@@ -208,8 +186,7 @@ class TestRegisterOrderFidelity(unittest.TestCase):
     def test_intra_frame_writes_carry_nominal_diff(self):
         """Every intra-frame decoded write must carry the nominal `_MIN_DIFF`; a
         frame-scale `diff` (the `diff=irq` class) drives the FRAME budget
-        negative and drops samples. Guards that fix across the full stack incl.
-        sweep/stamp."""
+        negative and drops samples. Guards that fix across the full stack."""
         flags = dict(
             {f: True for f in REGISTERED_MACROS},
             skeleton_pass=True,
@@ -219,9 +196,6 @@ class TestRegisterOrderFidelity(unittest.TestCase):
             wt_short=True,
             wt_oneshot=True,
             slide_wide=True,
-            stamp_pass=True,
-            sweep_pass=True,
-            sweep_loop=True,
             slide_landing=True,
         )
         _frames, bad_diffs = _decoded_frames(self.dump, flags)

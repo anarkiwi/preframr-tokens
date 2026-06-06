@@ -62,7 +62,7 @@ class TestPassAudit(unittest.TestCase):
         audit = PassAudit("raise")
         audit.start(_stream([100, None], delays=[None, 5]))
         with self.assertRaises(AssertionError):
-            audit.after(_stream([100, None], delays=[None, 3]), "StampPass")
+            audit.after(_stream([100, None], delays=[None, 3]), "WavetablePass")
 
     def test_lossy_pass_rebaselines(self):
         """SkeletonPass is lossy by design (RESID-snap) -- the audit must re-baseline on it, not raise,

@@ -276,7 +276,7 @@ def codebook_live_ids(df):
 
 def validate_codebook_refs(df, live_ids=None):
     """Replay ``df`` and assert every inline-codebook REF resolves to a live id (RESID_ZERO_PHASE3 §4 B4):
-    a DEF stashes the pending id, a COMMIT (STAMP_END / PATCH SR-step) makes it live, and a REF to a
+    a DEF stashes the pending id, a COMMIT (an END op / terminal STEP subreg) makes it live, and a REF to a
     non-live id raises -- the legality the B2 mask enforces, checked offline. ``live_ids`` seeds ids
     materialized from outside the window (the B3 snapshot)."""
     if "op" not in df.columns:

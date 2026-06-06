@@ -30,8 +30,6 @@ def _args(wavetable_pass):
     return parse_args(
         skeleton_pass=True,
         trajectory_anchor_pass=True,
-        stamp_pass=True,
-        sweep_pass=True,
         held_arp=True,
         wavetable_pass=wavetable_pass,
     )
