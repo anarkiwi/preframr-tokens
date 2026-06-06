@@ -258,7 +258,19 @@ class RowExpandingTransform(PassBackedTransform):
 
 
 def collect_op_loss_tiers() -> dict[int, str]:
+    """Op -> loss tier over both declaration surfaces: the ``Transform`` classes (their ``LOSS_TIER``) and
+    the MacroPass-emitted generator/codebook ops (``op_contracts.MACRO_OP_LOSS_TIERS``, since those carry
+    no Transform class). A Transform tier wins on the (non-existent) overlap. Lazy import keeps op_contracts
+    -> transform the only edge."""
     out: dict[int, str] = {}
+    from preframr_tokens.macros.op_contracts import MACRO_OP_LOSS_TIERS
+
+    for op, tier in MACRO_OP_LOSS_TIERS.items():
+        if tier not in LOSS_TIER_NAMES:
+            raise ValueError(
+                f"MACRO_OP_LOSS_TIERS[{op}]={tier!r} not in {LOSS_TIER_NAMES}"
+            )
+        out[int(op)] = tier
     for klass in _REGISTRY.values():
         tier = klass.LOSS_TIER
         if tier not in LOSS_TIER_NAMES:

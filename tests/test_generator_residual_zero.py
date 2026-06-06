@@ -112,6 +112,56 @@ def test_generator_strict_byte_exact():
             os.environ["PREFRAMR_ARBITER_STRICT"] = prev
 
 
+def test_generator_table_resid_split_byte_exact():
+    """``table_resid_split`` keys a freq GEN_TABLE on the OFFSET cycle alone and carries the per-frame
+    residual on the per-instance REF (the §3 de-fragmentation): same note-shape, different residual,
+    collapses to one DEF. The parse stays byte-exact (no raw gen SET under the strict arbiter) and the
+    residual STEP atoms move off the DEF (op GEN_TABLE_STEP) onto the REF (op GEN_TABLE_REF).
+    """
+    from preframr_tokens.stfconstants import (
+        GEN_TABLE_REF_OP as _REF,
+        GEN_TABLE_REF_SUBREG_RESID_HI as _RREF_HI,
+        GEN_TABLE_REF_SUBREG_RESID_LO as _RREF_LO,
+        GEN_TABLE_STEP_OP as _STEP,
+        GEN_TABLE_SUBREG_RESID_HI as _RDEF_HI,
+        GEN_TABLE_SUBREG_RESID_LO as _RDEF_LO,
+    )
+
+    prev = os.environ.get("PREFRAMR_ARBITER_STRICT")
+    os.environ["PREFRAMR_ARBITER_STRICT"] = "1"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _multi_feature_dump(os.path.join(tmp, "mf.dump.parquet"))
+            base = _parse(path)
+            split = _parse(path, table_resid_split=True)
+    finally:
+        if prev is None:
+            del os.environ["PREFRAMR_ARBITER_STRICT"]
+        else:
+            os.environ["PREFRAMR_ARBITER_STRICT"] = prev
+    assert base is not None and split is not None
+    assert not _raw_gen_sets(
+        split
+    ), "table_resid_split left un-modelled generator-channel raw SET"
+
+    def _resid(df, op, los, his):
+        return sum(
+            1
+            for o, s in zip(df["op"], df["subreg"])
+            if int(o) == op and int(s) in (los, his)
+        )
+
+    assert (
+        _resid(base, _STEP, _RDEF_LO, _RDEF_HI) > 0
+    ), "expected DEF-keyed residuals in the baseline"
+    assert (
+        _resid(split, _STEP, _RDEF_LO, _RDEF_HI) == 0
+    ), "split must drop residuals off the DEF key"
+    assert (
+        _resid(split, _REF, _RREF_LO, _RREF_HI) > 0
+    ), "split must carry residuals on the per-instance REF"
+
+
 def test_generator_length1_only_at_final_frame():
     """A length-1 generator atom (a degenerate SWEEP/TRI LEN=1) may occur only on the final frame F-1 --
     no interior length-1, the work order's entire 'tail' story (no GEN_END op)."""
