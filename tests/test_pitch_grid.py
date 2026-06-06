@@ -75,6 +75,19 @@ class TestPitchGrid(unittest.TestCase):
         raw_h = high - pg._table_vec(dh["table"], dh["note"])
         self.assertGreater(int(np.abs(raw_l - raw_h).max()), 20)
 
+    def test_boundary_detuned_scale_indexes_correctly(self):
+        """A Galway-style +44c-detuned ET scale recovers CONSECUTIVE note indices (the per-voice
+        tuning fit handles the near-half-semitone detune that naive rounding mis-assigns).
+        """
+        notes = np.arange(40, 76)
+        freqs = np.round(pg._ANCHOR * 2.0 ** ((notes + 44.0 / 100.0) / 12.0)).astype(
+            np.int64
+        )
+        dec = self._assert_lossless(np.repeat(freqs, 6))
+        idx = sorted({int(n) for n in dec["note"][dec["voiced"]]})
+        self.assertEqual(idx, list(range(idx[0], idx[0] + len(notes))))
+        self.assertGreater(dec["tuning"], 0.3)
+
     def test_small_table_and_silence(self):
         """The recovered table is the distinct notes used; unvoiced frames round-trip as zero."""
         dec = self._assert_lossless(

@@ -14,27 +14,47 @@ _ANCHOR = _FBASE * 16.0
 _LOG_ANCHOR = math.log2(_ANCHOR)
 
 
-def note_index(freq):
-    """Nearest-semitone index on the shared universal grid (note 49 ~ C5). The transferable abstraction;
-    intervals are delta-index (transposition-invariant)."""
+def voice_tuning(freqs):
+    """The voice's continuous tuning offset (semitone fraction, -0.5..0.5) -- the tune's tuning + the
+    voice's detune (chorus). Circular mean of the fractional semitone so a tune tuned ~half a semitone
+    (e.g. Galway +0.44) still assigns notes to the right semitone, and chorus voices keep distinct
+    tunings. Notes stay UNIVERSAL (the offset is emitted, not baked into the index)."""
+    f = np.asarray(freqs, dtype=np.float64)
+    f = f[f > 8]
+    if f.size < 8:
+        return 0.0
+    frac = (12.0 * (np.log2(f) - _LOG_ANCHOR)) % 1.0
+    ang = 2.0 * math.pi * frac
+    off = math.atan2(np.sin(ang).mean(), np.cos(ang).mean()) / (2.0 * math.pi)
+    return ((off + 0.5) % 1.0) - 0.5
+
+
+def note_index(freq, tuning=0.0):
+    """Nearest-semitone index on the shared grid offset by the per-voice ``tuning`` (note 49 ~ C5). The
+    transferable abstraction; intervals are delta-index (transposition + tuning invariant).
+    """
     f = np.asarray(freq, dtype=np.float64)
     out = np.zeros(f.shape, dtype=np.int64)
     m = f > 0
-    out[m] = np.round(12.0 * (np.log2(f[m]) - _LOG_ANCHOR)).astype(np.int64)
+    out[m] = np.round(12.0 * (np.log2(f[m]) - _LOG_ANCHOR) - tuning).astype(np.int64)
     return out
 
 
-def recover_table(freqs):
+def recover_table(freqs, tuning=None):
     """Per-voice note->freq table: the EXACT 16-bit freq each note maps to (modal over the voice's
-    frames = the tracker's table entry). ~20 entries/voice; makes static notes pure."""
+    frames = the tracker's table entry), with the per-voice ``tuning`` applied so detuned tunes
+    (Galway) and chorus voices index correctly. ~20 entries/voice; makes static notes pure.
+    """
     f = np.asarray(freqs, dtype=np.int64)
+    if tuning is None:
+        tuning = voice_tuning(f)
     voiced = f > 8
-    note = note_index(f)
+    note = note_index(f, tuning)
     table = {}
     for n in sorted({int(x) for x in note[voiced]}):
         vals = f[voiced & (note == n)]
-        u, c = np.unique(vals, return_counts=True)
-        table[n] = int(u[int(np.argmax(c))])
+        med = float(np.median(vals))
+        table[n] = int(vals[int(np.argmin(np.abs(vals.astype(np.float64) - med)))])
     return table
 
 
@@ -52,10 +72,11 @@ def decompose_voice(freqs, table=None):
     notes), closure[] (exact residue, 0 for static), voiced[], table. Defaults to recover_table.
     """
     f = np.asarray(freqs, dtype=np.int64)
+    tuning = voice_tuning(f)
     if table is None:
-        table = recover_table(f)
+        table = recover_table(f, tuning)
     voiced = f > 8
-    note = note_index(f)
+    note = note_index(f, tuning)
     ref = _table_vec(table, note)
     moved = voiced & (f != ref) & (ref > 0)
     mod = np.zeros_like(f)
@@ -67,6 +88,7 @@ def decompose_voice(freqs, table=None):
         "mod": mod,
         "closure": closure,
         "voiced": voiced,
+        "tuning": tuning,
         "table": table,
     }
 
