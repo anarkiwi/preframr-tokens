@@ -7,6 +7,9 @@ TRIANGLE -> GEN_TRI_OP, TABLE -> the GEN_TABLE codebook). Default OFF (``generat
 
 __all__ = ["GeneratorPass"]
 
+import numpy as np
+
+from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.generator_fit import (
     all_freqs,
@@ -31,11 +34,14 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_END_OP,
     GEN_TABLE_MODE_ABS,
     GEN_TABLE_MODE_NOTE,
+    GEN_TABLE_MODE_NOTE_UNIV,
     GEN_TABLE_REF_OP,
     GEN_TABLE_REF_SUBREG_BASE_NOTE,
     GEN_TABLE_REF_SUBREG_ID,
     GEN_TABLE_REF_SUBREG_LEN_HI,
     GEN_TABLE_REF_SUBREG_LEN_LO,
+    GEN_TABLE_REF_SUBREG_RESID_HI,
+    GEN_TABLE_REF_SUBREG_RESID_LO,
     GEN_TABLE_STEP_OP,
     GEN_TABLE_SUBREG_ABS_HI,
     GEN_TABLE_SUBREG_ABS_LO,
@@ -58,6 +64,7 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
     GEN_TUNING_SUBREG_REF,
+    GEN_TUNING_SUBREG_VOICE,
     GEN_FREQ_REGS,
     GEN_SCALAR_REGS,
     INSTR_OFF_CTRL,
@@ -94,7 +101,9 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
-    REQUIRES_ARGS = frozenset({"melody_skeleton"})
+    REQUIRES_ARGS = frozenset(
+        {"melody_skeleton", "universal_pitch", "universal_freq", "table_resid_split"}
+    )
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -116,11 +125,20 @@ class GeneratorPass(MacroPass):
         ref_q = max(0, min(255, int(round(tune_ref(all_freqs(state)) * 256.0)))) & 0xFF
         ref = ref_q / 256.0
         mel_ctx = (
-            self._melody_context(state, ref)
+            self._melody_context(
+                state,
+                ref,
+                bool(getattr(args, "universal_pitch", False)),
+                bool(getattr(args, "universal_freq", False)),
+            )
             if getattr(args, "melody_skeleton", False)
             else {}
         )
+        split = bool(getattr(args, "table_resid_split", False))
         claims = [self._tuning_claim(ref_q, irq)]
+        for m in mel_ctx.values():
+            if m.get("tuning_q") is not None:
+                claims.append(self._voice_tuning_claim(m["voice"], m["tuning_q"], irq))
         bank = {}
         def_rows = []
         for reg, is_freq, series in channels(state):
@@ -136,6 +154,7 @@ class GeneratorPass(MacroPass):
                     def_rows,
                     irq,
                     mel_ctx.get(int(reg)),
+                    split,
                 )
             )
         if def_rows:
@@ -162,27 +181,54 @@ class GeneratorPass(MacroPass):
             writes=(), tokens=[row], priority=_GEN_PRIORITY, label="gen_tuning"
         )
 
+    @staticmethod
+    def _voice_tuning_claim(voice, tuning_q, irq):
+        """A per-voice GEN_TUNING atom (``universal_pitch``): VOICE then REF=tuning_q, head-decoded so
+        the voice's ``note_freq`` recon is set before any MELODY_INTERVAL replay -- the per-voice tuning
+        makes the melody onset residual ~0 (pure note) under chorus/detune. Contiguous (one Claim).
+        """
+        rows = [
+            _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_VOICE, voice, irq),
+            _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_REF, tuning_q, irq),
+        ]
+        for r in rows:
+            r["__pos"] = -2
+        return Claim(
+            writes=(), tokens=rows, priority=_GEN_PRIORITY, label="gen_voice_tuning"
+        )
+
     @classmethod
-    def _melody_context(cls, state, ref):
-        """Per freq reg: ``{voice, onsets, melodic, note}`` for the interval re-keying. ``onsets`` is the
-        note-onset frame set (pass-1 sustained-pitch-change U gate-on, waveform-agnostic); ``melodic``
-        gates whether the voice settles to a stable note grid (a swept/percussion voice passes through as
-        raw generator atoms); ``note`` carries the running keyed note across the channel's atoms.
+    def _melody_context(cls, state, ref, universal=False, freq_bulk=False):
+        """Per freq reg: ``{voice, onsets, melodic, note, tuning, tuning_q, universal, universal_freq}`` for
+        the interval re-keying. ``universal`` (the ``universal_pitch`` flag) sets the PER-VOICE pitch_grid
+        ``tuning`` so the interval keys off the universal note index (transferable under chorus/detune);
+        ``freq_bulk`` (the ``universal_freq`` probe) extends the re-keying from melodic ONSETS to every
+        sounding HOLD/ACCUM atom on the melodic voices -- the bulk pitched-freq stream. Byte-exact either way.
         """
         ctx = {}
         n = int(state.shape[0])
         for b in GEN_FREQ_REGS:
-            freq = (
-                state[:, b].astype("int64") + 256 * state[:, b + 1].astype("int64")
-            ).tolist()
+            freqarr = state[:, b].astype("int64") + 256 * state[:, b + 1].astype(
+                "int64"
+            )
+            freq = freqarr.tolist()
             ctrl = (state[:, b + INSTR_OFF_CTRL].astype("int64") & 1).tolist()
             gate_on = [i for i in range(n) if ctrl[i] and (i == 0 or not ctrl[i - 1])]
             per_frame = [int(f) if f > 0 else None for f in freq]
+            if universal:
+                tq = pitch_grid.tuning_to_q(pitch_grid.voice_tuning(freqarr))
+                tuning = pitch_grid.q_to_tuning(tq)
+            else:
+                tq, tuning = None, None
             ctx[int(b)] = {
                 "voice": int(b) // 7,
                 "onsets": set(note_onsets(per_frame, gate_on)),
                 "melodic": cls._stability(freq, ref),
                 "note": None,
+                "tuning": tuning,
+                "tuning_q": tq,
+                "universal": universal,
+                "universal_freq": freq_bulk,
             }
         return ctx
 
@@ -260,6 +306,7 @@ class GeneratorPass(MacroPass):
         def_rows,
         irq,
         mel=None,
+        split=False,
     ):
         """Walk one channel's timeline left-to-right (first write -> the global final frame), re-fitting
         the longest generator from each ANCHORED frame and emitting one Claim for it. A write-less frame
@@ -304,6 +351,7 @@ class GeneratorPass(MacroPass):
                 irq,
                 i,
                 mel,
+                split,
             )
             if rows is not None:
                 for r in rows:
@@ -334,6 +382,7 @@ class GeneratorPass(MacroPass):
         irq,
         i=0,
         mel=None,
+        split=False,
     ):
         """The token rows (REF/atom) for one generator segment. HOLD/ACCUM -> SWEEP_OP (delta 0 for
         HOLD), TRI -> GEN_TRI_OP, TABLE -> a GEN_TABLE REF (the matching DEF is appended to ``def_rows``
@@ -341,15 +390,12 @@ class GeneratorPass(MacroPass):
         melody-skeleton ``mel`` context, a HOLD/ACCUM onset on a melodic voice is re-keyed to a
         MELODY_INTERVAL atom (note-relative), the writes unchanged.
         """
-        if (
-            mel is not None
-            and is_freq
-            and mel["melodic"]
-            and kind in ("HOLD", "ACCUM")
-            and int(i) in mel["onsets"]
-        ):
-            delta = int(params) if kind == "ACCUM" else 0
-            return cls._melody_rows(mel, int(seg[0]), delta, length, ref, irq)
+        if mel is not None and is_freq and kind in ("HOLD", "ACCUM") and mel["melodic"]:
+            onset = int(i) in mel["onsets"]
+            bulk = bool(mel.get("universal_freq")) and int(seg[0]) > 8
+            if onset or bulk:
+                delta = int(params) if kind == "ACCUM" else 0
+                return cls._melody_rows(mel, int(seg[0]), delta, length, ref, irq)
         if kind == "HOLD":
             return cls._sweep_rows(reg, seg[0], 0, length, irq)
         if kind == "ACCUM":
@@ -359,7 +405,17 @@ class GeneratorPass(MacroPass):
             return cls._tri_rows(reg, seg[0], step, lo, hi, dir0, length, irq)
         if kind == "TABLE":
             return cls._table_rows(
-                reg, is_freq, int(params), seg, length, ref, bank, def_rows, irq
+                reg,
+                is_freq,
+                int(params),
+                seg,
+                length,
+                ref,
+                bank,
+                def_rows,
+                irq,
+                split,
+                mel,
             )
         return None
 
@@ -369,8 +425,14 @@ class GeneratorPass(MacroPass):
         interval from the voice's previous keyed note, the exact residual, and the HOLD/ACCUM delta. The
         decoder's running interval sum + residual reproduces ``onset_freq`` bit-exact.
         """
-        note = note_of(onset_freq, ref)
-        resid = (onset_freq - recon(note, ref)) & 0xFFFF
+        if mel.get("universal"):
+            note = int(
+                pitch_grid.note_index(np.asarray([onset_freq]), mel["tuning"])[0]
+            )
+            resid = (onset_freq - pitch_grid.note_freq_at(note, mel["tuning"])) & 0xFFFF
+        else:
+            note = note_of(onset_freq, ref)
+            resid = (onset_freq - recon(note, ref)) & 0xFFFF
         prev = mel["note"]
         if prev is None:
             first, token = 1, note & 0xFFFF
@@ -454,53 +516,99 @@ class GeneratorPass(MacroPass):
         ]
 
     @classmethod
-    def _table_rows(cls, reg, is_freq, period, seg, length, ref, bank, def_rows, irq):
-        """A GEN_TABLE REF for a periodic TABLE cycle; on first sight of the bank key the matching DEF is
-        appended to ``def_rows`` (``__pos`` -1, the stream head) so a cross-voice REF can never precede
-        its DEF. Scalar channels key absolutely on the raw cycle bytes; freq keys note-relative on (offset
-        cycle, residual cycle) so transposed arps share one entry, the per-instance base_note on the REF.
-        """
+    def _table_rows(
+        cls,
+        reg,
+        is_freq,
+        period,
+        seg,
+        length,
+        ref,
+        bank,
+        def_rows,
+        irq,
+        split=False,
+        mel=None,
+    ):
+        """A GEN_TABLE REF for a periodic TABLE cycle; the DEF appends to ``def_rows`` on first sight of
+        its bank key. ``split`` keys the freq DEF on OFFSETS ALONE and moves the residual to the
+        per-instance REF (de-fragments); ``split``+universal computes offsets/residual off the PER-VOICE
+        ``note_index`` (item #4, mode NOTE_UNIV) so static residuals go ~0, decoded via the voice tuning.
+        Scalar keys absolutely. All paths byte-exact."""
         cycle = seg[:period]
-        if is_freq:
+        univ = bool(
+            split
+            and is_freq
+            and mel is not None
+            and mel.get("universal")
+            and mel.get("tuning") is not None
+        )
+        mode = GEN_TABLE_MODE_ABS
+        if univ:
+            tuning = mel["tuning"]
+            notes = [
+                int(pitch_grid.note_index(np.asarray([int(c)]), tuning)[0])
+                for c in cycle
+            ]
+            base_note = notes[0]
+            offs = [n - base_note for n in notes]
+            resids = [
+                int(c) - pitch_grid.note_freq_at(n, tuning)
+                for c, n in zip(cycle, notes)
+            ]
+            if 0 <= base_note <= 255 and all(-128 <= o <= 127 for o in offs):
+                key = ("noteU", tuple(offs))
+                mode = GEN_TABLE_MODE_NOTE_UNIV
+            else:
+                univ = False
+        if is_freq and not univ:
             base_note = note_of(cycle[0], ref)
             offs, resids = [], []
             for c in cycle:
                 nt = note_of(c, ref)
                 offs.append(nt - base_note)
                 resids.append(int(c) - recon(nt, ref))
-            key = ("note", tuple(offs), tuple(resids))
-        else:
+            key = (
+                ("note", tuple(offs)) if split else ("note", tuple(offs), tuple(resids))
+            )
+            mode = GEN_TABLE_MODE_NOTE
+        elif not is_freq:
             base_note = 0
             offs = resids = None
             key = ("abs", reg, tuple(int(c) for c in cycle))
         if key not in bank:
             cb_id = len(bank)
             bank[key] = cb_id
+            def_resids = None if (split and is_freq) else resids
             for r in cls._def_rows(
-                cb_id, is_freq, period, base_note, cycle, offs, resids, irq
+                cb_id, is_freq, period, base_note, cycle, offs, def_resids, irq, mode
             ):
                 r["__pos"] = -1
                 def_rows.append(r)
         else:
             cb_id = bank[key]
-        return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq)
+        ref_resids = resids if (split and is_freq) else None
+        return cls._ref_rows(reg, cb_id, is_freq, base_note, length, irq, ref_resids)
 
     @staticmethod
-    def _def_rows(cb_id, is_freq, period, base_note, cycle, offs, resids, irq):
+    def _def_rows(cb_id, is_freq, period, base_note, cycle, offs, resids, irq, mode):
         rows = [_row(0, GEN_TABLE_DEF_OP, -1, cb_id, irq)]
 
         def step(subreg, val):
             rows.append(_row(0, GEN_TABLE_STEP_OP, subreg, val, irq))
 
+        split = resids is None and mode != GEN_TABLE_MODE_ABS
         step(GEN_TABLE_SUBREG_PERIOD, period)
         if is_freq:
-            step(GEN_TABLE_SUBREG_MODE, GEN_TABLE_MODE_NOTE)
-            step(GEN_TABLE_SUBREG_BASE_NOTE, base_note & 0xFF)
+            step(GEN_TABLE_SUBREG_MODE, mode)
+            if not split:
+                step(GEN_TABLE_SUBREG_BASE_NOTE, base_note & 0xFF)
             for m in range(period):
                 step(GEN_TABLE_SUBREG_OFFSET, offs[m] & 0xFF)
-                r = resids[m] & 0xFFFF
-                step(GEN_TABLE_SUBREG_RESID_LO, r & 0xFF)
-                step(GEN_TABLE_SUBREG_RESID_HI, (r >> 8) & 0xFF)
+                if resids is not None:
+                    r = resids[m] & 0xFFFF
+                    step(GEN_TABLE_SUBREG_RESID_LO, r & 0xFF)
+                    step(GEN_TABLE_SUBREG_RESID_HI, (r >> 8) & 0xFF)
         else:
             step(GEN_TABLE_SUBREG_MODE, GEN_TABLE_MODE_ABS)
             for m in range(period):
@@ -511,7 +619,7 @@ class GeneratorPass(MacroPass):
         return rows
 
     @staticmethod
-    def _ref_rows(reg, cb_id, is_freq, base_note, length, irq):
+    def _ref_rows(reg, cb_id, is_freq, base_note, length, irq, resids=None):
         rows = [_row(reg, GEN_TABLE_REF_OP, GEN_TABLE_REF_SUBREG_ID, cb_id, irq)]
         if is_freq:
             rows.append(
@@ -523,6 +631,27 @@ class GeneratorPass(MacroPass):
                     irq,
                 )
             )
+        if resids is not None:
+            for r in resids:
+                rq = int(r) & 0xFFFF
+                rows.append(
+                    _row(
+                        reg,
+                        GEN_TABLE_REF_OP,
+                        GEN_TABLE_REF_SUBREG_RESID_LO,
+                        rq & 0xFF,
+                        irq,
+                    )
+                )
+                rows.append(
+                    _row(
+                        reg,
+                        GEN_TABLE_REF_OP,
+                        GEN_TABLE_REF_SUBREG_RESID_HI,
+                        (rq >> 8) & 0xFF,
+                        irq,
+                    )
+                )
         rows.append(
             _row(
                 reg,

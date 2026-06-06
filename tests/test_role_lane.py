@@ -72,6 +72,19 @@ class TestRoleLane(unittest.TestCase):
         series = voice_note_series(st)
         self.assertTrue(all(x is None for x in series[0]))
 
+    def test_roles_for_orders_accompaniment_before_melody(self):
+        """roles_for + lane_rank emit accompaniment (bass/mid) before the melody (lead-last) -- the
+        causal ordering the voice_lane reorder applies."""
+        from preframr_tokens.role_lane import roles_for
+        from preframr_tokens.macros.voice_lane import lane_rank
+
+        st = _state([72, 48, 60])
+        roles = roles_for(st)
+        self.assertEqual(roles, {0: "lead", 1: "bass", 2: "mid"})
+        ranks = lane_rank(roles, [0, 1, 2])
+        order = sorted([0, 1, 2], key=lambda v: ranks[v])
+        self.assertEqual(order, [1, 2, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

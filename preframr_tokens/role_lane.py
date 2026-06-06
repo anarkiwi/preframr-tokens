@@ -11,7 +11,7 @@ import numpy as np
 from preframr_tokens.macros.generator_fit import note_of
 from preframr_tokens.stfconstants import GEN_FREQ_REGS, INSTR_OFF_CTRL, VOICES
 
-__all__ = ["voice_note_series", "block_roles", "lead_changes"]
+__all__ = ["voice_note_series", "block_roles", "roles_for", "lead_changes"]
 
 _GATE_BIT = 0x01
 
@@ -66,6 +66,19 @@ def block_roles(state, block_frames=256, ref=0.0):
                 med[v] = float(np.median(sounding))
         out.append(_rank_roles(med) if med else {})
     return out
+
+
+def roles_for(state, ref=0.0):
+    """One ``{voice: role}`` over the whole block (the voice-lane reorder operates per block): each
+    sounding voice's median note ranked bass..lead. Silent voices omitted; never waveform-routed.
+    """
+    series = voice_note_series(state, ref)
+    med = {}
+    for v in range(VOICES):
+        sounding = [x for x in series[v] if x is not None]
+        if sounding:
+            med[v] = float(np.median(sounding))
+    return _rank_roles(med)
 
 
 def lead_changes(roles_per_block):

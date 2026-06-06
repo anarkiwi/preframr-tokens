@@ -96,11 +96,13 @@ def _marker_row(template, val, subreg, diff):
     return row
 
 
-def df_to_voice_major(records):
+def df_to_voice_major(records, ranks=None):
     """Frame-major token records -> ``[marker skeleton verbatim] + [per-slot lanes]``. Each lane is a slot's
-    content across frames (contiguous = de-multiplexed), led by a LANE marker, each frame-group preceded by
-    a FTAG carrying its frame index. The skeleton (FRAME/DELAY/VOICE rows, verbatim) preserves the exact
-    sval/DELAY bytes so the inverse regenerates the frame structure bit-exact."""
+    content across frames (contiguous = de-multiplexed), led by a LANE marker, each frame-group preceded by a
+    FTAG carrying its frame index. The verbatim skeleton (FRAME/DELAY/VOICE rows) keeps sval/DELAY bytes so
+    the inverse regenerates structure bit-exact. ``ranks`` (``lane_rank(roles_for(...))``) orders lanes
+    accompaniment->melody (causal-DAG), recorded in the LANE markers so the inverse stays byte-neutral.
+    """
     ann = _annotate(records)
     skeleton = [r for r, (is_m, _f, _s) in zip(records, ann) if is_m]
     groups = {}
@@ -112,7 +114,10 @@ def df_to_voice_major(records):
         slots.add(s)
     template = records[0] if records else {}
     out = list(skeleton)
-    for s in sorted(slots):
+    order = (
+        sorted(slots, key=lambda s: ranks.get(s, (3, s))) if ranks else sorted(slots)
+    )
+    for s in order:
         out.append(_marker_row(template, s, _VLANE_SUB_LANE, 0))
         for gs, gf in sorted(k for k in groups if k[0] == s):
             out.append(_marker_row(template, 0, _VLANE_SUB_FTAG, gf))
@@ -158,11 +163,29 @@ def df_to_frame_major(records):
 
 
 def forward_df(df):
-    """df-level frame-major -> voice-major (dtypes preserved), for the bit_exact ``voice_lane`` Transform."""
+    """df-level frame-major -> voice-major (dtypes preserved), for the bit_exact ``voice_lane`` Transform.
+    Orders the lanes by causal role (accompaniment->melody) via role_lane; the order is byte-neutral (the
+    inverse reads slots from the markers), so a role-estimate failure safely falls back to slot order.
+    """
     if df is None or len(df) == 0:
         return df
-    out = df_to_voice_major(df.to_dict("records"))
+    ranks = _role_ranks(df)
+    out = df_to_voice_major(df.to_dict("records"), ranks)
     return pd.DataFrame(out, columns=df.columns).astype(df.dtypes.to_dict())
+
+
+def _role_ranks(df):
+    """{slot: lane_rank} ordering accompaniment->melody from the block's per-voice median pitch, or None
+    on any decode/role failure (the order is byte-neutral, so the fallback is safe)."""
+    try:
+        from preframr_tokens import role_lane
+        from preframr_tokens.audit_primitives import register_state
+        from preframr_tokens.stfconstants import VOICES
+
+        roles = role_lane.roles_for(register_state(df))
+        return lane_rank(roles, list(range(VOICES)))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def inverse_df(df):

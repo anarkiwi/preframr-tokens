@@ -8,7 +8,7 @@ import re
 import unittest
 
 import preframr_tokens
-from preframr_tokens.macros.flag_registry import macro_flag_names
+from preframr_tokens.macros.flag_registry import macro_flag_names, resolve_flags
 from preframr_tokens.tokenizer_config import (
     MACRO_FLAGS,
     PARSER_DEFAULTS,
@@ -63,6 +63,15 @@ class TestFlagRegistry(unittest.TestCase):
             "strict_lonely",
         ):
             self.assertNotIn(flag, MACRO_FLAGS, flag)
+
+    def test_universal_freq_requires_pitch_stack(self):
+        """The bulk-freq probe needs per-voice tuning (universal_pitch), the interval atom
+        (melody_skeleton), and the generator channels (generator_pass); its REQUIRES closure pulls all
+        three so it can never be enabled standalone."""
+        self.assertIn("universal_freq", MACRO_FLAGS)
+        closure = resolve_flags({"universal_freq"})
+        for need in ("universal_pitch", "melody_skeleton", "generator_pass"):
+            self.assertIn(need, closure, need)
 
     def test_no_undeclared_gating_flag(self):
         undeclared = _source_flags() - set(MACRO_FLAGS)
