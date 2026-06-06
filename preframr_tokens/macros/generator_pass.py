@@ -146,7 +146,7 @@ class GeneratorPass(MacroPass):
     def _collect_writes(df, target_regs):
         """Per target reg, ordered ``(real_frame, row_idx, val)`` for plain SETs (subreg -1). real_frame
         counts a FRAME_REG as 1 frame and a DELAY_REG as its ``val`` frames -- the decode-frame index the
-        per-frame drain unrolls against (mirrors GlobalOscPass)."""
+        per-frame drain unrolls against."""
         regs = df["reg"].to_numpy()
         ops = df["op"].to_numpy()
         subregs = df["subreg"].to_numpy()
