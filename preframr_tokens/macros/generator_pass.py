@@ -98,7 +98,9 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
-    REQUIRES_ARGS = frozenset({"melody_skeleton", "universal_pitch"})
+    REQUIRES_ARGS = frozenset(
+        {"melody_skeleton", "universal_pitch", "universal_freq"}
+    )
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -121,7 +123,10 @@ class GeneratorPass(MacroPass):
         ref = ref_q / 256.0
         mel_ctx = (
             self._melody_context(
-                state, ref, bool(getattr(args, "universal_pitch", False))
+                state,
+                ref,
+                bool(getattr(args, "universal_pitch", False)),
+                bool(getattr(args, "universal_freq", False)),
             )
             if getattr(args, "melody_skeleton", False)
             else {}
@@ -188,13 +193,17 @@ class GeneratorPass(MacroPass):
         )
 
     @classmethod
-    def _melody_context(cls, state, ref, universal=False):
-        """Per freq reg: ``{voice, onsets, melodic, note, tuning, universal}`` for the interval re-keying.
-        ``onsets`` is the note-onset frame set (pass-1 sustained-pitch-change U gate-on, waveform-agnostic);
-        ``melodic`` gates whether the voice settles to a stable note grid; ``note`` carries the running keyed
-        note. With ``universal`` (the ``universal_pitch`` flag), ``tuning`` is the PER-VOICE pitch_grid
-        tuning so the interval is keyed off the universal note index (correct under chorus/detune,
-        transferable) -- byte-exact via the unchanged residual/decoder.
+    def _melody_context(cls, state, ref, universal=False, freq_bulk=False):
+        """Per freq reg: ``{voice, onsets, melodic, note, tuning, universal, universal_freq}`` for the
+        interval re-keying. ``onsets`` is the note-onset frame set (pass-1 sustained-pitch-change U gate-on,
+        waveform-agnostic); ``melodic`` gates whether the voice settles to a stable note grid; ``note``
+        carries the running keyed note. With ``universal`` (the ``universal_pitch`` flag), ``tuning`` is the
+        PER-VOICE pitch_grid tuning so the interval is keyed off the universal note index (correct under
+        chorus/detune, transferable) -- byte-exact via the unchanged residual/decoder. With ``freq_bulk``
+        (the ``universal_freq`` probe), the interval re-keying extends from melodic ONSETS to EVERY sounding
+        freq HOLD/ACCUM atom on the melodic voices (the bulk pitched-freq stream, not just sparse onsets) --
+        same atom, same byte-exact residual. Non-melodic (noise/percussion) voices stay raw SWEEP: their
+        freq register is not a pitch, so note-interval re-keying would only inject high-cardinality junk.
         """
         ctx = {}
         n = int(state.shape[0])
@@ -219,6 +228,7 @@ class GeneratorPass(MacroPass):
                 "tuning": tuning,
                 "tuning_q": tq,
                 "universal": universal,
+                "universal_freq": freq_bulk,
             }
         return ctx
 
@@ -377,15 +387,12 @@ class GeneratorPass(MacroPass):
         melody-skeleton ``mel`` context, a HOLD/ACCUM onset on a melodic voice is re-keyed to a
         MELODY_INTERVAL atom (note-relative), the writes unchanged.
         """
-        if (
-            mel is not None
-            and is_freq
-            and mel["melodic"]
-            and kind in ("HOLD", "ACCUM")
-            and int(i) in mel["onsets"]
-        ):
-            delta = int(params) if kind == "ACCUM" else 0
-            return cls._melody_rows(mel, int(seg[0]), delta, length, ref, irq)
+        if mel is not None and is_freq and kind in ("HOLD", "ACCUM") and mel["melodic"]:
+            onset = int(i) in mel["onsets"]
+            bulk = bool(mel.get("universal_freq")) and int(seg[0]) > 8
+            if onset or bulk:
+                delta = int(params) if kind == "ACCUM" else 0
+                return cls._melody_rows(mel, int(seg[0]), delta, length, ref, irq)
         if kind == "HOLD":
             return cls._sweep_rows(reg, seg[0], 0, length, irq)
         if kind == "ACCUM":
