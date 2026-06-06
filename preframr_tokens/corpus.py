@@ -272,8 +272,6 @@ class Corpus:
                 n = merged["n"].astype(np.int32).to_numpy()
                 self.tokenizer.validate_encoding(df_file, n)
                 seq = self.tokenizer.encode(n).astype(np.int32)
-                if getattr(self.args, "melody_merge_split", False):
-                    seq = self.tokenizer.split_melody_merges(seq)
                 if len(seq) >= block_size:
                     block_arrs.append(seq[:block_size])
                 else:

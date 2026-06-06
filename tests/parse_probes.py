@@ -34,7 +34,6 @@ def parse_args(**over):
     cfg = dict(PARSER_DEFAULTS)
     cfg.update(
         freq_trajectory_pass=False,
-        trajectory_anchor_pass=False,
         loop_pass=False,
         loop_transposed=False,
     )

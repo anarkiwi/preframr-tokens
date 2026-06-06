@@ -189,14 +189,12 @@ class TestPipelineTier(unittest.TestCase):
         self.assertEqual(p_bitexact.tier, "bit_exact")
         spec2 = {
             "transforms": [
-                {"name": "freq_traj"},
+                {"name": "preset"},
                 {"name": "hard_restart"},
                 {"name": "voice_block_order"},
             ]
         }
-        p_audio = TransformPipeline.from_spec(
-            spec2, args=_args(freq_trajectory_pass=True)
-        )
+        p_audio = TransformPipeline.from_spec(spec2, args=_args(preset_pass=True))
         self.assertEqual(p_audio.tier, "audio_bit_exact")
 
 
@@ -318,11 +316,11 @@ class TestRegisterStateContract(unittest.TestCase):
         try:
             spec = {
                 "transforms": [
-                    {"name": "freq_traj"},
+                    {"name": "preset"},
                     {"name": "_test_motion_consumer"},
                 ]
             }
-            errors = validate_pipeline_spec(spec, args=_args(freq_trajectory_pass=True))
+            errors = validate_pipeline_spec(spec, args=_args(preset_pass=True))
             self.assertTrue(
                 any("EXPECTS_SET_ON_REGS" in e for e in errors),
                 msg=f"expected EXPECTS_SET_ON_REGS error, got {errors}",

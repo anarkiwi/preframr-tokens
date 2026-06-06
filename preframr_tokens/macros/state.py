@@ -121,11 +121,7 @@ _TABLE_IDX = {name: i for i, name in enumerate(CODEBOOK_TABLE_NAMES)}
 class DecodeState:
     """Per-stream state shared by all ``MacroDecoder`` invocations."""
 
-    _SEED_TABLE_KEYS = (
-        "instrument_table",
-        "last_skel_note",
-        "last_freq_v0",
-    )
+    _SEED_TABLE_KEYS = ("instrument_table",)
 
     def __init__(
         self,
@@ -145,10 +141,6 @@ class DecodeState:
         self.interval_links = []
         self.pending_track_links = []
         self.pending_track_fields = {}
-        self.pending_ft = None
-        self.last_freq_v0 = {}
-        self.last_skel_note = {}
-        self.pending_orn = None
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
         self.pending_gen_tri = None

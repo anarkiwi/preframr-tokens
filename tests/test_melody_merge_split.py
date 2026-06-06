@@ -1,26 +1,10 @@
-"""melody-merge-split: the is_melody_pitch_atom classifier + the pure
-split_cross_boundary_merges function (cross-boundary merges expand, pure-melody and
-pure-non-melody merges are kept, single base atoms are kept)."""
+"""melody-merge-split: the pure split_cross_boundary_merges function (cross-boundary
+merges expand, pure-melody and pure-non-melody merges are kept, single base atoms are
+kept)."""
 
 import numpy as np
 
-from preframr_tokens.regtokenizer import (
-    is_melody_pitch_atom,
-    split_cross_boundary_merges,
-)
-from preframr_tokens.stfconstants import (
-    FREQ_TRAJ_OP,
-    FT_SUBREG_V0_HI,
-    FT_SUBREG_V0_LO,
-)
-
-
-def test_is_melody_pitch_atom():
-    assert is_melody_pitch_atom(FREQ_TRAJ_OP, 0, FT_SUBREG_V0_HI)
-    assert is_melody_pitch_atom(FREQ_TRAJ_OP, 7, FT_SUBREG_V0_LO)
-    assert not is_melody_pitch_atom(FREQ_TRAJ_OP, 0, 6)
-    assert not is_melody_pitch_atom(FREQ_TRAJ_OP, 2, FT_SUBREG_V0_HI)
-    assert not is_melody_pitch_atom(0, 0, -1)
+from preframr_tokens.regtokenizer import split_cross_boundary_merges
 
 
 def test_split_cross_boundary_merges_keeps_singles_and_pure_merges():

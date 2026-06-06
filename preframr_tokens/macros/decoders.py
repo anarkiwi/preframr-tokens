@@ -8,7 +8,6 @@ __all__ = [
     "FlipDecoder",
     "TransposeDecoder",
     "HardRestartDecoder",
-    "FreqTrajectoryDecoder",
     "TrackRefDecoder",
     "PresetDecoder",
     "ShiftedDecoder",
@@ -38,22 +37,6 @@ from preframr_tokens.stfconstants import (
     FC_LO_REG,
     FC_PRESET_TABLE,
     FLIP_OP,
-    FREQ_TRAJ_OP,
-    FT_DELTA_ESCAPE,
-    FT_PERIODIC_BIT,
-    FT_SUBREG_COUNT_HI,
-    FT_SUBREG_COUNT_LO,
-    FT_SUBREG_DELTA,
-    FT_SUBREG_FLAGS,
-    FT_SUBREG_PERIOD,
-    FT_SUBREG_RUNTIME,
-    FT_SUBREG_TERMINAL_HI,
-    FT_SUBREG_TERMINAL_LO,
-    FT_SUBREG_V0_HI,
-    FT_SUBREG_V0_LO,
-    FT_SUBTYPE_MASK,
-    FT_SUBTYPE_MONOTONE_RAMP,
-    FT_V0_INTERVAL_BIT,
     HARD_RESTART_OP,
     LEGATO_OP_CLUSTER_2,
     LEGATO_OP_CLUSTER_3,
@@ -270,134 +253,6 @@ class TrackRefDecoder(MacroDecoder):
         return pre or None
 
 
-class FreqTrajectoryDecoder(MacroDecoder):
-    """Decode a FREQ_TRAJ atom (op 45) for any slope reg: FLAGS selects SUBTYPE,
-    MONOTONE_RAMP replays SLOPE's terminal+runtime ramp, OSCILLATE/RUN replay a
-    lossless v0 + cumulative-delta run; all queue into pending_set_writes so one
-    value drains per frame tick (the 0.14.1 multi-frame-drain rule)."""
-
-    op_code = FREQ_TRAJ_OP
-
-    def expand(self, row, state):
-        subreg = int(row.subreg)
-        reg = int(row.reg)
-        if subreg == FT_SUBREG_FLAGS:
-            flags = int(row.val) & 0xFF
-            state.pending_ft = {
-                "reg": reg,
-                "subtype": flags & FT_SUBTYPE_MASK,
-                "periodic": bool(flags & FT_PERIODIC_BIT),
-                "v0_interval": bool(flags & FT_V0_INTERVAL_BIT),
-                "fields": {},
-                "steps": [],
-                "esc": [],
-                "in_esc": False,
-                "count": 0,
-            }
-            return None
-        ft = state.pending_ft
-        if ft is None or ft["reg"] != reg:
-            return None
-        if ft["subtype"] == FT_SUBTYPE_MONOTONE_RAMP:
-            return self._ramp(row, state, ft, subreg)
-        return self._delta_run(row, state, ft, subreg)
-
-    @staticmethod
-    def _ramp(row, state, ft, subreg):
-        if subreg == FT_SUBREG_TERMINAL_HI:
-            ft["fields"]["thi"] = int(row.val) & 0xFF
-            return None
-        if subreg == FT_SUBREG_TERMINAL_LO:
-            ft["fields"]["tlo"] = int(row.val) & 0xFF
-            return None
-        if subreg != FT_SUBREG_RUNTIME:
-            return None
-        reg = ft["reg"]
-        state.pending_ft = None
-        pre = state.maybe_flush_for(reg, -1)
-        terminal_u = (
-            (ft["fields"].get("thi", 0) << 8) | ft["fields"].get("tlo", 0)
-        ) & (0xFFFF)
-        signed = terminal_u if terminal_u < 0x8000 else terminal_u - 0x10000
-        if ft.get("v0_interval"):
-            terminal = int(state.last_freq_v0.get(reg, 0)) + signed
-        else:
-            terminal = signed
-        state.last_freq_v0[reg] = terminal
-        runtime = max(1, int(row.val))
-        start_val = int(state.last_val[reg])
-        delta = terminal - start_val
-        state.last_diff[reg] = row.diff
-        for k in range(1, runtime + 1):
-            state.pending_set_writes[reg].append(
-                int(start_val + (delta * k) // runtime)
-            )
-        return pre or None
-
-    def _delta_run(self, row, state, ft, subreg):
-        val = int(row.val) & 0xFF
-        if subreg == FT_SUBREG_V0_HI:
-            ft["fields"]["v0hi"] = val
-            return None
-        if subreg == FT_SUBREG_V0_LO:
-            ft["fields"]["v0lo"] = val
-            return None
-        if subreg == FT_SUBREG_COUNT_HI:
-            ft["fields"]["chi"] = val
-            return None
-        if subreg == FT_SUBREG_COUNT_LO:
-            ft["count"] = (ft["fields"].get("chi", 0) << 8) | val
-            return None
-        if subreg == FT_SUBREG_PERIOD:
-            ft["period"] = max(1, val)
-            return None
-        if subreg != FT_SUBREG_DELTA:
-            return None
-        if ft["in_esc"]:
-            ft["esc"].append(val)
-            if len(ft["esc"]) == 2:
-                ft["steps"].append(("abs", (ft["esc"][0] << 8) | ft["esc"][1]))
-                ft["esc"] = []
-                ft["in_esc"] = False
-        elif val == FT_DELTA_ESCAPE:
-            ft["in_esc"] = True
-        else:
-            ft["steps"].append(("rel", val if val < 128 else val - 256))
-        return self._maybe_finish(row, state, ft)
-
-    @staticmethod
-    def _maybe_finish(row, state, ft):
-        if ft["in_esc"]:
-            return None
-        periodic = ft["periodic"]
-        if periodic and "period" not in ft:
-            return None
-        target = ft["period"] if periodic else ft["count"]
-        if len(ft["steps"]) < target:
-            return None
-        reg = ft["reg"]
-        state.pending_ft = None
-        pre = state.maybe_flush_for(reg, -1)
-        raw = (ft["fields"].get("v0hi", 0) << 8) | ft["fields"].get("v0lo", 0)
-        if ft.get("v0_interval"):
-            signed = raw if raw < 0x8000 else raw - 0x10000
-            v0 = int(state.last_freq_v0.get(reg, 0)) + signed
-        else:
-            v0 = raw
-        state.last_freq_v0[reg] = v0
-        steps = ft["steps"]
-        period = ft["period"] if periodic else max(1, len(steps))
-        state.last_diff[reg] = row.diff
-        state.last_val[reg] = v0
-        state.pending_set_writes[reg].append(int(v0))
-        cur = v0
-        for i in range(ft["count"]):
-            kind, sv = steps[i % period]
-            cur = cur + sv if kind == "rel" else sv
-            state.pending_set_writes[reg].append(int(cur))
-        return list(pre)
-
-
 class PresetDecoder(MacroDecoder):
     """Decode PRESET_OP rows: emit a SET-equivalent write with table-snapped val."""
 
@@ -574,7 +429,6 @@ DECODERS = {
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
         _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
         PwmSustainDecoder(),
-        FreqTrajectoryDecoder(),
         TrackRefDecoder(),
         SweepDecoder(),
         GenTriDecoder(),

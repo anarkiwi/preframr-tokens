@@ -10,16 +10,8 @@ from preframr_tokens.audit_primitives import (
     op_atom_profile,
     register_state,
     tier_accuracy,
-    trajectory_coverage,
 )
-from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.stfconstants import FRAME_REG, SET_OP
-
-
-class FakeArgs:
-    def __init__(self, **flags):
-        for k, v in flags.items():
-            setattr(self, k, v)
 
 
 def _stream(reg, values, gap=1):
@@ -114,23 +106,6 @@ class TestProfilingReductions(unittest.TestCase):
         self.assertEqual(prof["op_hist"][SET_OP], len(df))
         self.assertGreater(prof["atoms_per_frame"], 0)
         self.assertIn("per_tier", prof)
-
-    def test_trajectory_coverage_raw_is_mopup(self):
-        cov = trajectory_coverage(
-            _stream(0, [120, 122, 120, 122, 120, 122]), tier="freq"
-        )
-        self.assertEqual(cov["structural_atoms"], 0)
-        self.assertGreater(cov["mopup_atoms"], 0)
-        self.assertAlmostEqual(cov["alternation_mean"], 1.0)
-
-    def test_trajectory_coverage_structural_after_pass(self):
-        df = _stream(0, [120, 122, 120, 122, 120, 122])
-        out = FreqTrajectoryPass().apply(
-            df.copy(), args=FakeArgs(freq_trajectory_pass=True)
-        )
-        cov = trajectory_coverage(out, tier="freq")
-        self.assertGreater(cov["structural_atoms"], 0)
-        self.assertGreater(cov["captured_frac"], 0.0)
 
 
 if __name__ == "__main__":

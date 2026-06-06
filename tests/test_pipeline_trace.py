@@ -106,15 +106,15 @@ class TestHelpers(unittest.TestCase):
         )
 
     def test_opname_and_reglabel(self):
-        self.assertEqual(pt._opname(45), "FREQ_TRAJ")
+        self.assertEqual(pt._opname(64), "SWEEP")
         self.assertEqual(pt._opname(0), "SET")
         self.assertEqual(pt._reglabel(2), "v0.PW")
         self.assertEqual(pt._reglabel(21), "FC")
         self.assertEqual(pt._reglabel(24), "MODE_VOL")
 
     def test_ophist(self):
-        df = pd.DataFrame([{"op": 0}, {"op": 0}, {"op": 45}])
-        self.assertEqual(pt._ophist(df), {"SET": 2, "FREQ_TRAJ": 1})
+        df = pd.DataFrame([{"op": 0}, {"op": 0}, {"op": 64}])
+        self.assertEqual(pt._ophist(df), {"SET": 2, "SWEEP": 1})
 
     def test_mark_branches_flags_discarded_output(self):
         records = [
@@ -254,17 +254,16 @@ class TestEndToEnd(unittest.TestCase):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
         records, final = pt.run_trace(self.dump, args, 1)
         self.assertIsNotNone(final)
+        preset_status = [r["status"] for r in records if r["stage"] == "PresetPass"]
+        self.assertIn("FIRED", preset_status)
         by_stage = {r["stage"]: r for r in records}
-        self.assertEqual(by_stage["FreqTrajectoryPass"]["status"], "FIRED")
-        self.assertIn("FREQ_TRAJ", by_stage["FreqTrajectoryPass"]["op_delta"])
         self.assertEqual(by_stage["combine_regs"]["kind"], "parser")
 
-    def test_isolate_localizes_freq_trajectory(self):
+    def test_isolate_localizes_preset(self):
         args, _, _, _ = pt.build_args(_FULL_MACROS_SPEC, _ABSORBERS, self.overrides)
-        iso = pt.isolate(self.dump, args, "freq_trajectory_pass", 1)
+        iso = pt.isolate(self.dump, args, "preset_pass", 1)
         sites = {d["stage"] for d in iso["sites"]}
-        self.assertIn("FreqTrajectoryPass", sites)
-        self.assertIn("FREQ_TRAJ", iso["net"]["op"])
+        self.assertIn("PresetPass", sites)
 
     def test_main_json_runs(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as spec_f:
@@ -300,7 +299,7 @@ class TestEndToEnd(unittest.TestCase):
                 "--min-irq",
                 "0",
                 "--isolate",
-                "freq_trajectory_pass",
+                "preset_pass",
                 "--full",
                 "--head",
                 "300",

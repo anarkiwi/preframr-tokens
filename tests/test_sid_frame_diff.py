@@ -29,7 +29,6 @@ from tests.parse_probes import parse_args
 
 _KNOWN_FREQ_LOSSY: set[str] = set()
 _STACK_FLAGS = {
-    "trajectory_anchor_pass",
     "freq_trajectory_pass",
 }
 

@@ -9,7 +9,6 @@ from preframr_tokens.macros.roles import (
     DistancePairSpec,
     distance_pair_role,
     frame_weight_role,
-    slope_subreg_role,
 )
 from preframr_tokens.stfconstants import (
     DO_LOOP_OP,
@@ -19,10 +18,6 @@ from preframr_tokens.stfconstants import (
     PATTERN_REPLAY_SUBREG_LEN,
     PATTERN_REPLAY_SUBREG_OVERLAY_COUNT,
     SET_OP,
-    FREQ_TRAJ_OP,
-    FT_SUBREG_RUNTIME,
-    FT_SUBREG_TERMINAL_HI,
-    FT_SUBREG_TERMINAL_LO,
 )
 
 
@@ -68,21 +63,6 @@ class TestDistancePairOps(unittest.TestCase):
         self.assertIsInstance(spec, DistancePairSpec)
 
 
-class TestSlopeSubregRole(unittest.TestCase):
-    def test_each_role(self):
-        op = FREQ_TRAJ_OP
-        self.assertEqual(slope_subreg_role(op, FT_SUBREG_TERMINAL_HI), "terminal_hi")
-        self.assertEqual(slope_subreg_role(op, FT_SUBREG_TERMINAL_LO), "terminal_lo")
-        self.assertEqual(slope_subreg_role(op, FT_SUBREG_RUNTIME), "runtime")
-
-    def test_non_slope_op_returns_none(self):
-        self.assertIsNone(slope_subreg_role(SET_OP, FT_SUBREG_TERMINAL_HI))
-        self.assertIsNone(slope_subreg_role(DO_LOOP_OP, FT_SUBREG_TERMINAL_HI))
-
-    def test_unknown_subreg_returns_none(self):
-        self.assertIsNone(slope_subreg_role(FREQ_TRAJ_OP, 99))
-
-
 class TestFrameWeightRole(unittest.TestCase):
     def test_pattern_replay_len(self):
         self.assertEqual(
@@ -92,11 +72,6 @@ class TestFrameWeightRole(unittest.TestCase):
 
     def test_do_loop_len(self):
         self.assertEqual(frame_weight_role(DO_LOOP_OP, 0), "do_loop_len")
-
-    def test_slope_runtime(self):
-        self.assertEqual(
-            frame_weight_role(FREQ_TRAJ_OP, FT_SUBREG_RUNTIME), "slope_runtime"
-        )
 
     def test_pattern_replay_dist_hi_is_not_a_weight_source(self):
         self.assertIsNone(

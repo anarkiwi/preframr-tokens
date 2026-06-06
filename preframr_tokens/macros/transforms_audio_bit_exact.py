@@ -5,13 +5,11 @@ from __future__ import annotations
 from preframr_tokens.macros.decoders import (
     DiffDecoder,
     FlipDecoder,
-    FreqTrajectoryDecoder,
     PresetDecoder,
     SetDecoder,
     ShiftedDecoder,
     TransposeDecoder,
 )
-from preframr_tokens.macros.freq_trajectory_pass import FreqTrajectoryPass
 from preframr_tokens.macros.loop_pass import LoopPass
 from preframr_tokens.macros.loops import expand_loops
 from preframr_tokens.macros.passes import (
@@ -30,7 +28,6 @@ from preframr_tokens.stfconstants import (
     DO_LOOP_OP,
     FC_PRESET_OP,
     FLIP_OP,
-    FREQ_TRAJ_OP,
     PATTERN_OVERLAY_OP,
     PATTERN_REPLAY_OP,
     PATTERN_REPLAY_SUBREG_DIST_HI,
@@ -42,22 +39,6 @@ from preframr_tokens.stfconstants import (
 )
 
 _PRESET_OPS = (PWM_PRESET_OP, FC_PRESET_OP, PWM_PRESET_SHIFTED_OP)
-
-
-@register("freq_traj")
-class FreqTrajectoryTransform(PassBackedTransform):
-    TIER = "audio_bit_exact"
-    OP_CODES = frozenset({FREQ_TRAJ_OP})
-    SUBSTITUTABLE_OP_SUBREGS = frozenset(
-        (int(FREQ_TRAJ_OP), int(sr)) for sr in range(7)
-    )
-    OPERATES_ON_VOICE_REGS = True
-    LOSS_TIER = "content"
-    REQUIRES_ARGS = frozenset({"freq_trajectory_pass"})
-    PROVIDES_OPS = frozenset({FREQ_TRAJ_OP})
-    EMITS_NON_SET_REGS = frozenset({0, 2, 21})
-    PASS_CLASS = FreqTrajectoryPass
-    DECODER_CLASS = FreqTrajectoryDecoder
 
 
 @register("preset")

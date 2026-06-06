@@ -13,7 +13,6 @@ from enum import Enum
 from preframr_tokens.stfconstants import (
     DIFF_OP,
     FLIP_OP,
-    FREQ_TRAJ_OP,
     GEN_TABLE_REF_OP,
     INSTR_REF_OP,
     MODE_VOL_REG,
@@ -105,22 +104,6 @@ CONTRACTS = {
     c.name: c
     for c in (
         MacroContract(
-            "TrajectoryAnchorPass",
-            frozenset(),
-            frozenset(),
-            frozenset(),
-            FrameEffect.PRESERVES,
-            False,
-        ),
-        MacroContract(
-            "FreqTrajectoryPass",
-            frozenset({(_FREQ, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.PRESERVES,
-            False,
-        ),
-        MacroContract(
             "PerRegBurstPass",
             frozenset({(_FREQ, _REL), (_PWM, _REL), (_FILT, _REL)}),
             frozenset(),
@@ -156,8 +139,6 @@ CONTRACTS = {
 }
 
 PIPELINE_ORDER = (
-    "TrajectoryAnchorPass",
-    "FreqTrajectoryPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
     "GeneratorPass",
@@ -217,7 +198,6 @@ RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
         int(SWEEP_OP),
-        int(FREQ_TRAJ_OP),
         int(TRACK_REF_OP),
         int(INSTR_REF_OP),
         int(GEN_TABLE_REF_OP),
