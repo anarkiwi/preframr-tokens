@@ -7,6 +7,9 @@ TRIANGLE -> GEN_TRI_OP, TABLE -> the GEN_TABLE codebook). Default OFF (``generat
 
 __all__ = ["GeneratorPass"]
 
+import numpy as np
+
+from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.generator_fit import (
     all_freqs,
@@ -94,7 +97,7 @@ class GeneratorPass(MacroPass):
     arbiter never drops -- the guard stays)."""
 
     GATE_FLAGS = frozenset({"generator_pass"})
-    REQUIRES_ARGS = frozenset({"melody_skeleton"})
+    REQUIRES_ARGS = frozenset({"melody_skeleton", "universal_pitch"})
 
     def apply(self, df, args=None):
         from preframr_tokens.audit_primitives import register_state
@@ -116,7 +119,9 @@ class GeneratorPass(MacroPass):
         ref_q = max(0, min(255, int(round(tune_ref(all_freqs(state)) * 256.0)))) & 0xFF
         ref = ref_q / 256.0
         mel_ctx = (
-            self._melody_context(state, ref)
+            self._melody_context(
+                state, ref, bool(getattr(args, "universal_pitch", False))
+            )
             if getattr(args, "melody_skeleton", False)
             else {}
         )
@@ -163,18 +168,21 @@ class GeneratorPass(MacroPass):
         )
 
     @classmethod
-    def _melody_context(cls, state, ref):
-        """Per freq reg: ``{voice, onsets, melodic, note}`` for the interval re-keying. ``onsets`` is the
-        note-onset frame set (pass-1 sustained-pitch-change U gate-on, waveform-agnostic); ``melodic``
-        gates whether the voice settles to a stable note grid (a swept/percussion voice passes through as
-        raw generator atoms); ``note`` carries the running keyed note across the channel's atoms.
+    def _melody_context(cls, state, ref, universal=False):
+        """Per freq reg: ``{voice, onsets, melodic, note, tuning, universal}`` for the interval re-keying.
+        ``onsets`` is the note-onset frame set (pass-1 sustained-pitch-change U gate-on, waveform-agnostic);
+        ``melodic`` gates whether the voice settles to a stable note grid; ``note`` carries the running keyed
+        note. With ``universal`` (the ``universal_pitch`` flag), ``tuning`` is the PER-VOICE pitch_grid
+        tuning so the interval is keyed off the universal note index (correct under chorus/detune,
+        transferable) -- byte-exact via the unchanged residual/decoder.
         """
         ctx = {}
         n = int(state.shape[0])
         for b in GEN_FREQ_REGS:
-            freq = (
-                state[:, b].astype("int64") + 256 * state[:, b + 1].astype("int64")
-            ).tolist()
+            freqarr = state[:, b].astype("int64") + 256 * state[:, b + 1].astype(
+                "int64"
+            )
+            freq = freqarr.tolist()
             ctrl = (state[:, b + INSTR_OFF_CTRL].astype("int64") & 1).tolist()
             gate_on = [i for i in range(n) if ctrl[i] and (i == 0 or not ctrl[i - 1])]
             per_frame = [int(f) if f > 0 else None for f in freq]
@@ -183,6 +191,10 @@ class GeneratorPass(MacroPass):
                 "onsets": set(note_onsets(per_frame, gate_on)),
                 "melodic": cls._stability(freq, ref),
                 "note": None,
+                "tuning": (
+                    float(pitch_grid.voice_tuning(freqarr)) if universal else None
+                ),
+                "universal": universal,
             }
         return ctx
 
@@ -369,7 +381,12 @@ class GeneratorPass(MacroPass):
         interval from the voice's previous keyed note, the exact residual, and the HOLD/ACCUM delta. The
         decoder's running interval sum + residual reproduces ``onset_freq`` bit-exact.
         """
-        note = note_of(onset_freq, ref)
+        if mel.get("universal"):
+            note = int(
+                pitch_grid.note_index(np.asarray([onset_freq]), mel["tuning"])[0]
+            )
+        else:
+            note = note_of(onset_freq, ref)
         resid = (onset_freq - recon(note, ref)) & 0xFFFF
         prev = mel["note"]
         if prev is None:
