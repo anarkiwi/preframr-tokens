@@ -2,15 +2,27 @@
 restores the canonical render order), de-multiplexes voices into contiguous lanes, and emits
 accompaniment before melody (melody-last) by role rank."""
 
+import glob
 import itertools
+import os
 import unittest
 
 from preframr_tokens.macros.voice_lane import (
+    df_to_frame_major,
+    df_to_voice_major,
     lane_rank,
     round_trips,
     to_frame_major,
     to_voice_major,
+    VLANE_REG,
 )
+from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, VOICE_REG
+
+_HVSC = "/scratch/preframr/hvsc"
+
+
+def _rec(reg, val, op=0, subreg=-1, diff=0):
+    return {"reg": reg, "val": val, "op": op, "subreg": subreg, "diff": diff}
 
 
 def _canonical(frames, voices):
@@ -74,6 +86,80 @@ class TestVoiceLaneCore(unittest.TestCase):
         events = [(0, 0, 0, "a"), (0, 2, 0, "b"), (3, 1, 0, "c"), (3, 2, 0, "d")]
         ranks = lane_rank({}, range(3))
         self.assertEqual(to_frame_major(to_voice_major(events, ranks)), events)
+
+
+class TestVoiceLaneDf(unittest.TestCase):
+    def test_synthetic_grammar_round_trips_and_demuxes(self):
+        recs = [
+            _rec(0, 116, op=84, subreg=0),
+            _rec(FRAME_REG, 6),
+            _rec(0, 1),
+            _rec(VOICE_REG, 0),
+            _rec(7, 2),
+            _rec(FRAME_REG, 6),
+            _rec(0, 3),
+            _rec(VOICE_REG, 0),
+            _rec(7, 4),
+            _rec(DELAY_REG, 2),
+            _rec(FRAME_REG, 6),
+            _rec(0, 5),
+            _rec(VOICE_REG, 0),
+            _rec(7, 6),
+        ]
+        vm = df_to_voice_major(recs)
+        self.assertEqual(df_to_frame_major(vm), recs)
+        lane_markers = [r for r in vm if int(r["reg"]) == VLANE_REG]
+        self.assertTrue(lane_markers, "no lane markers emitted")
+        content_regs = [
+            int(r["reg"])
+            for r in vm
+            if int(r["reg"]) >= 0 and int(r["reg"]) not in (FRAME_REG, VOICE_REG)
+        ]
+        self.assertEqual(
+            content_regs, [0, 0, 0, 0, 7, 7, 7], "content not de-muxed by slot"
+        )
+
+    def test_prefix_content_before_first_frame(self):
+        recs = [
+            _rec(0, 9, op=84),
+            _rec(FRAME_REG, 6),
+            _rec(0, 1),
+            _rec(VOICE_REG, 0),
+            _rec(7, 2),
+        ]
+        self.assertEqual(df_to_frame_major(df_to_voice_major(recs)), recs)
+
+    def test_corpus_round_trip_bit_exact(self):
+        paths = sorted(
+            glob.glob(os.path.join(_HVSC, "**", "*.dump.parquet"), recursive=True)
+        )
+        if not paths:
+            self.skipTest("HVSC corpus unavailable")
+        from preframr_tokens.reglogparser import RegLogParser
+        from preframr_tokens.tokenizer_config import default_tokenizer_args
+
+        args = default_tokenizer_args(
+            generator_pass=True, instrument_program=True, melody_skeleton=True
+        )
+        checked = 0
+        for path in paths[:: max(1, len(paths) // 40)][:20]:
+            df = next(
+                RegLogParser(args=args).parse(
+                    path, max_perm=1, require_pq=False, reparse=True
+                ),
+                None,
+            )
+            if df is None:
+                continue
+            checked += 1
+            recs = df.to_dict("records")
+            self.assertEqual(
+                df_to_frame_major(df_to_voice_major(recs)),
+                recs,
+                f"not bit-exact: {path}",
+            )
+        if checked == 0:
+            self.skipTest("no corpus tunes parsed")
 
 
 if __name__ == "__main__":
