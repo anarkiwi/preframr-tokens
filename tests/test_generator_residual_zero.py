@@ -225,7 +225,7 @@ def test_generator_zeroes_whole_chip_singleton_regs():
     generator -- a one-off global write is an ordinary HOLD generator, not an un-modelled straggler.
     Runs the whole-chip gate's own tune through the generator config (real parse, not a post-split df).
     """
-    from preframr_tokens.macros.skeleton_pass import LUT
+    from preframr_tokens.macros.freq_lut import LUT
 
     prev = os.environ.get("PREFRAMR_ARBITER_STRICT")
     os.environ["PREFRAMR_ARBITER_STRICT"] = "1"

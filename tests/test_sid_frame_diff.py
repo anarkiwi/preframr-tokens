@@ -17,7 +17,7 @@ from preframr_tokens.macros.flag_registry import (
     resolve_flags,
     valid_combo,
 )
-from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.sid_frame_diff import (
     diff_dump_vs_pipeline,

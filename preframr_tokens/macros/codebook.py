@@ -211,11 +211,10 @@ def codebook_spec_tuples() -> dict[int, tuple[str, str, int | None]]:
 
 
 def _skel_lut():
-    """The skeleton freq LUT, imported lazily to break the codebook->skeleton_pass->passes_base->
-    state->codebook import cycle (this leaf must load before state finishes initialising).
-    """
+    """The fixed note->16bit freq LUT, imported lazily to keep this codebook leaf free of any
+    eager macro-stack dependency."""
     # pylint: disable=import-outside-toplevel
-    from preframr_tokens.macros.skeleton_pass import LUT
+    from preframr_tokens.macros.freq_lut import LUT
 
     return LUT
 

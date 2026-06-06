@@ -24,7 +24,7 @@ from tests.sid_fixtures import (
 )
 
 from preframr_tokens.audit_primitives import register_state
-from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import (

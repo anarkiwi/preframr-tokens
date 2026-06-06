@@ -14,7 +14,8 @@ from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
-from preframr_tokens.macros.skeleton_pass import LUT, SkeletonPass
+from preframr_tokens.macros.freq_lut import LUT
+from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.stamp_pass import StampPass
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.macros.wavetable_pass import WavetablePass
@@ -30,7 +31,7 @@ from preframr_tokens.stfconstants import (
     WT_ONESHOT_SUBREG_LEN_LO,
     WT_ONESHOT_SUBREG_OFFSET,
 )
-from preframr_tokens.macros.skeleton_pass import midi_to_fn
+from preframr_tokens.macros.freq_lut import midi_to_fn
 
 _IRQ = 19656
 _CODEBOOK_OPS = sorted({op for fam in CODEBOOK_FAMILIES.values() for op in fam.ops})

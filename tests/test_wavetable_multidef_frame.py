@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
-from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import FRAME_REG, WAVETABLE_DEF_OP
 from tests.parse_probes import parse_args

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from preframr_tokens.macros.blocks import iter_self_contained_row_blocks
-from preframr_tokens.macros.skeleton_pass import ARP_MAX_PERIOD
+from preframr_tokens.macros.freq_lut import ARP_MAX_PERIOD
 from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.stfconstants import (
     ORN_OP,

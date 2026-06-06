@@ -23,7 +23,7 @@ from tests.parse_probes import (
 )
 from tests.sid_fixtures import FixtureUnavailable, cache_dir, ensure_driver_fixture
 
-from preframr_tokens.macros.skeleton_pass import LUT
+from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.stfconstants import (
     ORN_TYPE_ARP,
     ORN_TYPE_OCTAVE,

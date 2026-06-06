@@ -22,8 +22,8 @@ __all__ = [
     "GenTuningDecoder",
 ]
 
+from preframr_tokens.macros.freq_lut import LUT as SKEL_LUT
 from preframr_tokens.macros.skeleton_pass import (
-    LUT as SKEL_LUT,
     cycle_frame_offsets,
     held_cycle_offsets,
     slide_frame_offsets,
