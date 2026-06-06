@@ -26,7 +26,6 @@ def _args(zero_plain):
         skeleton_pass=True,
         trajectory_anchor_pass=True,
         held_arp=True,
-        wavetable_pass=True,
         zero_plain=zero_plain,
     )
 

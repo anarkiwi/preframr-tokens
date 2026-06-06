@@ -14,16 +14,9 @@ from preframr_tokens.stfconstants import (
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_REF_OP,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_REF_OP,
-    WT_REF_SUBREG_ID,
 )
 
 FROZEN_LEGACY_SPECS = {
-    WAVETABLE_DEF_OP: ("wavetable", "def", None),
-    WAVETABLE_END_OP: ("wavetable", "commit", None),
-    WAVETABLE_REF_OP: ("wavetable", "ref", WT_REF_SUBREG_ID),
     INSTR_DEF_OP: ("instrument", "def", None),
     INSTR_END_OP: ("instrument", "commit", None),
     INSTR_REF_OP: ("instrument", "ref", None),

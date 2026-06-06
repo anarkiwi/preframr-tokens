@@ -1,5 +1,5 @@
 """Codebook REF liveness mask (RESID_ZERO_PHASE3 §4 B2/B3): the constrained-decode mask forbids an
-inline-codebook INSTRUMENT/WAVETABLE REF whose id is not live (defined + committed), a DEF stashes the
+inline-codebook INSTRUMENT/GENERATOR REF whose id is not live (defined + committed), a DEF stashes the
 pending id and a COMMIT makes it live, a later DEF rebinds it, and an out-of-window DEF can be seeded via
 init_codebook_ids -- so the DEF->REF backref can no longer silently vanish at inference.
 """
@@ -16,15 +16,15 @@ from preframr_tokens.macros.validators import (
 )
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_ID,
     INSTR_DEF_OP,
     INSTR_END_OP,
     INSTR_REF_OP,
     PAD_REG,
     SET_OP,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_REF_OP,
-    WT_REF_SUBREG_ID,
 )
 
 PAD, FRAME, STAMP_DEF3, STAMP_END3, STAMP_REF3, STAMP_REF7 = 0, 1, 2, 3, 4, 5
@@ -37,9 +37,9 @@ _ROWS = [
     {"op": INSTR_END_OP, "reg": 4, "subreg": -1, "val": 3},
     {"op": INSTR_REF_OP, "reg": 4, "subreg": -1, "val": 3},
     {"op": INSTR_REF_OP, "reg": 4, "subreg": -1, "val": 7},
-    {"op": WAVETABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
-    {"op": WAVETABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
-    {"op": WAVETABLE_REF_OP, "reg": 0, "subreg": WT_REF_SUBREG_ID, "val": 9},
+    {"op": GEN_TABLE_DEF_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": GEN_TABLE_END_OP, "reg": 0, "subreg": -1, "val": 9},
+    {"op": GEN_TABLE_REF_OP, "reg": 0, "subreg": GEN_TABLE_REF_SUBREG_ID, "val": 9},
 ]
 
 
@@ -78,7 +78,7 @@ class TestCodebookMask(unittest.TestCase):
         self.assertTrue(_masked(state, STAMP_REF7), "other id still illegal")
 
     def test_seeded_live_id_makes_ref_legal(self):
-        state = _state(init_codebook_ids={1: {3}})
+        state = _state(init_codebook_ids={0: {3}})
         self.assertFalse(_masked(state, STAMP_REF3), "seeded id legal from start")
         self.assertTrue(_masked(state, STAMP_REF7))
 
@@ -87,30 +87,30 @@ class TestCodebookMask(unittest.TestCase):
         state.update(STAMP_DEF3)
         state.update(STAMP_END3)
         self.assertFalse(_masked(state, STAMP_REF3))
-        self.assertEqual(state.codebook_live[1], {3})
+        self.assertEqual(state.codebook_live[0], {3})
 
 
 def _df(*token_ids):
     return pd.DataFrame([_ROWS[t] for t in token_ids])
 
 
-class TestWavetableCodebookMask(unittest.TestCase):
-    def test_wavetable_ref_liveness(self):
+class TestGeneratorCodebookMask(unittest.TestCase):
+    def test_generator_ref_liveness(self):
         state = _state()
         self.assertTrue(_masked(state, WT_REF9), "ref illegal before def+commit")
         state.update(WT_DEF9)
         self.assertTrue(_masked(state, WT_REF9), "ref illegal before commit")
         state.update(WT_END9)
-        self.assertFalse(_masked(state, WT_REF9), "ref legal after WAVETABLE_END")
+        self.assertFalse(_masked(state, WT_REF9), "ref legal after GEN_TABLE_END")
 
-    def test_wavetable_validation(self):
+    def test_generator_validation(self):
         self.assertTrue(validate_codebook_refs(_df(WT_DEF9, WT_END9, WT_REF9)))
         with self.assertRaises(AssertionError):
             validate_codebook_refs(_df(WT_REF9))
 
-    def test_wavetable_live_ids_table_index(self):
+    def test_generator_live_ids_table_index(self):
         live = codebook_live_ids(_df(WT_DEF9, WT_END9))
-        self.assertEqual(live[0], {9}, "wavetable is table index 0")
+        self.assertEqual(live[1], {9}, "generator is table index 1")
 
 
 class TestCodebookValidation(unittest.TestCase):
@@ -131,18 +131,18 @@ class TestCodebookValidation(unittest.TestCase):
             validate_codebook_refs(_df(STAMP_DEF3, STAMP_REF3))
 
     def test_seeded_live_id_accepts_ref(self):
-        self.assertTrue(validate_codebook_refs(_df(STAMP_REF3), live_ids={1: {3}}))
-        self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={1: {3}}))
+        self.assertTrue(validate_codebook_refs(_df(STAMP_REF3), live_ids={0: {3}}))
+        self.assertTrue(validate_stream(_df(STAMP_REF3), live_ids={0: {3}}))
 
 
 class TestMaterialization(unittest.TestCase):
     def test_live_ids_from_prior_context(self):
         live = codebook_live_ids(_df(STAMP_DEF3, STAMP_END3, WT_DEF9, WT_END9))
-        self.assertEqual(live[1], {3})
-        self.assertEqual(live[0], {9})
+        self.assertEqual(live[0], {3})
+        self.assertEqual(live[1], {9})
 
     def test_uncommitted_def_is_not_live(self):
-        self.assertEqual(codebook_live_ids(_df(STAMP_DEF3))[1], set())
+        self.assertEqual(codebook_live_ids(_df(STAMP_DEF3))[0], set())
 
     def test_materialized_window_ref_becomes_legal(self):
         live = codebook_live_ids(_df(STAMP_DEF3, STAMP_END3))

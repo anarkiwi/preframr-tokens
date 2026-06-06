@@ -53,12 +53,6 @@ from preframr_tokens.stfconstants import (
     SWEEP_OP,
     TRACK_REF_OP,
     TRANSPOSE_OP,
-    WAVETABLE_DEF_OP,
-    WAVETABLE_END_OP,
-    WAVETABLE_ONESHOT_OP,
-    WAVETABLE_REF_OP,
-    WAVETABLE_STEP_OP,
-    WAVETABLE_SUSTAIN_OP,
 )
 
 __all__ = [
@@ -129,7 +123,6 @@ _CONTRACT_LIST = (
     OpContract(FC_PRESET_OP, MaskRole.ATOM),
     OpContract(PWM_PRESET_SHIFTED_OP, MaskRole.ATOM),
     OpContract(PWM_SUSTAIN_OP, MaskRole.ATOM),
-    OpContract(WAVETABLE_SUSTAIN_OP, MaskRole.ATOM),
     OpContract(FREQ_TRAJ_OP, MaskRole.ATOM),
     OpContract(TRACK_REF_OP, MaskRole.ATOM),
     OpContract(SKEL_OP, MaskRole.ATOM),
@@ -145,11 +138,6 @@ _CONTRACT_LIST = (
     OpContract(INSTR_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(INSTR_END_OP, MaskRole.CODEBOOK_END),
     OpContract(INSTR_REF_OP, MaskRole.CODEBOOK_REF),
-    OpContract(WAVETABLE_ONESHOT_OP, MaskRole.ATOM),
-    OpContract(WAVETABLE_DEF_OP, MaskRole.CODEBOOK_DEF),
-    OpContract(WAVETABLE_STEP_OP, MaskRole.CODEBOOK_STEP),
-    OpContract(WAVETABLE_END_OP, MaskRole.CODEBOOK_END),
-    OpContract(WAVETABLE_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(PATTERN_REPLAY_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_OVERLAY_OP, MaskRole.OVERLAY),
     OpContract(DO_LOOP_OP, MaskRole.LOOP_CTRL),
@@ -226,7 +214,6 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
 )
 
 CODEBOOK_TABLES: tuple[str, ...] = (
-    "wavetable",
     "instrument",
     "generator",
 )
@@ -255,10 +242,6 @@ OP_PRODUCER: dict[int, str] = {
     PATTERN_REPLAY_OP: "LoopPass",
     PATTERN_OVERLAY_OP: "LoopPass",
     DO_LOOP_OP: "LoopPass",
-    WAVETABLE_DEF_OP: "WavetablePass",
-    WAVETABLE_STEP_OP: "WavetablePass",
-    WAVETABLE_END_OP: "WavetablePass",
-    WAVETABLE_REF_OP: "WavetablePass",
     INSTR_DEF_OP: "InstrumentProgramPass",
     INSTR_STEP_OP: "InstrumentProgramPass",
     INSTR_END_OP: "InstrumentProgramPass",

@@ -1,6 +1,6 @@
-"""Run-length encoding shared by the skeleton held-ARP cycle detector (``skeleton_pass``) and the
-WAVETABLE codebook factoriser (``wavetable``): the ``(value, run-length)`` collapse and its inverse live
-in one tested place rather than being re-implemented per caller."""
+"""Run-length encoding used by the skeleton held-ARP cycle detector (``skeleton_pass``): the
+``(value, run-length)`` collapse and its inverse live in one tested place rather than being
+re-implemented per caller."""
 
 __all__ = ["run_length_encode", "run_length_decode"]
 

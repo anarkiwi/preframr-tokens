@@ -21,8 +21,8 @@ from preframr_tokens.stfconstants import INSTR_REF_OP
 from tests.test_codebook_machine_equivalence import _CORPUS, _Builder
 
 _FAMILY_CORPUS = {
-    "wavetable": "wt_def_ref",
     "instrument": "instrument_def_ref",
+    "generator": "generator_table",
 }
 
 

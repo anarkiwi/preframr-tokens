@@ -14,7 +14,6 @@ __all__ = [
     "ShiftedDecoder",
     "SubregFlushDecoder",
     "PwmSustainDecoder",
-    "WavetableSustainDecoder",
     "SkeletonDecoder",
     "OrnamentDecoder",
     "SweepDecoder",
@@ -110,7 +109,6 @@ from preframr_tokens.stfconstants import (
     TRACK_REF_SUBREG_LEAD,
     TRANSPOSE_OP,
     VOICES,
-    WAVETABLE_SUSTAIN_OP,
 )
 from preframr_tokens.macros.codebook import codebook_decoders
 from preframr_tokens.macros.generator_fit import _tri_seq
@@ -500,27 +498,6 @@ class PwmSustainDecoder(MacroDecoder):
         return pre + [own]
 
 
-class WavetableSustainDecoder(MacroDecoder):
-    """Lonely-PWM-plus-FC sustain-frame macro: decoder emits both a PWM_PRESET-equivalent SET on the voice's PW reg and an FC_PRESET-equivalent SET on the filter cutoff lo reg. Voice recovered upstream by remove_voice_reg; FC reg is global."""
-
-    op_code = WAVETABLE_SUSTAIN_OP
-
-    def expand(self, row, state):
-        reg = int(row.reg)
-        packed = int(row.val)
-        pwm_preset_id = (packed >> 8) & 0xFF
-        fc_preset_id = packed & 0xFF
-        pwm_val = int(PWM_PRESET_TABLE[pwm_preset_id])
-        fc_val = int(FC_PRESET_TABLE[fc_preset_id])
-        pre = state.maybe_flush_for(reg, -1)
-        state.last_val[reg] = pwm_val
-        state.last_val[int(FC_LO_REG)] = fc_val
-        return pre + [
-            (reg, pwm_val, row.diff, row.description),
-            (int(FC_LO_REG), fc_val, row.diff, row.description),
-        ]
-
-
 class SkeletonDecoder(MacroDecoder):
     """Decode a SKEL atom (op54): one clean held freq note. The note is absolute
     (subreg=SKEL_SUBREG_ABS) for the first claimed note on a reg, else a signed semitone
@@ -726,7 +703,6 @@ DECODERS = {
         _LegatoClusterNibbleDecoder(LEGATO_OP_CLUSTER_4),
         _LegatoClusterByteDecoder(LEGATO_OP_CLUSTER_7),
         PwmSustainDecoder(),
-        WavetableSustainDecoder(),
         FreqTrajectoryDecoder(),
         TrackRefDecoder(),
         SkeletonDecoder(),

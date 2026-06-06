@@ -32,10 +32,7 @@ _STACK_FLAGS = {
     "skeleton_pass",
     "trajectory_anchor_pass",
     "held_arp",
-    "wavetable_pass",
     "zero_plain",
-    "wt_short",
-    "wt_oneshot",
     "slide_wide",
     "slide_landing",
 }
@@ -114,8 +111,8 @@ class TestFrameDiffUnit(unittest.TestCase):
 class TestFlagResolver(unittest.TestCase):
     def test_requires_expanded(self):
         self.assertEqual(
-            resolve_flags({"wt_oneshot"}),
-            {"wt_oneshot", "wavetable_pass", "skeleton_pass"},
+            resolve_flags({"zero_plain"}),
+            {"zero_plain", "skeleton_pass"},
         )
 
     def test_conflict_raises(self):

@@ -17,9 +17,6 @@ __all__ = [
 ]
 
 FLAG_REQUIRES = {
-    "wavetable_pass": frozenset({"skeleton_pass"}),
-    "wt_short": frozenset({"wavetable_pass", "skeleton_pass"}),
-    "wt_oneshot": frozenset({"wavetable_pass", "skeleton_pass"}),
     "zero_plain": frozenset({"skeleton_pass"}),
     "slide_wide": frozenset({"skeleton_pass"}),
     "slide_landing": frozenset({"skeleton_pass"}),

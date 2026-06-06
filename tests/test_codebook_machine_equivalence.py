@@ -15,21 +15,12 @@ from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.freq_lut import LUT
-from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
-from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     INSTR_OFF_CTRL,
     INSTR_REF_OP,
     SET_OP,
-    SKEL_OP,
-    SKEL_SUBREG_ABS,
-    WAVETABLE_ONESHOT_OP,
-    WT_ONESHOT_SUBREG_END,
-    WT_ONESHOT_SUBREG_LEN_HI,
-    WT_ONESHOT_SUBREG_LEN_LO,
-    WT_ONESHOT_SUBREG_OFFSET,
 )
 
 _IRQ = 19656
@@ -84,33 +75,6 @@ class _Builder:
         return pd.DataFrame(self.rows)
 
 
-def _wavetable_streams():
-    _FREQ, _CTRL = 0, 4
-
-    def build(prog, bases):
-        b = _Builder()
-        for base in bases:
-            b.frame().write(_CTRL, 0x40)
-            b.frame().write(_CTRL, 0x41).write(_FREQ, int(LUT[base]))
-            for off in prog:
-                b.frame().write(_FREQ, int(LUT[base + off]))
-        for _ in range(6):
-            b.frame()
-        return b.df()
-
-    def skel(df):
-        return SkeletonPass().apply(df, _args(skeleton_pass=True, held_arp=True))
-
-    out = {}
-    out["wt_def_ref"] = WavetablePass().apply(
-        skel(build([26, 5, 9, 14], [40, 60, 50])), _args(wavetable_pass=True)
-    )
-    out["wt_oneshot"] = WavetablePass().apply(
-        skel(build([26, 5, 9, 14], [40])), _args(wavetable_pass=True, wt_oneshot=True)
-    )
-    return out
-
-
 def _instrument_streams():
     c0 = int(CTRL_REGS_BY_VOICE[0])
 
@@ -159,27 +123,11 @@ def _dead_ref_stream():
     return _Builder().frame().write(c0, 99, op=INSTR_REF_OP).frame().df()
 
 
-def _oneshot_handbuilt_stream():
-    """A self-contained WAVETABLE one-shot after an absolute SKEL note (exercises ONESHOT replay)."""
-    b = _Builder()
-    b.frame().write(0, 48, op=SKEL_OP, subreg=SKEL_SUBREG_ABS)
-    b.frame().write(0, 0, op=WAVETABLE_ONESHOT_OP, subreg=WT_ONESHOT_SUBREG_LEN_HI)
-    b.write(0, 3, op=WAVETABLE_ONESHOT_OP, subreg=WT_ONESHOT_SUBREG_LEN_LO)
-    for off in (0, 7, 12):
-        b.write(0, off, op=WAVETABLE_ONESHOT_OP, subreg=WT_ONESHOT_SUBREG_OFFSET)
-    b.write(0, 0, op=WAVETABLE_ONESHOT_OP, subreg=WT_ONESHOT_SUBREG_END)
-    for _ in range(6):
-        b.frame()
-    return b.df()
-
-
 def _corpus():
     streams = {}
-    streams.update(_wavetable_streams())
     streams.update(_instrument_streams())
     streams.update(_generator_streams())
     streams["dead_ref"] = _dead_ref_stream()
-    streams["oneshot_handbuilt"] = _oneshot_handbuilt_stream()
     return streams
 
 

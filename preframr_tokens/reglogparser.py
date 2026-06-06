@@ -20,7 +20,6 @@ from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
 from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.skeleton_pass import SkeletonPass
 from preframr_tokens.macros.trajectory_anchor import TrajectoryAnchorPass
-from preframr_tokens.macros.wavetable_pass import WavetablePass
 from preframr_tokens.macros.preset_pass import PresetPass
 from preframr_tokens.macros.pre_gate_freq_pass import PreGateFreqPass
 from preframr_tokens.macros.voice_track_pass import VoiceTrackPass
@@ -61,7 +60,6 @@ from preframr_tokens.stfconstants import (
     VOICES,
     VOICE_REG,
     VOICE_REG_SIZE,
-    WAVETABLE_SUSTAIN_OP,
 )
 
 __all__ = [
@@ -71,7 +69,7 @@ __all__ = [
     "read_initial_irq",
 ]
 
-_SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP), int(WAVETABLE_SUSTAIN_OP)}
+_SUSTAIN_MARKER_OPS = {int(PWM_SUSTAIN_OP)}
 
 FRAME_DTYPES = {
     "reg": REG_PDTYPE,
@@ -982,7 +980,6 @@ class RegLogParser:
             VoiceTrackPass(),
             TrajectoryAnchorPass(),
             SkeletonPass(),
-            WavetablePass(),
             FreqTrajectoryPass(),
             PresetPass(),
             PerRegBurstPass(),

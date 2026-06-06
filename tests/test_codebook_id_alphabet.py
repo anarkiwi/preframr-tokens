@@ -13,11 +13,11 @@ from preframr_tokens.alphabet_projection import project_df
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_REF_SUBREG_ID,
     INSTR_DEF_OP,
     MODEL_PDTYPE,
     SET_OP,
-    WAVETABLE_REF_OP,
-    WT_REF_SUBREG_ID,
 )
 
 
@@ -85,14 +85,16 @@ class TestProjectDfSkipsCodebookIds(unittest.TestCase):
 
     def test_rel_ref_id_subreg_skips_but_base_subreg_snaps(self):
         table = {
-            (WAVETABLE_REF_OP, 0, WT_REF_SUBREG_ID): np.array([0, 1], dtype=np.int64),
-            (WAVETABLE_REF_OP, 0, 2): np.array([100], dtype=np.int64),
+            (GEN_TABLE_REF_OP, 0, GEN_TABLE_REF_SUBREG_ID): np.array(
+                [0, 1], dtype=np.int64
+            ),
+            (GEN_TABLE_REF_OP, 0, 2): np.array([100], dtype=np.int64),
         }
         df = pd.DataFrame(
             {
-                "op": [WAVETABLE_REF_OP, WAVETABLE_REF_OP],
+                "op": [GEN_TABLE_REF_OP, GEN_TABLE_REF_OP],
                 "reg": [0, 0],
-                "subreg": [WT_REF_SUBREG_ID, 2],
+                "subreg": [GEN_TABLE_REF_SUBREG_ID, 2],
                 "val": [7, 50],
             }
         )

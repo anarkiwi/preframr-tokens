@@ -190,11 +190,8 @@ class TestRegisterOrderFidelity(unittest.TestCase):
         flags = dict(
             {f: True for f in REGISTERED_MACROS},
             skeleton_pass=True,
-            wavetable_pass=True,
             held_arp=True,
             zero_plain=True,
-            wt_short=True,
-            wt_oneshot=True,
             slide_wide=True,
             slide_landing=True,
         )

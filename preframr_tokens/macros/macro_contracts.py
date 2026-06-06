@@ -23,8 +23,6 @@ from preframr_tokens.stfconstants import (
     TRACK_REF_OP,
     VOICE_REG_SIZE,
     VOICES,
-    WAVETABLE_ONESHOT_OP,
-    WAVETABLE_REF_OP,
 )
 
 __all__ = [
@@ -60,7 +58,7 @@ class RegClass(Enum):
 class Effect(Enum):
     """How a decode op sets a register: ABSOLUTE = a state-independent value (SET/preset/onset);
     RELATIVE = a function of the register's prior decode value (DIFF/FLIP) -- needs a stable base;
-    REPLAY = regenerated from a codebook/trajectory (WAVETABLE_REF/SKEL/...) -- opaque to a delta encoder.
+    REPLAY = regenerated from a codebook/trajectory (INSTR_REF/SKEL/...) -- opaque to a delta encoder.
     """
 
     ABSOLUTE = "absolute"
@@ -125,14 +123,6 @@ CONTRACTS = {
             False,
         ),
         MacroContract(
-            "WavetablePass",
-            frozenset({(_FREQ, _RPL), (_PWM, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            False,
-        ),
-        MacroContract(
             "FreqTrajectoryPass",
             frozenset({(_FREQ, _RPL)}),
             frozenset(),
@@ -178,7 +168,6 @@ CONTRACTS = {
 PIPELINE_ORDER = (
     "TrajectoryAnchorPass",
     "SkeletonPass",
-    "WavetablePass",
     "FreqTrajectoryPass",
     "PerRegBurstPass",
     "InstrumentProgramPass",
@@ -243,8 +232,6 @@ REPLAY_OPS = frozenset(
         int(SWEEP_OP),
         int(FREQ_TRAJ_OP),
         int(TRACK_REF_OP),
-        int(WAVETABLE_REF_OP),
-        int(WAVETABLE_ONESHOT_OP),
         int(INSTR_REF_OP),
         int(GEN_TABLE_REF_OP),
     }
