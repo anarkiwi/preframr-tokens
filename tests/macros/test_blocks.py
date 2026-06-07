@@ -5,11 +5,12 @@ import unittest
 import pandas as pd
 
 from preframr_tokens.macros.blocks import (
+    _to_canonical_int,
     expand_to_literal_form,
     iter_self_contained_row_blocks,
     self_contain_slice,
 )
-from preframr_tokens.stfconstants import FRAME_REG, MODEL_PDTYPE, SET_OP
+from preframr_tokens.stfconstants import DIFF_PDTYPE, FRAME_REG, MODEL_PDTYPE, SET_OP
 
 
 def _row(reg, val, op=SET_OP, diff=32, subreg=-1):
@@ -25,6 +26,20 @@ def _row(reg, val, op=SET_OP, diff=32, subreg=-1):
 
 def _df(rows):
     return pd.DataFrame(rows, dtype=MODEL_PDTYPE)
+
+
+class TestCanonicalIntDtypes(unittest.TestCase):
+    def test_negative_diff_sentinel_survives_cast(self):
+        """voice-lane marker rows carry the -1 diff sentinel; the canonical diff dtype must be signed so
+        _to_canonical_int does not raise (regression: DIFF_PDTYPE was UInt16, crashing macro-arm tokenize
+        with 'cannot safely cast non-equivalent int64 to uint16'). Large in-range diffs still round-trip.
+        """
+        self.assertTrue(pd.api.types.is_signed_integer_dtype(DIFF_PDTYPE.numpy_dtype))
+        out = _to_canonical_int(
+            _df([_row(FRAME_REG, 0, diff=19656), _row(0, 5, diff=-1)])
+        )
+        self.assertEqual(int(out["diff"].iloc[0]), 19656)
+        self.assertEqual(int(out["diff"].iloc[1]), -1)
 
 
 class TestExpandToLiteralForm(unittest.TestCase):
