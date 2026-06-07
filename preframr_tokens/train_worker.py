@@ -120,12 +120,15 @@ def train_worker(
             return f.read()
 
     def reader():
-        parts = []
+        """Yield one sequence per ``.uni`` file (a bounded per-tune/block chunk) rather than a single
+        giant concatenation of the whole corpus. The big single sequence stresses the unigram trainer's
+        per-item pre-tokenisation/feed (the ~50K-symbol isolation alphabet + a multi-million-char string)
+        and has been linked to non-deterministic SIGSEGVs; per-file chunks bound the per-item work.
+        ``map`` preserves input order (the old ``as_completed`` join was order-nondeterministic, so the
+        trained vocab was not reproducible) while keeping the reads parallel."""
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as p:
-            futures = [p.submit(read_uni, uni_file) for uni_file in uni_files]
-            for future in concurrent.futures.as_completed(futures):
-                parts.append(future.result())
-        yield "".join(parts)
+            for part in p.map(read_uni, uni_files):
+                yield part
 
     tkmodel, trainer = get_tk(
         tkvocab,

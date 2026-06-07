@@ -47,6 +47,28 @@ class TestTrainWorker(unittest.TestCase):
             self.assertTrue(os.path.exists(tkmodel_path))
             self.assertGreater(os.path.getsize(tkmodel_path), 0)
 
+    def test_unigram_multiple_uni_files_chunked(self):
+        """Several .uni files train via the per-file chunked reader (one sequence per file, in order),
+        not a single giant concatenation -- the giant-string path is linked to unigram-trainer SIGSEGVs.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = "".join((string.ascii_letters + string.digits + ".,;: ") * 4)
+            unis = []
+            for i in range(3):
+                u = os.path.join(tmpdir, f"part{i}.uni.zst")
+                self._write_uni(u, base + chr(0x300 + i))
+                unis.append(u)
+            tkmodel_path = os.path.join(tmpdir, "tk.json")
+            train_worker(
+                tokenizer="unigram",
+                tkvocab=256,
+                args_tkmodel=tkmodel_path,
+                uni_files=unis,
+                initial_alphabet=list(string.ascii_letters + string.digits),
+            )
+            self.assertTrue(os.path.exists(tkmodel_path))
+            self.assertGreater(os.path.getsize(tkmodel_path), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
