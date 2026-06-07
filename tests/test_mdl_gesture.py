@@ -8,13 +8,19 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.audit_primitives import register_state
+from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.codebook import gesture_value_series
 from preframr_tokens.macros.mdl_gesture_pass import (
     MdlGesturePass,
     _emit_specs,
     _SCALAR_REGS,
 )
-from preframr_tokens.stfconstants import FRAME_REG, GESTURE_REF_OP, SET_OP
+from preframr_tokens.stfconstants import (
+    FRAME_REG,
+    GESTURE_REF_OP,
+    NOTE_INTERVAL_OP,
+    SET_OP,
+)
 
 
 def _reconstruct(series, wrap=False):
@@ -109,16 +115,45 @@ def test_pass_is_idempotent():
     assert once.reset_index(drop=True).equals(twice.reset_index(drop=True))
 
 
-def test_pass_leaves_freq_and_markers_untouched():
-    """Step 2 owns only the scalar value channels: the freq value SETs (reg 0, op SET) and the FRAME
-    markers survive verbatim, so the freq joint parse (Step 3) is free to claim them later. (Gesture
-    DEF rows ride the voice-relative reg 0, so the reg-0 row count grows -- the freq SETs do not.)
+def test_freq_two_layer_is_byte_exact():
+    """The freq channel splits into a note-index layer (NOTE_INTERVAL) + a freq-delta gesture layer and
+    decodes back byte-exact: a melody of held grid notes, an arp, and a vibrato around one held note all
+    reconstruct via note_freq(note) + delta, with the vibrato kept in the delta layer (note held).
     """
+    tuning = 0.0
+    notes = [49, 53, 56, 49, 51, 53]
+    seq = []
+    for k, m in enumerate(notes):
+        base = pitch_grid.note_freq_at(m, tuning)
+        hold = 8
+        if k == 0:
+            seq.extend(
+                int(base + round(40 * np.sin(2 * np.pi * j / 6))) for j in range(20)
+            )
+        else:
+            seq.extend([base] * hold)
+    for m in (49, 52, 55):
+        seq.extend([pitch_grid.note_freq_at(m, tuning)] * 2)
+    freq = [int(max(0, min(65535, v))) for v in seq]
+    n = len(freq)
+    df = _setdf({0: freq}, n)
+    before = register_state(df.copy())
+    out = MdlGesturePass().encode(df.copy())
+    after = register_state(out.copy())
+    assert before.shape == after.shape
+    assert not (before != after).any()
+    assert int((out["op"] == NOTE_INTERVAL_OP).sum()) > 0
+    assert int((out["op"] == GESTURE_REF_OP).sum()) > 0
+    assert int(((out["reg"] == 0) & (out["op"] == SET_OP)).sum()) == 0
+
+
+def test_frame_markers_preserved():
+    """The pass rewrites only value rows: the FRAME markers (the decode frame budget every lossless
+    transform must conserve) survive verbatim in count, and the freq reg is owned by the freq two-layer
+    parse -- not the scalar channel set."""
     n = 24
     chans = {0: [9000 + 10 * f for f in range(n)], 2: [256] * n}
     df = _setdf(chans, n)
     out = MdlGesturePass().encode(df.copy())
-    freq_sets = (out["reg"] == 0) & (out["op"] == SET_OP)
-    assert int(freq_sets.sum()) == int((df["reg"] == 0).sum())
     assert int((out["reg"] == FRAME_REG).sum()) == n
     assert 0 not in set(_SCALAR_REGS)

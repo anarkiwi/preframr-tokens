@@ -455,6 +455,22 @@ def gesture_value_series(shape, anchor, diffs, length):
     return out
 
 
+def _gesture_note_base(state, voice):
+    """The freq a gesture REF on a freq voice rides: the voice's current note (set by NOTE_INTERVAL)
+    mapped through the recovered note->freq table, the per-voice tuning grid, or the global ref grid --
+    the SAME base the encoder subtracts to form the freq-delta, so ``base + delta`` is byte-exact.
+    """
+    cur_note = getattr(state, "gesture_cur_note", {}).get(voice)
+    if cur_note is None:
+        return 0
+    tbl = state.gen_table_by_voice.get(voice)
+    if tbl is not None and cur_note in tbl:
+        return int(tbl[cur_note])
+    if voice in state.gen_ref_by_voice:
+        return int(pitch_grid.note_freq_at(cur_note, state.gen_ref_by_voice[voice]))
+    return int(recon(cur_note, state.gen_ref)) & 0xFFFF
+
+
 class _GestureCodec(_Codec):
     """MDL gesture codebook (subsumes GENERATOR + INSTRUMENT): DEF/STEP/END buffer one reusable SHAPE
     (HOLD / POLY(N) forward-difference / PERIOD delta-cell) into the id table; the fixed-layout REF
@@ -548,14 +564,9 @@ class _GestureCodec(_Codec):
         pre = state.maybe_flush_for(reg, -1)
         queue = state.pending_set_writes[reg]
         if reg in GEN_FREQ_REGS:
-            voice = reg // 7
-            note_base = getattr(state, "gesture_note_freq", {}).get(voice)
-            if note_base is not None:
-                for delta in series:
-                    queue.append((int(note_base) + int(delta)) & 0xFFFF)
-            else:
-                for v in series:
-                    queue.append(int(v) & 0xFFFF)
+            base = _gesture_note_base(state, reg // 7)
+            for delta in series:
+                queue.append((base + int(delta)) & 0xFFFF)
         else:
             for v in series:
                 queue.append(int(v))

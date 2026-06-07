@@ -143,6 +143,8 @@ class DecodeState:
         self.pending_gen_tri = None
         self.pending_melody_interval = None
         self.melody_interval_cur_note = {v: 0 for v in range(VOICES)}
+        self.pending_note_interval = None
+        self.gesture_cur_note = {v: 0 for v in range(VOICES)}
         self.gen_ref = 0.0
         self.gen_ref_by_voice = {}
         self.gen_table_by_voice = {}

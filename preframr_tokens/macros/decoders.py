@@ -13,10 +13,16 @@ __all__ = [
     "GenTriDecoder",
     "GenTuningDecoder",
     "MelodyIntervalDecoder",
+    "NoteIntervalDecoder",
 ]
 
 from preframr_tokens.macros.state import FREQ_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
+    NOTE_INTERVAL_OP,
+    NOTE_INTERVAL_SUBREG_FIRST,
+    NOTE_INTERVAL_SUBREG_INTERVAL_HI,
+    NOTE_INTERVAL_SUBREG_INTERVAL_LO,
+    NOTE_INTERVAL_SUBREG_VOICE,
     MELODY_INTERVAL_OP,
     MELODY_INTERVAL_SUBREG_DELTA_HI,
     MELODY_INTERVAL_SUBREG_DELTA_LO,
@@ -397,6 +403,38 @@ class MelodyIntervalDecoder(MacroDecoder):
         return pre or None
 
 
+class NoteIntervalDecoder(MacroDecoder):
+    """Decode a NOTE_INTERVAL atom (MDL note-index layer): update the voice's current note from the
+    zig-zag interval (FIRST sets it absolute) and store it on the state; it emits no register write --
+    the freq-delta GESTURE_REF that follows rides ``note_freq(cur_note) + delta`` onto the freq reg.
+    """
+
+    op_code = NOTE_INTERVAL_OP
+
+    def expand(self, row, state):
+        sub = int(row.subreg)
+        if sub == NOTE_INTERVAL_SUBREG_VOICE:
+            state.pending_note_interval = {"fields": {}}
+        pend = state.pending_note_interval
+        if pend is None:
+            return None
+        pend["fields"][sub] = int(row.val)
+        if sub != NOTE_INTERVAL_SUBREG_INTERVAL_LO:
+            return None
+        state.pending_note_interval = None
+        f = pend["fields"]
+        voice = int(f.get(NOTE_INTERVAL_SUBREG_VOICE, 0)) % VOICES
+        raw_iv = ((f.get(NOTE_INTERVAL_SUBREG_INTERVAL_HI, 0) & 0xFF) << 8) | (
+            f.get(NOTE_INTERVAL_SUBREG_INTERVAL_LO, 0) & 0xFF
+        )
+        iv = unzig(raw_iv)
+        if int(f.get(NOTE_INTERVAL_SUBREG_FIRST, 0)):
+            state.gesture_cur_note[voice] = iv
+        else:
+            state.gesture_cur_note[voice] = state.gesture_cur_note[voice] + iv
+        return None
+
+
 DECODERS = {
     d.op_code: d
     for d in (
@@ -414,6 +452,7 @@ DECODERS = {
         GenTriDecoder(),
         GenTuningDecoder(),
         MelodyIntervalDecoder(),
+        NoteIntervalDecoder(),
     )
 }
 DECODERS.update(codebook_decoders())
