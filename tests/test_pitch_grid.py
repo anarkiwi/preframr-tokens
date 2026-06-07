@@ -3,6 +3,7 @@ index, distinct per-voice tables), and vibrato-as-modulation (design/universal_m
 """
 
 import unittest
+import warnings
 
 import numpy as np
 
@@ -96,6 +97,21 @@ class TestPitchGrid(unittest.TestCase):
             freqs = pg.note_freq(notes, t)
             self.assertTrue((freqs < 65535).all())
             self.assertTrue(np.array_equal(pg.note_index(freqs, t), notes))
+
+    def test_note_freq_clamps_out_of_domain_note(self):
+        """An out-of-domain note index (e.g. a speculative arbiter candidate reading non-note bytes
+        as base_note) must NOT overflow the ``2**(n/12)`` power: note_freq clamps its input so the
+        output saturates within [0, 65535] and raises no RuntimeWarning, while in-domain notes are
+        unchanged (the clamp is a no-op for every real note, so the encoding stays byte-exact).
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            out = pg.note_freq(np.array([12000, -12000, 95, 49, 0]), 0.0)
+        self.assertTrue(((out >= 0) & (out <= 65535)).all())
+        self.assertEqual(int(out[0]), 65535)
+        self.assertEqual(int(out[1]), 0)
+        real = np.arange(12, 92)
+        self.assertTrue(np.array_equal(pg.note_index(pg.note_freq(real)), real))
 
     def test_small_table_and_silence(self):
         """The recovered table is the distinct notes used; unvoiced frames round-trip as zero."""
