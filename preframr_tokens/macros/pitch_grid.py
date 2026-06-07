@@ -47,7 +47,7 @@ def note_freq(note, tuning=0.0):
     """The grid 16-bit freq for a note index at ``tuning`` -- the shared recon the encoder and decoder
     both use (``freq = note_freq(note, tuning) + residual`` is byte-exact). Inverse-consistent with
     note_index: ``note_index(note_freq(n, t), t) == n``."""
-    n = np.asarray(note, dtype=np.float64)
+    n = np.clip(np.asarray(note, dtype=np.float64), -150.0, 150.0)
     return np.clip(np.round(_ANCHOR * 2.0 ** ((n + tuning) / 12.0)), 0, 65535).astype(
         np.int64
     )

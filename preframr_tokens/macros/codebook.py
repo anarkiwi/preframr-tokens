@@ -350,6 +350,8 @@ class _GeneratorCodec(_Codec):
         reg = int(pend["reg"])
         ref = float(getattr(state, "gen_ref", 0.0))
         base = int(pend["base_note"])
+        if int(gen["mode"]) == GEN_TABLE_MODE_NOTE_UNIV and not 0 <= base <= 255:
+            return None
         resid = pend["resid"] if pend.get("resid") else gen["resid"]
         pre = state.maybe_flush_for(reg, -1)
         queue = state.pending_set_writes[reg]

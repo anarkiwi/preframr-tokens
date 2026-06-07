@@ -225,25 +225,6 @@ The authoritative promised surface is `preframr_tokens.__all__`
   torch-free guarantee here is load-bearing and never accepts a torch
   dependency.
 
-### Removed back-compat aliases
-
-All back-compat aliases have been removed. The internal aliases
-(`_frame_marker_count`, `_compute_invalid`, `_LOSS_TIER_NAMES`) and the
-public `MIN_DIFF` re-export went in the prior round; the `reglog_helpers`
-re-export set (`dump_palettes_attrs`, `load_palettes_attrs`, `wrapbits`)
-followed once the last main-repo consumer (`render_play.py`) cut over to
-the source modules.
-
-The `reglog_helpers` module itself was then dissolved (it had become a
-grab-bag): the reg matchers moved to `reg_match`, `tighten_persist_dtypes`
-to `utils` (beside `to_int64_arrays`), and `read_initial_irq` to
-`reglogparser`. Import palette sidecar IO from `palette_io`, `wrapbits`
-and dtype helpers from `utils`, reg matchers from `reg_match`, and
-`read_initial_irq` from `reglogparser`.
-
-Symbols prefixed `_` are package-internal and may change without
-notice.
-
 ## License
 
 Apache 2.0. See `LICENSE`.
