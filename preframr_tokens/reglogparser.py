@@ -923,7 +923,7 @@ class RegLogParser:
                 return
         df = self._read_df(name)
         try:
-            from preframr_tokens.dump_meta import meta_path_for, read_meta, write_meta
+            from preframr_tokens.dump_meta import read_meta, write_meta
 
             existing = read_meta(name)
             if existing is None or existing.stale:
