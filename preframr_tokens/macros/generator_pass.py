@@ -242,8 +242,6 @@ class GeneratorPass(MacroPass):
         f = np.asarray([int(x) for x in freq if x > 8], dtype=np.int64)
         if len(f) < 8:
             return False
-        # Vectorized note_of + recon over all sounding frames (the per-frame Python loop is an
-        # O(frames) hot path re-run per voice per tune -- minutes on a long-tune cross-tune audit).
         lut = _lut(ref)
         idx = np.clip(np.searchsorted(lut, f), 1, _NOTES - 1)
         nt = np.where(f - lut[idx - 1] <= lut[idx] - f, idx - 1, idx)

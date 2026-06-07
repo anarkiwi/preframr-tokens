@@ -156,8 +156,9 @@ def test_generator_table_resid_split_byte_exact():
     try:
         with tempfile.TemporaryDirectory() as tmp:
             path = _multi_feature_dump(os.path.join(tmp, "mf.dump.parquet"))
-            base = _parse(path)
-            split = _parse(path, table_resid_split=True)
+            off = dict(melody_skeleton=False, universal_pitch=False)
+            base = _parse(path, table_resid_split=False, **off)
+            split = _parse(path, table_resid_split=True, **off)
     finally:
         if prev is None:
             del os.environ["PREFRAMR_ARBITER_STRICT"]

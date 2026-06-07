@@ -55,12 +55,17 @@ def __getattr__(name):
 
 
 def default_tokenizer_args(**overrides) -> SimpleNamespace:
-    """Namespace with the real parser params plus every macro-pass flag present
-    and off (the no-macro baseline); ``overrides`` win so callers enable only the
-    passes they want."""
+    """Namespace with the real parser params plus the DEFAULT generator pipeline on
+    (``REGISTERED_MACROS`` + transitive requires) -- the one set of passes that makes
+    the generator encoding work properly. ``overrides`` win; pass ``named_config("baseline")``
+    for the explicit all-off control."""
+    # pylint: disable=import-outside-toplevel
+    from preframr_tokens.macros.flag_registry import resolve_flags
+
     cfg = dict(PARSER_DEFAULTS)
+    on = resolve_flags(set(REGISTERED_MACROS))
     for flag in _macro_flags():
-        cfg[flag] = False
+        cfg[flag] = flag in on
     cfg.update(overrides)
     return SimpleNamespace(**cfg)
 
@@ -74,19 +79,22 @@ REGISTERED_MACROS = (
     "loop_pass",
     "loop_transposed",
     "instrument_program",
+    "melody_skeleton",
+    "universal_pitch",
+    "table_resid_split",
 )
 
-NAMED_CONFIGS = {
-    "baseline": {},
-    "full_macros": {flag: True for flag in REGISTERED_MACROS},
-}
+NAMED_CONFIGS = ("baseline", "full_macros")
 
 
 def named_config(name: str, **overrides) -> SimpleNamespace:
-    """Build a preset args namespace by name (``baseline`` / ``full_macros``);
-    ``overrides`` are applied on top of the preset."""
-    if name not in NAMED_CONFIGS:
+    """Build a preset args namespace by name (``baseline`` = explicit all-off /
+    ``full_macros`` = the generator pipeline); ``overrides`` are applied on top."""
+    if name == "baseline":
+        cfg = {flag: False for flag in _macro_flags()}
+    elif name == "full_macros":
+        cfg = {flag: True for flag in REGISTERED_MACROS}
+    else:
         raise KeyError(f"unknown config {name!r}; known: {sorted(NAMED_CONFIGS)}")
-    cfg = dict(NAMED_CONFIGS[name])
     cfg.update(overrides)
     return default_tokenizer_args(**cfg)

@@ -357,15 +357,12 @@ class _GeneratorCodec(_Codec):
         queue = state.pending_set_writes[reg]
         mode = int(gen["mode"])
         length = int(pend["len"])
-        # Precompute the period's output values ONCE; the frame loop then just indexes the
-        # cycle. The notes repeat every `period` frames, so computing note_freq_at/recon per
-        # replayed frame (and re-running that under the arbiter's validate=True re-decode) is an
-        # O(len x cost) blowup -- this hoists it to O(period). Byte-exact (identical values).
         if mode == GEN_TABLE_MODE_NOTE_UNIV:
             voice = reg // 7
             tuning = getattr(state, "gen_ref_by_voice", {}).get(voice, 0.0)
             cyc = [
-                (pitch_grid.note_freq_at(base + gen["off"][m], tuning) + resid[m]) & 0xFFFF
+                (pitch_grid.note_freq_at(base + gen["off"][m], tuning) + resid[m])
+                & 0xFFFF
                 for m in range(period)
             ]
         elif mode == GEN_TABLE_MODE_NOTE:

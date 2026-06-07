@@ -14,10 +14,10 @@ from preframr_tokens.tokenizer_config import (
 
 
 class TestTokenizerConfig(unittest.TestCase):
-    def test_default_has_all_flags_and_params(self):
+    def test_default_is_generator_pipeline_and_has_params(self):
         ns = default_tokenizer_args()
-        for flag in MACRO_FLAGS:
-            self.assertIs(getattr(ns, flag), False, flag)
+        on = {f for f in MACRO_FLAGS if getattr(ns, f) is True}
+        self.assertEqual(on, set(REGISTERED_MACROS))
         for key in PARSER_DEFAULTS:
             self.assertTrue(hasattr(ns, key), key)
 

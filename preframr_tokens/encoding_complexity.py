@@ -1,20 +1,10 @@
-"""Encoding-explosion guard: a faithful generator encoding must never emit MORE distinct
-freq behaviours than the input freq stream structurally contains. If it does, the encoder
-has ADDED complexity (a modeling/abstraction error) rather than abstracting -- e.g. carrying
-one vibrato LFO as dozens of per-instance residual payloads.
-
-Per freq voice, comparing like-with-like in pitch space:
-
-  input  complexity = |distinct semitone notes| + |distinct off-grid modulation levels (5c)|
-                      -- the music's structural alphabet: its notes + its modulation alphabet.
-                      Off-grid is BINNED so one bounded LFO (triangle OR sine) costs O(depth),
-                      not O(distinct sampled freqs) -- a sine vibrato must not inflate the bound.
-  encoded complexity = |distinct note-table shapes| + |distinct residual payloads|
-                       + |distinct TRI/SWEEP gesture params|, attributed to the voice.
-
-Raise EncodingExplosion when encoded > input on any voice. Cheap (one pass over each), so it
-runs on every parse as a runtime invariant.
+"""Encoding-explosion guard: per freq voice the encoded vocabulary (distinct note-table shapes
++ residual payloads + TRI/SWEEP gesture params) must not exceed the input alphabet (distinct
+semitone notes + binned off-grid modulation levels, so one bounded LFO costs O(depth) not
+O(distinct sampled freqs)); when it does, the encoder ADDED complexity rather than abstracting
+(e.g. one vibrato carried as many per-instance residuals) and check_no_explosion raises.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -41,7 +31,8 @@ class EncodingExplosion(ValueError):
 
 def input_freq_complexity(reg_df) -> dict[int, int]:
     """Per voice: |distinct notes| + |distinct off-grid 5c modulation levels| from the raw
-    register log (cols clock/irq/chipno/reg/val). Reconstructs per-frame settled freq+gate."""
+    register log (cols clock/irq/chipno/reg/val). Reconstructs per-frame settled freq+gate.
+    """
     d = reg_df[reg_df["chipno"] == 0]
     frames = list(dict.fromkeys(d["irq"].tolist()))
     fpos = {f: i for i, f in enumerate(frames)}
@@ -102,17 +93,19 @@ def encoded_freq_complexity(token_df) -> dict[int, int]:
     return {v: len(s) for v, s in voc.items()}
 
 
-def check_no_explosion(reg_df, token_df, *, tune: str = "", raise_on_explosion: bool = True):
+def check_no_explosion(
+    reg_df, token_df, *, tune: str = "", raise_on_explosion: bool = True
+):
     """Compare encoded vs input freq complexity per voice; raise (or return report) on explosion."""
     inp = input_freq_complexity(reg_df)
     enc = encoded_freq_complexity(token_df)
     bad = {
-        v: (enc[v], inp.get(v, 0))
-        for v in enc
-        if enc[v] > inp.get(v, 0) and enc[v] > 1
+        v: (enc[v], inp.get(v, 0)) for v in enc if enc[v] > inp.get(v, 0) and enc[v] > 1
     }
     if bad and raise_on_explosion:
-        detail = ", ".join(f"voice {v}: encoded {e} > input {i}" for v, (e, i) in bad.items())
+        detail = ", ".join(
+            f"voice {v}: encoded {e} > input {i}" for v, (e, i) in bad.items()
+        )
         raise EncodingExplosion(
             f"encoding explosion in {tune or '<tune>'} ({detail}) -- the generator pass minted "
             "more distinct freq behaviours than the input contained (likely modulation carried "

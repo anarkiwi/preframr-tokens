@@ -61,7 +61,7 @@ fallback_version = "0.44.0"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-addopts = "-v"
+addopts = "-n auto --dist worksteal"
 
 [tool.coverage.run]
 branch = true
