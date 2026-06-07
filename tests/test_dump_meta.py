@@ -1,6 +1,5 @@
 """DumpMeta sidecar tests: write/read round-trip, stale detection, glob_dumps filter."""
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,15 +7,13 @@ from pathlib import Path
 import pandas as pd
 
 from preframr_tokens.dump_meta import (
-    DumpMeta,
-    META_SUFFIX,
     filter_dump_paths,
     meta_code_hash,
     meta_path_for,
     read_meta,
     write_meta,
 )
-from preframr_tokens.stfconstants import DUMP_SUFFIX, MODE_VOL_REG, VOICE_REG_SIZE
+from preframr_tokens.stfconstants import DUMP_SUFFIX, MODE_VOL_REG
 
 
 def _tiny_raw_df(irq=19656, vol_changes_per_frame=2, n_frames=10):

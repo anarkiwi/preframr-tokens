@@ -435,16 +435,28 @@ class RegLogParser:
         return combine_reg(orig_df, reg, diffmax=diffmax, bits=bits, lobits=lobits)
 
     def _rotate_filter(self, df, r):
-        m = df["reg"] == FILTER_REG
-        df.loc[m, "fres"] = df[m]["val"].values & 0xF0
-        df.loc[m, "val"] -= df[m]["fres"]
+        """Rotate the filter ($D417) 3 voice-routing bits to match an ``r``-step voice rotation, on RAW
+        ``SET`` writes ONLY -- the rotation runs after GeneratorPass, so reg-23 also holds generator atoms
+        (SWEEP/TABLE) whose val is a LEN/delta, not a routing nibble (rotating those -> NaN). The resonance
+        nibble + external-filter bit (bit 3, FILTEX) are kept in ``fres`` (& 0xF8), out of the 3-bit merge.
+        """
+
+        def _setmask(d):
+            mm = d["reg"] == FILTER_REG
+            return mm & (d["op"] == SET_OP) if "op" in d.columns else mm
+
+        setm = _setmask(df)
+        if not setm.any():
+            return df
+        df.loc[setm, "fres"] = df[setm]["val"].values & 0xF8
+        df.loc[setm, "val"] -= df[setm]["fres"]
         for _ in range(r):
             df = df.merge(FILTER_SHIFT_DF, how="left", on=["reg", "val"])
-            m = df["reg"] == FILTER_REG
+            m = _setmask(df) & df["y"].notna()
             df.loc[m, "val"] = df[m]["y"]
             df = df.drop(["y"], axis=1)
-        m = df["reg"] == FILTER_REG
-        df.loc[m, "val"] += df[m]["fres"]
+        setm = _setmask(df)
+        df.loc[setm, "val"] += df[setm]["fres"]
         return df
 
     def _rotate_voice_augment(self, orig_df, max_perm):
@@ -911,7 +923,7 @@ class RegLogParser:
                 return
         df = self._read_df(name)
         try:
-            from preframr_tokens.dump_meta import meta_path_for, read_meta, write_meta
+            from preframr_tokens.dump_meta import read_meta, write_meta
 
             existing = read_meta(name)
             if existing is None or existing.stale:

@@ -5,7 +5,7 @@ import unittest
 
 import pandas as pd
 
-from preframr_tokens.macros import (  # noqa: F401 register transforms
+from preframr_tokens.macros import (  # pylint: disable=unused-import
     transforms_audio_bit_exact,
     transforms_bit_exact,
 )
@@ -19,10 +19,7 @@ from preframr_tokens.macros.transform import (
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     HARD_RESTART_OP,
-    LEGATO_OP_CLUSTER_2,
-    LEGATO_OP_CLUSTER_4,
     SET_OP,
-    SUBREG_FLUSH_OP,
     VOICE_CTRL_REG,
 )
 

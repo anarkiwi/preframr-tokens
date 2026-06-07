@@ -4,8 +4,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import pandas as pd
-
 from preframr_tokens.audit_primitives import detect_tail_cycle
 from preframr_tokens.dump_meta import DumpMeta, meta_path_for, read_meta
 from preframr_tokens.stfconstants import DUMP_SUFFIX
