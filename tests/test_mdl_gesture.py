@@ -14,6 +14,7 @@ from preframr_tokens.macros.mdl_gesture_pass import (
     MdlGesturePass,
     _emit_specs,
     _SCALAR_REGS,
+    gesture_shape_uses,
 )
 from preframr_tokens.stfconstants import (
     FRAME_REG,
@@ -145,6 +146,39 @@ def test_freq_two_layer_is_byte_exact():
     assert int((out["op"] == NOTE_INTERVAL_OP).sum()) > 0
     assert int((out["op"] == GESTURE_REF_OP).sum()) > 0
     assert int(((out["reg"] == 0) & (out["op"] == SET_OP)).sum()) == 0
+
+
+def test_gesture_shape_uses_interns_recurring_shapes():
+    """gesture_shape_uses (the dictionary builder's input) keys each run by its reusable shape and
+    counts reuse: a scalar channel that ramps with the same step twice yields one POLY shape used
+    twice, and the freq layer's note-table notes add freq-delta shapes -- the corpus dictionary scope.
+    """
+    n = 48
+    state = np.zeros((n, 25), dtype=np.int64)
+    state[:, 23] = [100 + 5 * (f % 12) for f in range(n)]
+    state[:, 0] = [pitch_grid.note_freq_at(49 + (f // 12), 0.0) for f in range(n)]
+    uses = gesture_shape_uses(state)
+    assert uses
+    assert max(uses.values()) >= 2
+    assert all(isinstance(k, tuple) and k[0] in ("H", "D", "P") for k in uses)
+
+
+def test_corpus_global_scope_shrinks_the_alphabet():
+    """The dictionary-scope recommendation (MDL_PARSER_IMPLEMENTATION.md §2): a shape recurring across
+    tunes is ONE corpus-global id but a fresh per-tune id each time, so the corpus-global alphabet is
+    strictly smaller than the sum of per-tune alphabets -- the learnability win (frequent shared shapes
+    vs under-trained singletons)."""
+    tunes = []
+    for k in range(3):
+        st = np.zeros((40, 25), dtype=np.int64)
+        st[:, 23] = [200 + 7 * (f % 10) for f in range(40)]
+        st[:, 24] = [10 + k + 2 * f for f in range(40)]
+        tunes.append(gesture_shape_uses(st))
+    per_tune_sum = sum(len(u) for u in tunes)
+    corpus_global = len(set().union(*tunes))
+    assert corpus_global < per_tune_sum
+    shared = set(tunes[0]) & set(tunes[1]) & set(tunes[2])
+    assert shared
 
 
 def test_frame_markers_preserved():

@@ -7,7 +7,9 @@ arbitrated with ``validate=True`` so every claim is byte-exact or dropped to the
 
 from __future__ import annotations
 
-__all__ = ["MdlGesturePass"]
+__all__ = ["MdlGesturePass", "gesture_shape_uses"]
+
+from collections import Counter
 
 import numpy as np
 
@@ -189,6 +191,55 @@ def _ref_rows(reg, cb_id, anchor, d1, d2, length, irq):
         _row(reg, GESTURE_REF_OP, GESTURE_REF_SUBREG_LEN_HI, (ln >> 8) & 0xFF, irq),
         _row(reg, GESTURE_REF_OP, GESTURE_REF_SUBREG_LEN_LO, ln & 0xFF, irq),
     ]
+
+
+def gesture_shape_uses(state):
+    """Per-tune gesture-shape usage Counter over every channel (scalar value channels + the two-layer
+    freq-delta layers) -- the dictionary builder's input for measuring per-tune vs corpus-global scope
+    (MDL_PARSER_IMPLEMENTATION.md §2). A shape key is HOLD kind / POLY (degree, N-th diff) / PERIOD cell;
+    length-1 scalar HOLD literals are excluded (they stay raw), matching the encoder."""
+    uses: Counter = Counter()
+    for reg in _SCALAR_REGS:
+        if reg >= state.shape[1]:
+            continue
+        s = np.asarray(state[:, reg], dtype=np.int64)
+        if not s.any():
+            continue
+        for spec in _emit_specs(s, False):
+            if spec[1] == GESTURE_KIND_HOLD and spec[8] == 1:
+                continue
+            uses[spec[0]] += 1
+    for reg in GEN_FREQ_REGS:
+        if reg >= state.shape[1]:
+            continue
+        f = np.asarray(state[:, reg], dtype=np.int64)
+        if not (f > 8).any():
+            continue
+        tuning = pitch_grid.q_to_tuning(
+            pitch_grid.tuning_to_q(pitch_grid.voice_tuning(f))
+        )
+        table = {
+            m: v
+            for m, v in pitch_grid.recover_table(f, tuning).items()
+            if -128 <= m <= 127
+        }
+        note = _held_notes(pitch_grid.note_index(f, tuning), 0)
+        base = np.array(
+            [table.get(int(m), pitch_grid.note_freq_at(int(m), tuning)) for m in note],
+            dtype=np.int64,
+        )
+        delta = f - base
+        n = len(f)
+        t = 0
+        while t < n:
+            m = int(note[t])
+            b = t
+            while b < n and int(note[b]) == m:
+                b += 1
+            for spec in _emit_specs(delta[t:b], False):
+                uses[spec[0]] += 1
+            t = b
+    return uses
 
 
 class MdlGesturePass(MacroPass):
