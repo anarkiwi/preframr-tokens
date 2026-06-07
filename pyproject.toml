@@ -73,7 +73,6 @@ omit = [
     "preframr_tokens/corpus.py",
     "preframr_tokens/parse_runner.py",
     "preframr_tokens/tokenizer_profile.py",
-    "preframr_tokens/trajectory_coverage.py",
 ]
 
 [tool.coverage.report]

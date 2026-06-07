@@ -34,7 +34,6 @@ __all__ = [
     "RELATIVE_OPS",
     "REPLAY_OPS",
     "reg_class",
-    "relative_base_unsound",
 ]
 
 
@@ -213,31 +212,3 @@ def reg_class(reg):
     if reg == MODE_VOL_REG:
         return None
     return None
-
-
-def relative_base_unsound(df):
-    """Walk an encoded token stream and return RELATIVE writes whose base crosses a REPLAY of the same
-    register -- i.e. a delta op decoding against a value some codebook replay set, not the literal
-    write its encoder saw. Empty iff every RELATIVE encoder honoured its barrier declaration. The code
-    check backing the R1 contract: returns ``[(row_index, reg, replay_op)]``."""
-    regs = df["reg"].to_numpy()
-    ops = df["op"].to_numpy() if "op" in df.columns else None
-    if ops is None:
-        return []
-    last_writer = {}
-    bad = []
-    for i in range(len(regs)):
-        r = int(regs[i])
-        if r < 0:
-            continue
-        op = int(ops[i])
-        if op in RELATIVE_OPS:
-            prev = last_writer.get(r)
-            if prev is not None and prev in REPLAY_OPS:
-                bad.append((i, r, prev))
-            last_writer[r] = op
-        elif op in REPLAY_OPS:
-            last_writer[r] = op
-        else:
-            last_writer[r] = op
-    return bad
