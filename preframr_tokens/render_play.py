@@ -23,7 +23,11 @@ from preframr_tokens import (
     read_initial_irq,
 )
 from preframr_audio.sidwav import sidq
-from preframr_tokens.tokenizer_config import NAMED_CONFIGS, named_config
+from preframr_tokens.tokenizer_config import (
+    DEFAULT_PIPELINE,
+    NAMED_CONFIGS,
+    named_config,
+)
 from preframr_tokens.utils import get_logger
 
 
@@ -54,7 +58,7 @@ def main():
     ap.add_argument("--cents", type=int, default=50)
     ap.add_argument(
         "--config",
-        default="full_macros",
+        default=DEFAULT_PIPELINE,
         choices=sorted(NAMED_CONFIGS),
         help=(
             "Parser macro config used when re-parsing a .dump.parquet. "

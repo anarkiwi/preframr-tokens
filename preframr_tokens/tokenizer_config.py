@@ -12,7 +12,9 @@ __all__ = [
     "PARSER_DEFAULTS",
     "MACRO_FLAGS",
     "REGISTERED_MACROS",
+    "DEFAULT_PIPELINE",
     "default_tokenizer_args",
+    "default_pipeline_args",
     "named_config",
     "NAMED_CONFIGS",
 ]
@@ -55,17 +57,14 @@ def __getattr__(name):
 
 
 def default_tokenizer_args(**overrides) -> SimpleNamespace:
-    """Namespace with the real parser params plus the DEFAULT generator pipeline on
-    (``REGISTERED_MACROS`` + transitive requires) -- the one set of passes that makes
-    the generator encoding work properly. ``overrides`` win; pass ``named_config("baseline")``
-    for the explicit all-off control."""
-    # pylint: disable=import-outside-toplevel
-    from preframr_tokens.macros.flag_registry import resolve_flags
-
+    """The additive low-level builder: real parser params plus every macro-pass flag present and
+    OFF, so an omitted flag means OFF and ``overrides`` enable only the passes a caller names. The
+    DEFAULT PARSE PIPELINE the runner uses is ``default_pipeline_args()`` (the generator pipeline),
+    NOT this bare builder -- keeping omission-means-off intact for every partial-flags caller.
+    """
     cfg = dict(PARSER_DEFAULTS)
-    on = resolve_flags(set(REGISTERED_MACROS))
     for flag in _macro_flags():
-        cfg[flag] = flag in on
+        cfg[flag] = False
     cfg.update(overrides)
     return SimpleNamespace(**cfg)
 
@@ -86,15 +85,26 @@ REGISTERED_MACROS = (
 
 NAMED_CONFIGS = ("baseline", "full_macros")
 
+DEFAULT_PIPELINE = "full_macros"
+
 
 def named_config(name: str, **overrides) -> SimpleNamespace:
-    """Build a preset args namespace by name (``baseline`` = explicit all-off /
-    ``full_macros`` = the generator pipeline); ``overrides`` are applied on top."""
+    """Build a preset args namespace by name (``baseline`` = additive all-off /
+    ``full_macros`` = the generator pipeline = ``REGISTERED_MACROS``); ``overrides`` win.
+    """
     if name == "baseline":
-        cfg = {flag: False for flag in _macro_flags()}
+        cfg = {}
     elif name == "full_macros":
         cfg = {flag: True for flag in REGISTERED_MACROS}
     else:
         raise KeyError(f"unknown config {name!r}; known: {sorted(NAMED_CONFIGS)}")
     cfg.update(overrides)
     return default_tokenizer_args(**cfg)
+
+
+def default_pipeline_args(**overrides) -> SimpleNamespace:
+    """The runner's DEFAULT parse pipeline: the corrected generator pipeline
+    (``named_config(DEFAULT_PIPELINE)`` = ``REGISTERED_MACROS``). Callers that want the parse to
+    behave as the framework default does should build args from this, not the additive bare builder.
+    """
+    return named_config(DEFAULT_PIPELINE, **overrides)
