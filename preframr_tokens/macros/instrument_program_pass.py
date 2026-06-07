@@ -6,6 +6,7 @@ construction. A voice-relative per-frame write-series codebook (``instrument_pro
 
 __all__ = ["InstrumentProgramPass"]
 
+import bisect
 import os
 from collections import defaultdict
 
@@ -174,12 +175,8 @@ class InstrumentProgramPass(MacroPass):
     def _val_at(writes, frame):
         """Forward-filled value in effect at ``frame`` (last write at or before it), 0 if none -- the
         SID power-on / register_state initial state."""
-        cur = 0
-        for fr, _ri, v in writes:
-            if fr > frame:
-                break
-            cur = v
-        return cur
+        i = bisect.bisect_right(writes, (frame, float("inf"), float("inf")))
+        return writes[i - 1][2] if i > 0 else 0
 
     @classmethod
     def _build_span(cls, creg, b0, b1, cw, aw, sw):
@@ -188,7 +185,10 @@ class InstrumentProgramPass(MacroPass):
         SETTLED value (last write wins -- a same-frame hard-restart pair settles at its second byte, the
         only value register_state sees), but every write row is consumed so none survives as residual.
         """
-        in_lists = [[w for w in seq if b0 <= w[0] < b1] for seq in (cw, aw, sw)]
+        in_lists = [
+            seq[bisect.bisect_left(seq, (b0,)) : bisect.bisect_left(seq, (b1,))]
+            for seq in (cw, aw, sw)
+        ]
         settled = [{} for _ in range(3)]
         for j in range(3):
             for fr, _ri, v in in_lists[j]:

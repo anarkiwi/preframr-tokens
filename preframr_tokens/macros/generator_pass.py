@@ -12,6 +12,8 @@ import numpy as np
 from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.arbiter import Claim, arbitrate
 from preframr_tokens.macros.generator_fit import (
+    _NOTES,
+    _lut,
     all_freqs,
     channels,
     fit_run,
@@ -237,16 +239,18 @@ class GeneratorPass(MacroPass):
         """True iff most sounding frames sit near a LUT note (small fraction of the local semitone gap),
         i.e. the voice settles to a stable note grid -- the cheap, waveform-agnostic melodic test.
         """
-        sounding = [int(f) for f in freq if f > 8]
-        if len(sounding) < 8:
+        f = np.asarray([int(x) for x in freq if x > 8], dtype=np.int64)
+        if len(f) < 8:
             return False
-        good = 0
-        for f in sounding:
-            nt = note_of(f, ref)
-            span = max(1, recon(nt + 1, ref) - recon(nt, ref))
-            if abs(f - recon(nt, ref)) <= 0.3 * span:
-                good += 1
-        return good / len(sounding) >= 0.6
+        # Vectorized note_of + recon over all sounding frames (the per-frame Python loop is an
+        # O(frames) hot path re-run per voice per tune -- minutes on a long-tune cross-tune audit).
+        lut = _lut(ref)
+        idx = np.clip(np.searchsorted(lut, f), 1, _NOTES - 1)
+        nt = np.where(f - lut[idx - 1] <= lut[idx] - f, idx - 1, idx)
+        base = lut[np.clip(nt, 0, _NOTES - 1)]
+        span = np.maximum(1, lut[np.clip(nt + 1, 0, _NOTES - 1)] - base)
+        good = int(np.sum(np.abs(f - base) <= 0.3 * span))
+        return good / len(f) >= 0.6
 
     @staticmethod
     def _collect_writes(df, target_regs):
