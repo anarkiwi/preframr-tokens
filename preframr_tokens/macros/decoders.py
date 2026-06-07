@@ -39,6 +39,9 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_HI,
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
+    GEN_TUNING_SUBREG_FREQ_HI,
+    GEN_TUNING_SUBREG_FREQ_LO,
+    GEN_TUNING_SUBREG_NOTE,
     GEN_TUNING_SUBREG_REF,
     GEN_TUNING_SUBREG_VOICE,
     DIFF_OP,
@@ -274,16 +277,30 @@ class GenTuningDecoder(MacroDecoder):
 
     def expand(self, row, state):
         sub = int(row.subreg)
+        val = int(row.val)
         if sub == GEN_TUNING_SUBREG_VOICE:
-            state.pending_gen_tuning_voice = int(row.val)
+            state.pending_gen_tuning_voice = val
+            state.pending_gen_tuning_note = None
             return None
         if sub == GEN_TUNING_SUBREG_REF:
             voice = state.pending_gen_tuning_voice
             if voice is None:
-                state.gen_ref = (int(row.val) & 0xFF) / 256.0
+                state.gen_ref = (val & 0xFF) / 256.0
             else:
-                state.gen_ref_by_voice[voice] = pitch_grid.q_to_tuning(int(row.val))
-                state.pending_gen_tuning_voice = None
+                state.gen_ref_by_voice[voice] = pitch_grid.q_to_tuning(val)
+            return None
+        if sub == GEN_TUNING_SUBREG_NOTE:
+            state.pending_gen_tuning_note = val - 256 if val >= 128 else val
+            return None
+        if sub == GEN_TUNING_SUBREG_FREQ_LO:
+            state.pending_gen_tuning_flo = val & 0xFF
+            return None
+        if sub == GEN_TUNING_SUBREG_FREQ_HI:
+            voice = state.pending_gen_tuning_voice
+            note = state.pending_gen_tuning_note
+            if voice is not None and note is not None:
+                freq = ((val & 0xFF) << 8) | state.pending_gen_tuning_flo
+                state.gen_table_by_voice.setdefault(voice, {})[note] = freq
         return None
 
 
@@ -366,7 +383,10 @@ class MelodyIntervalDecoder(MacroDecoder):
             ((f.get(MELODY_INTERVAL_SUBREG_DELTA_HI, 0) & 0xFF) << 8)
             | (f.get(MELODY_INTERVAL_SUBREG_DELTA_LO, 0) & 0xFF)
         )
-        if voice in state.gen_ref_by_voice:
+        tbl = state.gen_table_by_voice.get(voice)
+        if tbl is not None and cur_note in tbl:
+            base = tbl[cur_note]
+        elif voice in state.gen_ref_by_voice:
             base = pitch_grid.note_freq_at(cur_note, state.gen_ref_by_voice[voice])
         else:
             base = recon(cur_note, state.gen_ref)

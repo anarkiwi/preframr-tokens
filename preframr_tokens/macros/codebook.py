@@ -360,8 +360,16 @@ class _GeneratorCodec(_Codec):
         if mode == GEN_TABLE_MODE_NOTE_UNIV:
             voice = reg // 7
             tuning = getattr(state, "gen_ref_by_voice", {}).get(voice, 0.0)
+            tbl = getattr(state, "gen_table_by_voice", {}).get(voice, {})
             cyc = [
-                (pitch_grid.note_freq_at(base + gen["off"][m], tuning) + resid[m])
+                (
+                    (
+                        tbl[base + gen["off"][m]]
+                        if (base + gen["off"][m]) in tbl
+                        else pitch_grid.note_freq_at(base + gen["off"][m], tuning)
+                    )
+                    + resid[m]
+                )
                 & 0xFFFF
                 for m in range(period)
             ]

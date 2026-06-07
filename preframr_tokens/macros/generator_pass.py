@@ -65,6 +65,9 @@ from preframr_tokens.stfconstants import (
     GEN_TRI_SUBREG_STEP_HI,
     GEN_TRI_SUBREG_STEP_LO,
     GEN_TUNING_OP,
+    GEN_TUNING_SUBREG_FREQ_HI,
+    GEN_TUNING_SUBREG_FREQ_LO,
+    GEN_TUNING_SUBREG_NOTE,
     GEN_TUNING_SUBREG_REF,
     GEN_TUNING_SUBREG_VOICE,
     GEN_FREQ_REGS,
@@ -140,7 +143,11 @@ class GeneratorPass(MacroPass):
         claims = [self._tuning_claim(ref_q, irq)]
         for m in mel_ctx.values():
             if m.get("tuning_q") is not None:
-                claims.append(self._voice_tuning_claim(m["voice"], m["tuning_q"], irq))
+                claims.append(
+                    self._voice_tuning_claim(
+                        m["voice"], m["tuning_q"], m.get("table"), irq
+                    )
+                )
         bank = {}
         def_rows = []
         for reg, is_freq, series in channels(state):
@@ -184,15 +191,30 @@ class GeneratorPass(MacroPass):
         )
 
     @staticmethod
-    def _voice_tuning_claim(voice, tuning_q, irq):
-        """A per-voice GEN_TUNING atom (``universal_pitch``): VOICE then REF=tuning_q, head-decoded so
-        the voice's ``note_freq`` recon is set before any MELODY_INTERVAL replay -- the per-voice tuning
-        makes the melody onset residual ~0 (pure note) under chorus/detune. Contiguous (one Claim).
+    def _voice_tuning_claim(voice, tuning_q, table, irq):
+        """A per-voice GEN_TUNING atom (``universal_pitch``): VOICE, REF=tuning_q, then the recovered
+        note->freq TABLE (NOTE/FREQ_LO/FREQ_HI per byte-range entry), head-decoded so the per-voice
+        tuning AND the exact note table are set before any REF/MELODY_INTERVAL replay. The table is the
+        tracker's own note->freq map, so static notes decode pure (residual 0) and the freq residual
+        stops fragmenting the codebook. Notes outside a signed byte fall back to the grid both sides.
         """
         rows = [
             _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_VOICE, voice, irq),
             _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_REF, tuning_q, irq),
         ]
+        for note, freq in sorted((table or {}).items()):
+            if not -128 <= int(note) <= 127:
+                continue
+            f = int(freq) & 0xFFFF
+            rows.append(
+                _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_NOTE, int(note) & 0xFF, irq)
+            )
+            rows.append(
+                _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_FREQ_LO, f & 0xFF, irq)
+            )
+            rows.append(
+                _row(0, GEN_TUNING_OP, GEN_TUNING_SUBREG_FREQ_HI, (f >> 8) & 0xFF, irq)
+            )
         for r in rows:
             r["__pos"] = -2
         return Claim(
@@ -220,8 +242,9 @@ class GeneratorPass(MacroPass):
             if universal:
                 tq = pitch_grid.tuning_to_q(pitch_grid.voice_tuning(freqarr))
                 tuning = pitch_grid.q_to_tuning(tq)
+                table = pitch_grid.recover_table(freqarr, tuning)
             else:
-                tq, tuning = None, None
+                tq, tuning, table = None, None, None
             ctx[int(b)] = {
                 "voice": int(b) // 7,
                 "onsets": set(note_onsets(per_frame, gate_on)),
@@ -229,6 +252,7 @@ class GeneratorPass(MacroPass):
                 "note": None,
                 "tuning": tuning,
                 "tuning_q": tq,
+                "table": table,
                 "universal": universal,
                 "universal_freq": freq_bulk,
             }
@@ -431,7 +455,13 @@ class GeneratorPass(MacroPass):
             note = int(
                 pitch_grid.note_index(np.asarray([onset_freq]), mel["tuning"])[0]
             )
-            resid = (onset_freq - pitch_grid.note_freq_at(note, mel["tuning"])) & 0xFFFF
+            tbl = mel.get("table") or {}
+            base = (
+                tbl[note]
+                if note in tbl
+                else pitch_grid.note_freq_at(note, mel["tuning"])
+            )
+            resid = (onset_freq - base) & 0xFFFF
         else:
             note = note_of(onset_freq, ref)
             resid = (onset_freq - recon(note, ref)) & 0xFFFF
@@ -554,8 +584,9 @@ class GeneratorPass(MacroPass):
             ]
             base_note = notes[0]
             offs = [n - base_note for n in notes]
+            tbl = mel.get("table") or {}
             resids = [
-                int(c) - pitch_grid.note_freq_at(n, tuning)
+                int(c) - (tbl[n] if n in tbl else pitch_grid.note_freq_at(n, tuning))
                 for c, n in zip(cycle, notes)
             ]
             if 0 <= base_note <= 255 and all(-128 <= o <= 127 for o in offs):

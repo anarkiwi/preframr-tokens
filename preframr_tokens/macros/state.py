@@ -145,7 +145,10 @@ class DecodeState:
         self.melody_interval_cur_note = {v: 0 for v in range(VOICES)}
         self.gen_ref = 0.0
         self.gen_ref_by_voice = {}
+        self.gen_table_by_voice = {}
         self.pending_gen_tuning_voice = None
+        self.pending_gen_tuning_note = None
+        self.pending_gen_tuning_flo = 0
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
         self.last_ctrl = {v: 0 for v in range(VOICES)}
