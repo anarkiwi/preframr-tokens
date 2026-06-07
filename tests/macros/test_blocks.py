@@ -9,7 +9,7 @@ from preframr_tokens.macros.blocks import (
     iter_self_contained_row_blocks,
     self_contain_slice,
 )
-from preframr_tokens.stfconstants import DELAY_REG, FRAME_REG, MODEL_PDTYPE, SET_OP
+from preframr_tokens.stfconstants import FRAME_REG, MODEL_PDTYPE, SET_OP
 
 
 def _row(reg, val, op=SET_OP, diff=32, subreg=-1):

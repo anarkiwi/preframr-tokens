@@ -75,7 +75,6 @@ def extract_interleaved(df):
     ops = df["op"].to_numpy()
     subs = df["subreg"].to_numpy()
     vals = df["val"].to_numpy()
-    cur = {}
     out = []
     pend = None
     for i in range(len(df)):
@@ -146,7 +145,7 @@ def measure(paths, min_len=4):
         df = _parse(path)
         if df is None:
             continue
-        for voice, seq in extract_sequences(df).items():
+        for _voice, seq in extract_sequences(df).items():
             if len(seq["intervals"]) < min_len:
                 continue
             (train if k % 2 == 0 else test).append(seq)

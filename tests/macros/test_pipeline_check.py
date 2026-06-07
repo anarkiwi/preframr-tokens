@@ -3,7 +3,7 @@
 import argparse
 import unittest
 
-from preframr_tokens.macros import (  # noqa: F401 register transforms
+from preframr_tokens.macros import (  # pylint: disable=unused-import
     transforms_audio_bit_exact,
     transforms_bit_exact,
 )
@@ -172,7 +172,7 @@ class TestPipelineTier(unittest.TestCase):
         self.assertEqual(p.tier, "bit_exact")
 
     def test_pipeline_tier_is_worst_transform_tier(self):
-        from preframr_tokens.macros import (  # noqa: F401
+        from preframr_tokens.macros import (  # pylint: disable=unused-import
             transforms_audio_bit_exact,
             transforms_bit_exact,
         )
@@ -254,7 +254,7 @@ class TestIdempotenceRoundTrip(unittest.TestCase):
 
 class TestHardcodedPassesSeedAccumulator(unittest.TestCase):
     def test_hardcoded_emits_non_set_regs_includes_known_motion_regs(self):
-        from preframr_tokens.macros import (  # noqa: F401
+        from preframr_tokens.macros import (  # pylint: disable=unused-import
             transforms_audio_bit_exact,
             transforms_bit_exact,
         )
@@ -265,7 +265,7 @@ class TestHardcodedPassesSeedAccumulator(unittest.TestCase):
         self.assertIn(4, hardcoded)
 
     def test_consumer_with_no_handles_errors_against_hardcoded_seed(self):
-        from preframr_tokens.macros import (  # noqa: F401
+        from preframr_tokens.macros import (  # pylint: disable=unused-import
             transforms_audio_bit_exact,
             transforms_bit_exact,
         )

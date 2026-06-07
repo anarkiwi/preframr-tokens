@@ -22,7 +22,6 @@ from preframr_tokens.reglogparser import RegLogParser
 from preframr_tokens.sid_frame_diff import (
     diff_dump_vs_pipeline,
     diff_states,
-    dump_frame_state,
 )
 from preframr_tokens.tokenizer_config import default_tokenizer_args
 from tests.parse_probes import parse_args

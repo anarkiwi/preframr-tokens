@@ -112,6 +112,30 @@ def test_generator_strict_byte_exact():
             os.environ["PREFRAMR_ARBITER_STRICT"] = prev
 
 
+def test_generator_filter_external_bit_rotation_no_nan():
+    """Regression: voice-rotation augmentation runs AFTER GeneratorPass, so reg-23 (filter) carries
+    generator atoms (SWEEP/TABLE), not raw SET writes. ``_rotate_filter`` must skip those (and preserve
+    the external-filter bit on real SET writes), else a routing-nibble >= 8 misses the 3-bit shift table
+    and mints a NaN that crashes the next walker. Parse a filter-external tune with rotation (max_perm>1)
+    and assert every rotation yields with no NaN val.
+    """
+    b = DumpBuilder().adsr().pw(0x800).modevol(0x1F).resfilt(0xF9)
+    b.note([cents_to_fn([60, 64, 67][i % 3], 0) for i in range(12)])
+    b.resfilt(0xFC)
+    b.note([cents_to_fn(55, 0) - 90 * i for i in range(8)])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_dump(b, os.path.join(tmp, "filtext.dump.parquet"))
+        n = 0
+        for df in RegLogParser(args=_gen_args()).parse(
+            path, max_perm=99, require_pq=False, reparse=True
+        ):
+            assert (
+                not df["val"].isna().any()
+            ), "NaN val from filter rotation on generator atoms"
+            n += 1
+    assert n >= 2, f"expected multiple voice-rotation permutations, got {n}"
+
+
 def test_generator_table_resid_split_byte_exact():
     """``table_resid_split`` keys a freq GEN_TABLE on the OFFSET cycle alone and carries the per-frame
     residual on the per-instance REF (the §3 de-fragmentation): same note-shape, different residual,
