@@ -18,6 +18,26 @@ from preframr_tokens.macros.freq_lut import LUT
 from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     FRAME_REG,
+    GESTURE_DEF_OP,
+    GESTURE_END_OP,
+    GESTURE_KIND_HOLD,
+    GESTURE_KIND_PERIOD,
+    GESTURE_KIND_POLY,
+    GESTURE_REF_OP,
+    GESTURE_REF_SUBREG_ANCHOR_HI,
+    GESTURE_REF_SUBREG_ANCHOR_LO,
+    GESTURE_REF_SUBREG_D1_HI,
+    GESTURE_REF_SUBREG_D1_LO,
+    GESTURE_REF_SUBREG_D2_HI,
+    GESTURE_REF_SUBREG_D2_LO,
+    GESTURE_REF_SUBREG_ID,
+    GESTURE_REF_SUBREG_LEN_HI,
+    GESTURE_REF_SUBREG_LEN_LO,
+    GESTURE_STEP_OP,
+    GESTURE_SUBREG_CELL_HI,
+    GESTURE_SUBREG_CELL_LO,
+    GESTURE_SUBREG_DEGREE,
+    GESTURE_SUBREG_KIND,
     INSTR_OFF_CTRL,
     INSTR_REF_OP,
     SET_OP,
@@ -117,6 +137,55 @@ def _generator_streams():
     return out
 
 
+def _gesture_def(b, idv, kind, degree, cells):
+    """One gesture DEF/STEP/END defining a reusable shape into the dictionary (reg 0, voice-relative)."""
+    b.write(0, idv, op=GESTURE_DEF_OP)
+    b.write(0, kind, op=GESTURE_STEP_OP, subreg=GESTURE_SUBREG_KIND)
+    b.write(0, degree, op=GESTURE_STEP_OP, subreg=GESTURE_SUBREG_DEGREE)
+    for c in cells:
+        b.write(0, c & 0xFF, op=GESTURE_STEP_OP, subreg=GESTURE_SUBREG_CELL_LO)
+        b.write(0, (c >> 8) & 0xFF, op=GESTURE_STEP_OP, subreg=GESTURE_SUBREG_CELL_HI)
+    b.write(0, idv, op=GESTURE_END_OP)
+
+
+def _gesture_ref(b, reg, idv, anchor, d1, d2, length):
+    """One fixed-layout gesture REF replaying shape ``idv`` with per-instance anchor + diffs + length."""
+    a, d1u, d2u, ln = anchor & 0xFFFF, d1 & 0xFFFF, d2 & 0xFFFF, length & 0xFFFF
+    b.write(reg, idv, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_ID)
+    b.write(reg, a & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_ANCHOR_LO)
+    b.write(
+        reg, (a >> 8) & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_ANCHOR_HI
+    )
+    b.write(reg, d1u & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_D1_LO)
+    b.write(reg, (d1u >> 8) & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_D1_HI)
+    b.write(reg, d2u & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_D2_LO)
+    b.write(reg, (d2u >> 8) & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_D2_HI)
+    b.write(reg, (ln >> 8) & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_LEN_HI)
+    b.write(reg, ln & 0xFF, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_LEN_LO)
+
+
+def _gesture_streams():
+    """One stream exercising every gesture op and all three shape kinds: a HOLD, a POLY(1) ramp, and a
+    PERIOD(2) cell, each defined once then replayed on a scalar reg. Pins the unified _GestureCodec
+    decode (DEF/STEP/END/REF -> per-frame writes) byte-exactly."""
+    b = _Builder()
+    b.frame()
+    _gesture_def(b, 0, GESTURE_KIND_HOLD, 0, ())
+    _gesture_def(b, 1, GESTURE_KIND_POLY, 1, (5,))
+    _gesture_def(b, 2, GESTURE_KIND_PERIOD, 2, (3, -3))
+    _gesture_ref(b, 23, 0, 50, 0, 0, 3)
+    for _ in range(3):
+        b.frame()
+    _gesture_ref(b, 2, 1, 100, 0, 0, 4)
+    for _ in range(4):
+        b.frame()
+    _gesture_ref(b, 9, 2, 200, 0, 0, 5)
+    for _ in range(5):
+        b.frame()
+    b.frame()
+    return {"gesture_shapes": b.df()}
+
+
 def _dead_ref_stream():
     """An INSTR_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
     c0 = int(CTRL_REGS_BY_VOICE[0])
@@ -127,6 +196,7 @@ def _corpus():
     streams = {}
     streams.update(_instrument_streams())
     streams.update(_generator_streams())
+    streams.update(_gesture_streams())
     streams["dead_ref"] = _dead_ref_stream()
     return streams
 

@@ -12,6 +12,27 @@ from dataclasses import dataclass
 from preframr_tokens.macros import pitch_grid
 from preframr_tokens.macros.generator_fit import recon
 from preframr_tokens.stfconstants import (
+    GEN_FREQ_REGS,
+    GESTURE_DEF_OP,
+    GESTURE_END_OP,
+    GESTURE_KIND_HOLD,
+    GESTURE_KIND_PERIOD,
+    GESTURE_KIND_POLY,
+    GESTURE_REF_OP,
+    GESTURE_REF_SUBREG_ANCHOR_HI,
+    GESTURE_REF_SUBREG_ANCHOR_LO,
+    GESTURE_REF_SUBREG_D1_HI,
+    GESTURE_REF_SUBREG_D1_LO,
+    GESTURE_REF_SUBREG_D2_HI,
+    GESTURE_REF_SUBREG_D2_LO,
+    GESTURE_REF_SUBREG_ID,
+    GESTURE_REF_SUBREG_LEN_HI,
+    GESTURE_REF_SUBREG_LEN_LO,
+    GESTURE_STEP_OP,
+    GESTURE_SUBREG_CELL_HI,
+    GESTURE_SUBREG_CELL_LO,
+    GESTURE_SUBREG_DEGREE,
+    GESTURE_SUBREG_KIND,
     GEN_TABLE_DEF_OP,
     GEN_TABLE_END_OP,
     GEN_TABLE_MODE_NOTE,
@@ -59,6 +80,7 @@ DEAD_REF_POLICY = "drop"
 CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
     "instrument",
     "generator",
+    "gesture",
 )
 
 
@@ -133,6 +155,15 @@ CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
         commit_op=GEN_TABLE_END_OP,
         commit_subreg=None,
         refs=(RefSpec(GEN_TABLE_REF_OP, id_subreg=GEN_TABLE_REF_SUBREG_ID),),
+        def_emits=False,
+    ),
+    "gesture": CodebookFamily(
+        name="gesture",
+        def_op=GESTURE_DEF_OP,
+        step_ops=(GESTURE_STEP_OP,),
+        commit_op=GESTURE_END_OP,
+        commit_subreg=None,
+        refs=(RefSpec(GESTURE_REF_OP, id_subreg=GESTURE_REF_SUBREG_ID),),
         def_emits=False,
     ),
 }
@@ -385,9 +416,156 @@ class _GeneratorCodec(_Codec):
         return pre or None
 
 
+def _s16(lo, hi):
+    """Signed 16-bit two's-complement from a (lo, hi) byte pair -- the consistent field encoding the
+    gesture REF/STEP value pairs use for anchors, initial diffs, and cell deltas."""
+    raw = ((int(hi) & 0xFF) << 8) | (int(lo) & 0xFF)
+    return raw - 0x10000 if raw >= 0x8000 else raw
+
+
+def gesture_value_series(shape, anchor, diffs, length):
+    """Replay one gesture SHAPE into its ``length``-frame value series (no note layer, no channel wrap).
+    The inverse of the encoder's gesture split: HOLD repeats the anchor; POLY forward-differences the
+    initial difference table ``[anchor, *diffs, N-th-diff]``; PERIOD walks the looped delta cell from the
+    anchor. Pure integer arithmetic -- byte-exact by construction (see mdl_codec.decode).
+    """
+    kind = int(shape["kind"])
+    out = []
+    if kind == GESTURE_KIND_HOLD:
+        out = [int(anchor)] * int(length)
+    elif kind == GESTURE_KIND_POLY:
+        degree = int(shape["degree"])
+        dt = (
+            [int(anchor)]
+            + [int(d) for d in diffs[: degree - 1]]
+            + [int(shape["cell"][0])]
+        )
+        for _ in range(int(length)):
+            out.append(dt[0])
+            for k in range(degree):
+                dt[k] += dt[k + 1]
+    elif kind == GESTURE_KIND_PERIOD:
+        period = int(shape["degree"])
+        cell = [int(c) for c in shape["cell"]]
+        cur = int(anchor)
+        for k in range(int(length)):
+            if k:
+                cur = cur + cell[(k - 1) % period]
+            out.append(cur)
+    return out
+
+
+class _GestureCodec(_Codec):
+    """MDL gesture codebook (subsumes GENERATOR + INSTRUMENT): DEF/STEP/END buffer one reusable SHAPE
+    (HOLD / POLY(N) forward-difference / PERIOD delta-cell) into the id table; the fixed-layout REF
+    replays it with a per-instance anchor + lower-order initial diffs + length, queuing one value per
+    frame onto its reg. A freq REG additionally rides the note layer: ``freq = note_table[note_index] +
+    delta`` with a 16-bit value wrap (set by NOTE_INTERVAL; absent => the series is written directly).
+    """
+
+    def def_open(self, row, state, cb):
+        cb.pending = {
+            "id": int(row.val),
+            "kind": GESTURE_KIND_HOLD,
+            "degree": 0,
+            "cell": [],
+            "_lo": None,
+        }
+
+    def step(self, state, row, cb):
+        g = cb.pending
+        if g is None:
+            return None
+        sub = int(row.subreg)
+        val = int(row.val)
+        if sub == GESTURE_SUBREG_KIND:
+            g["kind"] = val
+        elif sub == GESTURE_SUBREG_DEGREE:
+            g["degree"] = val
+        elif sub == GESTURE_SUBREG_CELL_LO:
+            g["_lo"] = val & 0xFF
+        elif sub == GESTURE_SUBREG_CELL_HI:
+            g["cell"].append(_s16(g["_lo"] or 0, val))
+            g["_lo"] = None
+        return None
+
+    def commit(self, state, row, cb):
+        g = cb.pending
+        if g is not None:
+            cb.table[int(g["id"])] = g
+            cb.pending = None
+        return None
+
+    def ref(self, state, row, cb):
+        sub = int(row.subreg)
+        val = int(row.val)
+        if sub == GESTURE_REF_SUBREG_ID:
+            cb.pending_ref = {
+                "id": val,
+                "reg": int(row.reg),
+                "anchor_lo": 0,
+                "d1_lo": 0,
+                "d2_lo": 0,
+                "anchor": 0,
+                "d1": 0,
+                "d2": 0,
+                "len": 0,
+            }
+            return None
+        pend = cb.pending_ref
+        if pend is None:
+            return None
+        if sub == GESTURE_REF_SUBREG_ANCHOR_LO:
+            pend["anchor_lo"] = val & 0xFF
+        elif sub == GESTURE_REF_SUBREG_ANCHOR_HI:
+            pend["anchor"] = _s16(pend["anchor_lo"], val)
+        elif sub == GESTURE_REF_SUBREG_D1_LO:
+            pend["d1_lo"] = val & 0xFF
+        elif sub == GESTURE_REF_SUBREG_D1_HI:
+            pend["d1"] = _s16(pend["d1_lo"], val)
+        elif sub == GESTURE_REF_SUBREG_D2_LO:
+            pend["d2_lo"] = val & 0xFF
+        elif sub == GESTURE_REF_SUBREG_D2_HI:
+            pend["d2"] = _s16(pend["d2_lo"], val)
+        elif sub == GESTURE_REF_SUBREG_LEN_HI:
+            pend["len"] |= (val & 0xFF) << 8
+        elif sub == GESTURE_REF_SUBREG_LEN_LO:
+            pend["len"] |= val & 0xFF
+            cb.pending_ref = None
+            return self._replay(pend, state, cb)
+        return None
+
+    @staticmethod
+    def _replay(pend, state, cb):
+        shape = cb.table.get(int(pend["id"]))
+        if shape is None:
+            return None
+        reg = int(pend["reg"])
+        length = int(pend["len"])
+        series = gesture_value_series(
+            shape, pend["anchor"], (pend["d1"], pend["d2"]), length
+        )
+        pre = state.maybe_flush_for(reg, -1)
+        queue = state.pending_set_writes[reg]
+        if reg in GEN_FREQ_REGS:
+            voice = reg // 7
+            note_base = getattr(state, "gesture_note_freq", {}).get(voice)
+            if note_base is not None:
+                for delta in series:
+                    queue.append((int(note_base) + int(delta)) & 0xFFFF)
+            else:
+                for v in series:
+                    queue.append(int(v) & 0xFFFF)
+        else:
+            for v in series:
+                queue.append(int(v))
+        return pre or None
+
+
 _CODECS: dict[str, _Codec] = {
     "instrument": _InstrumentCodec(),
     "generator": _GeneratorCodec(),
+    "gesture": _GestureCodec(),
 }
 
 

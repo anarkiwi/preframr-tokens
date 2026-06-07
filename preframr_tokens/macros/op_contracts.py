@@ -20,6 +20,10 @@ from preframr_tokens.stfconstants import (
     GEN_TABLE_STEP_OP,
     GEN_TABLE_END_OP,
     GEN_TABLE_REF_OP,
+    GESTURE_DEF_OP,
+    GESTURE_STEP_OP,
+    GESTURE_END_OP,
+    GESTURE_REF_OP,
     MELODY_INTERVAL_OP,
     DIFF_OP,
     DO_LOOP_OP,
@@ -125,6 +129,10 @@ _CONTRACT_LIST = (
     OpContract(INSTR_STEP_OP, MaskRole.CODEBOOK_STEP),
     OpContract(INSTR_END_OP, MaskRole.CODEBOOK_END),
     OpContract(INSTR_REF_OP, MaskRole.CODEBOOK_REF),
+    OpContract(GESTURE_DEF_OP, MaskRole.CODEBOOK_DEF),
+    OpContract(GESTURE_STEP_OP, MaskRole.CODEBOOK_STEP),
+    OpContract(GESTURE_END_OP, MaskRole.CODEBOOK_END),
+    OpContract(GESTURE_REF_OP, MaskRole.CODEBOOK_REF),
     OpContract(PATTERN_REPLAY_OP, MaskRole.DISTANCE_PAIR),
     OpContract(PATTERN_OVERLAY_OP, MaskRole.OVERLAY),
     OpContract(DO_LOOP_OP, MaskRole.LOOP_CTRL),
@@ -146,6 +154,10 @@ MACRO_OP_LOSS_TIERS: dict[int, str] = {
     int(INSTR_DEF_OP): "structural",
     int(INSTR_END_OP): "structural",
     int(INSTR_REF_OP): "structural",
+    int(GESTURE_STEP_OP): "content",
+    int(GESTURE_DEF_OP): "structural",
+    int(GESTURE_END_OP): "structural",
+    int(GESTURE_REF_OP): "structural",
 }
 """Loss tier for the generator/codebook ops, which are MacroPass-emitted (not ``Transform`` classes) so
 ``collect_op_loss_tiers`` cannot read a ``LOSS_TIER`` off them. Value-bearing atoms (the freq/pitch
@@ -225,6 +237,7 @@ STRUCTURAL_VALUE_ARRAYS: tuple[str, ...] = (
 CODEBOOK_TABLES: tuple[str, ...] = (
     "instrument",
     "generator",
+    "gesture",
 )
 
 
@@ -259,6 +272,10 @@ OP_PRODUCER: dict[int, str] = {
     GEN_TABLE_STEP_OP: "GeneratorPass",
     GEN_TABLE_END_OP: "GeneratorPass",
     GEN_TABLE_REF_OP: "GeneratorPass",
+    GESTURE_DEF_OP: "MdlGesturePass",
+    GESTURE_STEP_OP: "MdlGesturePass",
+    GESTURE_END_OP: "MdlGesturePass",
+    GESTURE_REF_OP: "MdlGesturePass",
 }
 
 _REFERENCE_ROLES = frozenset(
