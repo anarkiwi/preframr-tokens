@@ -1,8 +1,8 @@
 """MdlGesturePass: the single MDL optimal-parse pass that replaces InstrumentProgramPass + GeneratorPass
-(MDL_PARSER_IMPLEMENTATION.md §4), parsing each settled value channel into the driver's own HOLD /
-POLY(N) forward-difference / PERIOD primitives and emitting them as the unified ``gesture`` codebook
-family; it owns the non-freq scalar channels here (Step 2) and grows the joint 2-D freq parse (Step 3),
-arbitrated with ``validate=True`` so every claim is byte-exact or dropped to the literal stream.
+(MDL_PARSER_IMPLEMENTATION.md §4), parsing every value channel into the unified ``gesture`` codebook --
+PW/cutoff/res/vol into HOLD/POLY/PERIOD, freq into a note-index + freq-delta two-layer split, and
+ctrl/AD/SR into a verbatim on-change PROGRAM gesture (exact write order) -- arbitrated ``validate=True``
+so every claim is byte-exact.
 """
 
 from __future__ import annotations
@@ -53,18 +53,37 @@ from preframr_tokens.stfconstants import (
     GESTURE_REF_SUBREG_ID,
     GESTURE_REF_SUBREG_LEN_HI,
     GESTURE_REF_SUBREG_LEN_LO,
+    GESTURE_KIND_PROGRAM,
     GESTURE_STEP_OP,
     GESTURE_SUBREG_CELL_HI,
     GESTURE_SUBREG_CELL_LO,
     GESTURE_SUBREG_DEGREE,
     GESTURE_SUBREG_KIND,
+    GESTURE_SUBREG_PROG_DFRAME_HI,
+    GESTURE_SUBREG_PROG_DFRAME_LO,
+    GESTURE_SUBREG_PROG_FIELD,
+    GESTURE_SUBREG_PROG_VAL,
     SET_OP,
 )
 
 _GESTURE_PRIORITY = -8
 _MAX_LEN = 0xFFFF
 
-_SCALAR_REGS = (2, 9, 16, 21, 23, 24, 4, 5, 6, 11, 12, 13, 18, 19, 20)
+_SCALAR_REGS = (2, 9, 16, 21, 23, 24)
+
+_CTRL_FIELD = {
+    4: (0, 0),
+    5: (0, 1),
+    6: (0, 2),
+    11: (1, 0),
+    12: (1, 1),
+    13: (1, 2),
+    18: (2, 0),
+    19: (2, 1),
+    20: (2, 2),
+}
+_VOICE_CTRL_BASE = {0: 4, 1: 11, 2: 18}
+_PROG_MAX_GAP = 60000
 
 
 def _row(reg, op, subreg, val, irq):
@@ -119,13 +138,14 @@ def _def_rows(cb_id, kind, degree, cell, irq):
 
 
 _NOTE_SUSTAIN = 3
+_NOTE_REANCHOR = 3
 
 
 def _held_notes(note_target, f0):
-    """The note-index layer: re-anchor to a new note only when ``note_target`` settles there for
-    ``_NOTE_SUSTAIN`` frames, so transient vibrato wobbles across a semitone boundary stay in the
-    freq-delta layer (not minted as note events) while sustained arp/melody steps become note events --
-    the validated greedy re-anchor (MDL_TRANSITION_DESIGN.md), the joint-DP's tractable approximation.
+    """The note-index layer: re-anchor to a new note when ``note_target`` either settles there for
+    ``_NOTE_SUSTAIN`` frames (sustained arp/melody step) or jumps ``_NOTE_REANCHOR``+ semitones away (a
+    fast slide / clear note change), so transient sub-``_NOTE_REANCHOR`` vibrato stays in the freq-delta
+    layer while the held note never drifts far enough for the raw-Hz delta to overflow its signed field.
     """
     nt = np.asarray(note_target, dtype=np.int64)
     n = len(nt)
@@ -133,8 +153,9 @@ def _held_notes(note_target, f0):
     cur = int(nt[f0]) if f0 < n else 0
     for t in range(f0, n):
         v = int(nt[t])
-        if v != cur and all(
-            int(nt[u]) == v for u in range(t, min(n, t + _NOTE_SUSTAIN))
+        if v != cur and (
+            abs(v - cur) >= _NOTE_REANCHOR
+            or all(int(nt[u]) == v for u in range(t, min(n, t + _NOTE_SUSTAIN)))
         ):
             cur = v
         out[t] = cur
@@ -173,6 +194,33 @@ def _note_interval_rows(voice, first, interval, irq):
         ),
         _row(0, NOTE_INTERVAL_OP, NOTE_INTERVAL_SUBREG_INTERVAL_LO, z & 0xFF, irq),
     ]
+
+
+def _prog_def_rows(cb_id, prog, irq):
+    """DEF/STEP/END serialising a ctrl/AD/SR PROGRAM shape: KIND=PROGRAM then, per on-change write, a
+    (frame-delta, field, val) entry as four STEP rows -- the verbatim ordered write-series.
+    """
+    rows = [
+        _row(0, GESTURE_DEF_OP, -1, cb_id, irq),
+        _row(0, GESTURE_STEP_OP, GESTURE_SUBREG_KIND, GESTURE_KIND_PROGRAM, irq),
+    ]
+    for dframe, field, val in prog:
+        rows.append(
+            _row(0, GESTURE_STEP_OP, GESTURE_SUBREG_PROG_DFRAME_LO, dframe & 0xFF, irq)
+        )
+        rows.append(
+            _row(
+                0,
+                GESTURE_STEP_OP,
+                GESTURE_SUBREG_PROG_DFRAME_HI,
+                (dframe >> 8) & 0xFF,
+                irq,
+            )
+        )
+        rows.append(_row(0, GESTURE_STEP_OP, GESTURE_SUBREG_PROG_FIELD, field, irq))
+        rows.append(_row(0, GESTURE_STEP_OP, GESTURE_SUBREG_PROG_VAL, val & 0xFF, irq))
+    rows.append(_row(0, GESTURE_END_OP, -1, cb_id, irq))
+    return rows
 
 
 def _ref_rows(reg, cb_id, anchor, d1, d2, length, irq):
@@ -243,19 +291,19 @@ def gesture_shape_uses(state):
 
 
 class MdlGesturePass(MacroPass):
-    """Replace the per-gesture greedy passes with one MDL optimal parse over HOLD/POLY/PERIOD gestures
-    interned in the corpus-global ``gesture`` codebook: scalar channels (PW, cutoff, res, vol, ctrl/AD/SR)
-    parse directly, the freq channels split into a note-index layer (NOTE_INTERVAL) + a freq-delta gesture
-    layer; ``encode`` is byte-exact standalone and ``apply`` routes to it at the Step-5 production swap.
+    """Replace the per-gesture greedy passes with one MDL optimal parse interning every value channel in
+    the corpus-global ``gesture`` codebook: the PW/cutoff/res/vol channels parse into HOLD/POLY/PERIOD,
+    the freq channels split into a note-index layer (NOTE_INTERVAL) + a freq-delta gesture layer, and
+    ctrl/AD/SR become a verbatim on-change PROGRAM gesture that preserves their exact intra-frame order.
     """
 
     GATE_FLAGS: frozenset = frozenset()
 
     def apply(self, df, args=None):
-        """No-op in the pipeline until the build-order Step-5 swap routes it to ``encode`` and retires the
-        generator/instrument passes; kept in FREQ_BLOCK_PASSES so the reference-producer contract holds
-        while the encoder is grown and validated standalone (test_mdl_gesture)."""
-        return df
+        """The single freq-block pass: parse every value channel into the gesture codebook (scalar
+        channels directly, freq channels via the note-index + freq-delta two-layer split), replacing the
+        retired InstrumentProgramPass + GeneratorPass. Unconditional (no gate flag)."""
+        return self.encode(df)
 
     def encode(self, df):
         """Parse the scalar value channels into gesture DEF/REF tokens, arbitrated ``validate=True`` so
@@ -302,6 +350,7 @@ class MdlGesturePass(MacroPass):
                     irq,
                 )
             )
+        claims.extend(self._program_claims(df, bank, def_rows, irq))
         if head_rows:
             claims.append(
                 Claim(
@@ -446,6 +495,89 @@ class MdlGesturePass(MacroPass):
             )
             t = b
         return claims
+
+    @classmethod
+    def _program_claims(cls, df, bank, def_rows, irq):
+        """One PROGRAM gesture per voice (split on huge gaps) capturing the voice's ctrl/AD/SR on-change
+        writes verbatim in stream order; the REF replays them at their exact frames so decode reproduces
+        the raw write SEQUENCE (frames + intra-frame order), never a per-frame re-assertion or a literal.
+        """
+        regs = df["reg"].to_numpy()
+        ops = df["op"].to_numpy()
+        subs = df["subreg"].to_numpy()
+        vals = df["val"].to_numpy()
+        per_voice: dict = {0: [], 1: [], 2: []}
+        rf = 0
+        for i in range(len(df)):
+            r = int(regs[i])
+            if r == FRAME_REG:
+                rf += 1
+            elif r == DELAY_REG:
+                rf += int(vals[i])
+            elif int(ops[i]) == SET_OP and int(subs[i]) == -1 and r in _CTRL_FIELD:
+                voice, field = _CTRL_FIELD[r]
+                per_voice[voice].append((rf, field, int(vals[i]), int(i)))
+        claims = []
+        for voice, writes in per_voice.items():
+            if not writes:
+                continue
+            for chunk in cls._split_program(writes):
+                claims.append(
+                    cls._program_chunk_claim(voice, chunk, bank, def_rows, irq)
+                )
+        return claims
+
+    @staticmethod
+    def _split_program(writes):
+        """Split a voice's ctrl/AD/SR writes into chunks wherever the inter-write frame gap exceeds the
+        2-byte frame-delta field, so every chunk's deltas fit the PROGRAM encoding."""
+        chunks, cur, prev = [], [], None
+        for w in writes:
+            if prev is not None and w[0] - prev > _PROG_MAX_GAP:
+                chunks.append(cur)
+                cur = []
+            cur.append(w)
+            prev = w[0]
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    @classmethod
+    def _program_chunk_claim(cls, voice, chunk, bank, def_rows, irq):
+        base = _VOICE_CTRL_BASE[voice]
+        prog = []
+        prev = chunk[0][0]
+        for frame, field, val, _ri in chunk:
+            prog.append((frame - prev, field, val))
+            prev = frame
+        cb_id = cls._intern_program(tuple(prog), def_rows, bank, irq)
+        pos = int(chunk[0][3])
+        rows = _ref_rows(base, cb_id, 0, 0, 0, len(prog), irq)
+        for r in rows:
+            r["__pos"] = pos
+        drop = tuple(int(w[3]) for w in chunk)
+        return Claim(
+            writes=drop,
+            tokens=rows,
+            priority=_GESTURE_PRIORITY,
+            label="gesture_program",
+        )
+
+    @staticmethod
+    def _intern_program(prog, def_rows, bank, irq):
+        """Intern a ctrl/AD/SR PROGRAM shape (its verbatim entry tuple) in the corpus-global dictionary,
+        appending its DEF rows to the stream head on first sight so a recurring instrument collapses to
+        one DEF + cheap REFs."""
+        shape_key = ("PROG", prog)
+        if shape_key in bank:
+            return bank[shape_key]
+        cb_id = len(bank)
+        bank[shape_key] = cb_id
+        rows = _prog_def_rows(cb_id, prog, irq)
+        for r in rows:
+            r["__pos"] = -1
+        def_rows.extend(rows)
+        return cb_id
 
     @staticmethod
     def _intern(shape_key, kind, degree, cell, def_rows, bank, irq):

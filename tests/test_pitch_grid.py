@@ -1,124 +1,91 @@
-"""Recovered-table pitch model: lossless round-trip, on-grid purity, per-voice chorus (shared note
-index, distinct per-voice tables), and vibrato-as-modulation (design/universal_multiresolution_pitch.md).
+"""Recovered-table pitch model (raw-Hz, post-cents-retirement): note_index<->note_freq round-trip, the
+exact per-voice note table (recover_table), the raw-Hz two-layer split freq = note_freq(note) + delta the
+MDL gesture parse rides, shared note index under per-voice detune, and held-note-plus-modulation.
 """
 
 import unittest
-import warnings
 
 import numpy as np
 
 from preframr_tokens.macros import pitch_grid as pg
 
 
-def _melody_freqs(notes):
-    return np.round(pg._ANCHOR * 2.0 ** (np.asarray(notes) / 12.0)).astype(np.int64)
+def _melody_freqs(notes, tuning=0.0):
+    return pg.note_freq(np.asarray(notes), tuning)
 
 
 class TestPitchGrid(unittest.TestCase):
-    def _assert_lossless(self, freqs):
-        dec = pg.decompose_voice(freqs)
-        rec = pg.reconstruct(dec)
-        self.assertTrue(
-            np.array_equal(rec.astype(np.int64), np.asarray(freqs, dtype=np.int64))
-        )
-        return dec
+    def test_note_index_inverts_note_freq(self):
+        """note_index(note_freq(n)) == n across the playable range (before note_freq saturates the
+        16-bit word at the extreme low/high ends) -- the grid the note layer indexes."""
+        for n in range(-48, 95):
+            self.assertEqual(int(pg.note_index(pg.note_freq_at(n, 0.0), 0.0)), n)
 
-    def test_random_full_range_is_lossless(self):
-        """Arbitrary 16-bit freqs round-trip exactly under the recovered table (lossless for any table)."""
-        rng = np.random.RandomState(0)
-        self._assert_lossless(rng.randint(1, 65536, 3000))
-
-    def test_on_grid_melody_is_pure(self):
-        """An equal-tempered melody is 100% pure notes: every frame is an exact table entry."""
-        rng = np.random.RandomState(1)
-        dec = self._assert_lossless(_melody_freqs(rng.randint(20, 90, 256)))
-        self.assertEqual(pg.pure_fraction(dec), 1.0)
-
-    def test_chorus_shared_index_distinct_tables(self):
-        """Two voices on the same notes, one detuned +12c: identical NOTE index stream, DIFFERENT
-        per-voice tables, both 100% pure (the chorus is in the table values, not a residual).
+    def test_two_layer_split_is_byte_exact(self):
+        """Any 16-bit freq series splits into note_index + raw-Hz delta and reconstructs exactly:
+        freq == (note_freq(note_index(freq)) + (freq - note_freq(note_index(freq)))), the MDL freq cover.
         """
-        rng = np.random.RandomState(2)
-        base = _melody_freqs(rng.randint(30, 80, 200))
-        det = np.round(base * 2.0 ** (12.0 / 1200.0)).astype(np.int64)
-        da = self._assert_lossless(base)
-        db = self._assert_lossless(det)
-        self.assertTrue(np.array_equal(da["note"], db["note"]))
-        self.assertNotEqual(da["table"], db["table"])
-        self.assertEqual(pg.pure_fraction(da), 1.0)
-        self.assertEqual(pg.pure_fraction(db), 1.0)
+        rng = np.random.RandomState(0)
+        f = rng.randint(1, 65536, 3000).astype(np.int64)
+        note = pg.note_index(f, 0.0)
+        base = pg.note_freq(note, 0.0)
+        delta = f - base
+        self.assertTrue(np.array_equal((base + delta).astype(np.int64), f))
+        self.assertLess(int(np.abs(delta).max()), 32768)
 
-    def test_vibrato_is_one_note_plus_modulation(self):
-        """A vibrato on a held note is one NOTE index plus a nonzero CENTS trajectory, lossless."""
+    def test_on_grid_melody_has_zero_delta(self):
+        """An equal-tempered melody sits exactly on the recovered table: every voiced frame has delta 0."""
+        rng = np.random.RandomState(1)
+        f = _melody_freqs(rng.randint(20, 90, 256))
+        note = pg.note_index(f, 0.0)
+        self.assertTrue(np.array_equal(pg.note_freq(note, 0.0), f))
+
+    def test_recover_table_is_exact_modal_entry(self):
+        """recover_table maps each played note to the exact 16-bit freq word it was played at."""
+        notes = [49, 53, 56, 60]
+        f = _melody_freqs(np.repeat(notes, 8))
+        table = pg.recover_table(f, 0.0)
+        for n in notes:
+            self.assertEqual(
+                int(table[int(pg.note_index(pg.note_freq_at(n, 0.0), 0.0))]),
+                int(pg.note_freq_at(n, 0.0)),
+            )
+
+    def test_chorus_shares_note_index(self):
+        """Two voices on the same notes, one detuned +12 cents, recover the SAME note-index stream
+        (the detune lives in the per-voice tuning + table, not the index)."""
+        rng = np.random.RandomState(2)
+        base = _melody_freqs(rng.randint(34, 78, 200))
+        det = np.round(base * 2.0 ** (12.0 / 1200.0)).astype(np.int64)
+        ta = pg.voice_tuning(base)
+        tb = pg.voice_tuning(det)
+        self.assertTrue(np.array_equal(pg.note_index(base, ta), pg.note_index(det, tb)))
+
+    def test_vibrato_is_one_held_note_plus_delta(self):
+        """A vibrato around a held note recovers ONE note index (the wobble is a nonzero freq-delta),
+        and the raw delta stays well within the signed-16-bit field the gesture anchor carries.
+        """
         t = np.arange(400)
         vib = np.round(
-            pg._ANCHOR * 2.0 ** (60.0 / 12.0) * 2.0 ** (20.0 * np.sin(t / 6.0) / 1200.0)
+            pg.note_freq_at(60, 0.0) * 2.0 ** (20.0 * np.sin(t / 6.0) / 1200.0)
         ).astype(np.int64)
-        dec = self._assert_lossless(vib)
-        self.assertEqual(len({int(n) for n in dec["note"][dec["voiced"]]}), 1)
-        self.assertGreater(int((dec["mod"] != 0).sum()), 0)
-        self.assertLess(pg.pure_fraction(dec), 1.0)
+        note = pg.note_index(vib, 0.0)
+        self.assertEqual(len(set(int(n) for n in note)), 1)
+        delta = vib - pg.note_freq(note, 0.0)
+        self.assertGreater(int((delta != 0).sum()), 0)
+        self.assertLess(int(np.abs(delta).max()), 4096)
 
-    def test_modulation_is_tuning_invariant(self):
-        """The SAME +/-Xc vibrato gesture at two DIFFERENT tunings yields the SAME cents trajectory
-        (model learns "X cents", not absolute freq) -- the transferability requirement.
-        """
-        t = np.arange(200)
-        gesture = np.concatenate(
-            [np.ones(120), 2.0 ** (20.0 * np.sin(t / 5.0) / 1200.0)]
-        )
-        low = np.round(pg._ANCHOR * 2.0 ** (36.0 / 12.0) * gesture).astype(np.int64)
-        high = np.round(pg._ANCHOR * 2.0 ** (72.0 / 12.0) * gesture).astype(np.int64)
-        dl = pg.decompose_voice(low)
-        dh = pg.decompose_voice(high)
-        self.assertLessEqual(int(np.abs(dl["mod"] - dh["mod"]).max()), 2)
-        raw_l = low - pg._table_vec(dl["table"], dl["note"])
-        raw_h = high - pg._table_vec(dh["table"], dh["note"])
-        self.assertGreater(int(np.abs(raw_l - raw_h).max()), 20)
-
-    def test_boundary_detuned_scale_indexes_correctly(self):
-        """A Galway-style +44c-detuned ET scale recovers CONSECUTIVE note indices (the per-voice
-        tuning fit handles the near-half-semitone detune that naive rounding mis-assigns).
-        """
+    def test_detuned_scale_recovers_consecutive_indices(self):
+        """A Galway-style +44c-detuned ET scale recovers consecutive note indices (the per-voice tuning
+        fit handles the near-half-semitone detune naive rounding mis-assigns)."""
         notes = np.arange(40, 76)
-        freqs = np.round(pg._ANCHOR * 2.0 ** ((notes + 44.0 / 100.0) / 12.0)).astype(
-            np.int64
-        )
-        dec = self._assert_lossless(np.repeat(freqs, 6))
-        idx = sorted({int(n) for n in dec["note"][dec["voiced"]]})
+        freqs = np.round(
+            pg.note_freq_at(0, 0.0) * 2.0 ** ((notes + 44.0 / 100.0) / 12.0)
+        ).astype(np.int64)
+        f = np.repeat(freqs, 6)
+        tuning = pg.voice_tuning(f)
+        idx = sorted(set(int(n) for n in pg.note_index(f, tuning)))
         self.assertEqual(idx, list(range(idx[0], idx[0] + len(notes))))
-        self.assertGreater(dec["tuning"], 0.3)
-
-    def test_note_freq_is_inverse_of_note_index(self):
-        """The shared grid recon: note_index(note_freq(n, t), t) == n across notes and tunings -- the
-        encode/decode anchor both sides use; the residual closes the exact freq."""
-        for t in (-0.4, 0.0, 0.32, 0.44):
-            notes = np.arange(12, 92)
-            freqs = pg.note_freq(notes, t)
-            self.assertTrue((freqs < 65535).all())
-            self.assertTrue(np.array_equal(pg.note_index(freqs, t), notes))
-
-    def test_note_freq_clamps_out_of_domain_note(self):
-        """An out-of-domain note index (e.g. a speculative arbiter candidate reading non-note bytes
-        as base_note) must NOT overflow the ``2**(n/12)`` power: note_freq clamps its input so the
-        output saturates within [0, 65535] and raises no RuntimeWarning, while in-domain notes are
-        unchanged (the clamp is a no-op for every real note, so the encoding stays byte-exact).
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            out = pg.note_freq(np.array([12000, -12000, 95, 49, 0]), 0.0)
-        self.assertTrue(((out >= 0) & (out <= 65535)).all())
-        self.assertEqual(int(out[0]), 65535)
-        self.assertEqual(int(out[1]), 0)
-        real = np.arange(12, 92)
-        self.assertTrue(np.array_equal(pg.note_index(pg.note_freq(real)), real))
-
-    def test_small_table_and_silence(self):
-        """The recovered table is the distinct notes used; unvoiced frames round-trip as zero."""
-        dec = self._assert_lossless(
-            np.array([0, 0, 4455, 4455, 0, 8910, 8910, 0], dtype=np.int64)
-        )
-        self.assertLessEqual(len(dec["table"]), 2)
 
 
 if __name__ == "__main__":

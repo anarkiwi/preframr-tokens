@@ -18,6 +18,7 @@ from preframr_tokens.stfconstants import (
     GESTURE_KIND_HOLD,
     GESTURE_KIND_PERIOD,
     GESTURE_KIND_POLY,
+    GESTURE_KIND_PROGRAM,
     GESTURE_REF_OP,
     GESTURE_REF_SUBREG_ANCHOR_HI,
     GESTURE_REF_SUBREG_ANCHOR_LO,
@@ -33,32 +34,10 @@ from preframr_tokens.stfconstants import (
     GESTURE_SUBREG_CELL_LO,
     GESTURE_SUBREG_DEGREE,
     GESTURE_SUBREG_KIND,
-    GEN_TABLE_DEF_OP,
-    GEN_TABLE_END_OP,
-    GEN_TABLE_MODE_NOTE,
-    GEN_TABLE_MODE_NOTE_UNIV,
-    GEN_TABLE_REF_OP,
-    GEN_TABLE_REF_SUBREG_BASE_NOTE,
-    GEN_TABLE_REF_SUBREG_ID,
-    GEN_TABLE_REF_SUBREG_LEN_HI,
-    GEN_TABLE_REF_SUBREG_LEN_LO,
-    GEN_TABLE_REF_SUBREG_RESID_HI,
-    GEN_TABLE_REF_SUBREG_RESID_LO,
-    GEN_TABLE_STEP_OP,
-    GEN_TABLE_SUBREG_ABS_HI,
-    GEN_TABLE_SUBREG_ABS_LO,
-    GEN_TABLE_SUBREG_BASE_NOTE,
-    GEN_TABLE_SUBREG_MODE,
-    GEN_TABLE_SUBREG_OFFSET,
-    GEN_TABLE_SUBREG_PERIOD,
-    GEN_TABLE_SUBREG_RESID_HI,
-    GEN_TABLE_SUBREG_RESID_LO,
-    INSTR_DEF_OP,
-    INSTR_END_OP,
-    INSTR_OFF_CTRL,
-    INSTR_REF_OP,
-    INSTR_STEP_OP,
-    INSTR_SUBREG_FRAME,
+    GESTURE_SUBREG_PROG_DFRAME_HI,
+    GESTURE_SUBREG_PROG_DFRAME_LO,
+    GESTURE_SUBREG_PROG_FIELD,
+    GESTURE_SUBREG_PROG_VAL,
 )
 
 __all__ = [
@@ -77,11 +56,7 @@ __all__ = [
 
 DEAD_REF_POLICY = "drop"
 
-CODEBOOK_TABLE_NAMES: tuple[str, ...] = (
-    "instrument",
-    "generator",
-    "gesture",
-)
+CODEBOOK_TABLE_NAMES: tuple[str, ...] = ("gesture",)
 
 
 @dataclass(frozen=True)
@@ -139,24 +114,6 @@ class CodebookFamily:
 
 
 CODEBOOK_FAMILIES: dict[str, CodebookFamily] = {
-    "instrument": CodebookFamily(
-        name="instrument",
-        def_op=INSTR_DEF_OP,
-        step_ops=(INSTR_STEP_OP,),
-        commit_op=INSTR_END_OP,
-        commit_subreg=None,
-        refs=(RefSpec(INSTR_REF_OP),),
-        def_emits=False,
-    ),
-    "generator": CodebookFamily(
-        name="generator",
-        def_op=GEN_TABLE_DEF_OP,
-        step_ops=(GEN_TABLE_STEP_OP,),
-        commit_op=GEN_TABLE_END_OP,
-        commit_subreg=None,
-        refs=(RefSpec(GEN_TABLE_REF_OP, id_subreg=GEN_TABLE_REF_SUBREG_ID),),
-        def_emits=False,
-    ),
     "gesture": CodebookFamily(
         name="gesture",
         def_op=GESTURE_DEF_OP,
@@ -225,197 +182,6 @@ class _Codec:
         return None
 
 
-class _InstrumentCodec(_Codec):
-    """Note-onset timbre program: DEF/STEP/END buffer a per-frame ``(ctrl, AD, SR)`` walk into the id
-    table, REF replays it on the target voice -- each frame's fields queue onto the voice's ctrl/AD/SR
-    regs (voice base ``reg - INSTR_OFF_CTRL`` plus the field's voice-relative subreg), one drained per
-    frame tick. A voice-relative per-frame write-series codebook."""
-
-    def def_open(self, row, state, cb):
-        cb.pending = {"id": int(row.val), "frames": [[]]}
-
-    def step(self, state, row, cb):
-        prog = cb.pending
-        if prog is None:
-            return None
-        if int(row.subreg) == INSTR_SUBREG_FRAME:
-            prog["frames"].append([])
-        else:
-            prog["frames"][-1].append((int(row.subreg), int(row.val)))
-        return None
-
-    def commit(self, state, row, cb):
-        prog = cb.pending
-        if prog is not None:
-            cb.table[int(prog["id"])] = prog["frames"]
-            cb.pending = None
-        return None
-
-    @staticmethod
-    def _offsets_in_order(frames):
-        """Voice-relative subregs in first-write order across the buffered frames."""
-        offsets, seen = [], set()
-        for fr in frames:
-            for sub, _val in fr:
-                if sub not in seen:
-                    seen.add(sub)
-                    offsets.append(sub)
-        return offsets
-
-    def ref(self, state, row, cb):
-        frames = cb.table.get(int(row.val))
-        if not frames:
-            return None
-        base = int(row.reg) - INSTR_OFF_CTRL
-        offsets = self._offsets_in_order(frames)
-        pre = state.maybe_flush_for(int(row.reg), -1)
-        cur = {}
-        for fr in frames:
-            for sub, val in fr:
-                cur[sub] = val
-            for sub in offsets:
-                if sub in cur:
-                    state.pending_set_writes[base + sub].append(int(cur[sub]))
-        return pre or None
-
-
-class _GeneratorCodec(_Codec):
-    """Generator-MDL TABLE codebook: DEF/STEP/END buffer one periodic cycle (absolute byte cycle for
-    scalar channels, or note-relative offset+residual cycle for freq) into the id table; the multi-row
-    REF carries the per-instance base_note + LEN and queues ``cycle[k % P]`` for LEN frames onto its
-    reg. The note-relative decode is ``recon(base_note + offset[k], ref) + resid[k]`` -- exact, with
-    ``ref`` the per-tune semitone-LUT offset a ``GEN_TUNING`` atom stored on the state.
-    """
-
-    def def_open(self, row, state, cb):
-        cb.pending = {
-            "id": int(row.val),
-            "period": 0,
-            "mode": 0,
-            "base_note": 0,
-            "abs": [],
-            "off": [],
-            "resid": [],
-            "_lo": None,
-        }
-
-    def step(self, state, row, cb):
-        gen = cb.pending
-        if gen is None:
-            return None
-        sub = int(row.subreg)
-        val = int(row.val)
-        if sub == GEN_TABLE_SUBREG_PERIOD:
-            gen["period"] = val
-        elif sub == GEN_TABLE_SUBREG_MODE:
-            gen["mode"] = val
-        elif sub == GEN_TABLE_SUBREG_BASE_NOTE:
-            gen["base_note"] = val
-        elif sub == GEN_TABLE_SUBREG_ABS_LO:
-            gen["_lo"] = val & 0xFF
-        elif sub == GEN_TABLE_SUBREG_ABS_HI:
-            gen["abs"].append(((val & 0xFF) << 8) | (gen["_lo"] or 0))
-            gen["_lo"] = None
-        elif sub == GEN_TABLE_SUBREG_OFFSET:
-            v = val & 0xFF
-            gen["off"].append(v - 256 if v >= 128 else v)
-        elif sub == GEN_TABLE_SUBREG_RESID_LO:
-            gen["_lo"] = val & 0xFF
-        elif sub == GEN_TABLE_SUBREG_RESID_HI:
-            raw = ((val & 0xFF) << 8) | (gen["_lo"] or 0)
-            gen["resid"].append(raw - 0x10000 if raw >= 0x8000 else raw)
-            gen["_lo"] = None
-        return None
-
-    def commit(self, state, row, cb):
-        gen = cb.pending
-        if gen is not None:
-            cb.table[int(gen["id"])] = gen
-            cb.pending = None
-        return None
-
-    def ref(self, state, row, cb):
-        sub = int(row.subreg)
-        val = int(row.val)
-        if sub == GEN_TABLE_REF_SUBREG_ID:
-            cb.pending_ref = {
-                "id": val,
-                "reg": int(row.reg),
-                "base_note": 0,
-                "len": 0,
-                "resid": [],
-                "_rlo": None,
-            }
-            return None
-        pend = cb.pending_ref
-        if pend is None:
-            return None
-        if sub == GEN_TABLE_REF_SUBREG_BASE_NOTE:
-            pend["base_note"] = val
-            return None
-        if sub == GEN_TABLE_REF_SUBREG_RESID_LO:
-            pend["_rlo"] = val & 0xFF
-            return None
-        if sub == GEN_TABLE_REF_SUBREG_RESID_HI:
-            raw = ((val & 0xFF) << 8) | (pend["_rlo"] or 0)
-            pend["resid"].append(raw - 0x10000 if raw >= 0x8000 else raw)
-            pend["_rlo"] = None
-            return None
-        if sub == GEN_TABLE_REF_SUBREG_LEN_HI:
-            pend["len"] |= (val & 0xFF) << 8
-            return None
-        if sub != GEN_TABLE_REF_SUBREG_LEN_LO:
-            return None
-        pend["len"] |= val & 0xFF
-        cb.pending_ref = None
-        return self._replay(pend, state, cb)
-
-    @staticmethod
-    def _replay(pend, state, cb):
-        gen = cb.table.get(int(pend["id"]))
-        if gen is None:
-            return None
-        period = int(gen["period"])
-        if period <= 0:
-            return None
-        reg = int(pend["reg"])
-        ref = float(getattr(state, "gen_ref", 0.0))
-        base = int(pend["base_note"])
-        if int(gen["mode"]) == GEN_TABLE_MODE_NOTE_UNIV and not 0 <= base <= 255:
-            return None
-        resid = pend["resid"] if pend.get("resid") else gen["resid"]
-        pre = state.maybe_flush_for(reg, -1)
-        queue = state.pending_set_writes[reg]
-        mode = int(gen["mode"])
-        length = int(pend["len"])
-        if mode == GEN_TABLE_MODE_NOTE_UNIV:
-            voice = reg // 7
-            tuning = getattr(state, "gen_ref_by_voice", {}).get(voice, 0.0)
-            tbl = getattr(state, "gen_table_by_voice", {}).get(voice, {})
-            cyc = [
-                (
-                    (
-                        tbl[base + gen["off"][m]]
-                        if (base + gen["off"][m]) in tbl
-                        else pitch_grid.note_freq_at(base + gen["off"][m], tuning)
-                    )
-                    + resid[m]
-                )
-                & 0xFFFF
-                for m in range(period)
-            ]
-        elif mode == GEN_TABLE_MODE_NOTE:
-            cyc = [
-                (recon(base + gen["off"][m], ref) + resid[m]) & 0xFFFF
-                for m in range(period)
-            ]
-        else:
-            cyc = [int(x) for x in gen["abs"]]
-        for k in range(length):
-            queue.append(cyc[k % period])
-        return pre or None
-
-
 def _s16(lo, hi):
     """Signed 16-bit two's-complement from a (lo, hi) byte pair -- the consistent field encoding the
     gesture REF/STEP value pairs use for anchors, initial diffs, and cell deltas."""
@@ -471,6 +237,18 @@ def _gesture_note_base(state, voice):
     return int(recon(cur_note, state.gen_ref)) & 0xFFFF
 
 
+def _replay_program(shape, reg, state):
+    """Schedule a PROGRAM gesture's verbatim on-change writes onto ``state.pending_program`` at their
+    exact frame offsets (cumulative frame-deltas from the REF anchor), so decode reproduces the raw
+    ctrl/AD/SR write SEQUENCE -- frames, order and same-reg repeats -- not a per-frame re-assertion.
+    """
+    pos = int(state.program_pos)
+    for dframe, field, val in shape["prog"]:
+        pos += int(dframe)
+        state.pending_program.setdefault(pos, []).append((reg + int(field), int(val)))
+    return None
+
+
 class _GestureCodec(_Codec):
     """MDL gesture codebook (subsumes GENERATOR + INSTRUMENT): DEF/STEP/END buffer one reusable SHAPE
     (HOLD / POLY(N) forward-difference / PERIOD delta-cell) into the id table; the fixed-layout REF
@@ -485,7 +263,10 @@ class _GestureCodec(_Codec):
             "kind": GESTURE_KIND_HOLD,
             "degree": 0,
             "cell": [],
+            "prog": [],
             "_lo": None,
+            "_dframe": 0,
+            "_field": 0,
         }
 
     def step(self, state, row, cb):
@@ -503,6 +284,15 @@ class _GestureCodec(_Codec):
         elif sub == GESTURE_SUBREG_CELL_HI:
             g["cell"].append(_s16(g["_lo"] or 0, val))
             g["_lo"] = None
+        elif sub == GESTURE_SUBREG_PROG_DFRAME_LO:
+            g["_dframe"] = val & 0xFF
+        elif sub == GESTURE_SUBREG_PROG_DFRAME_HI:
+            g["_dframe"] |= (val & 0xFF) << 8
+        elif sub == GESTURE_SUBREG_PROG_FIELD:
+            g["_field"] = val & 0xFF
+        elif sub == GESTURE_SUBREG_PROG_VAL:
+            g["prog"].append((int(g["_dframe"]), int(g["_field"]), val & 0xFF))
+            g["_dframe"] = 0
         return None
 
     def commit(self, state, row, cb):
@@ -534,7 +324,7 @@ class _GestureCodec(_Codec):
         if sub == GESTURE_REF_SUBREG_ANCHOR_LO:
             pend["anchor_lo"] = val & 0xFF
         elif sub == GESTURE_REF_SUBREG_ANCHOR_HI:
-            pend["anchor"] = _s16(pend["anchor_lo"], val)
+            pend["anchor"] = ((val & 0xFF) << 8) | pend["anchor_lo"]
         elif sub == GESTURE_REF_SUBREG_D1_LO:
             pend["d1_lo"] = val & 0xFF
         elif sub == GESTURE_REF_SUBREG_D1_HI:
@@ -558,24 +348,25 @@ class _GestureCodec(_Codec):
             return None
         reg = int(pend["reg"])
         length = int(pend["len"])
-        series = gesture_value_series(
-            shape, pend["anchor"], (pend["d1"], pend["d2"]), length
-        )
+        if int(shape.get("kind", -1)) == GESTURE_KIND_PROGRAM:
+            return _replay_program(shape, reg, state)
         pre = state.maybe_flush_for(reg, -1)
         queue = state.pending_set_writes[reg]
+        raw = int(pend["anchor"])
         if reg in GEN_FREQ_REGS:
+            anchor = raw - 0x10000 if raw >= 0x8000 else raw
+            series = gesture_value_series(shape, anchor, (pend["d1"], pend["d2"]), length)
             base = _gesture_note_base(state, reg // 7)
             for delta in series:
                 queue.append((base + int(delta)) & 0xFFFF)
         else:
+            series = gesture_value_series(shape, raw, (pend["d1"], pend["d2"]), length)
             for v in series:
                 queue.append(int(v))
         return pre or None
 
 
 _CODECS: dict[str, _Codec] = {
-    "instrument": _InstrumentCodec(),
-    "generator": _GeneratorCodec(),
     "gesture": _GestureCodec(),
 }
 

@@ -14,8 +14,6 @@ from preframr_tokens.macros.passes import (
     TransposePass,
     VoiceBlockOrderPass,
 )
-from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
-from preframr_tokens.macros.generator_pass import GeneratorPass
 from preframr_tokens.macros.mdl_gesture_pass import MdlGesturePass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
@@ -38,8 +36,6 @@ from preframr_tokens.macros.validators import (
 
 FREQ_BLOCK_PASSES = [
     MdlGesturePass(),
-    InstrumentProgramPass(),
-    GeneratorPass(),
 ]
 
 

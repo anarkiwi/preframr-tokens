@@ -45,9 +45,9 @@ class TestTokenizerConfig(unittest.TestCase):
         self.assertTrue(set(REGISTERED_MACROS).issubset(MACRO_FLAGS))
 
     def test_named_override(self):
-        ns = named_config("full_macros", generator_pass=False)
-        self.assertIs(ns.generator_pass, False)
-        self.assertIs(ns.instrument_program, True)
+        ns = named_config("full_macros", loop_pass=False)
+        self.assertIs(ns.loop_pass, False)
+        self.assertIs(ns.hard_restart_pass, True)
 
     def test_named_unknown_raises(self):
         with self.assertRaises(KeyError):

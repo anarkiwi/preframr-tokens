@@ -12,10 +12,6 @@ import pytest
 
 from preframr_tokens.macros.codebook import CODEBOOK_FAMILIES
 from preframr_tokens.macros.decode import expand_ops
-from preframr_tokens.macros.instrument_program_pass import InstrumentProgramPass
-from preframr_tokens.macros.generator_pass import GeneratorPass
-from preframr_tokens.macros.freq_lut import LUT
-from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
 from preframr_tokens.stfconstants import (
     FRAME_REG,
     GESTURE_DEF_OP,
@@ -38,8 +34,6 @@ from preframr_tokens.stfconstants import (
     GESTURE_SUBREG_CELL_LO,
     GESTURE_SUBREG_DEGREE,
     GESTURE_SUBREG_KIND,
-    INSTR_OFF_CTRL,
-    INSTR_REF_OP,
     SET_OP,
 )
 
@@ -71,12 +65,6 @@ def _row(reg, val, op=SET_OP, subreg=-1):
     }
 
 
-def _args(**over):
-    from types import SimpleNamespace
-
-    return SimpleNamespace(**over)
-
-
 class _Builder:
     """Minimal per-frame register-write stream builder (only-on-change), shared by the corpus."""
 
@@ -93,48 +81,6 @@ class _Builder:
 
     def df(self):
         return pd.DataFrame(self.rows)
-
-
-def _instrument_streams():
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-
-    def build(notes):
-        b = _Builder()
-        for walk, ad, sr in notes:
-            b.frame().write(c0 + 1, ad).write(c0 + 2, sr).write(c0, 0x41)
-            for c in walk:
-                b.frame().write(c0, c)
-        b.frame()
-        return b.df()
-
-    note = ([0x11, 0x41], 0x09, 0x00)
-    out = {}
-    out["instrument_def_ref"] = InstrumentProgramPass().apply(
-        build([note, note, note]), args=_args(instrument_program=True)
-    )
-    return out
-
-
-def _generator_streams():
-    """A freq arp (period-3 TABLE) reused across two transposed notes -- exercises the GEN_TABLE
-    codebook DEF/STEP/END/REF + the GEN_TUNING head atom."""
-
-    def build(arps):
-        b = _Builder()
-        for arp in arps:
-            for i in range(9):
-                b.frame().write(0, int(arp[i % 3]))
-        for _ in range(4):
-            b.frame()
-        return b.df()
-
-    arp_a = [int(LUT[60]), int(LUT[64]), int(LUT[67])]
-    arp_b = [int(LUT[62]), int(LUT[66]), int(LUT[69])]
-    out = {}
-    out["generator_table"] = GeneratorPass().apply(
-        build([arp_a, arp_b]), args=_args(generator_pass=True)
-    )
-    return out
 
 
 def _gesture_def(b, idv, kind, degree, cells):
@@ -187,15 +133,17 @@ def _gesture_streams():
 
 
 def _dead_ref_stream():
-    """An INSTR_REF to an id that was never defined: every decoder silently drops it (DEAD_REF_POLICY)."""
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-    return _Builder().frame().write(c0, 99, op=INSTR_REF_OP).frame().df()
+    """A GESTURE_REF to an id that was never defined: the decoder silently drops it (DEAD_REF_POLICY)."""
+    b = _Builder()
+    b.frame()
+    _gesture_ref(b, 23, 99, 0, 0, 0, 3)
+    for _ in range(3):
+        b.frame()
+    return b.df()
 
 
 def _corpus():
     streams = {}
-    streams.update(_instrument_streams())
-    streams.update(_generator_streams())
     streams.update(_gesture_streams())
     streams["dead_ref"] = _dead_ref_stream()
     return streams
@@ -222,16 +170,5 @@ def test_corpus_covers_every_codebook_op():
 
 
 def test_golden_covers_corpus():
-    """Every corpus stream (plus the seed case) has a golden entry and vice-versa -- no silent drift."""
-    assert set(_GOLDEN) == set(_CORPUS) | {"seed_materialized"}
-
-
-def test_seed_materialized_ref_matches_golden():
-    """A REF whose DEF preceded the window resolves from the codebook_seed snapshot, byte-identical to
-    the pre-refactor decoder."""
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-    df = _Builder().frame().write(c0, 7, op=INSTR_REF_OP).frame().df()
-    seed = {
-        "instrument_table": {7: [[(INSTR_OFF_CTRL, 0x41), (INSTR_OFF_CTRL + 1, 0x09)]]}
-    }
-    assert _cols(_decode(df, seed=seed)) == _GOLDEN["seed_materialized"]
+    """Every corpus stream has a golden entry and vice-versa -- no silent drift."""
+    assert set(_GOLDEN) == set(_CORPUS)

@@ -65,6 +65,18 @@ def _poly_runs(diffs, N, n):
     return end, aval
 
 
+def _hold_runs(s, n):
+    """Exclusive end of the maximal constant run starting at each frame, in one O(n) backward pass, so
+    the HOLD edge is O(1) per position instead of an O(run) rescan (the O(n^2) blowup on long silent
+    channels) -- the rest of the DP already precomputes its run tables vectorised."""
+    end = np.empty(n, dtype=np.int64)
+    if n:
+        end[n - 1] = n
+    for i in range(n - 2, -1, -1):
+        end[i] = end[i + 1] if s[i] == s[i + 1] else i + 1
+    return end
+
+
 def _period_edges(s, n):
     """Candidate PERIOD edges keyed by start frame: for each probed period ``p`` the maximal exact
     looped-cell spans, each as ``(end, cost, ("P", cell))`` with ``cell`` the ``p`` looped deltas.
@@ -94,6 +106,7 @@ def mdl_parse(series, wrap=False):
     diffs = _diffs(s, wrap)
     poly = [None] + [_poly_runs(diffs, N, n) for N in range(1, _MAXDEG + 1)]
     per_edges = _period_edges(s, n)
+    hold_end = _hold_runs(s, n)
     inf = float("inf")
     cost = [inf] * (n + 1)
     cost[0] = 0.0
@@ -109,10 +122,7 @@ def mdl_parse(series, wrap=False):
             continue
         base = cost[i]
         hv = int(s[i])
-        j = i
-        while j < n and s[j] == s[i]:
-            j += 1
-        relax(i, j, base + _HDR + nbits(hv), ("H", hv))
+        relax(i, int(hold_end[i]), base + _HDR + nbits(hv), ("H", hv))
         relax(i, i + 1, base + _HDR + nbits(hv), ("H", hv))
         for N in range(1, _MAXDEG + 1):
             if i + N >= n:

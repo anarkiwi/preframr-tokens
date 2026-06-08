@@ -115,13 +115,8 @@ _BUNDLE_REGS_FLAT = frozenset(
 )
 
 
-_TABLE_IDX = {name: i for i, name in enumerate(CODEBOOK_TABLE_NAMES)}
-
-
 class DecodeState:
     """Per-stream state shared by all ``MacroDecoder`` invocations."""
-
-    _SEED_TABLE_KEYS = ("instrument_table",)
 
     def __init__(
         self,
@@ -138,6 +133,8 @@ class DecodeState:
         self.strict = strict
         self.pending_diffs = defaultdict(list)
         self.pending_set_writes = defaultdict(list)
+        self.pending_program = {}
+        self.program_pos = 0
         self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
         self.pending_sweep = None
         self.pending_gen_tri = None
@@ -161,17 +158,9 @@ class DecodeState:
         if seed:
             self._apply_seed(seed)
 
-    @property
-    def instrument_table(self):
-        return self.codebooks[_TABLE_IDX["instrument"]].table
-
     def _apply_seed(self, seed):
-        """Seed out-of-window codebook tables and carry-state for a mid-song window (RESID_ZERO_PHASE3
-        §4 B3): an INSTRUMENT REF whose DEF preceded the window resolves from the snapshot
-        instead of silently dropping. Only tables this build defines are seeded."""
-        for key in self._SEED_TABLE_KEYS:
-            if key in seed and hasattr(self, key):
-                getattr(self, key).update(seed[key])
+        """Seed carry-state (the running register values) for a mid-song window so the first frames
+        decode against the snapshot prior state instead of a cold zero state."""
         for reg, val in seed.get("last_val", {}).items():
             self.last_val[int(reg)] = int(val)
 
@@ -228,7 +217,7 @@ class DecodeState:
                 del self.pending_diffs[reg]
             self.last_val[reg] += delta
             writes.append((reg, int(self.last_val[reg]), self.diff_for(reg)))
-        for reg in list(self.pending_set_writes.keys()):
+        for reg in sorted(self.pending_set_writes.keys()):
             queue = self.pending_set_writes[reg]
             if not queue:
                 del self.pending_set_writes[reg]
@@ -238,6 +227,12 @@ class DecodeState:
                 del self.pending_set_writes[reg]
             self.last_val[reg] = val
             writes.append((reg, val, self.diff_for(reg)))
+        frame_writes = self.pending_program.pop(self.program_pos, None)
+        self.program_pos += 1
+        if frame_writes:
+            for reg, val in frame_writes:
+                self.last_val[reg] = val
+                writes.append((reg, val, self.diff_for(reg)))
         return writes
 
 

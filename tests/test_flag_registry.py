@@ -39,9 +39,23 @@ class TestFlagRegistry(unittest.TestCase):
     def test_surfaced_flags_present(self):
         for flag in (
             "hard_restart_pass",
-            "instrument_program",
+            "loop_pass",
         ):
             self.assertIn(flag, MACRO_FLAGS, flag)
+
+    def test_retired_generator_instrument_flags_absent(self):
+        """The retired generator/instrument encoding flags are gone now MdlGesturePass owns every
+        value channel -- a parse-config caller can no longer request the deleted passes.
+        """
+        for flag in (
+            "generator_pass",
+            "instrument_program",
+            "melody_skeleton",
+            "universal_pitch",
+            "universal_freq",
+            "table_resid_split",
+        ):
+            self.assertNotIn(flag, MACRO_FLAGS, flag)
 
     def test_dead_flags_absent(self):
         for flag in (
@@ -64,14 +78,11 @@ class TestFlagRegistry(unittest.TestCase):
         ):
             self.assertNotIn(flag, MACRO_FLAGS, flag)
 
-    def test_universal_freq_requires_pitch_stack(self):
-        """The bulk-freq probe needs per-voice tuning (universal_pitch), the interval atom
-        (melody_skeleton), and the generator channels (generator_pass); its REQUIRES closure pulls all
-        three so it can never be enabled standalone."""
-        self.assertIn("universal_freq", MACRO_FLAGS)
-        closure = resolve_flags({"universal_freq"})
-        for need in ("universal_pitch", "melody_skeleton", "generator_pass"):
-            self.assertIn(need, closure, need)
+    def test_resolve_flags_is_identity_without_requires(self):
+        """With the generator/instrument REQUIRES stack retired, FLAG_REQUIRES is empty, so resolving a
+        live flag set returns it unchanged (no hidden transitive enables)."""
+        flags = {"hard_restart_pass", "loop_pass"}
+        self.assertEqual(resolve_flags(flags), flags)
 
     def test_no_undeclared_gating_flag(self):
         undeclared = _source_flags() - set(MACRO_FLAGS)

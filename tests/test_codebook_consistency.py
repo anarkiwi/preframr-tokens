@@ -16,13 +16,11 @@ from preframr_tokens.macros.op_contracts import CODEBOOK_SPECS, OP_PRODUCER
 from preframr_tokens.macros.state import DecodeState, _build_decode_state
 from preframr_tokens.macros.validators import validate_codebook_refs
 from preframr_tokens.macros.walker import FrameWalker
-from preframr_tokens.macros.state import CTRL_REGS_BY_VOICE
-from preframr_tokens.stfconstants import INSTR_REF_OP
+from preframr_tokens.stfconstants import GESTURE_REF_OP, GESTURE_REF_SUBREG_ID
 from tests.test_codebook_machine_equivalence import _CORPUS, _Builder
 
 _FAMILY_CORPUS = {
-    "instrument": "instrument_def_ref",
-    "generator": "generator_table",
+    "gesture": "gesture_shapes",
 }
 
 
@@ -46,18 +44,28 @@ def test_dead_ref_policy_is_drop():
 
 def test_dead_ref_decode_drops_silently():
     """A REF to a never-defined id decodes without error and writes nothing on the target reg."""
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-    df = _Builder().frame().write(c0, 99, op=INSTR_REF_OP).frame().df()
+    df = (
+        _Builder()
+        .frame()
+        .write(23, 99, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_ID)
+        .frame()
+        .df()
+    )
     out = expand_ops(df.copy())
-    assert c0 not in out["reg"].tolist()
+    assert 23 not in out["reg"].tolist()
 
 
 def test_dead_ref_validator_raises():
     """The offline validator is strict on the same stream the decoder drops -- the documented
     asymmetry (lenient decode, strict validation) the three facets now agree on via the registry.
     """
-    c0 = int(CTRL_REGS_BY_VOICE[0])
-    df = _Builder().frame().write(c0, 99, op=INSTR_REF_OP).frame().df()
+    df = (
+        _Builder()
+        .frame()
+        .write(23, 99, op=GESTURE_REF_OP, subreg=GESTURE_REF_SUBREG_ID)
+        .frame()
+        .df()
+    )
     with pytest.raises(AssertionError):
         validate_codebook_refs(df)
 

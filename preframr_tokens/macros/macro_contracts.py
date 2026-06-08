@@ -13,9 +13,7 @@ from enum import Enum
 from preframr_tokens.stfconstants import (
     DIFF_OP,
     FLIP_OP,
-    GEN_TABLE_REF_OP,
     GESTURE_REF_OP,
-    INSTR_REF_OP,
     MODE_VOL_REG,
     SWEEP_OP,
     VOICE_REG_SIZE,
@@ -120,22 +118,6 @@ CONTRACTS = {
             True,
         ),
         MacroContract(
-            "InstrumentProgramPass",
-            frozenset({(_CTRL, _RPL), (_AD, _RPL), (_SR, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            True,
-        ),
-        MacroContract(
-            "GeneratorPass",
-            frozenset({(_FREQ, _RPL), (_PWM, _RPL), (_FILT, _RPL)}),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            True,
-        ),
-        MacroContract(
             "frame_consolidation",
             frozenset(),
             frozenset(),
@@ -148,8 +130,6 @@ CONTRACTS = {
 
 PIPELINE_ORDER = (
     "MdlGesturePass",
-    "InstrumentProgramPass",
-    "GeneratorPass",
     "frame_consolidation",
 )
 
@@ -197,8 +177,6 @@ def interaction_mismatches():
 KNOWN_MISMATCHES = frozenset(
     {
         Mismatch("frame_anchor", "MdlGesturePass", "frame_consolidation", None),
-        Mismatch("frame_anchor", "InstrumentProgramPass", "frame_consolidation", None),
-        Mismatch("frame_anchor", "GeneratorPass", "frame_consolidation", None),
     }
 )
 
@@ -207,8 +185,6 @@ RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
         int(SWEEP_OP),
-        int(INSTR_REF_OP),
-        int(GEN_TABLE_REF_OP),
         int(GESTURE_REF_OP),
     }
 )
