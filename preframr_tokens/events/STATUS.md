@@ -51,6 +51,33 @@ Partially met: **§2.7 one time encoding** — note durations are mixed-radix, b
 and gesture `LEN` are still raw frame-delta varints; unifying those onto the one scheme is the remaining
 step.
 
+## Production swap — DONE (§7.1, the events codec IS the pipeline now)
+
+The events codec replaced the old `parse → (op,reg,subreg,val) alphabet → merge_token_df` substrate, and
+the old gesture/codebook machinery is retired.
+
+- **Tokenizer/alphabet** (`events/dataset.py`): a fixed 68-atom alphabet (atom id +1 into n-space, 0=PAD);
+  the alphabet-agnostic `RegTokenizer` unicode-serialize + BPE (`train_worker`) + encode/decode is reused.
+- **Dataset build** (`corpus.preload`): globs raw dumps, sets the event alphabet, trains BPE over per-dump
+  whole-tune event token streams, writes per-dump `.0.blocks.npy` (BPE-encoded stream chunked to seq_len+1)
+  + tokens.csv + df-map + reg-widths; `iter_block_seqs` serves event blocks unchanged.
+- **Generation** (`events/generate.py`): generated BPE ids → `tokenizer.decode` → `ids_to_writes` → ordered
+  writes → render-ready dump df. The factored decoder is the strict grammar/completeness oracle.
+- **Retired:** the gesture PASS (`mdl_gesture_pass`/`arbiter`/`codebook_emit`), the codebook op subsystem
+  (gesture was the last family → `CODEBOOK_FAMILIES = {}`, GESTURE ops de-registered from
+  `op_contracts`/`macro_contracts`), the prototypes + this-era docs, and the tests of all that.
+
+Validated byte-exact end to end (synthetic corpus, identity + trained BPE): the reassembled block stream
+decodes to the exact ordered writes. Full suite (minus the 6-min corpus test): **676 passed, 3 failed** —
+all 3 pre-existing on this branch (decompose_voice removed earlier, GEN_TABLE tiering, repo-wide lint),
+**zero events-swap regressions**. Model train/generate end-to-end is a downstream run (not done here).
+
+*Residual cleanup (cosmetic, non-blocking):* unreachable dead codebook code still sits in
+`constrained_decode`/`validators`/`regtokenizer`/`decoders`/`stfconstants` (no codebook ops reach it) and
+the old `Corpus.make_tokens`/`encode_and_save_cached_blocks` + parse/blocks machinery are now unused;
+deletable in a follow-up. The §2.7 ORDER-`DT`/gesture-`LEN` unification and the §7.1 generation grammar
+mask remain as optimizations (the decoder already validates).
+
 ## Done since last status
 
 - **§8.3 note/attack layer (step 2, task #4) — LANDED.** Each voice's CTRL/AD/SR settled series is owned by
