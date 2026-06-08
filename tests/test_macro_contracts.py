@@ -13,7 +13,6 @@ from preframr_tokens.macros.macro_contracts import (
     CONTRACTS,
     KNOWN_MISMATCHES,
     PIPELINE_ORDER,
-    REPLAY_OPS,
     interaction_mismatches,
 )
 from preframr_tokens.macros.op_contracts import CODEBOOK_SPECS
@@ -36,14 +35,11 @@ class TestContractCompleteness(unittest.TestCase):
                 type(macro_pass).__name__, PIPELINE_ORDER, type(macro_pass).__name__
             )
 
-    def test_every_codebook_ref_op_is_a_replay(self):
-        """Every inline-codebook REF op (the ops that replay a stored register series at decode) must
-        be classified REPLAY, so a delta encoder's barrier logic and the stream check account for it.
-        A new codebook REF op fails here until it is added -- the latent-replay drift the bug was.
-        """
+    def test_no_codebook_ref_ops_remain(self):
+        """The inline-codebook families are retired (the events codec owns those channels), so the
+        derived spec table carries no REF ops."""
         ref_ops = {int(op) for op, spec in CODEBOOK_SPECS.items() if spec.kind == "ref"}
-        self.assertTrue(ref_ops)
-        self.assertTrue(ref_ops <= REPLAY_OPS, ref_ops - REPLAY_OPS)
+        self.assertEqual(ref_ops, set())
 
 
 class TestStaticReasoner(unittest.TestCase):

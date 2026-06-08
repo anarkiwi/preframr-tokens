@@ -9,7 +9,6 @@ from collections import defaultdict
 
 import numpy as np
 
-from preframr_tokens.macros.codebook import CODEBOOK_TABLE_NAMES, _Codebook
 from preframr_tokens.stfconstants import (
     DELAY_REG,
     FILTER_REG,
@@ -135,7 +134,7 @@ class DecodeState:
         self.pending_set_writes = defaultdict(list)
         self.pending_program = {}
         self.program_pos = 0
-        self.codebooks = {i: _Codebook() for i in range(len(CODEBOOK_TABLE_NAMES))}
+        self.codebooks = {}
         self.pending_sweep = None
         self.pending_gen_tri = None
         self.pending_melody_interval = None

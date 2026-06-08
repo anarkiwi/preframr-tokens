@@ -13,7 +13,6 @@ from enum import Enum
 from preframr_tokens.stfconstants import (
     DIFF_OP,
     FLIP_OP,
-    GESTURE_REF_OP,
     MODE_VOL_REG,
     SWEEP_OP,
     VOICE_REG_SIZE,
@@ -87,36 +86,9 @@ class MacroContract:
     can_empty_frames: bool
 
 
-_FREQ, _PWM, _CTRL, _AD, _SR, _FILT = (
-    RegClass.FREQ,
-    RegClass.PWM,
-    RegClass.CTRL,
-    RegClass.AD,
-    RegClass.SR,
-    RegClass.FILTER,
-)
-_ABS, _REL, _RPL = Effect.ABSOLUTE, Effect.RELATIVE, Effect.REPLAY
-
 CONTRACTS = {
     c.name: c
     for c in (
-        MacroContract(
-            "MdlGesturePass",
-            frozenset(
-                {
-                    (_FREQ, _RPL),
-                    (_PWM, _RPL),
-                    (_FILT, _RPL),
-                    (_CTRL, _RPL),
-                    (_AD, _RPL),
-                    (_SR, _RPL),
-                }
-            ),
-            frozenset(),
-            frozenset(),
-            FrameEffect.ANCHORED_REPLAY,
-            True,
-        ),
         MacroContract(
             "frame_consolidation",
             frozenset(),
@@ -128,10 +100,7 @@ CONTRACTS = {
     )
 }
 
-PIPELINE_ORDER = (
-    "MdlGesturePass",
-    "frame_consolidation",
-)
+PIPELINE_ORDER = ("frame_consolidation",)
 
 
 @dataclass(frozen=True)
@@ -174,18 +143,13 @@ def interaction_mismatches():
     return out
 
 
-KNOWN_MISMATCHES = frozenset(
-    {
-        Mismatch("frame_anchor", "MdlGesturePass", "frame_consolidation", None),
-    }
-)
+KNOWN_MISMATCHES = frozenset()
 
 
 RELATIVE_OPS = frozenset({int(DIFF_OP), int(FLIP_OP)})
 REPLAY_OPS = frozenset(
     {
         int(SWEEP_OP),
-        int(GESTURE_REF_OP),
     }
 )
 
