@@ -69,25 +69,42 @@ def ids_to_writes(n_ids) -> list[tuple[int, int, int]]:
 def dump_block_ids(
     df, frames_per_block: int, stride: int | None = None
 ) -> list[list[int]]:
-    """Raw dump -> list of self-contained pre-BPE token-id blocks (n-space), the §7.1 tokenization."""
+    """Raw dump -> list of self-contained pre-BPE token-id blocks (n-space), one per frame window."""
     ow = ordered_writes(df)
     return [block_to_ids(w) for w in iter_windows(ow, frames_per_block, stride)]
 
 
-def encode_block_array(
-    tokenizer: RegTokenizer, df, block_size: int, frames_per_block: int, stride=None
-) -> np.ndarray:
-    """Materialise a tune into the model's ``(n_blocks, block_size)`` int32 array: per window, BPE-encode
-    the event token block (n-space) via the finalised tokenizer, zero-pad / truncate to ``block_size``.
+def dump_token_ids(df) -> list[int]:
+    """A whole tune's pre-BPE event token stream in n-space (the unit BPE trains over and the model
+    decodes from). Byte-exact: ``ids_to_writes(dump_token_ids(df))`` reproduces the ordered writes.
     """
-    rows = []
-    for ids in dump_block_ids(df, frames_per_block, stride):
-        seq = tokenizer.encode(np.asarray(ids, dtype=np.int32)).astype(np.int32)
-        row = np.zeros(block_size, dtype=np.int32)
-        row[: min(len(seq), block_size)] = seq[:block_size]
-        rows.append(row)
-    if not rows:
+    return [a + 1 for a in factored.encode(ordered_writes(df))]
+
+
+def encode_block_array(
+    tokenizer: RegTokenizer, df, block_size: int, stride: int | None = None
+) -> np.ndarray:
+    """Materialise a tune into the model's ``(n_blocks, block_size)`` int32 array: BPE-encode the whole-
+    tune event token stream, then chunk it into fixed ``block_size`` windows (stride ``block_size`` by
+    default), zero-padding the final partial chunk. Decodability is whole-stream (a chunk boundary may
+    fall mid-gesture); ``tokenizer.decode`` then :func:`ids_to_writes` over the full stream is byte-exact.
+    """
+    seq = tokenizer.encode(np.asarray(dump_token_ids(df), dtype=np.int32)).astype(
+        np.int32
+    )
+    if stride is None:
+        stride = block_size
+    n = len(seq)
+    if n == 0:
         return np.zeros((0, block_size), dtype=np.int32)
+    rows = []
+    for start in range(0, n, stride):
+        chunk = seq[start : start + block_size]
+        row = np.zeros(block_size, dtype=np.int32)
+        row[: len(chunk)] = chunk
+        rows.append(row)
+        if start + block_size >= n:
+            break
     return np.stack(rows)
 
 
@@ -95,6 +112,7 @@ __all__ = [
     "PAD_ID",
     "block_to_ids",
     "dump_block_ids",
+    "dump_token_ids",
     "encode_block_array",
     "events_alphabet",
     "ids_to_writes",

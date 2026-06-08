@@ -69,13 +69,15 @@ def test_unicode_serialize_roundtrip():
     assert list(tk.decode_unicode(uni)) == ids
 
 
-def test_encode_block_array_passthrough_shape():
+def test_encode_block_array_chunks_whole_tune_byte_exact():
     df = _synth_df()
     tk = dataset.make_tokenizer(_args())
-    block_size = 257
-    arr = dataset.encode_block_array(tk, df, block_size, frames_per_block=16)
+    block_size = 32
+    arr = dataset.encode_block_array(tk, df, block_size)
     assert arr.dtype == np.int32 and arr.shape[1] == block_size
-    assert arr.shape[0] == len(
-        list(pipeline.iter_windows(oracle.ordered_writes(df), 16))
-    )
     assert int(arr.max()) <= pipeline.VOCAB_SIZE
+    flat = [int(x) for row in arr for x in row]
+    while flat and flat[-1] == 0:
+        flat.pop()
+    assert flat == dataset.dump_token_ids(df), "chunks reassemble the whole-tune stream"
+    assert dataset.ids_to_writes(flat) == oracle.ordered_writes(df).triples()

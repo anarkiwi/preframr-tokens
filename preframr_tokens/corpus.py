@@ -10,7 +10,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import zstandard as zstd
 from tqdm import tqdm
 
 from preframr_tokens.alphabet_projection import build_projection_table, project_df
@@ -22,6 +21,7 @@ from preframr_tokens.blocks import (
     parser_worker,
     reg_widths_path,
 )
+from preframr_tokens.events import dataset as events_dataset
 from preframr_tokens.regtokenizer import (
     RegTokenizer,
     TOKEN_PDTYPE,
@@ -328,57 +328,97 @@ class Corpus:
         )
         return True
 
+    def _read_dump(self, df_file):
+        return pd.read_parquet(
+            df_file, columns=["clock", "irq", "chipno", "reg", "val"]
+        )
+
+    def _events_glob(self, reglogs, eval_reglogs):
+        """``(train_files, val_files, kind_by_file)`` over the raw-dump corpus (events owns parsing, so
+        no ``parser_worker``): glob train + each eval subset, first-seen kind wins."""
+        require_pq = getattr(self.args, "require_pq", False)
+        irq_lo = getattr(self.args, "meta_irq_lo", 0)
+        irq_hi = getattr(self.args, "meta_irq_hi", 0)
+        irq_range = (int(irq_lo), int(irq_hi)) if (irq_lo or irq_hi) else None
+
+        def _glob(g):
+            return list(
+                glob_dumps(
+                    g,
+                    self.args.max_files,
+                    require_pq,
+                    seed=0,
+                    exclude_digi=getattr(self.args, "meta_exclude_digi", False),
+                    irq_range=irq_range,
+                    require_meta=getattr(self.args, "meta_require", False),
+                )
+            )
+
+        train = _glob(reglogs)
+        kind_by_file = {f: "train" for f in train}
+        val = []
+        if eval_reglogs:
+            for name, g in parse_eval_reglogs(eval_reglogs).items():
+                for f in _glob(g):
+                    if f not in kind_by_file:
+                        kind_by_file[f] = name
+                        val.append(f)
+        return train, val, kind_by_file
+
+    def _encode_and_save_events(self, df_files):
+        """Write each dump's ``.0.blocks.npy`` of BPE-encoded event token blocks (the model input)."""
+        block_size = self.args.seq_len + 1
+        for df_file in df_files:
+            try:
+                df = self._read_dump(df_file)
+            except Exception:  # pylint: disable=broad-except
+                continue
+            arr = events_dataset.encode_block_array(self.tokenizer, df, block_size)
+            if arr.shape[0]:
+                np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
+
     def preload(self, tokens=None, tkmodel=None):
-        """Top-level tokenize-stage orchestrator. (a) explicit tokens passed in -> tokenizer.load; (b) try_preload_from_disk succeeds; (c) make_tokens + write tokens.csv + write dataset.csv + train Unigram if tkvocab>0 + encode_and_save_cached_blocks."""
+        """Events-native tokenize-stage orchestrator (REDESIGN_optionB §7.1): the raw dump is encoded by
+        the factored codec, replacing parse -> (op,reg,subreg,val) alphabet -> merge_token_df. (a) explicit
+        tokens -> load; (b) preload-from-disk; (c) glob raw dumps, set the fixed event alphabet, train BPE
+        over the event token streams (tkvocab>0), write tokens.csv / df-map / reg-widths, and save the
+        per-dump ``.0.blocks.npy`` event-token blocks."""
         if tokens is not None:
             self.tokenizer.load(tkmodel, tokens)
             return
         if self.try_preload_from_disk():
             return
-        self.logger.info("preload making tokens")
+        self.logger.info("preload making tokens (events-native)")
         eval_reglogs = getattr(self.args, "eval_reglogs", "") or ""
-        train_files, val_files, cached_blocks = self.make_tokens(
-            self.args.reglogs, eval_reglogs=eval_reglogs
+        train_files, val_files, kind_by_file = self._events_glob(
+            self.args.reglogs, eval_reglogs
         )
         df_files = train_files + val_files
+        self.tokenizer.tokens = events_dataset.events_alphabet()
+
+        irq_by_file = {}
+        for df_file in df_files:
+            try:
+                irq_by_file[df_file] = int(self._read_dump(df_file)["irq"].min())
+            except Exception:  # pylint: disable=broad-except
+                irq_by_file[df_file] = 0
+        self._tokenize_meta = TokenizeMeta(
+            irq_by_file=irq_by_file,
+            rotations_by_file={f: 1 for f in df_files},
+            kind_by_file=kind_by_file,
+            reg_widths={},
+            val_subsets=(
+                list(parse_eval_reglogs(eval_reglogs).keys()) if eval_reglogs else []
+            ),
+        )
+
         if self.args.token_csv:
             self.logger.info("writing tokens to %s", self.args.token_csv)
             self.tokenizer.tokens.to_csv(self.args.token_csv, index=False)
-        dataset_csv = self.args.dataset_csv
+
         df_map_csv = self.args.df_map_csv
 
-        if not self.args.tkvocab and not dataset_csv:
-            if df_map_csv:
-                self._build_df_map_frame(train_files, val_files).to_csv(
-                    df_map_csv, index=False
-                )
-                self._write_reg_widths_sidecar(df_map_csv)
-            return
-
-        def worker():
-            dataset_csv_inner = self.args.dataset_csv
-
-            def worker_gen():
-                for i, (df_file, _i, df, _seq, _irq, _blocks) in enumerate(
-                    self.load_dfs(
-                        dump_files=df_files,
-                        max_perm=self.args.max_perm,
-                        encode=False,
-                    )
-                ):
-                    yield df_file, df, i
-
-            if dataset_csv_inner:
-                self.logger.info("writing dataset to %s", dataset_csv_inner)
-                with zstd.open(dataset_csv_inner, "w") as f:
-                    for df_file, df, i in worker_gen():
-                        df["i"] = int(i)
-                        df.to_csv(f, index=False, header=(i == 0))
-                        yield df_file, df, i
-            else:
-                for df_file, df, i in worker_gen():
-                    yield df_file, df, i
-
+        def _write_map():
             if df_map_csv:
                 self.logger.info("writing dataset map to %s", df_map_csv)
                 self._build_df_map_frame(train_files, val_files).to_csv(
@@ -386,14 +426,31 @@ class Corpus:
                 )
                 self._write_reg_widths_sidecar(df_map_csv)
 
+        if not self.args.tkvocab and not self.args.dataset_csv:
+            _write_map()
+            return
+
         if self.args.tkvocab:
+
+            def worker():
+                for i, df_file in enumerate(df_files):
+                    try:
+                        df = self._read_dump(df_file)
+                    except Exception:  # pylint: disable=broad-except
+                        continue
+                    ids = events_dataset.dump_token_ids(df)
+                    if ids:
+                        yield df_file, pd.DataFrame(
+                            {"n": np.asarray(ids, dtype=np.int64)}
+                        ), i
+                _write_map()
+
             self.tokenizer.train_tokenizer(worker())
         else:
-            for _df in worker():
-                continue
+            _write_map()
 
         if getattr(self.args, "write_blocks", True):
-            self.encode_and_save_cached_blocks(cached_blocks)
+            self._encode_and_save_events(df_files)
 
     def iter_block_seqs(self):
         """Top-level train-stage iterator. Yields (kind, blocks_path, seq_meta) tuples. Tries metadata-fast-path first (df-map.csv with `irq`/`n_rotations` columns + _reg_widths.json sidecar); falls back to re-parsing the corpus. Sets self.n_vocab, self.n_words, self.reg_widths as side effects."""
