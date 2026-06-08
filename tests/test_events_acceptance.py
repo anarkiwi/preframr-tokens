@@ -25,7 +25,7 @@ def test_no_escape_every_value_decodes_over_one_alphabet():
     the signed varint round-trips across the full byte range and large magnitudes."""
     for v in list(range(-300, 301)) + [-70000, 65535, 1 << 20]:
         assert varint.unzigzag(varint.decode_unsigned(varint.encode_signed(v))[0]) == v
-    assert factored.VOCAB_SIZE == factored.FLD_SR + 1
+    assert factored.VOCAB_SIZE == factored.PW_MARK + 1
 
 
 def test_gesture_basis_is_lossless_for_all_shapes():
@@ -135,6 +135,21 @@ def test_note_duration_carried_and_gate_off_derived():
     series: dict = {}
     factored._read_note_voice(out, 0, n, series)
     assert (series[cr] == settled[:, cr]).all()
+
+
+def test_pw_combined_lane_byte_exact():
+    """§8.5: PW lo/hi are encoded as one combined 12-bit value lane (adjacent bit ranges), which is
+    byte-exact -- the lo/hi bytes split back exactly -- and lets a PW sweep be one ramp. A lo-byte wrap
+    with a hi-nibble step round-trips to the exact two source bytes."""
+    writes = []
+    for f in range(40):
+        pw = 0x0F0 + 6 * f
+        writes.append((f, 2, pw & 0xFF))
+        writes.append((f, 3, (pw >> 8) & 0xFF))
+    ow = _ow(sorted(writes, key=lambda t: t[0]), 40)
+    tokens = factored.encode(ow)
+    assert factored.PW_MARK in tokens, "PW rides the combined lane"
+    assert factored.decode(tokens) == ow.triples()
 
 
 def test_decoder_rejects_malformed_stream():

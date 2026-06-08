@@ -24,11 +24,15 @@ stream**. Every layer is guarded by that roundtrip.
 - No-escape invariant, expansion guard, gesture-basis losslessness, determinism, strict-grammar rejection
   (`tests/test_events_acceptance.py`).
 
-**Numbers (5 drivers, 1500 BPE merges):** post-BPE ~**4.2 bits/write** (~3.8× vs the 16-bit raw dump
-floor). The §8.3 note layer beat plain byte lanes here (4.55→4.12); the §4 duration layer adds a small
-*within-tune* order-0 cost (the per-note mode token) and is ~neutral on 5 same-corpus drivers — by design,
-because its win is **corpus-scale tempo-invariance**, which 5 drivers can't show. The 10–14× target is
-corpus-scale (BPE shares the dominant ORDER descriptor + recurring gestures/attacks across many tunes).
+**Numbers (5 drivers, 1500 BPE merges):** post-BPE **3.77 bits/write (4.24×** vs the 16-bit raw dump
+floor). Progression: byte-lane CTRL/AD/SR 4.55 → §8.3 note layer 4.12 → §4 duration layer 4.23 (a small
+*within-tune* order-0 cost; its win is corpus-scale tempo-invariance, below) → **§8.5 PW-combine 3.77**. The
+10–14× target is corpus-scale (BPE shares the ORDER descriptor + recurring gestures/attacks across tunes).
+
+**§4 numbers (120 corpus tunes, the right scale):** encoding note durations as `q·tick + r` cuts their
+pooled coding cost **H(raw frames)=3.83 → H(q)+H(r)=2.08+1.29=3.37 bits** (−12%) and collapses the alphabet
+(423 distinct raw durations → 218 `q` + **14** `r`). A quarter note is the same `(q,r)` regardless of
+tempo — the generalization the order-0 5-driver metric structurally cannot reward.
 
 **§4 numbers (120 corpus tunes, the right scale):** encoding note durations as `q·tick + r` cuts their
 pooled coding cost **H(raw frames)=3.83 → H(q)+H(r)=2.08+1.29=3.37 bits** (−12%) and collapses the alphabet
@@ -60,8 +64,7 @@ step.
   5 drivers + the 200-tune corpus sample, and isolation-tested (`tests/test_events_acceptance.py::
   test_note_layer_gate_on_typed_and_byte_exact`).
   *Deferred refinements on this substrate (not blockers):* body-CTRL as an explicit `MOD_CTRL` gesture
-  (currently inline `FLD_CTRL` edges); the structural (not fixed-W) attack window; the §8.4 joint freq/note
-  DP that would let some onsets share a note-index.
+  (currently inline `FLD_CTRL` edges); the structural (not fixed-W) attack window.
 
 - **§4 mixed-radix tick + §6 gate-off derivation — LANDED.** Each voice's note section now carries a
   `tick`/`offset` header (§8.1 grid-fit on gate-on durations: largest unit in [2,32] with ≥90% on-grid
@@ -75,15 +78,35 @@ step.
   gate-off value is derived, no note-off token). Verified byte-exact on 5 drivers + 50-tune spot-check +
   the 200-tune corpus roundtrip; pinned by `test_note_duration_carried_and_gate_off_derived`.
 
+- **§8.5 PW combined lane — LANDED.** PW lo (reg 7v+2) and hi (reg 7v+3) are adjacent bit ranges, so each
+  voice's PW is encoded as one combined 12-bit value lane (`(hi<<8)|lo`, byte-exact split on decode) under
+  a `PW_MARK` instead of two byte covers. A sweep is one ramp instead of two byte covers fighting at the
+  lo-byte wrap: **5-driver post-BPE 4.23 → 3.77 bits/write (−10.8%), collapse 4.24×**, byte-exact on 5
+  drivers + 50-tune spot-check + the 200-tune corpus. Pinned by `test_pw_combined_lane_byte_exact`.
+
+## Measured dead-ends (investigated, not shipped — roadmap refinements)
+
+- **§2.7 ORDER-descriptor `DT` as mixed-radix — REJECTED (measured harmful).** The inter-write-frame gap is
+  **entropy ≈ 0: 100% of values are `1`** (consecutive frames), already one BPE-folded token. Mixed-radix
+  would turn every `1` into `(q=0, r=1)` = 2 tokens, doubling the most common token in the stream. The
+  strict "one time encoding" purity is counterproductive here; ORDER `DT` stays raw varint.
+- **§8.4 joint freq/note path DP — REJECTED (measured regression, reverted).** A shortest-path parse over
+  `(frame, note-anchor)` emitting NOTE_STEP events + per-segment delta gestures was implemented and is
+  byte-exact, but cost **4.23 → 4.42 bits/write**. Root cause: the current two-tiling freq encoding covers
+  the note-index and the delta as *separate* series, so `delta = 0` (static notes, via the recovered table)
+  spans across note boundaries as one long HOLD; the interleaved path forces a delta-gesture boundary at
+  every note event, fragmenting `delta = 0` into a per-note HOLD. The two-tiling greedy is the stronger
+  representation for the common static-note case. (A variant that keeps the two-tiling but picks a
+  piecewise-constant note-index via DP could still help fragmented tunes like baggis — 536 ni-gestures —
+  without the delta fragmentation; left as a future option.)
+
 ## Remaining (doc build order §11)
 
-- **§2.7 finish:** route the ORDER-descriptor `DT` and gesture `LEN` through the same mixed-radix scheme
-  (+ §4.1 span inheritance: a gesture whose span == the note duration emits no length token).
-- **§8.4 joint 2-D DP:** the freq lane currently uses nearest-grid note-index + recovered table (the
-  greedy bootstrap). Upgrade to the optimal shortest-path joint parse for fewer note events.
-- **§3.1 global lane semantics / §8.5 labels:** PW/cutoff/res/vol are already byte-exactly gesture-covered
-  (mdl scalar = §8.5); add the semantic `MOD_PW`/`MOD_CUTOFF`/`FILTER_CTL`/`MOD_VOL` typing + `VOICE=GLOBAL`
-  grouping.
+- **§4.1 span inheritance:** a gesture whose span == the enclosing note duration emits no length token
+  (needs note-aware gesture boundaries). The only remaining clearly-beneficial mixed-radix/time item.
+- **§3.1 global lane semantics / §8.5 labels:** add the semantic `MOD_PW`/`MOD_CUTOFF`/`FILTER_CTL`/
+  `MOD_VOL` typing + `VOICE=GLOBAL` grouping (cutoff/res/vol stay separate byte lanes — combining cutoff
+  lo/hi was measured −50.6% because reg21's low-3-bits register is not contiguous when byte-packed).
 - **§7.1 grammar mask (step 1/5):** `factored.from_tokens`/`decode` is already a strict parser (the
   grammar); add the generation-time finite-state mask + completeness test.
 - **§9 corpus-scale bits measurement** and **§7.1 retirement** of the old gesture-codebook row machinery

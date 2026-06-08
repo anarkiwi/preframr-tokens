@@ -22,16 +22,20 @@ from .schema import (
     FREQ_HI,
     FREQ_LO,
     NUM_REGS,
+    PW_HI,
+    PW_LO,
     SR,
     Shape,
     VOICE_OF,
     ad_reg,
     ctrl_reg,
     freq_regs,
+    pw_regs,
     sr_reg,
 )
 
 CAS_REGS = CTRL | AD | SR
+PW_REGS = PW_LO | PW_HI
 
 VOICE_FREQ = {r: VOICE_OF[r] for r in (FREQ_LO | FREQ_HI)}
 
@@ -49,7 +53,8 @@ FLD_NOTE_ON = NOTE_MARK + 1
 FLD_CTRL = FLD_NOTE_ON + 1
 FLD_AD = FLD_CTRL + 1
 FLD_SR = FLD_AD + 1
-VOCAB_SIZE = FLD_SR + 1
+PW_MARK = FLD_SR + 1
+VOCAB_SIZE = PW_MARK + 1
 
 _CTRL_FLDS = (FLD_NOTE_ON, FLD_CTRL)
 
@@ -470,6 +475,28 @@ def _read_note_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
     return pos
 
 
+def _emit_pw_voice(out: list[int], settled, v: int) -> None:
+    """Emit a voice's pulse width as one combined 12-bit value lane (§8.5): PW lo (reg 7v+2) and hi (reg
+    7v+3) are adjacent bit ranges, so ``(hi << 8) | lo`` is byte-exact and contiguous -- a PW sweep is one
+    ramp instead of two byte covers that fight each other at the lo-byte wrap."""
+    lo, hi = pw_regs(v)
+    combined = (settled[:, hi].astype(np.int64) << 8) | settled[:, lo].astype(np.int64)
+    out.append(PW_MARK)
+    _emit_u(out, v)
+    _emit_cover(out, combined, signed=False)
+
+
+def _read_pw_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
+    """Read one voice's combined PW lane, splitting it back into the byte-exact lo/hi series."""
+    pos += 1
+    v, pos = _read_u(tokens, pos)
+    combined, pos = _read_cover(tokens, pos, n, signed=False)
+    lo, hi = pw_regs(v)
+    series[lo] = combined & 0xFF
+    series[hi] = (combined >> 8) & 0xFF
+    return pos
+
+
 def encode(ow: OrderedWrites) -> list[int]:
     """Ordered write stream -> factored v1 token id list (byte-exact; see module docstring)."""
     n = ow.n_frames
@@ -510,6 +537,12 @@ def encode(ow: OrderedWrites) -> list[int]:
         lane_regs.discard(ad_reg(v))
         lane_regs.discard(sr_reg(v))
 
+    pw_voices = sorted({VOICE_OF[r] for r in lane_regs if r in PW_REGS})
+    for v in pw_voices:
+        _emit_pw_voice(out, settled, v)
+        lane_regs.discard(pw_regs(v)[0])
+        lane_regs.discard(pw_regs(v)[1])
+
     for reg in sorted(lane_regs):
         out.append(REG_BASE + reg)
         for g in cover(settled[:, reg], wrap=False):
@@ -543,6 +576,8 @@ def decode(tokens: list[int]) -> list[tuple[int, int, int]]:
         pos = _read_freq_voice(tokens, pos, n, series)
     while pos < len(tokens) and tokens[pos] == NOTE_MARK:
         pos = _read_note_voice(tokens, pos, n, series)
+    while pos < len(tokens) and tokens[pos] == PW_MARK:
+        pos = _read_pw_voice(tokens, pos, n, series)
     while pos < len(tokens) and REG_BASE <= tokens[pos] < REG_BASE + NUM_REGS:
         reg = tokens[pos] - REG_BASE
         pos += 1
