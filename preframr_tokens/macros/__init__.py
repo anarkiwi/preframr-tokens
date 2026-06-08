@@ -14,7 +14,6 @@ from preframr_tokens.macros.passes import (
     TransposePass,
     VoiceBlockOrderPass,
 )
-from preframr_tokens.macros.mdl_gesture_pass import MdlGesturePass
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
     OVERLAY_BODY_FREQ_DELTA_BIN,
@@ -34,9 +33,7 @@ from preframr_tokens.macros.validators import (
     validate_stream,
 )
 
-FREQ_BLOCK_PASSES = [
-    MdlGesturePass(),
-]
+FREQ_BLOCK_PASSES = []
 
 
 PASSES = [

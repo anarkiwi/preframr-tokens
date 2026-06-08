@@ -13,7 +13,6 @@ from preframr_tokens.engine_fingerprint import (
 )
 from preframr_tokens.macros.decode import expand_ops
 from preframr_tokens.parse_audit import make_pass_audit
-from preframr_tokens.macros.mdl_gesture_pass import MdlGesturePass
 from preframr_tokens.reg_mappers import FreqMapper
 from preframr_tokens.palette_io import load_palettes_attrs
 from preframr_tokens.reg_match import (
@@ -950,13 +949,8 @@ class RegLogParser:
         if "op" not in df.columns:
             df = df.copy()
             df["op"] = int(SET_OP)
-        elapsed = elapsed_frames(df)
         audit = make_pass_audit(self.args)
         audit.start(df)
-        for macro_pass in (MdlGesturePass(),):
-            df = macro_pass.apply(df, args=self.args)
-            assert_elapsed_frames(df, elapsed, type(macro_pass).__name__)
-            audit.after(df, type(macro_pass).__name__)
         df = self._consolidate_frames(df)
         audit.after(df, "_consolidate_frames")
         consolidated = elapsed_frames(df)
