@@ -98,6 +98,45 @@ def test_note_layer_gate_on_typed_and_byte_exact():
     assert (series[srg] == settled[:, srg]).all()
 
 
+def test_note_duration_carried_and_gate_off_derived():
+    """§4/§6: a note carries its duration (mixed-radix q*tick+r) on the NOTE_ON and the gate-off is
+    DERIVED, not stored as an edge. Here gate-off CTRL 0x10 == body waveform 0x11 with the gate bit
+    cleared, so the gate-off edge is removed (mode DERIVE) and reconstruction stays byte-exact.
+    """
+    from preframr_tokens.events.schema import ad_reg, ctrl_reg, sr_reg
+
+    n = 30
+    settled = np.zeros((n, 25), dtype=np.int64)
+    cr, ar, srg = ctrl_reg(0), ad_reg(0), sr_reg(0)
+    for f in range(n):
+        settled[f, cr] = (
+            0x40 if f < 2 else (0x41 if f < 10 else (0x11 if f < 20 else 0x10))
+        )
+        settled[f, ar] = 0x08
+        settled[f, srg] = 0xA9
+
+    edges = factored._note_edges(settled, 0)
+    durinfo, remove = factored._pair_gateoffs(edges)
+    note_idx = next(i for i, e in enumerate(edges) if e[1] == factored.FLD_NOTE_ON)
+    mode, dur, _c_off = durinfo[note_idx]
+    assert (
+        mode == factored._GO_DERIVE
+    ), "0x10 == 0x11 & ~gate -> gate-off value is derived"
+    assert dur == 20 - 2, "duration is gate-on(f=2) to gate-off(f=20)"
+    goff_idx = next(
+        i for i, e in enumerate(edges) if e[0] == 20 and e[1] == factored.FLD_CTRL
+    )
+    assert (
+        goff_idx in remove
+    ), "the gate-off edge is dropped (synthesized from duration, no note-off)"
+
+    out: list[int] = []
+    factored._emit_note_voice(out, settled, 0)
+    series: dict = {}
+    factored._read_note_voice(out, 0, n, series)
+    assert (series[cr] == settled[:, cr]).all()
+
+
 def test_decoder_rejects_malformed_stream():
     """The token grammar is strict: a truncated varint / missing ORDER_MARK fails loudly (no escape)."""
     import pytest

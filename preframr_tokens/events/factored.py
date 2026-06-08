@@ -7,6 +7,9 @@ an escape. Decode is asserted equal to the source write stream (§7) over one se
 
 from __future__ import annotations
 
+import collections
+import math
+
 import numpy as np
 
 from preframr_tokens.macros import pitch_grid
@@ -221,6 +224,71 @@ def _read_freq_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
     return pos
 
 
+_TICK_MIN, _TICK_MAX = 2, 32
+
+
+def _iround(x: float) -> int:
+    """Deterministic round-half-up for the mixed-radix quotient (x >= 0)."""
+    return int(math.floor(x + 0.5))
+
+
+def _gate_durations(C) -> list[int]:
+    """Gate-on durations (gate-on edge -> matching gate-off edge, in frames) of a settled CTRL series."""
+    durs: list[int] = []
+    pc = 0
+    gate = 0
+    on_f = None
+    for f in range(C.shape[0]):
+        c = int(C[f])
+        if c != pc:
+            ng = c & 1
+            if ng and not gate:
+                on_f = f
+            elif gate and not ng and on_f is not None:
+                durs.append(f - on_f)
+                on_f = None
+            gate = ng
+            pc = c
+    return durs
+
+
+def _recover_tick(C) -> tuple[int, int]:
+    """Per-voice ``(tick, offset)`` for the mixed-radix time scheme (§4, §8.1): ``tick`` is the largest
+    unit in [2,32] for which >=90% of gate-on durations land within +-1 of a multiple; ``offset`` is the
+    mode of the on-grid residual. ``tick==1`` means raw varint (no usable duration grid).
+    """
+    durs = _gate_durations(C)
+    if not durs:
+        return 1, 0
+    tick = 1
+    for t in range(_TICK_MIN, _TICK_MAX + 1):
+        on = sum(1 for d in durs if abs(d - _iround(d / t) * t) <= 1)
+        if on >= 0.9 * len(durs):
+            tick = t
+    if tick == 1:
+        return 1, 0
+    rr = collections.Counter(d - _iround(d / tick) * tick for d in durs)
+    return tick, rr.most_common(1)[0][0]
+
+
+def _emit_dt(out: list[int], d: int, tick: int, offset: int) -> None:
+    """Emit a time delta as mixed-radix ``q*tick + r + offset`` (§4); ``tick==1`` falls back to raw."""
+    if tick <= 1:
+        _emit_u(out, d)
+        return
+    q = _iround(d / tick)
+    _emit_u(out, q)
+    _emit_s(out, d - q * tick - offset)
+
+
+def _read_dt(tokens: list[int], pos: int, tick: int, offset: int) -> tuple[int, int]:
+    if tick <= 1:
+        return _read_u(tokens, pos)
+    q, pos = _read_u(tokens, pos)
+    r, pos = _read_s(tokens, pos)
+    return q * tick + r + offset, pos
+
+
 def _note_edges(settled, v: int) -> list[tuple[int, int, int]]:
     """Ordered ``(frame, field_tok, value)`` edges covering the settled CTRL/AD/SR change-points of voice
     ``v``. CTRL edges that turn the gate on (bit0 0->1) are typed ``FLD_NOTE_ON`` (§6).
@@ -252,30 +320,134 @@ def _note_edges(settled, v: int) -> list[tuple[int, int, int]]:
     return edges
 
 
+_GO_NONE, _GO_DERIVE, _GO_VALUE = 0, 1, 2
+
+
+def _pair_gateoffs(edges: list[tuple[int, int, int]]) -> tuple[dict, set]:
+    """Match each NOTE_ON to its gate-off CTRL edge (next bit0-clear before the next NOTE_ON), returning
+    ``durinfo[note_idx] = (mode, duration, c_off)`` and the gate-off edge indices to drop (§4/§6). ``mode``
+    is ``_GO_DERIVE`` when the gate-off byte == the held waveform with the gate bit cleared, ``_GO_VALUE``
+    when it differs (``c_off`` carries it), or ``_GO_NONE`` when no gate-off precedes the next note.
+    """
+    durinfo: dict = {}
+    remove: set = set()
+    n = len(edges)
+    for idx in range(n):
+        f, tok, val = edges[idx]
+        if tok != FLD_NOTE_ON:
+            continue
+        prev_c = val
+        goff = None
+        for j in range(idx + 1, n):
+            _fj, tj, vj = edges[j]
+            if tj == FLD_NOTE_ON:
+                break
+            if tj == FLD_CTRL:
+                if not (vj & 1):
+                    goff = j
+                    break
+                prev_c = vj
+        if goff is None:
+            durinfo[idx] = (_GO_NONE, 0, 0)
+            continue
+        fj, _tj, vj = edges[goff]
+        if vj == (prev_c & ~1):
+            durinfo[idx] = (_GO_DERIVE, fj - f, 0)
+        else:
+            durinfo[idx] = (_GO_VALUE, fj - f, vj)
+        remove.add(goff)
+    return durinfo, remove
+
+
+def _replay_note(n: int, edges, schedule) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Forward-fill settled CTRL/AD/SR from kept edges plus the derived gate-off ``schedule`` (a list of
+    ``(frame, mode, c_off)``); the gate-off applies after the frame's edges (encoder guarantees no CTRL
+    edge shares a derived gate-off frame, so order is unambiguous)."""
+    C = np.zeros(n, dtype=np.int64)
+    A = np.zeros(n, dtype=np.int64)
+    S = np.zeros(n, dtype=np.int64)
+    by_f: dict = {}
+    for f, tok, val in edges:
+        by_f.setdefault(f, []).append((tok, val))
+    sched: dict = {}
+    for f, mode, c_off in schedule:
+        sched.setdefault(f, []).append((mode, c_off))
+    c = a = s = 0
+    for f in range(n):
+        for tok, val in by_f.get(f, ()):
+            if tok in _CTRL_FLDS:
+                c = val
+            elif tok == FLD_AD:
+                a = val
+            else:
+                s = val
+        for mode, c_off in sched.get(f, ()):
+            c = (c & ~1) if mode == _GO_DERIVE else c_off
+        C[f] = c
+        A[f] = a
+        S[f] = s
+    return C, A, S
+
+
 def _emit_note_voice(out: list[int], settled, v: int) -> None:
+    cr, ar, srg = ctrl_reg(v), ad_reg(v), sr_reg(v)
     edges = _note_edges(settled, v)
+    durinfo, remove = _pair_gateoffs(edges)
+    emit_list = [
+        (f, tok, val, durinfo.get(i))
+        for i, (f, tok, val) in enumerate(edges)
+        if i not in remove
+    ]
+    schedule = [
+        (f + d, mode, c_off)
+        for f, tok, _v, di in emit_list
+        if tok == FLD_NOTE_ON
+        for mode, d, c_off in (di,)
+        if mode != _GO_NONE
+    ]
+    n = settled.shape[0]
+    rc, ra, rs = _replay_note(n, [(f, t, x) for f, t, x, _ in emit_list], schedule)
+    if not (
+        (rc == settled[:, cr]).all()
+        and (ra == settled[:, ar]).all()
+        and (rs == settled[:, srg]).all()
+    ):
+        emit_list = [
+            (f, tok, val, (_GO_NONE, 0, 0) if tok == FLD_NOTE_ON else None)
+            for f, tok, val in edges
+        ]
+    tick, offset = _recover_tick(settled[:, cr])
     out.append(NOTE_MARK)
     _emit_u(out, v)
-    _emit_u(out, len(edges))
+    _emit_u(out, tick)
+    _emit_s(out, offset)
+    _emit_u(out, len(emit_list))
     prev_f = 0
-    for f, tok, val in edges:
+    for f, tok, val, di in emit_list:
         _emit_u(out, f - prev_f)
         out.append(tok)
         _emit_u(out, val)
         prev_f = f
+        if tok == FLD_NOTE_ON:
+            mode, d, c_off = di
+            _emit_u(out, mode)
+            if mode != _GO_NONE:
+                _emit_dt(out, d, tick, offset)
+                if mode == _GO_VALUE:
+                    _emit_u(out, c_off)
 
 
 def _read_note_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
     """Read one voice's note section, populating ``series[ctrl/ad/sr]`` with the forward-filled series."""
     pos += 1
     v, pos = _read_u(tokens, pos)
+    tick, pos = _read_u(tokens, pos)
+    offset, pos = _read_s(tokens, pos)
     n_edges, pos = _read_u(tokens, pos)
     cr, ar, srg = ctrl_reg(v), ad_reg(v), sr_reg(v)
-    C = np.zeros(n, dtype=np.int64)
-    A = np.zeros(n, dtype=np.int64)
-    S = np.zeros(n, dtype=np.int64)
     cur_f = 0
     edges: list[tuple[int, int, int]] = []
+    schedule: list[tuple[int, int, int]] = []
     for _ in range(n_edges):
         dt, pos = _read_u(tokens, pos)
         cur_f += dt
@@ -283,23 +455,15 @@ def _read_note_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
         pos += 1
         val, pos = _read_u(tokens, pos)
         edges.append((cur_f, tok, val))
-    c = a = s = 0
-    ei = 0
-    for f in range(n):
-        while ei < len(edges) and edges[ei][0] == f:
-            _, tok, val = edges[ei]
-            if tok in _CTRL_FLDS:
-                c = val
-            elif tok == FLD_AD:
-                a = val
-            elif tok == FLD_SR:
-                s = val
-            else:
-                raise ValueError(f"unexpected note-edge field {tok}")
-            ei += 1
-        C[f] = c
-        A[f] = a
-        S[f] = s
+        if tok == FLD_NOTE_ON:
+            mode, pos = _read_u(tokens, pos)
+            if mode != _GO_NONE:
+                d, pos = _read_dt(tokens, pos, tick, offset)
+                c_off = 0
+                if mode == _GO_VALUE:
+                    c_off, pos = _read_u(tokens, pos)
+                schedule.append((cur_f + d, mode, c_off))
+    C, A, S = _replay_note(n, edges, schedule)
     series[cr] = C
     series[ar] = A
     series[srg] = S
