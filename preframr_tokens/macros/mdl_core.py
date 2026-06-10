@@ -77,9 +77,11 @@ def _hold_runs(s, n):
     return end
 
 
-def _period_edges(s, n):
+def _period_edges(s, n, wrap=False):
     """Candidate PERIOD edges keyed by start frame: for each probed period ``p`` the maximal exact
-    looped-cell spans, each as ``(end, cost, ("P", cell))`` with ``cell`` the ``p`` looped deltas.
+    looped-cell spans, each as ``(end, cost, ("P", cell))`` with ``cell`` the ``p`` looped deltas
+    (reduced to signed 16-bit when ``wrap`` so the cell fits the codec's 2-byte field; decode wraps the
+    value level, so the looped sum is unchanged mod-65536).
     """
     edges = defaultdict(list)
     for p in range(2, min(_PMAX, n // 2) + 1):
@@ -88,7 +90,9 @@ def _period_edges(s, n):
         for a, e in zip(np.where(d == 1)[0].tolist(), np.where(d == -1)[0].tolist()):
             if e - a < p:
                 continue
-            cell = tuple(int(x) for x in (s[a + 1 : a + p + 1] - s[a : a + p]))
+            cell = tuple(
+                _wd(int(x), wrap) for x in (s[a + 1 : a + p + 1] - s[a : a + p])
+            )
             cost = _HDR + nbits(int(s[a])) + nbits(p) + sum(nbits(c) for c in cell)
             edges[a].append((e - 1 + p + 1, cost, ("P", cell)))
     return edges
@@ -105,7 +109,7 @@ def mdl_parse(series, wrap=False):
         return []
     diffs = _diffs(s, wrap)
     poly = [None] + [_poly_runs(diffs, N, n) for N in range(1, _MAXDEG + 1)]
-    per_edges = _period_edges(s, n)
+    per_edges = _period_edges(s, n, wrap)
     hold_end = _hold_runs(s, n)
     inf = float("inf")
     cost = [inf] * (n + 1)
