@@ -27,11 +27,14 @@ class Gesture:
     params: tuple[int, ...]
 
 
-def cover(series, wrap: bool = False) -> list[Gesture]:
-    """Optimal lossless HOLD/POLY/PERIOD cover of ``series`` (``wrap`` for 16-bit register channels)."""
+def cover(series, wrap: bool = False, cost_model=None) -> list[Gesture]:
+    """Optimal lossless HOLD/POLY/PERIOD cover of ``series`` (``wrap`` for 16-bit register channels).
+    ``cost_model`` (see :func:`mdl_core.mdl_parse`) switches the parse objective from the legacy
+    bootstrap bit cost to the caller's serialized cost (e.g. emitted-token count, §8.6).
+    """
     s = np.asarray(series, dtype=np.int64)
     out: list[Gesture] = []
-    for kind, i, j, param in mdl_core.mdl_parse(s, wrap=wrap):
+    for kind, i, j, param in mdl_core.mdl_parse(s, wrap=wrap, cost_model=cost_model):
         length = j - i
         if kind == "H":
             out.append(Gesture(Shape.HOLD, i, length, (int(param),)))

@@ -79,9 +79,10 @@ def _hold_runs(s, n):
 
 def _period_edges(s, n, wrap=False):
     """Candidate PERIOD edges keyed by start frame: for each probed period ``p`` the maximal exact
-    looped-cell spans, each as ``(end, cost, ("P", cell))`` with ``cell`` the ``p`` looped deltas
-    (reduced to signed 16-bit when ``wrap`` so the cell fits the codec's 2-byte field; decode wraps the
-    value level, so the looped sum is unchanged mod-65536).
+    looped-cell spans, each as ``(end, cell)`` with ``cell`` the ``p`` looped deltas (reduced to signed
+    16-bit when ``wrap`` so the cell fits the codec's 2-byte field; decode wraps the value level, so the
+    looped sum is unchanged mod-65536). Costing happens in :func:`mdl_parse` (legacy bits or a caller
+    cost model).
     """
     edges = defaultdict(list)
     for p in range(2, min(_PMAX, n // 2) + 1):
@@ -93,15 +94,16 @@ def _period_edges(s, n, wrap=False):
             cell = tuple(
                 _wd(int(x), wrap) for x in (s[a + 1 : a + p + 1] - s[a : a + p])
             )
-            cost = _HDR + nbits(int(s[a])) + nbits(p) + sum(nbits(c) for c in cell)
-            edges[a].append((e - 1 + p + 1, cost, ("P", cell)))
+            edges[a].append((e - 1 + p + 1, cell))
     return edges
 
 
-def mdl_parse(series, wrap=False):
+def mdl_parse(series, wrap=False, cost_model=None):
     """Globally optimal min-description-length parse of ``series`` into HOLD / POLY(N) / PERIOD tokens
-    via shortest path on the position DAG. Returns ``[(kind, i, j, param)]`` with kind ``"H"``
-    (param=value), ``"D"`` (param=(N, constant N-th diff)), or ``"P"`` (param=delta cell).
+    via shortest path on the position DAG; returns ``[(kind, i, j, param)]`` with kind ``"H"``
+    (param=value), ``"D"`` (param=(N, constant N-th diff)), or ``"P"`` (param=delta cell). ``cost_model``
+    (methods ``hold(s,i,j)``, ``poly(s,i,j,N,difftable)``, ``period(s,i,j,cell)``) overrides the legacy
+    bootstrap bit cost with the caller's serialized cost (§8.6, e.g. emitted-token count).
     """
     s = np.asarray(series, dtype=np.int64)
     n = len(s)
@@ -126,8 +128,14 @@ def mdl_parse(series, wrap=False):
             continue
         base = cost[i]
         hv = int(s[i])
-        relax(i, int(hold_end[i]), base + _HDR + nbits(hv), ("H", hv))
-        relax(i, i + 1, base + _HDR + nbits(hv), ("H", hv))
+        he = int(hold_end[i])
+        if cost_model is None:
+            hcost = h1cost = _HDR + nbits(hv)
+        else:
+            hcost = cost_model.hold(s, i, he)
+            h1cost = cost_model.hold(s, i, i + 1)
+        relax(i, he, base + hcost, ("H", hv))
+        relax(i, i + 1, base + h1cost, ("H", hv))
         for N in range(1, _MAXDEG + 1):
             if i + N >= n:
                 break
@@ -135,12 +143,21 @@ def mdl_parse(series, wrap=False):
             e = int(end[i])
             if e - i + 1 < N + 2:
                 continue
-            pcost = (
-                _HDR + nbits(hv) + sum(nbits(int(diffs[k][i])) for k in range(1, N + 1))
-            )
+            if cost_model is None:
+                pcost = (
+                    _HDR
+                    + nbits(hv)
+                    + sum(nbits(int(diffs[k][i])) for k in range(1, N + 1))
+                )
+            else:
+                pcost = cost_model.poly(s, i, e + 1, N, difftable(s, i, N, wrap))
             relax(i, e + 1, base + pcost, ("D", (N, int(aval[i]))))
-        for b, c, tok in per_edges.get(i, ()):
-            relax(i, b, base + c, tok)
+        for b, cell in per_edges.get(i, ()):
+            if cost_model is None:
+                c = _HDR + nbits(hv) + nbits(len(cell)) + sum(nbits(x) for x in cell)
+            else:
+                c = cost_model.period(s, i, b, cell)
+            relax(i, b, base + c, ("P", cell))
 
     toks = []
     j = n
