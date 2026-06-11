@@ -38,11 +38,29 @@ every `encode`). Concretely:
 Stream shape: `[n_frames][headers]([DT][voice events in canonical order])*` — headers on first use
 (TUNING omitted at 0; NOTE_TABLE = nonzero grid deviations only, delta-coded; TICK omitted at 1,
 recovered by exact-grid fit with groove offset ∈ {-1,0,+1} — the ±1/unconstrained criteria were
-measured degenerate). Pitch is interval-coded (`NI_STEP/NI_RAMP`); freq residual, 12-bit PW and global
-lanes are STEP/RAMP events with no-op suppression (held value = no event; HOLD = STEP with no length);
-gesture covers use the emitted-token cost model (§8.6 completed — `mdl_parse(cost_model=...)`).
-Vocab: 84 atoms (32 digits, 25 regs, 4 voices, headers/kinds/shapes). `encode` self-verifies
-`decode == canonical_writes` (fail loudly).
+measured degenerate). Pitch is interval-coded (`NI_STEP/NI_RAMP`); freq residual and global lanes are
+STEP/RAMP events with no-op suppression (held value = no event; HOLD = STEP with no length); gesture
+covers use the emitted-token cost model (§8.6 completed — `mdl_parse(cost_model=...)`). `encode`
+self-verifies `decode == canonical_writes` + the permutation multiset (fail loudly).
+
+**Learnability layer (measured in, 2026-06-11):**
+- **Typed value nibbles** (§3.5 restored): CTRL bytes = `NIB_WAVE` (waveform) + `NIB_ART`
+  (test/ring/sync/gate) token pairs; AD/SR = `NIB_ENV` pairs; the gate-off VALUE byte likewise; PW is a
+  `NIB_ENV` duty-class nibble + fine byte. Timbre bits are single embeddings, not digit puzzles, and the
+  NOTE_ON body's undelimited varint run is broken up. ~23% of the stream is typed value tokens.
+- **Big-endian varints**: most-significant digit first (the coarse, predictable part is committed before
+  the noisy fine digit).
+- **KEYFRAME chunk conditioning**: `dataset.encode_block_array` leads every training chunk with a
+  BPE-encoded `[KEYFRAME …]` segment (`stream.chunk_keyframe`: tolerant-parse decoder state at the
+  boundary — TUNING/TICK + per-voice ni/fd/PW/CTRL/AD/SR + globals, in the ordinary event grammar), so
+  every chunk can interpret its durations/intervals and register; `strip_keyframes` removes segments
+  before decode — the canonical encoding itself stays redundancy-free.
+- Measured (59 in-scope tunes): atomic H1 **5.92 → 5.81 bits/write** (tok/write 1.66 → 1.74 — each
+  token more predictable), post-BPE 0.23 tok/write at 2.01 bits/write order-0; zero-drop unchanged.
+- Measured & rejected: DT-in-ticks (72.5% of event-frame DTs are 1, 95.5% ≤ 4 — already one digit);
+  POLY degree cap (deg≥2 = 9% of POLYs, chosen by the cost DP because it pays).
+
+Vocab: 128 atoms (32 digits, 25 regs, 4 voices, 18 kinds/shapes, 48 typed nibbles, KEYFRAME).
 
 **Verified**: canonical roundtrip on the 5 drivers + in-scope 200-sample corpus sweep; determinism;
 no-NOTE-OFF, driver-order cas, freq-first/globals-last reorder, retrigger/blip chains pinned in

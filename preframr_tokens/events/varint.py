@@ -1,8 +1,8 @@
 """Complete, escape-free integer codec shared by every numeric field (REDESIGN_optionB §2.2, §3.5): a
-signed int is zig-zagged then split into base-16 digits, each a token 0..15 with a high continue bit (token
-0..31, ``& 16`` => more follow). The common small value is one token; a rare large value is more digits of
-the same alphabet, never a different path. BPE later fuses frequent digit runs into single learned tokens,
-the only "dictionary" (no ids, no escape).
+signed int is zig-zagged then split into BIG-ENDIAN base-16 digits (most-significant first -- the coarse,
+context-predictable part is committed before the noisy fine digit, which autoregressive models prefer),
+each a token 0..15 with a high continue bit (token 0..31, ``& 16`` => more follow). A common small value
+is one token; a rare large value is more digits of the same alphabet, never a different path.
 """
 
 from __future__ import annotations
@@ -24,19 +24,18 @@ def unzigzag(z: int) -> int:
 
 
 def encode_unsigned(u: int) -> list[int]:
-    """A non-negative int as little-endian base-16 digit tokens (high bit = continue). At least one token."""
+    """A non-negative int as big-endian base-16 digit tokens (high bit = continue). At least one token."""
     u = int(u)
     if u < 0:
         raise ValueError(f"encode_unsigned got negative {u}")
-    out: list[int] = []
+    digits: list[int] = []
     while True:
-        d = u & DIGIT_MASK
+        digits.append(u & DIGIT_MASK)
         u >>= 4
-        if u:
-            out.append(d | CONT)
-        else:
-            out.append(d)
-            return out
+        if not u:
+            break
+    digits.reverse()
+    return [d | CONT for d in digits[:-1]] + [digits[-1]]
 
 
 def encode_signed(n: int) -> list[int]:
@@ -49,15 +48,13 @@ def decode_unsigned(tokens: list[int], pos: int = 0) -> tuple[int, int]:
     ``ValueError`` on a truncated run (continue bit set but no following token), never silently tolerated.
     """
     u = 0
-    shift = 0
     n = len(tokens)
     while True:
         if pos >= n:
             raise ValueError("truncated varint (continue bit set at end of stream)")
         tok = tokens[pos]
         pos += 1
-        u |= (tok & DIGIT_MASK) << shift
-        shift += 4
+        u = (u << 4) | (tok & DIGIT_MASK)
         if not (tok & CONT):
             return u, pos
 

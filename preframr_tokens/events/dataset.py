@@ -31,16 +31,11 @@ PAD_ID = 0
 
 
 def events_alphabet() -> pd.DataFrame:
-    """The fixed pre-BPE alphabet: a PAD row at n=0 then one row per event atom at n = atom_id + 1. The
-    val field is synthetic (only ``n`` drives unicode-serialize), but ``op`` carries the loss-tier so the
-    registry-driven tier system classifies the event vocab meaningfully (no framework/audit change needed):
-    value-digit atoms (``stream.is_content_atom`` -- note intervals, durations, freq/PW deltas, header
-    values) are ``SET_OP`` -> ``content`` tier; structural scaffolding atoms (reg ids, voice tags, kind/
-    field/shape markers, headers) are ``SUBREG_FLUSH_OP``, a registry-structural op, -> ``structural`` tier.
-    ``reg`` stays 0 (NOT FRAME_REG -- that would register these as RegTokenizer frame splitters and change
-    BPE); both ops are frame-weight-neutral, so ``frame_weights`` stay 1.0. The structural op is borrowed
-    purely for its tier; a first-class event op would also fix the (secondary) per-op label.
-    """
+    """The fixed pre-BPE alphabet: a PAD row at n=0 then one row per event atom at n = atom_id + 1; only
+    ``n`` drives unicode-serialize, while ``op`` carries the loss tier: ``stream.is_content_atom`` atoms
+    are ``SET_OP`` (content) and structural scaffolding is ``SUBREG_FLUSH_OP`` (a registry-structural op
+    borrowed purely for its tier). ``reg`` stays 0 -- FRAME_REG would register frame splitters and change
+    BPE -- and both ops are frame-weight-neutral, so ``frame_weights`` stay 1.0."""
     rows = [{"op": 0, "reg": PAD_REG, "subreg": -1, "val": 0, "count": 0}]
     for a in range(VOCAB_SIZE):
         op = SET_OP if stream.is_content_atom(a) else SUBREG_FLUSH_OP
@@ -71,8 +66,11 @@ def block_to_ids(ow_window) -> list[int]:
 
 
 def ids_to_writes(n_ids) -> list[tuple[int, int, int]]:
-    """Inverse of :func:`block_to_ids` (dropping PAD): n-space ids -> ordered ``(frame, reg, val)``."""
-    return stream.decode([int(n) - 1 for n in n_ids if int(n) > 0])
+    """Inverse of :func:`block_to_ids` (dropping PAD and any KEYFRAME conditioning segments): n-space
+    ids -> ordered ``(frame, reg, val)``."""
+    return stream.decode(
+        stream.strip_keyframes([int(n) - 1 for n in n_ids if int(n) > 0])
+    )
 
 
 def dump_block_ids(
@@ -94,26 +92,54 @@ def encode_block_array(
     tokenizer: RegTokenizer, df, block_size: int, stride: int | None = None
 ) -> np.ndarray:
     """Materialise a tune into the model's ``(n_blocks, block_size)`` int32 array: BPE-encode the whole-
-    tune event token stream, then chunk it into fixed ``block_size`` windows (stride ``block_size`` by
-    default), zero-padding the final partial chunk. Decodability is whole-stream (a chunk boundary may
-    fall mid-gesture); ``tokenizer.decode`` then :func:`ids_to_writes` over the full stream is byte-exact.
+    tune event stream and chunk it to ``block_size``; with the default stride each chunk is led by a
+    BPE-encoded KEYFRAME conditioning segment (:func:`stream.chunk_keyframe`: tick/tuning + per-voice
+    state at the boundary) so every training chunk can interpret its durations/intervals. An explicit
+    ``stride`` keeps plain prefix-free chunking; ``ids_to_writes`` strips segments before decode.
     """
-    seq = tokenizer.encode(np.asarray(dump_token_ids(df), dtype=np.int32)).astype(
-        np.int32
-    )
-    if stride is None:
-        stride = block_size
+    atoms_n = dump_token_ids(df)
+    seq = tokenizer.encode(np.asarray(atoms_n, dtype=np.int32)).astype(np.int32)
     n = len(seq)
     if n == 0:
         return np.zeros((0, block_size), dtype=np.int32)
     rows = []
-    for start in range(0, n, stride):
-        chunk = seq[start : start + block_size]
+    if stride is not None:
+        for start in range(0, n, stride):
+            chunk = seq[start : start + block_size]
+            row = np.zeros(block_size, dtype=np.int32)
+            row[: len(chunk)] = chunk
+            rows.append(row)
+            if start + block_size >= n:
+                break
+        return np.stack(rows)
+    atoms = [int(a) - 1 for a in atoms_n]
+    alen_cache: dict[int, int] = {}
+
+    def _alen(i: int) -> int:
+        if i not in alen_cache:
+            alen_cache[i] = len(tokenizer.decode(np.asarray([i], dtype=np.uint32)))
+        return alen_cache[i]
+
+    start = 0
+    apos = 0
+    while start < n:
+        prefix = np.zeros(0, dtype=np.int32)
+        if apos:
+            kf = stream.chunk_keyframe(atoms, apos)
+            if kf:
+                kf_ids = tokenizer.encode(
+                    np.asarray([a + 1 for a in kf], dtype=np.int32)
+                ).astype(np.int32)
+                if len(kf_ids) <= block_size // 4:
+                    prefix = kf_ids
+        eff = block_size - len(prefix)
+        chunk = seq[start : start + eff]
         row = np.zeros(block_size, dtype=np.int32)
-        row[: len(chunk)] = chunk
+        row[: len(prefix)] = prefix
+        row[len(prefix) : len(prefix) + len(chunk)] = chunk
         rows.append(row)
-        if start + block_size >= n:
-            break
+        apos += sum(_alen(int(i)) for i in chunk)
+        start += eff
     return np.stack(rows)
 
 

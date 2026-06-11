@@ -82,7 +82,30 @@ def test_encode_block_array_chunks_whole_tune_byte_exact():
     flat = [int(x) for row in arr for x in row]
     while flat and flat[-1] == 0:
         flat.pop()
-    assert flat == dataset.dump_token_ids(df), "chunks reassemble the whole-tune stream"
+    stripped = stream.strip_keyframes([n - 1 for n in flat if n])
+    assert stripped == [
+        n - 1 for n in dataset.dump_token_ids(df)
+    ], "chunks (minus KEYFRAME prefixes) reassemble the whole-tune stream"
     assert dataset.ids_to_writes(flat) == stream.canonical_writes(
         oracle.ordered_writes(df)
     )
+
+
+def test_keyframe_prefixes_make_chunks_self_interpreting():
+    """With a roomy block size, every chunk after the first is led by a KEYFRAME conditioning
+    segment carrying the tune's tick/tuning headers + per-voice state; segments strip away for
+    decode (the canonical stream stays redundancy-free)."""
+    df = _synth_df()
+    tk = dataset.make_tokenizer(_args())
+    arr = dataset.encode_block_array(tk, df, 128)
+    kf_n = stream.KEYFRAME + 1
+    assert arr.shape[0] >= 2, "synth tune must span multiple chunks"
+    for row in arr[1:]:
+        ids = [int(x) for x in row if x]
+        assert ids and ids[0] == kf_n, "chunk must open with a KEYFRAME bracket"
+        seg = ids[1 : ids.index(kf_n, 1)]
+        atoms = [n - 1 for n in seg]
+        assert stream.TUNING in atoms or stream.TICK in atoms or stream.NI_STEP in atoms
+    assert stream.strip_keyframes([int(x) - 1 for row in arr for x in row if x]) == [
+        n - 1 for n in dataset.dump_token_ids(df)
+    ]

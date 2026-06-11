@@ -39,7 +39,11 @@ G_RAMP = G_STEP + 1
 PRE = G_RAMP + 1
 SHAPE_POLY = PRE + 1
 SHAPE_PERIOD = SHAPE_POLY + 1
-VOCAB_SIZE = SHAPE_PERIOD + 1
+NIB_WAVE = SHAPE_PERIOD + 1
+NIB_ART = NIB_WAVE + 16
+NIB_ENV = NIB_ART + 16
+KEYFRAME = NIB_ENV + 16
+VOCAB_SIZE = KEYFRAME + 1
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
 _EVENT_KINDS = frozenset(range(NI_STEP, PRE + 1))
@@ -57,13 +61,41 @@ def _is_digit(tok: int) -> bool:
 
 
 def is_content_atom(tok: int) -> bool:
-    """Whether atom ``tok`` is musical *content* vs structural scaffolding (for loss-tier
-    classification). The varint value-digits carry the actual payload the model must predict
-    -- note intervals, durations, freq/PW deltas, header values -- so they are ``content``;
-    every other atom (reg ids, voice tags, kind/field/shape markers, headers) is grammar
-    scaffolding and classifies as ``structural``.
+    """Whether atom ``tok`` is musical *content* vs structural scaffolding (loss tiers): varint value
+    digits and the typed value nibbles (waveform/articulation, AD/SR envelope, PW duty-class) carry
+    the payload the model must predict -- intervals, durations, timbre bits -- so they are content;
+    every other atom (reg ids, voice tags, kind/shape markers, KEYFRAME) is structural.
     """
-    return _is_digit(tok)
+    return _is_digit(tok) or NIB_WAVE <= tok < KEYFRAME
+
+
+def _emit_ctrl_val(out: list[int], val: int) -> None:
+    out.append(NIB_WAVE + ((val >> 4) & 0xF))
+    out.append(NIB_ART + (val & 0xF))
+
+
+def _emit_env_val(out: list[int], val: int) -> None:
+    out.append(NIB_ENV + ((val >> 4) & 0xF))
+    out.append(NIB_ENV + (val & 0xF))
+
+
+def _read_nib(tokens, pos: int, base: int) -> tuple[int, int]:
+    tok = tokens[pos]
+    if not base <= tok < base + 16:
+        raise ValueError(f"expected nibble token at {pos}")
+    return tok - base, pos + 1
+
+
+def _read_ctrl_val(tokens, pos: int) -> tuple[int, int]:
+    hi, pos = _read_nib(tokens, pos, NIB_WAVE)
+    lo, pos = _read_nib(tokens, pos, NIB_ART)
+    return (hi << 4) | lo, pos
+
+
+def _read_env_val(tokens, pos: int) -> tuple[int, int]:
+    hi, pos = _read_nib(tokens, pos, NIB_ENV)
+    lo, pos = _read_nib(tokens, pos, NIB_ENV)
+    return (hi << 4) | lo, pos
 
 
 def _is_reg(tok: int) -> bool:
@@ -136,13 +168,18 @@ class _SeriesCost:
     suppressed entirely (cost 0). ``head`` is the per-event overhead ([VOICE][KIND], +1 for the global
     lane's reg token)."""
 
-    def __init__(self, signed: bool, interval: bool = False, head: int = 2):
+    def __init__(
+        self, signed: bool, interval: bool = False, head: int = 2, pw: bool = False
+    ):
         self.signed = signed
         self.interval = interval
         self.head = head
+        self.pw = pw
 
     def _lvl(self, s, i) -> int:
         v = int(s[i])
+        if self.pw:
+            return 1 + _ulen(v & 0xFF)
         if self.interval:
             prev = int(s[i - 1]) if i > 0 else 0
             return _slen(v - prev)
@@ -175,45 +212,56 @@ class _SeriesCost:
         )
 
 
-def _ramp_tokens(kind, g, cur, signed, interval, reg_tok=None):
+def _emit_level(out, value, cur, signed, interval, pw):
+    if pw:
+        out.append(NIB_ENV + ((value >> 8) & 0xF))
+        _emit_u(out, value & 0xFF)
+    elif interval:
+        _emit_s(out, value - cur)
+    elif signed:
+        _emit_s(out, value)
+    else:
+        _emit_u(out, value)
+
+
+def _ramp_tokens(kind, g, cur, signed, interval, reg_tok=None, pw=False):
     out = [kind]
     if reg_tok is not None:
         out.append(reg_tok)
     out.append(SHAPE_POLY if g.shape == Shape.POLY else SHAPE_PERIOD)
     _emit_u(out, g.length)
     _emit_u(out, len(g.params) - 1)
-    p0 = int(g.params[0])
-    if interval:
-        _emit_s(out, p0 - cur)
-    elif signed:
-        _emit_s(out, p0)
-    else:
-        _emit_u(out, p0)
+    _emit_level(out, int(g.params[0]), cur, signed, interval, pw)
     for d in g.params[1:]:
         _emit_s(out, d)
     return out
 
 
-def _step_tokens(kind, value, cur, signed, interval, reg_tok=None):
+def _step_tokens(kind, value, cur, signed, interval, reg_tok=None, pw=False):
     out = [kind]
     if reg_tok is not None:
         out.append(reg_tok)
-    if interval:
-        _emit_s(out, value - cur)
-    elif signed:
-        _emit_s(out, value)
-    else:
-        _emit_u(out, value)
+    _emit_level(out, value, cur, signed, interval, pw)
     return out
 
 
 def _series_events(
-    series, voice, rank, step_kind, ramp_kind, signed, interval=False, reg=None
+    series,
+    voice,
+    rank,
+    step_kind,
+    ramp_kind,
+    signed,
+    interval=False,
+    reg=None,
+    pw=False,
 ):
     """A settled series -> [(frame, sort_key, body_tokens)] value events (kind-led bodies; the VOICE
-    token is the frame group lead). ``sort_key`` = (voice, rank, sub)."""
+    token is the frame group lead). ``sort_key`` = (voice, rank, sub). ``pw`` levels split as a typed
+    duty-class nibble + fine byte (12-bit values; the coarse nibble is the timbre-relevant part).
+    """
     head = 2 if reg is None else 3
-    cm = _SeriesCost(signed=signed, interval=interval, head=head)
+    cm = _SeriesCost(signed=signed, interval=interval, head=head, pw=pw)
     reg_tok = None if reg is None else REG_BASE + reg
     evs = []
     cur = 0
@@ -225,7 +273,7 @@ def _series_events(
                     (
                         g.start,
                         (voice, rank, reg or 0),
-                        _step_tokens(step_kind, v, cur, signed, interval, reg_tok),
+                        _step_tokens(step_kind, v, cur, signed, interval, reg_tok, pw),
                     )
                 )
             cur = v
@@ -234,7 +282,7 @@ def _series_events(
                 (
                     g.start,
                     (voice, rank, reg or 0),
-                    _ramp_tokens(ramp_kind, g, cur, signed, interval, reg_tok),
+                    _ramp_tokens(ramp_kind, g, cur, signed, interval, reg_tok, pw),
                 )
             )
             cur = int(series[g.start + g.length - 1])
@@ -396,7 +444,10 @@ def _note_layer(seq, v: int):
         if i in remove:
             continue
         body = [tok]
-        _emit_u(body, val)
+        if tok in (FLD_NOTE_ON, FLD_CTRL):
+            _emit_ctrl_val(body, val)
+        else:
+            _emit_env_val(body, val)
         if tok == FLD_NOTE_ON:
             d = durinfo[i][1]
             mode, c_off = modes.get(i, (_GO_NONE, 0))
@@ -409,7 +460,7 @@ def _note_layer(seq, v: int):
                 else:
                     _emit_u(body, d)
                 if mode == _GO_VALUE:
-                    _emit_u(body, c_off)
+                    _emit_ctrl_val(body, c_off)
         evs.append((f, (v, _RANK_CAS, sub), body))
         sub += 1
     return headers, evs
@@ -601,7 +652,7 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
                 np.int64
             )
             events += _series_events(
-                combined, v, _RANK_PW, PW_STEP, PW_RAMP, signed=False
+                combined, v, _RANK_PW, PW_STEP, PW_RAMP, signed=False, pw=True
             )
     for reg in GLOBAL_REGS:
         if reg in written and settled[:, reg].any():
@@ -710,11 +761,13 @@ class _Decoder:
         self.pw = [_Chan() for _ in range(3)]
         self.g = {reg: _Chan() for reg in GLOBAL_REGS}
         self.tuning = [pitch_grid.q_to_tuning(_DEFAULT_TUNING_Q)] * 3
+        self.q = [_DEFAULT_TUNING_Q] * 3
         self.devs = [dict(), dict(), dict()]
         self._base = [dict(), dict(), dict()]
         self.tick = [(1, 0)] * 3
         self.freq_active = [False] * 3
         self.pw_active = [False] * 3
+        self.cas_active = [False] * 3
         self.g_active = {reg: False for reg in GLOBAL_REGS}
         self.chan_ops = collections.defaultdict(list)
         self.cas = collections.defaultdict(list)
@@ -729,7 +782,7 @@ class _Decoder:
         v, self.pos = _read_s(self.t, self.pos)
         return v
 
-    def _parse_ramp(self, chan, f, signed, interval):
+    def _parse_ramp(self, chan, f, signed, interval, pw=False):
         shape = self.t[self.pos]
         if shape not in (SHAPE_POLY, SHAPE_PERIOD):
             raise ValueError(f"expected shape token at {self.pos}")
@@ -741,7 +794,11 @@ class _Decoder:
             rest = [self._s() for _ in range(deg)]
             self.chan_ops[f].append((chan, "ramp_rel", (shape, length, rel, rest)))
         else:
-            p0 = self._s() if signed else self._u()
+            if pw:
+                hi, self.pos = _read_nib(self.t, self.pos, NIB_ENV)
+                p0 = (hi << 8) | self._u()
+            else:
+                p0 = self._s() if signed else self._u()
             rest = [self._s() for _ in range(deg)]
             self.chan_ops[f].append((chan, "ramp", (shape, length, [p0, *rest])))
 
@@ -768,10 +825,11 @@ class _Decoder:
             self._parse_ramp(self.fd[voice], f, True, False)
         elif kind == PW_STEP:
             self.pw_active[voice] = True
-            self.chan_ops[f].append((self.pw[voice], "set", self._u()))
+            hi, self.pos = _read_nib(self.t, self.pos, NIB_ENV)
+            self.chan_ops[f].append((self.pw[voice], "set", (hi << 8) | self._u()))
         elif kind == PW_RAMP:
             self.pw_active[voice] = True
-            self._parse_ramp(self.pw[voice], f, False, False)
+            self._parse_ramp(self.pw[voice], f, False, False, pw=True)
         elif kind == G_STEP:
             reg = self.t[self.pos] - REG_BASE
             self.pos += 1
@@ -783,7 +841,11 @@ class _Decoder:
             self.g_active[reg] = True
             self._parse_ramp(self.g[reg], f, False, False)
         elif kind in (FLD_NOTE_ON, FLD_CTRL, FLD_AD, FLD_SR):
-            val = self._u()
+            if kind in (FLD_NOTE_ON, FLD_CTRL):
+                val, self.pos = _read_ctrl_val(self.t, self.pos)
+            else:
+                val, self.pos = _read_env_val(self.t, self.pos)
+            self.cas_active[voice] = True
             self.cas[(voice, f)].append((kind, val))
             if kind == FLD_NOTE_ON:
                 mode = self._u()
@@ -795,7 +857,9 @@ class _Decoder:
                         d = q * tick + r + offset
                     else:
                         d = self._u()
-                    go_val = self._u() if mode == _GO_VALUE else None
+                    go_val = None
+                    if mode == _GO_VALUE:
+                        go_val, self.pos = _read_ctrl_val(self.t, self.pos)
                     self.offs[(voice, f + d)].append((d > 0, mode, go_val, f))
         else:
             raise ValueError(f"unknown event kind {kind} at {self.pos - 1}")
@@ -806,7 +870,8 @@ class _Decoder:
         kind = self.t[self.pos]
         self.pos += 1
         if kind == TUNING:
-            self.tuning[voice] = pitch_grid.q_to_tuning(self._u())
+            self.q[voice] = self._u()
+            self.tuning[voice] = pitch_grid.q_to_tuning(self.q[voice])
         elif kind == NOTE_TABLE:
             count = self._u()
             prev = 0
@@ -827,35 +892,55 @@ class _Decoder:
             self._base[v][note] = b
         return b
 
-    def run(self) -> list[tuple[int, int, int]]:
+    def parse(self, tolerant: bool = False) -> tuple[int, int]:
+        """Parse headers + frame groups into the per-frame op/event tables; returns ``(n_frames,
+        last_group_frame)``. ``tolerant`` swallows a trailing truncated group (for state snapshots at
+        arbitrary chunk boundaries) instead of raising."""
         t = self.t
-        n = self._u()
+        try:
+            n = self._u()
+            while (
+                self.pos + 1 < len(t)
+                and _is_voice(t[self.pos])
+                and t[self.pos + 1] in _HEADER_KINDS
+            ):
+                self._parse_header()
+        except (ValueError, IndexError):
+            if not tolerant:
+                raise
+            return 0, 0
         if n == 0:
-            if self.pos != len(t):
+            if self.pos != len(t) and not tolerant:
                 raise ValueError("trailing tokens after empty stream")
-            return []
-        while (
-            self.pos + 1 < len(t)
-            and _is_voice(t[self.pos])
-            and t[self.pos + 1] in _HEADER_KINDS
-        ):
-            self._parse_header()
+            return 0, 0
         cur_f = 0
+        last_f = 0
         m = len(t)
-        while self.pos < m:
-            dt = self._u()
-            cur_f += dt
-            while self.pos < m and _is_voice(t[self.pos]):
-                voice = t[self.pos] - VOICE_BASE
-                self.pos += 1
-                while self.pos < m and t[self.pos] in _EVENT_KINDS:
-                    self._parse_event(cur_f, voice)
-            if self.pos < m and not _is_digit(t[self.pos]):
-                raise ValueError(f"expected DT, VOICE or event at {self.pos}")
+        try:
+            while self.pos < m:
+                dt = self._u()
+                cur_f += dt
+                while self.pos < m and _is_voice(t[self.pos]):
+                    voice = t[self.pos] - VOICE_BASE
+                    self.pos += 1
+                    while self.pos < m and t[self.pos] in _EVENT_KINDS:
+                        self._parse_event(cur_f, voice)
+                if self.pos < m and not _is_digit(t[self.pos]):
+                    raise ValueError(f"expected DT, VOICE or event at {self.pos}")
+                last_f = cur_f
+        except (ValueError, IndexError):
+            if not tolerant:
+                raise
+        return n, last_f
 
+    def replay(self, n: int) -> list[tuple[int, int, int]]:
+        """Replay parsed state over frames ``[0, n)``, deriving the canonical write stream; leaves the
+        channel/cas/global state at frame ``n - 1`` (read by :meth:`state`)."""
         out: list[tuple[int, int, int]] = []
         prev_byte = np.zeros(NUM_REGS, dtype=np.int64)
-        ctrl_state = [0, 0, 0]
+        ctrl_state = self._ctrl_state = [0, 0, 0]
+        self._ad_state = [0, 0, 0]
+        self._sr_state = [0, 0, 0]
         for f in range(n):
             for chan, op, args in self.chan_ops.get(f, ()):
                 if op == "set":
@@ -906,8 +991,10 @@ class _Decoder:
                             ctrl_state[v] = val
                             out.append((f, cr, val))
                         elif tok == FLD_AD:
+                            self._ad_state[v] = val
                             out.append((f, ad_reg(v), val))
                         else:
+                            self._sr_state[v] = val
                             out.append((f, sr_reg(v), val))
             for reg, payload in self.pres.get((GLOBAL, f), ()):
                 out.append((f, reg, int(prev_byte[reg] + payload)))
@@ -920,11 +1007,89 @@ class _Decoder:
                     prev_byte[r] = b
         return out
 
+    def run(self) -> list[tuple[int, int, int]]:
+        n, _last = self.parse()
+        return self.replay(n)
+
 
 def decode(tokens: list[int]) -> list[tuple[int, int, int]]:
     """v3 token stream -> the canonical ordered ``(frame, reg, value)`` writes. Strict grammar parser:
     malformed streams raise rather than silently mis-decoding."""
     return _Decoder(tokens).run()
+
+
+def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:
+    """Conditioning prefix for a training chunk starting at atom position ``upto`` of a whole-tune
+    stream: a ``[KEYFRAME ... KEYFRAME]``-bracketed segment carrying the decoder state at the last
+    complete frame group before ``upto`` (per-voice TUNING/TICK headers + current note index, freq
+    residual, PW, CTRL/AD/SR and global values, in the ordinary event grammar). Conditioning only:
+    :func:`strip_keyframes` removes segments before decode, so the encoding stays redundancy-free.
+    """
+    if upto <= 0:
+        return []
+    d = _Decoder(tokens[:upto])
+    n, last_f = d.parse(tolerant=True)
+    if n == 0:
+        return []
+    d.replay(min(last_f + 1, n))
+    out = [KEYFRAME]
+    f = last_f
+    for v in range(3):
+        voice_tok = VOICE_BASE + v
+        if d.freq_active[v]:
+            out += [voice_tok, TUNING]
+            _emit_u(out, d.q[v])
+        if d.tick[v] != (1, 0):
+            out += [voice_tok, TICK]
+            _emit_u(out, d.tick[v][0])
+            _emit_s(out, d.tick[v][1])
+    for v in range(3):
+        voice_tok = VOICE_BASE + v
+        body: list[int] = []
+        if d.freq_active[v]:
+            body.append(NI_STEP)
+            _emit_s(body, int(d.ni[v].at(f)))
+            body.append(FD_STEP)
+            _emit_s(body, int(d.fd[v].at(f)))
+        if d.pw_active[v]:
+            pwv = int(d.pw[v].at(f))
+            body.append(PW_STEP)
+            body.append(NIB_ENV + ((pwv >> 8) & 0xF))
+            _emit_u(body, pwv & 0xFF)
+        if d.cas_active[v]:
+            body.append(FLD_CTRL)
+            _emit_ctrl_val(body, d._ctrl_state[v])  # pylint: disable=protected-access
+            body.append(FLD_AD)
+            _emit_env_val(body, d._ad_state[v])  # pylint: disable=protected-access
+            body.append(FLD_SR)
+            _emit_env_val(body, d._sr_state[v])  # pylint: disable=protected-access
+        if body:
+            out.append(voice_tok)
+            out.extend(body)
+    gbody: list[int] = []
+    for reg in GLOBAL_REGS:
+        if d.g_active[reg]:
+            gbody += [G_STEP, REG_BASE + reg]
+            _emit_u(gbody, int(d.g[reg].at(f)) & 0xFF)
+    if gbody:
+        out.append(VOICE_BASE + GLOBAL)
+        out.extend(gbody)
+    out.append(KEYFRAME)
+    return out
+
+
+def strip_keyframes(tokens: list[int]) -> list[int]:
+    """Remove ``[KEYFRAME ... KEYFRAME]`` conditioning segments (chunk prefixes) from an atom stream,
+    leaving the pure canonical encoding for :func:`decode`."""
+    out: list[int] = []
+    inside = False
+    for t in tokens:
+        if t == KEYFRAME:
+            inside = not inside
+            continue
+        if not inside:
+            out.append(t)
+    return out
 
 
 def roundtrip_ok(df) -> bool:
@@ -934,11 +1099,14 @@ def roundtrip_ok(df) -> bool:
 
 
 __all__ = [
+    "KEYFRAME",
     "VOCAB_SIZE",
     "canonical_writes",
+    "chunk_keyframe",
     "decode",
     "encode",
     "is_content_atom",
     "roundtrip_ok",
     "single_speed",
+    "strip_keyframes",
 ]
