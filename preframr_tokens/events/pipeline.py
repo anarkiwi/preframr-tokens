@@ -1,19 +1,18 @@
-"""Events-native production tokenization (REDESIGN_optionB §7.1): the raw dump is encoded directly by the
-factored codec, replacing the parse -> (op,reg,subreg,val) alphabet -> merge_token_df path. A tune is sliced
-into self-contained frame-window blocks; each block's writes are re-indexed to frame 0 and encoded to a flat
-token-id list (the pre-BPE "n" stream). Each block decodes byte-exact to its window's ordered writes, so the
-model trains on self-delimiting event tokens (no ids, no per-tune codebook); BPE over them is the dictionary.
-"""
+"""Events-native production tokenization (REDESIGN_optionB §7.1): the raw dump is encoded directly by
+the canonical stream codec (``events.stream``). A tune is sliced into self-contained frame-window blocks,
+each encoded to a flat token-id list (the pre-BPE "n" stream) that decodes to the window's canonical
+writes, so the model trains on self-delimiting event tokens (no ids, no per-tune codebook); BPE over
+them is the dictionary."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from . import factored
+from . import stream
 from .oracle import MAX_REG, OrderedWrites, ordered_writes
 
-VOCAB_SIZE = factored.VOCAB_SIZE
+VOCAB_SIZE = stream.VOCAB_SIZE
 
 
 def window(ow: OrderedWrites, f0: int, f1: int) -> OrderedWrites:
@@ -44,12 +43,12 @@ def iter_windows(ow: OrderedWrites, frames_per_block: int, stride: int | None = 
 
 def block_tokens(ow_window: OrderedWrites) -> list[int]:
     """One frame window -> its flat event token-id list (the pre-BPE block, byte-exact)."""
-    return factored.encode(ow_window)
+    return stream.encode(ow_window)
 
 
 def block_writes(tokens: list[int]) -> list[tuple[int, int, int]]:
     """Inverse of :func:`block_tokens`: a block's tokens -> its ordered ``(frame, reg, val)`` writes."""
-    return factored.decode(tokens)
+    return stream.decode(tokens)
 
 
 def dump_blocks(

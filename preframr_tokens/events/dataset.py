@@ -1,8 +1,8 @@
 """Events-native tokenizer + dataset build (REDESIGN_optionB §7.1, step 2-3). The event token stream is a
 flat list of small atom ids, so the existing ``RegTokenizer`` unicode-serialize + BPE + encode/decode layer
-is reused verbatim with a synthetic 68-atom alphabet; only the (op,reg,subreg,val) alphabet-building and
-``merge_token_df`` are bypassed (event ids ARE the "n" stream). Atom ids are offset by +1 into "n" space so
-id 0 is reserved for PAD, matching the model's zero-padded fixed-size blocks.
+is reused verbatim with the fixed ``stream.VOCAB_SIZE``-atom alphabet; only the (op,reg,subreg,val)
+alphabet-building and ``merge_token_df`` are bypassed (event ids ARE the "n" stream). Atom ids are offset
+by +1 into "n" space so id 0 is reserved for PAD, matching the model's zero-padded fixed-size blocks.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from preframr_tokens.stfconstants import (
     VAL_PDTYPE,
 )
 
-from . import factored
+from . import stream
 from .oracle import ordered_writes
 from .pipeline import VOCAB_SIZE, iter_windows
 
@@ -58,12 +58,12 @@ def make_tokenizer(args, logger=logging) -> RegTokenizer:
 
 def block_to_ids(ow_window) -> list[int]:
     """One frame window -> its pre-BPE token-id block in n-space (atom_id + 1; 0 is PAD)."""
-    return [a + 1 for a in factored.encode(ow_window)]
+    return [a + 1 for a in stream.encode(ow_window)]
 
 
 def ids_to_writes(n_ids) -> list[tuple[int, int, int]]:
     """Inverse of :func:`block_to_ids` (dropping PAD): n-space ids -> ordered ``(frame, reg, val)``."""
-    return factored.decode([int(n) - 1 for n in n_ids if int(n) > 0])
+    return stream.decode([int(n) - 1 for n in n_ids if int(n) > 0])
 
 
 def dump_block_ids(
@@ -78,7 +78,7 @@ def dump_token_ids(df) -> list[int]:
     """A whole tune's pre-BPE event token stream in n-space (the unit BPE trains over and the model
     decodes from). Byte-exact: ``ids_to_writes(dump_token_ids(df))`` reproduces the ordered writes.
     """
-    return [a + 1 for a in factored.encode(ordered_writes(df))]
+    return [a + 1 for a in stream.encode(ordered_writes(df))]
 
 
 def encode_block_array(

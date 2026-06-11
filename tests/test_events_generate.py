@@ -7,7 +7,7 @@ import types
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.events import dataset, generate, oracle
+from preframr_tokens.events import dataset, generate, oracle, stream
 
 
 def _args():
@@ -39,19 +39,21 @@ def _synth_df():
     )
 
 
-def test_generated_tokens_decode_byte_exact():
+def test_generated_tokens_decode_canonical():
     df = _synth_df()
     tk = dataset.make_tokenizer(_args())
     ids = dataset.dump_token_ids(df)
     writes = generate.tokens_to_writes(tk, ids)
-    assert writes == oracle.ordered_writes(df).triples()
+    assert writes == stream.canonical_writes(oracle.ordered_writes(df))
 
 
 def test_generated_tokens_tolerate_trailing_pad():
     df = _synth_df()
     tk = dataset.make_tokenizer(_args())
     ids = dataset.dump_token_ids(df) + [0, 0, 0]
-    assert generate.tokens_to_writes(tk, ids) == oracle.ordered_writes(df).triples()
+    assert generate.tokens_to_writes(tk, ids) == stream.canonical_writes(
+        oracle.ordered_writes(df)
+    )
 
 
 def test_render_df_carries_frame_timing():
@@ -59,7 +61,7 @@ def test_render_df_carries_frame_timing():
     tk = dataset.make_tokenizer(_args())
     out = generate.tokens_to_dump_df(tk, dataset.dump_token_ids(df))
     assert list(out.columns) == ["clock", "irq", "chipno", "reg", "val"]
-    src = oracle.ordered_writes(df).triples()
+    src = stream.canonical_writes(oracle.ordered_writes(df))
     assert out["irq"].tolist() == [f for f, _, _ in src], "irq is the per-write frame"
     assert out["reg"].tolist() == [r for _, r, _ in src]
     assert out["val"].tolist() == [v for _, _, v in src]

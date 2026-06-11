@@ -1,5 +1,6 @@
-"""Events-native tokenizer/alphabet guards (REDESIGN_optionB §7.1, step 2): the fixed 68-atom alphabet, the
-PAD-reserving n-space offset, and byte-exact block<->ids round-trips through the reused RegTokenizer layer.
+"""Events-native tokenizer/alphabet guards (REDESIGN_optionB §7.1, step 2): the fixed event-atom alphabet,
+the PAD-reserving n-space offset, and byte-exact block<->ids round-trips through the reused RegTokenizer
+layer.
 """
 
 import types
@@ -7,7 +8,7 @@ import types
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.events import dataset, oracle, pipeline
+from preframr_tokens.events import dataset, oracle, pipeline, stream
 
 
 def _args():
@@ -49,7 +50,7 @@ def test_events_alphabet_and_splitters():
     ), "no FRAME_REG in the event alphabet -> no reserved splitters"
 
 
-def test_block_ids_are_pad_safe_and_byte_exact():
+def test_block_ids_are_pad_safe_and_canonical():
     df = _synth_df()
     ow = oracle.ordered_writes(df)
     for w in pipeline.iter_windows(ow, 16):
@@ -57,7 +58,9 @@ def test_block_ids_are_pad_safe_and_byte_exact():
         assert (
             min(ids) >= 1 and max(ids) <= pipeline.VOCAB_SIZE
         ), "n-space avoids PAD (0)"
-        assert dataset.ids_to_writes(ids) == w.triples(), "block ids decode byte-exact"
+        assert dataset.ids_to_writes(ids) == stream.canonical_writes(
+            w
+        ), "block ids decode to the window's canonical writes"
 
 
 def test_unicode_serialize_roundtrip():
@@ -80,4 +83,6 @@ def test_encode_block_array_chunks_whole_tune_byte_exact():
     while flat and flat[-1] == 0:
         flat.pop()
     assert flat == dataset.dump_token_ids(df), "chunks reassemble the whole-tune stream"
-    assert dataset.ids_to_writes(flat) == oracle.ordered_writes(df).triples()
+    assert dataset.ids_to_writes(flat) == stream.canonical_writes(
+        oracle.ordered_writes(df)
+    )

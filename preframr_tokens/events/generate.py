@@ -1,10 +1,8 @@
-"""Events-native generation decode (REDESIGN_optionB §7.1, step 4): turn a model's generated BPE token-id
-stream back into the ordered register-write stream and a render-ready raw-dump DataFrame. The inverse of
-the tokenization -- ``tokenizer.decode`` (BPE -> n-space atoms) then :func:`dataset.ids_to_writes` (atoms ->
-ordered writes). The factored decoder is a strict grammar parser, so an invalid generated stream raises
-loudly rather than silently mis-decoding; constrained-sampling masking is a generation-time optimization on
-top of this (the decoder is the completeness oracle).
-"""
+"""Events-native generation decode (REDESIGN_optionB §7.1, step 4): generated BPE ids -> ordered
+canonical register writes -> a render-ready raw-dump DataFrame, via ``tokenizer.decode`` (BPE -> n-space
+atoms) then :func:`dataset.ids_to_writes`. The stream decoder is a strict grammar parser (an invalid
+stream raises loudly); constrained-sampling masking is a generation-time optimization on top (the
+decoder is the completeness oracle)."""
 
 from __future__ import annotations
 
@@ -16,7 +14,7 @@ from .dataset import ids_to_writes
 
 def tokens_to_writes(tokenizer, bpe_ids) -> list[tuple[int, int, int]]:
     """Generated BPE ids -> ordered ``(frame, reg, val)`` writes. ``tokenizer.decode`` undoes the BPE to
-    the n-space atom stream; trailing PAD (0) is dropped; the factored decoder replays it (raising on a
+    the n-space atom stream; trailing PAD (0) is dropped; the stream decoder replays it (raising on a
     grammatically invalid stream)."""
     nspace = list(tokenizer.decode(np.asarray(bpe_ids, dtype=np.uint32)))
     while nspace and int(nspace[-1]) == 0:

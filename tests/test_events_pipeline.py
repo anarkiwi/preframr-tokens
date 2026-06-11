@@ -4,7 +4,7 @@ per block and reassembles to the whole tune, and the block array is the fixed-sh
 
 import numpy as np
 
-from preframr_tokens.events import oracle, pipeline
+from preframr_tokens.events import oracle, pipeline, stream
 
 
 def _ow(writes, n):
@@ -31,18 +31,14 @@ def _synthetic():
     return _ow(sorted(writes, key=lambda t: t[0]), 64)
 
 
-def test_windows_are_byte_exact_and_reassemble():
+def test_windows_decode_to_their_canonical_writes():
+    """Each self-contained frame window decodes to ITS canonical write stream (windows reset decoder
+    state, so a value held across a boundary re-emits at the window start by design)."""
     ow = _synthetic()
     fpb = 16
-    wins = list(pipeline.iter_windows(ow, fpb))
-    recon = []
-    for i, w in enumerate(wins):
+    for i, w in enumerate(pipeline.iter_windows(ow, fpb)):
         triples = pipeline.block_writes(pipeline.block_tokens(w))
-        assert triples == w.triples(), f"block {i} diverged"
-        recon += [(f + i * fpb, r, v) for f, r, v in triples]
-    assert (
-        recon == ow.triples()
-    ), "non-overlapping windows must reassemble the whole tune"
+        assert triples == stream.canonical_writes(w), f"block {i} diverged"
 
 
 def test_block_array_shape_and_alphabet():
