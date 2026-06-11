@@ -17,6 +17,7 @@ from preframr_tokens.stfconstants import (
     OP_PDTYPE,
     PAD_REG,
     SET_OP,
+    SUBREG_FLUSH_OP,
     SUBREG_PDTYPE,
     TOKEN_PDTYPE,
     VAL_PDTYPE,
@@ -31,11 +32,19 @@ PAD_ID = 0
 
 def events_alphabet() -> pd.DataFrame:
     """The fixed pre-BPE alphabet: a PAD row at n=0 then one row per event atom at n = atom_id + 1. The
-    op/reg/subreg/val fields are synthetic (only ``n`` drives unicode-serialize); no corpus scan needed.
+    val field is synthetic (only ``n`` drives unicode-serialize), but ``op`` carries the loss-tier so the
+    registry-driven tier system classifies the event vocab meaningfully (no framework/audit change needed):
+    value-digit atoms (``stream.is_content_atom`` -- note intervals, durations, freq/PW deltas, header
+    values) are ``SET_OP`` -> ``content`` tier; structural scaffolding atoms (reg ids, voice tags, kind/
+    field/shape markers, headers) are ``SUBREG_FLUSH_OP``, a registry-structural op, -> ``structural`` tier.
+    ``reg`` stays 0 (NOT FRAME_REG -- that would register these as RegTokenizer frame splitters and change
+    BPE); both ops are frame-weight-neutral, so ``frame_weights`` stay 1.0. The structural op is borrowed
+    purely for its tier; a first-class event op would also fix the (secondary) per-op label.
     """
     rows = [{"op": 0, "reg": PAD_REG, "subreg": -1, "val": 0, "count": 0}]
     for a in range(VOCAB_SIZE):
-        rows.append({"op": SET_OP, "reg": 0, "subreg": -1, "val": a, "count": 1})
+        op = SET_OP if stream.is_content_atom(a) else SUBREG_FLUSH_OP
+        rows.append({"op": op, "reg": 0, "subreg": -1, "val": a, "count": 1})
     tokens = pd.DataFrame(rows)
     tokens["n"] = tokens.index
     tokens = tokens.astype(

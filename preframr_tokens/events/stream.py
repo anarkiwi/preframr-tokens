@@ -56,6 +56,16 @@ def _is_digit(tok: int) -> bool:
     return VAR_BASE <= tok < VAR_BASE + _VSPAN
 
 
+def is_content_atom(tok: int) -> bool:
+    """Whether atom ``tok`` is musical *content* vs structural scaffolding (for loss-tier
+    classification). The varint value-digits carry the actual payload the model must predict
+    -- note intervals, durations, freq/PW deltas, header values -- so they are ``content``;
+    every other atom (reg ids, voice tags, kind/field/shape markers, headers) is grammar
+    scaffolding and classifies as ``structural``.
+    """
+    return _is_digit(tok)
+
+
 def _is_reg(tok: int) -> bool:
     return REG_BASE <= tok < REG_BASE + NUM_REGS
 
@@ -928,6 +938,7 @@ __all__ = [
     "canonical_writes",
     "decode",
     "encode",
+    "is_content_atom",
     "roundtrip_ok",
     "single_speed",
 ]
