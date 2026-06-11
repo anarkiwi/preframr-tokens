@@ -14,6 +14,10 @@ import preframr_tokens.stfconstants as _stfconstants
 from preframr_tokens.macros.codebook import codebook_spec_tuples
 from preframr_tokens.macros.decoders import DECODERS
 from preframr_tokens.stfconstants import (
+    GEN_TABLE_DEF_OP,
+    GEN_TABLE_END_OP,
+    GEN_TABLE_REF_OP,
+    GEN_TABLE_STEP_OP,
     GEN_TRI_OP,
     GEN_TUNING_OP,
     MELODY_INTERVAL_OP,
@@ -125,6 +129,10 @@ MACRO_OP_LOSS_TIERS: dict[int, str] = {
     int(MELODY_INTERVAL_OP): "content",
     int(NOTE_INTERVAL_OP): "content",
     int(GEN_TUNING_OP): "structural",
+    int(GEN_TABLE_DEF_OP): "structural",
+    int(GEN_TABLE_STEP_OP): "content",
+    int(GEN_TABLE_END_OP): "structural",
+    int(GEN_TABLE_REF_OP): "structural",
 }
 """Loss tier for the generator/codebook ops, which are MacroPass-emitted (not ``Transform`` classes) so
 ``collect_op_loss_tiers`` cannot read a ``LOSS_TIER`` off them. Value-bearing atoms (the freq/pitch

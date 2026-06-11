@@ -353,7 +353,7 @@ def _recover_tick(durs) -> tuple[int, int]:
     for t in range(2, 33):
         res = [d - _iround(d / t) * t for d in durs]
         cnt = collections.Counter(res)
-        off = max((0, -1, 1), key=lambda r: (cnt.get(r, 0), -abs(r)))
+        off = max((0, -1, 1), key=lambda r, c=cnt: (c.get(r, 0), -abs(r)))
         mass = cnt.get(off, 0)
         if mass >= 0.9 * len(durs):
             cand = (mass, -abs(off), t, off)

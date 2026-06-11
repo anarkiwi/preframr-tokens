@@ -37,6 +37,19 @@ def _stable(fr, voiced):
     return out
 
 
+def _recovered(fr):
+    """The current pitch model's reconstruction pieces: (note_index, base, residual) with
+    ``base + residual == fr`` exact by construction (recovered table over the tuned grid).
+    """
+    tuning = pg.q_to_tuning(pg.tuning_to_q(pg.voice_tuning(fr)))
+    table = pg.recover_table(fr, tuning)
+    ni = pg.note_index(fr, tuning)
+    base = pg.note_freq(ni, tuning).copy()
+    for note, freq in table.items():
+        base[ni == note] = freq
+    return ni, base, fr - base
+
+
 def _assert_exact_notes_and_pitches(S, table):
     ftbl = np.array([int(v) for v in table], dtype=np.int64)
     checked = 0
@@ -46,16 +59,17 @@ def _assert_exact_notes_and_pitches(S, table):
         voiced = (fr > 8) & gate
         if int(voiced.sum()) < 30:
             continue
-        dec = pg.decompose_voice(fr)
-        assert np.array_equal(
-            pg.reconstruct(dec), fr
-        ), f"voice {b}: pitches not bit-exact"
+        mynote, base, resid = _recovered(fr)
+        assert np.array_equal(base + resid, fr), f"voice {b}: pitches not bit-exact"
         stable = _stable(fr, voiced)
         ns = int(stable.sum())
         if ns < 10:
             continue
         checked += 1
-        mynote = pg.note_index(fr, pg.voice_tuning(fr))
+        pure = float((resid[stable] == 0).mean())
+        assert (
+            pure >= 0.99
+        ), f"voice {b}: stable pitches not pure table entries ({pure:.2%})"
         tblidx = np.array([int(np.argmin(np.abs(ftbl - f))) for f in fr])
         diff = (mynote - tblidx)[stable]
         off = int(np.median(diff))
@@ -126,15 +140,16 @@ def test_defmon_exact_notes_and_pitches(prg):
 
 def test_detuned_scale_exact():
     """A Galway-style +44c-detuned ET scale (no Python player) reproduces bit-exactly with consecutive
-    note indices -- the per-voice tuning fit yields the tracker's exact pitches + notes back.
-    """
+    note indices and zero residual -- the per-voice tuning fit + recovered table yield the tracker's
+    exact pitches + notes back."""
     notes = np.arange(28, 88)
-    freqs = np.round(pg._ANCHOR * 2.0 ** ((notes + 44.0 / 100.0) / 12.0)).astype(
-        np.int64
-    )
+    freqs = np.round(
+        pg._ANCHOR
+        * 2.0 ** ((notes + 44.0 / 100.0) / 12.0)  # pylint: disable=protected-access
+    ).astype(np.int64)
     seq = np.repeat(freqs, 8)
-    dec = pg.decompose_voice(seq)
-    assert np.array_equal(pg.reconstruct(dec), seq)
-    assert pg.pure_fraction(dec) == 1.0
-    idx = sorted({int(n) for n in dec["note"][dec["voiced"]]})
+    ni, base, resid = _recovered(seq)
+    assert np.array_equal(base + resid, seq)
+    assert float((resid == 0).mean()) == 1.0, "static detuned notes must be pure"
+    idx = sorted({int(n) for n in ni})
     assert idx == list(range(idx[0], idx[0] + len(notes)))

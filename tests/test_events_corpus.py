@@ -14,7 +14,7 @@ import pandas as pd
 
 from preframr_tokens.corpus import Corpus
 from preframr_tokens.events import dataset as events_dataset
-from preframr_tokens.events import oracle
+from preframr_tokens.events import oracle, stream
 
 
 def _synth_dump(path, seed):
@@ -90,7 +90,7 @@ def test_preload_writes_events_blocks_and_decodes_byte_exact():
             src = bp.replace(".0.blocks.npy", ".dump.parquet")
             ow = oracle.ordered_writes(pd.read_parquet(src))
             flat = _reassemble(bp)
-            assert events_dataset.ids_to_writes(flat) == ow.triples()
+            assert events_dataset.ids_to_writes(flat) == stream.canonical_writes(ow)
         assert len(list(c.iter_block_seqs())) == 2
 
 
@@ -99,7 +99,8 @@ def test_preload_trains_bpe_over_events_and_round_trips():
         for i in range(3):
             _synth_dump(os.path.join(d, f"song{i}.dump.parquet"), i)
         c = Corpus(
-            _args(d, seq_len=128, tkvocab=78, dataset_csv=None), logging.getLogger("t")
+            _args(d, seq_len=128, tkvocab=stream.VOCAB_SIZE + 11, dataset_csv=None),
+            logging.getLogger("t"),
         )
         c.preload()
         assert c.tokenizer.tkmodel is not None
@@ -108,4 +109,4 @@ def test_preload_trains_bpe_over_events_and_round_trips():
             ow = oracle.ordered_writes(pd.read_parquet(src))
             bpe = np.asarray(_reassemble(bp), dtype=np.uint32)
             nspace = list(c.tokenizer.decode(bpe))
-            assert events_dataset.ids_to_writes(nspace) == ow.triples()
+            assert events_dataset.ids_to_writes(nspace) == stream.canonical_writes(ow)
