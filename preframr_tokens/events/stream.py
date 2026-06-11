@@ -1,8 +1,8 @@
-"""v3 canonical event codec: the oracle is :func:`canonical_writes` (the dump's audibly-faithful
-canonical form), not raw byte order -- CTRL/ADSR change activity is preserved as ordered typed events at
-sub-frame resolution (gate-on = NOTE_ON with §4 mixed-radix duration; gate-off is ALWAYS derived, no
-NOTE OFF token), freq/PW are settled-per-frame and canonically first in the voice group, globals last,
-and writes are implied by events (no order descriptor, no literals). Scope: single-speed non-digi.
+"""v3 canonical event codec: the oracle is :func:`canonical_writes`, an exact intra-frame PERMUTATION
+of the dump (zero drops) -- CTRL/ADSR activity as ordered typed events at sub-frame resolution (gate-on
+= NOTE_ON with §4 duration; gate-off ALWAYS derived, no NOTE OFF token), settled freq/PW first per voice
+group with transient pre-writes as delta-coded PRE events, globals last; frames are voice-grouped
+([DT]([VOICE][kind-led bodies]*)*) so a patch's tokens are voice-invariant. Scope: single-speed non-digi.
 """
 
 from __future__ import annotations
@@ -36,18 +36,20 @@ FLD_AD = FLD_CTRL + 1
 FLD_SR = FLD_AD + 1
 G_STEP = FLD_SR + 1
 G_RAMP = G_STEP + 1
-SHAPE_POLY = G_RAMP + 1
+PRE = G_RAMP + 1
+SHAPE_POLY = PRE + 1
 SHAPE_PERIOD = SHAPE_POLY + 1
 VOCAB_SIZE = SHAPE_PERIOD + 1
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
+_EVENT_KINDS = frozenset(range(NI_STEP, PRE + 1))
 _DEFAULT_TUNING_Q = pitch_grid.tuning_to_q(0.0)
 
 _GO_NONE, _GO_DERIVE, _GO_VALUE = 0, 1, 2
 
 GLOBAL_REGS = (21, 22, 23, 24)
 
-_RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = 0, 1, 2, 3
+_RANK_PRE, _RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = -1, 0, 1, 2, 3
 
 
 def _is_digit(tok: int) -> bool:
@@ -163,8 +165,8 @@ class _SeriesCost:
         )
 
 
-def _ramp_tokens(voice_tok, kind, g, cur, signed, interval, reg_tok=None):
-    out = [voice_tok, kind]
+def _ramp_tokens(kind, g, cur, signed, interval, reg_tok=None):
+    out = [kind]
     if reg_tok is not None:
         out.append(reg_tok)
     out.append(SHAPE_POLY if g.shape == Shape.POLY else SHAPE_PERIOD)
@@ -182,8 +184,8 @@ def _ramp_tokens(voice_tok, kind, g, cur, signed, interval, reg_tok=None):
     return out
 
 
-def _step_tokens(voice_tok, kind, value, cur, signed, interval, reg_tok=None):
-    out = [voice_tok, kind]
+def _step_tokens(kind, value, cur, signed, interval, reg_tok=None):
+    out = [kind]
     if reg_tok is not None:
         out.append(reg_tok)
     if interval:
@@ -198,11 +200,10 @@ def _step_tokens(voice_tok, kind, value, cur, signed, interval, reg_tok=None):
 def _series_events(
     series, voice, rank, step_kind, ramp_kind, signed, interval=False, reg=None
 ):
-    """A settled series -> [(frame, sort_key, tokens)] value events. ``sort_key`` =
-    (voice, rank, sub) places the event canonically within its frame group."""
+    """A settled series -> [(frame, sort_key, body_tokens)] value events (kind-led bodies; the VOICE
+    token is the frame group lead). ``sort_key`` = (voice, rank, sub)."""
     head = 2 if reg is None else 3
     cm = _SeriesCost(signed=signed, interval=interval, head=head)
-    voice_tok = VOICE_BASE + voice
     reg_tok = None if reg is None else REG_BASE + reg
     evs = []
     cur = 0
@@ -214,9 +215,7 @@ def _series_events(
                     (
                         g.start,
                         (voice, rank, reg or 0),
-                        _step_tokens(
-                            voice_tok, step_kind, v, cur, signed, interval, reg_tok
-                        ),
+                        _step_tokens(step_kind, v, cur, signed, interval, reg_tok),
                     )
                 )
             cur = v
@@ -225,9 +224,7 @@ def _series_events(
                 (
                     g.start,
                     (voice, rank, reg or 0),
-                    _ramp_tokens(
-                        voice_tok, ramp_kind, g, cur, signed, interval, reg_tok
-                    ),
+                    _ramp_tokens(ramp_kind, g, cur, signed, interval, reg_tok),
                 )
             )
             cur = int(series[g.start + g.length - 1])
@@ -291,15 +288,13 @@ def _freq_layer(settled, v: int):
 
 
 def _cas_changes(ow: OrderedWrites) -> dict[int, list[tuple[int, int, int]]]:
-    """Per-voice ordered CTRL/AD/SR *change* sequences ``[(frame, reg, val)]``, walking the raw writes in
-    driver order (sub-frame resolution; redundant same-value rewrites dropped)."""
+    """Per-voice ordered CTRL/AD/SR write sequences ``[(frame, reg, val)]`` in driver order (sub-frame
+    resolution). ALL writes are kept -- a same-value rewrite is activity too (zero-drop contract); it
+    types as a plain field event since the gate state is unchanged."""
     seqs: dict[int, list[tuple[int, int, int]]] = {0: [], 1: [], 2: []}
-    cur = [0] * NUM_REGS
     for f, reg, val in zip(ow.frame.tolist(), ow.reg.tolist(), ow.val.tolist()):
         if reg <= 20 and reg % 7 >= 4:
-            if cur[reg] != val:
-                seqs[reg // 7].append((f, reg, val))
-            cur[reg] = val
+            seqs[reg // 7].append((f, reg, val))
     return seqs
 
 
@@ -390,7 +385,7 @@ def _note_layer(seq, v: int):
     for i, (f, tok, val) in enumerate(raw):
         if i in remove:
             continue
-        body = [voice_tok, tok]
+        body = [tok]
         _emit_u(body, val)
         if tok == FLD_NOTE_ON:
             d = durinfo[i][1]
@@ -480,17 +475,40 @@ def _assign_gate_off_modes(raw, durinfo, remove):
     return modes
 
 
+def _pre_writes(ow: OrderedWrites, settled) -> dict:
+    """Per ``(group_voice, frame)``: ordered transient freq/PW/global writes ``[(reg, val)]`` -- every
+    such write except a reg's frame-final write when it lands a settled change (that one is implied by
+    the channel). With these, :func:`canonical_writes` is an exact intra-frame permutation of the dump:
+    zero writes are dropped (the Commando freq re-fire and player init wipes become PRE events).
+    """
+    pres: dict = collections.defaultdict(list)
+    for f, writes in enumerate(ow.by_frame()):
+        last = {}
+        for k, (reg, _val) in enumerate(writes):
+            last[reg] = k
+        for k, (reg, val) in enumerate(writes):
+            if reg <= 20 and reg % 7 >= 4:
+                continue
+            prev = int(settled[f - 1, reg]) if f else 0
+            if last[reg] == k and int(settled[f, reg]) != prev:
+                continue
+            gv = GLOBAL if reg >= 21 else reg // 7
+            pres[(gv, f)].append((reg, val))
+    return pres
+
+
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
-    """The fidelity target: the dump's audibly-faithful canonical form. Per frame: voices ascending,
-    each as [changed freq lo,hi][changed pw lo,hi][its cas change sequence in driver order, gate-offs
-    slotted per the derived rule], then changed globals reg-ascending. Intermediate freq/pw writes,
-    redundant rewrites, and settled-unchanged writes are dropped; CTRL/ADSR activity is preserved
-    exactly at sub-frame resolution."""
+    """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
+    PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [transient PRE
+    writes in driver order][changed freq lo,hi][changed pw lo,hi][cas write sequence in driver order
+    with gate-offs slotted per the derived rule]; then the global group's PRE writes + changed globals
+    reg-ascending."""
     n = ow.n_frames
     if n == 0:
         return []
     settled = settled_grid(ow)
     seqs = _cas_changes(ow)
+    pres = _pre_writes(ow, settled)
     asm = {}
     raws = {}
     durinfos = {}
@@ -504,6 +522,8 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     for f in range(n):
         row = settled[f]
         for v in range(3):
+            for reg, val in pres.get((v, f), ()):
+                out.append((f, int(reg), int(val)))
             lo, hi = freq_regs(v)
             plo, phi = pw_regs(v)
             for r in (lo, hi, plo, phi):
@@ -521,6 +541,8 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
                         else (ad_reg(v) if tok == FLD_AD else sr_reg(v))
                     )
                     out.append((f, reg, int(val)))
+        for reg, val in pres.get((GLOBAL, f), ()):
+            out.append((f, int(reg), int(val)))
         for r in GLOBAL_REGS:
             if row[r] != prev[r]:
                 out.append((f, r, int(row[r])))
@@ -576,6 +598,11 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
             events += _series_events(
                 settled[:, reg], GLOBAL, reg, G_STEP, G_RAMP, signed=False, reg=reg
             )
+    for (gv, f), lst in _pre_writes(ow, settled).items():
+        for idx, (reg, val) in enumerate(lst):
+            body = [PRE, REG_BASE + reg]
+            _emit_s(body, val - (int(settled[f - 1, reg]) if f else 0))
+            events.append((f, (gv, _RANK_PRE, idx), body))
 
     for h in headers:
         out.extend(h)
@@ -587,7 +614,11 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
     for f in sorted(by_f):
         _emit_u(out, f - prev_f)
         prev_f = f
-        for _key, toks in sorted(by_f[f], key=lambda kt: kt[0]):
+        cur_v = None
+        for key, toks in sorted(by_f[f], key=lambda kt: kt[0]):
+            if key[0] != cur_v:
+                out.append(VOICE_BASE + key[0])
+                cur_v = key[0]
             out.extend(toks)
 
     if verify:
@@ -602,6 +633,11 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
                 f"v3 roundtrip diverged at canonical write {k}: "
                 f"got {got[k] if k < len(got) else None} "
                 f"want {want[k] if k < len(want) else None}"
+            )
+        if collections.Counter(got) != collections.Counter(ow.triples()):
+            raise AssertionError(
+                "canonical form is not a per-frame permutation of the dump "
+                "(zero-drop invariant violated)"
             )
     return out
 
@@ -673,6 +709,7 @@ class _Decoder:
         self.chan_ops = collections.defaultdict(list)
         self.cas = collections.defaultdict(list)
         self.offs = collections.defaultdict(list)
+        self.pres = collections.defaultdict(list)
 
     def _u(self):
         v, self.pos = _read_u(self.t, self.pos)
@@ -698,14 +735,16 @@ class _Decoder:
             rest = [self._s() for _ in range(deg)]
             self.chan_ops[f].append((chan, "ramp", (shape, length, [p0, *rest])))
 
-    def _parse_event(self, f: int) -> None:
-        if not _is_voice(self.t[self.pos]):
-            raise ValueError(f"expected VOICE token at {self.pos}")
-        voice = self.t[self.pos] - VOICE_BASE
-        self.pos += 1
+    def _parse_event(self, f: int, voice: int) -> None:
         kind = self.t[self.pos]
         self.pos += 1
-        if kind == NI_STEP:
+        if kind == PRE:
+            if not _is_reg(self.t[self.pos]):
+                raise ValueError(f"expected reg token after PRE at {self.pos}")
+            reg = self.t[self.pos] - REG_BASE
+            self.pos += 1
+            self.pres[(voice, f)].append((reg, self._s()))
+        elif kind == NI_STEP:
             self.freq_active[voice] = True
             self.chan_ops[f].append((self.ni[voice], "set_rel", self._s()))
         elif kind == NI_RAMP:
@@ -797,9 +836,12 @@ class _Decoder:
             dt = self._u()
             cur_f += dt
             while self.pos < m and _is_voice(t[self.pos]):
-                self._parse_event(cur_f)
+                voice = t[self.pos] - VOICE_BASE
+                self.pos += 1
+                while self.pos < m and t[self.pos] in _EVENT_KINDS:
+                    self._parse_event(cur_f, voice)
             if self.pos < m and not _is_digit(t[self.pos]):
-                raise ValueError(f"expected DT or event at {self.pos}")
+                raise ValueError(f"expected DT, VOICE or event at {self.pos}")
 
         out: list[tuple[int, int, int]] = []
         prev_byte = np.zeros(NUM_REGS, dtype=np.int64)
@@ -817,6 +859,8 @@ class _Decoder:
                     shape, length, rel, rest = args
                     chan.ramp(f, shape, length, [chan.at(f) + rel, *rest])
             for v in range(3):
+                for reg, payload in self.pres.get((v, f), ()):
+                    out.append((f, reg, int(prev_byte[reg] + payload)))
                 if self.freq_active[v]:
                     lo, hi = freq_regs(v)
                     freq = self._freq_base(v, self.ni[v].at(f)) + self.fd[v].at(f)
@@ -855,6 +899,8 @@ class _Decoder:
                             out.append((f, ad_reg(v), val))
                         else:
                             out.append((f, sr_reg(v), val))
+            for reg, payload in self.pres.get((GLOBAL, f), ()):
+                out.append((f, reg, int(prev_byte[reg] + payload)))
             for r in GLOBAL_REGS:
                 if not self.g_active[r]:
                     continue

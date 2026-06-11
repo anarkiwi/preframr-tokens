@@ -90,9 +90,12 @@ def test_empty_and_writeless_streams():
     assert stream.decode(stream.encode(silent)) == []
 
 
-def test_canonical_drops_redundant_and_intermediate_writes():
-    """The canonical form keeps changes only: constant rewrites vanish; a same-frame intermediate
-    freq write (final value wins) vanishes; CTRL/ADSR change activity is preserved."""
+def test_canonical_is_an_intraframe_permutation():
+    """Zero-drop contract: every dump write survives canonicalization -- a same-frame intermediate
+    freq write becomes a PRE event, same-value cas rewrites stay events -- so the canonical form is an
+    exact per-frame permutation of the dump's (frame, reg, val) multiset."""
+    import collections
+
     writes = []
     for f in range(50):
         writes.append((f, 4, 0x41))
@@ -102,30 +105,32 @@ def test_canonical_drops_redundant_and_intermediate_writes():
     writes.sort(key=lambda t: t[0])
     ow = _ow(writes, 50)
     cw = stream.canonical_writes(ow)
-    assert [w for w in cw if w[1] == 4] == [(0, 4, 0x41)]
-    freq = [w for w in cw if w[1] == 0]
-    assert freq == [
-        (0, 0, 0x10),
-        (10, 0, 0x11),
-        (20, 0, 0x12),
-        (30, 0, 0x13),
-        (40, 0, 0x14),
-    ]
-    _roundtrip(ow)
+    assert collections.Counter(cw) == collections.Counter(ow.triples())
+    f25 = [w for w in cw if w[0] == 25 and w[1] == 0]
+    assert f25 == [
+        (25, 0, 0x12),
+        (25, 0, 0x99),
+        (25, 0, 0x12),
+    ], "transient writes keep driver order; settled value is unchanged so all are PRE"
+    toks = _roundtrip(ow)
+    assert stream.PRE in toks
 
 
-def test_noop_suppression_constant_rewrites_cost_nothing():
+def test_constant_rewrites_are_preserved_not_dropped():
+    """Zero-drop: a driver hammering constant values still roundtrips every write (in-scope dumps are
+    change-squeezed, so this costs nothing in practice -- 66 such writes measured in 1.6M).
+    """
+    import collections
+
     writes = []
-    for f in range(100):
+    for f in range(20):
         writes.append((f, 4, 0x41))
         writes.append((f, 5, 0x08))
         writes.append((f, 24, 0x0F))
-    ow = _ow(sorted(writes, key=lambda t: t[0]), 100)
-    toks = _roundtrip(ow)
-    assert (
-        len(toks) < 40
-    ), f"constant tune must be a handful of frame-0 events: {len(toks)}"
-    assert stream.canonical_writes(ow) == [(0, 4, 0x41), (0, 5, 0x08), (0, 24, 0x0F)]
+    ow = _ow(sorted(writes, key=lambda t: t[0]), 20)
+    cw = stream.canonical_writes(ow)
+    assert collections.Counter(cw) == collections.Counter(ow.triples())
+    _roundtrip(ow)
 
 
 def test_cas_sequence_preserved_in_driver_order():
