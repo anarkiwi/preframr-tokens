@@ -54,6 +54,12 @@ GLOBAL_REGS = (21, 22, 23, 24)
 
 _RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = 0, 1, 2, 3
 _FLAG_OAD, _FLAG_OSR, _FLAG_HRAD, _FLAG_HRSR = 1, 2, 4, 8
+# Which side of the gate edge the driver wrote the folded onset envelope on. The side is CONTENT:
+# drivers split conventions (grid_runner/commando write gate-then-AD/SR, camerock/baggis the
+# reverse) and a write crossing the edge changes which compare governs the gate=0 dwell / the
+# attack's first steps -- ADSR-bug stall states flip value-dependently (preframr-audio
+# test_release_write_position / test_gate_adsr_reference).
+_FLAG_OAD_PRE, _FLAG_OSR_PRE = 16, 32
 
 
 def _is_digit(tok: int) -> bool:
@@ -452,12 +458,12 @@ def _fold_envelope(raw, durinfo, remove):
         slot = by_frame.get(f, {})
         j = slot.get(FLD_AD)
         if j is not None and j not in claimed:
-            flags |= _FLAG_OAD
+            flags |= _FLAG_OAD | (_FLAG_OAD_PRE if j < i else 0)
             oad = raw[j][2]
             claimed.add(j)
         j = slot.get(FLD_SR)
         if j is not None and j not in claimed:
-            flags |= _FLAG_OSR
+            flags |= _FLAG_OSR | (_FLAG_OSR_PRE if j < i else 0)
             osr = raw[j][2]
             claimed.add(j)
         for k in range(1, 9):
@@ -545,6 +551,10 @@ def _slot_gate_offs(entries, offs):
     Rule: an inherited off (onset in an earlier frame) goes before the frame's first NOTE_ON (retrigger
     keeps gate semantics) else at the end; a same-frame off goes immediately after its own NOTE_ON --
     the i-th same-frame off after the i-th NOTE_ON, exact because ons/offs alternate within a frame.
+    The NOTE_ON's glued onset-envelope entries stay on their recorded side of it: an inherited off
+    goes before the pre-side OAD/OSR group, and a same-frame off goes after the post-side group
+    (writes must not cross a gate edge they did not cross in the dump -- the preframr-audio
+    liveness matrix / gate reference).
     """
     if not offs:
         return list(entries)
@@ -553,24 +563,52 @@ def _slot_gate_offs(entries, offs):
     out = []
     si = 0
     inh = list(inherited)
-    for e in entries:
+    entries = list(entries)
+    k = 0
+    while k < len(entries):
+        e = entries[k]
         if e[0] == FLD_NOTE_ON and inh:
-            out.append(("OFF", inh.pop(0)[1]))
+            at = len(out)
+            while at > 0 and out[at - 1][0] in ("OAD", "OSR"):
+                at -= 1
+            out.insert(at, ("OFF", inh.pop(0)[1]))
         out.append(e)
-        if e[0] == FLD_NOTE_ON and si < len(same):
-            out.append(("OFF", same[si][1]))
-            si += 1
+        if e[0] == FLD_NOTE_ON:
+            while k + 1 < len(entries) and entries[k + 1][0] in ("OAD", "OSR"):
+                k += 1
+                out.append(entries[k])
+            if si < len(same):
+                out.append(("OFF", same[si][1]))
+                si += 1
+        k += 1
     for o in inh:
         out.append(("OFF", o[1]))
     return out
 
 
+def _insert_hr(merged, hr):
+    """Place a frame's HR prep writes on the gate=0 side of the gate edge: after the frame's last
+    derived gate-off when one is present (the dump wrote them with the gate already off; an AD/SR
+    compare change crossing the off edge flips ADSR-bug stall states -- preframr-audio
+    ``test_gate_adsr_reference``), else leading the frame (the gate is 0 throughout)."""
+    if not hr:
+        return merged
+    idx = 0
+    for j, e in enumerate(merged):
+        if e[0] == "OFF":
+            idx = j + 1
+    return merged[:idx] + list(hr) + merged[idx:]
+
+
 def _voice_assembly(raw, durinfo, remove, folds=None, claimed=None):
     """The canonical per-frame cas assembly of one voice: ``{frame: [("OFF", note_idx) | ("OAD"/"OSR"/
     "HRAD"/"HRSR", val) | (tok, val)]}`` -- kept entries in driver order, each NOTE_ON's folded onset
-    envelope inserted immediately before it (canonical AD,SR order), its HR prep pair leading the prep
-    frame, and gate-offs slotted per :func:`_slot_gate_offs`. Shared by the encoder, the canonical
-    oracle and (structurally) the decoder so all three order identically."""
+    envelope re-emitted on the RECORDED side of the gate edge (the ``_FLAG_O*_PRE`` bits; the side is
+    content -- a write crossing the edge flips ADSR-bug stall states value-dependently, and driver
+    conventions split), AD before SR within a side, its HR prep pair on the gate=0 side of the prep
+    frame's gate-off (:func:`_insert_hr`), and gate-offs slotted per :func:`_slot_gate_offs`. Shared
+    by the encoder, the canonical oracle and (structurally) the decoder so all three order
+    identically."""
     claimed = claimed or set()
     kept_by_f: dict = collections.defaultdict(list)
     hr_by_f: dict = collections.defaultdict(list)
@@ -580,15 +618,21 @@ def _voice_assembly(raw, durinfo, remove, folds=None, claimed=None):
             continue
         if folds and tok == FLD_NOTE_ON and i in folds:
             flags, oad, osr, hr_off, hr_ad, hr_sr = folds[i]
-            if flags & _FLAG_OAD:
+            if flags & _FLAG_OAD and flags & _FLAG_OAD_PRE:
                 kept_by_f[f].append(("OAD", oad))
-            if flags & _FLAG_OSR:
+            if flags & _FLAG_OSR and flags & _FLAG_OSR_PRE:
+                kept_by_f[f].append(("OSR", osr))
+            kept_by_f[f].append((tok, val))
+            if flags & _FLAG_OAD and not flags & _FLAG_OAD_PRE:
+                kept_by_f[f].append(("OAD", oad))
+            if flags & _FLAG_OSR and not flags & _FLAG_OSR_PRE:
                 kept_by_f[f].append(("OSR", osr))
             if flags & _FLAG_HRAD:
                 hr_by_f[f - hr_off].append(("HRAD", hr_ad))
             if flags & _FLAG_HRSR:
                 hr_by_f[f - hr_off].append(("HRSR", hr_sr))
-        kept_by_f[f].append((tok, val))
+        else:
+            kept_by_f[f].append((tok, val))
     for i, (mode, _d, _c, goff) in durinfo.items():
         if mode == _GO_NONE:
             continue
@@ -598,8 +642,8 @@ def _voice_assembly(raw, durinfo, remove, folds=None, claimed=None):
     out = {}
     for f in sorted(set(kept_by_f) | set(hr_by_f) | set(offs_by_f)):
         offs = sorted(offs_by_f.get(f, ()), key=lambda o: (not o[0], o[2]))
-        entries = hr_by_f.get(f, []) + kept_by_f.get(f, [])
-        out[f] = _slot_gate_offs(entries, [(o[0], o[1]) for o in offs])
+        merged = _slot_gate_offs(kept_by_f.get(f, []), [(o[0], o[1]) for o in offs])
+        out[f] = _insert_hr(merged, hr_by_f.get(f, []))
     return out
 
 
@@ -627,8 +671,9 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
     PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [transient PRE
     writes in driver order][changed freq lo,hi][changed pw lo,hi][cas write sequence in driver order
-    with gate-offs slotted per the derived rule]; then the global group's PRE writes + changed globals
-    reg-ascending."""
+    with gate-offs slotted per the derived rule, folded onset envelope on its recorded side of the
+    gate edge and HR prep on the gate=0 side of the off edge -- gate-edge crossings are content];
+    then the global group's PRE writes + changed globals reg-ascending."""
     n = ow.n_frames
     if n == 0:
         return []
@@ -891,14 +936,21 @@ class _Decoder:
             else:
                 val, self.pos = _read_env_val(self.t, self.pos)
             self.cas_active[voice] = True
+            post = []
             if kind == FLD_NOTE_ON:
                 flags = self._u()
                 if flags & _FLAG_OAD:
                     oad, self.pos = _read_env_val(self.t, self.pos)
-                    self.cas[(voice, f)].append(("OAD", oad))
+                    if flags & _FLAG_OAD_PRE:
+                        self.cas[(voice, f)].append(("OAD", oad))
+                    else:
+                        post.append(("OAD", oad))
                 if flags & _FLAG_OSR:
                     osr, self.pos = _read_env_val(self.t, self.pos)
-                    self.cas[(voice, f)].append(("OSR", osr))
+                    if flags & _FLAG_OSR_PRE:
+                        self.cas[(voice, f)].append(("OSR", osr))
+                    else:
+                        post.append(("OSR", osr))
                 if flags & (_FLAG_HRAD | _FLAG_HRSR):
                     hr_off = self._u()
                     if flags & _FLAG_HRAD:
@@ -909,6 +961,7 @@ class _Decoder:
                         self.hr[(voice, f - hr_off)].append(("HRSR", hr_sr))
             self.cas[(voice, f)].append((kind, val))
             if kind == FLD_NOTE_ON:
+                self.cas[(voice, f)].extend(post)
                 mode = self._u()
                 if mode != _GO_NONE:
                     tick, offset = self.tick[voice]
@@ -1032,9 +1085,10 @@ class _Decoder:
                 offs = self.offs.get((v, f), ())
                 offs = sorted(offs, key=lambda o: (not o[0], o[3]))
                 merged = _slot_gate_offs(
-                    self.hr.get((v, f), []) + self.cas.get((v, f), []),
+                    self.cas.get((v, f), []),
                     [(o[0], (o[1], o[2])) for o in offs],
                 )
+                merged = _insert_hr(merged, self.hr.get((v, f), []))
                 cr = ctrl_reg(v)
                 for e in merged:
                     if e[0] == "OFF":

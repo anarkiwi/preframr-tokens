@@ -20,8 +20,31 @@ Concretely:
   onset−k (36.6%, 89% at k≤2) are NOTE_ON fields (flags + env nibbles + prep offset). Measured on
   reSID: an AD write is inert outside attack/decay (0.00% output change in sustain) but essential to
   the next attack (dropping: 13.9% rel-RMS), so its gate-OFF timing is canonical, not content.
-  Genuine gate-ON mid-note AD/SR changes (12.9%) remain standalone events. Onset envelope
-  canonicalizes to AD,SR-before-gate (chip-inert reorder).
+  Genuine gate-ON mid-note AD/SR changes (12.9%) remain standalone events — and are now ~94%
+  *proven* irreducible, not unexamined residue (audited 2026-06-11, 65 in-scope tunes, 20.8k events:
+  46.8% S-changing SR = live per-voice volume, 47.6% D-changing AD = live/phase-live prescaler
+  compare, 5.1% R-only = foldable but not worth a NOTE_ON field, 0.03% superseded = dead writes).
+  The governing model (pinned in preframr-audio `test_adsr_write_liveness_matrix.py` +
+  `test_release_write_position.py` + `test_gate_adsr_reference.py` — the last reproduces the ADSR
+  bug directly: it is compare-change associated, not gate associated; write-only freezes in all
+  three phases, one-directional, never at internal handoffs): an AD/SR nibble write is relocatable iff it is neither
+  **value-live** (shaping the counter: A in attack, D in decay, R in release, S as clamp) nor
+  **phase-live** (the active rate-LFSR *equality* compare: A/D/R by state — D even while
+  sustain-clamped, R even after the envelope is dead) anywhere the move crosses; everything in the
+  envelope is an equality compare, including the sustain hold (raising S mid-note kills the note).
+  Onset envelope re-emits on the **recorded side of the gate edge** (FIXED 2026-06-11; was a fixed
+  AD,SR-before-gate reorder): the side is content — a write crossing the edge changes which
+  prescaler compare governs the gate=0 dwell / the attack's first steps and flips ADSR-bug stall
+  states value-dependently — and driver conventions SPLIT (grid_runner/commando write gate-then-
+  AD/SR; camerock/baggis the reverse), so no fixed order is faithful. NOTE_ON carries two side
+  bits (`_FLAG_OAD_PRE`/`_FLAG_OSR_PRE`, AD-before-SR within a side); HR prep pairs emit on the
+  **gate=0 side** of the prep frame's gate-off (the dump wrote them there; a compare change
+  crossing the off edge is the same flip, 4070); a blip note's folded envelope stays glued on its
+  recorded side of the same-frame derived off. Measured (5 drivers, reSID render at per-write slot
+  timing, preframr-audio perceptual metric): raw-vs-canonical now ≤ the ±8 render-noise floor on
+  all 5; the old fixed reorder was audibly wrong on grid_runner (0.15% samples >500, max|Δ| 6722 —
+  flipped attack stalls). Flags >15 cost one extra digit per pre-side NOTE_ON (camerock/baggis
+  class); tok/write impact unremeasured (sub-0.1% expected).
 - **freq/PW**: settled value per frame, canonically FIRST in the voice's frame group (reg-offset
   ascending). (The freq/PW-between-two-CTRL-changes position exception measured 0.71%, all
   hard-restart onsets — position canonicalization only; Facemorph's noise→tonal instrument verified
@@ -204,6 +227,17 @@ mask remain as optimizations (the decoder already validates).
   **entropy ≈ 0: 100% of values are `1`** (consecutive frames), already one BPE-folded token. Mixed-radix
   would turn every `1` into `(q=0, r=1)` = 2 tokens, doubling the most common token in the stream. The
   strict "one time encoding" purity is counterproductive here; ORDER `DT` stays raw varint.
+- **Mid-note R-only fold into NOTE_ON — VALID but NOT SHIPPED (measured 2026-06-11).** A mid-note
+  R change is relocatable to its own note's onset *emitted after the gate write* (R is latent the
+  moment gate=1: worst 10 across the R_old×R_new grid at real per-write timing, write-count-matched
+  A/B). It is NOT relocatable before the gate edge: with the prior tail live the tail re-rates
+  (3252); with the tail provably dead (ENV3=00) the gap's compare trajectory still shifts the rate
+  LFSR and stalls the next attack a full frame on the ADSR-bug equality compare (4079). Corpus
+  audit (`tmp/midnote_adsr_split.py`): R-only finals are 5.1% of mid-note events ≈ 0.8% of all
+  AD/SR changes — the fold doesn't pay for a NOTE_ON field. Pinned in preframr-audio
+  `tests/test_release_write_position.py`; the full (phase × nibble) relocation matrix in
+  `tests/test_adsr_write_liveness_matrix.py`. Collapsed-timing A/Bs (writes applied back-to-back)
+  MASK all of this — placement experiments must use per-write clocking.
 - **§8.4 joint freq/note path DP — REJECTED (measured regression, reverted).** A shortest-path parse over
   `(frame, note-anchor)` emitting NOTE_STEP events + per-segment delta gestures was implemented and is
   byte-exact, but cost **4.23 → 4.42 bits/write**. Root cause: the current two-tiling freq encoding covers

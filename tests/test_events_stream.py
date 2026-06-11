@@ -116,7 +116,12 @@ def test_canonical_drops_subframe_transients_and_rewrites():
 
 def test_cas_sequence_preserved_in_driver_order():
     """Sub-frame CTRL/ADSR activity (hard restart: two ctrl changes in one frame) survives with the
-    onset envelope folded into NOTE_ON and re-emitted canonically (AD,SR then gate)."""
+    onset envelope folded into NOTE_ON and re-emitted on the RECORDED side of the gate edge (AD
+    before SR within a side): the side is content -- a write crossing the edge changes which
+    prescaler compare governs the gate=0 dwell and flips ADSR-bug stall states value-dependently,
+    and driver conventions split (preframr-audio ``test_release_write_position`` /
+    ``test_gate_adsr_reference``). Here both envelope writes preceded the gate, so the canonical
+    form keeps them pre-gate."""
     writes = [
         (0, 6, 0xA9),
         (0, 5, 0x18),
@@ -136,7 +141,7 @@ def test_cas_sequence_preserved_in_driver_order():
         (6, 4, 0x80),
         (6, 5, 0xFF),
         (6, 4, 0x81),
-    ], "onset envelope canonicalizes to AD,SR before the gate write (chip-inert reorder)"
+    ], "onset envelope keeps the dump's side of the gate edge (AD,SR within the pre side)"
     toks = _roundtrip(ow)
     assert toks.count(stream.FLD_NOTE_ON) == 2
     assert toks.count(stream.FLD_CTRL) == 1
