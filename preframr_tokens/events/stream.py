@@ -36,8 +36,7 @@ FLD_AD = FLD_CTRL + 1
 FLD_SR = FLD_AD + 1
 G_STEP = FLD_SR + 1
 G_RAMP = G_STEP + 1
-PRE = G_RAMP + 1
-SHAPE_POLY = PRE + 1
+SHAPE_POLY = G_RAMP + 1
 SHAPE_PERIOD = SHAPE_POLY + 1
 NIB_WAVE = SHAPE_PERIOD + 1
 NIB_ART = NIB_WAVE + 16
@@ -46,14 +45,15 @@ KEYFRAME = NIB_ENV + 16
 VOCAB_SIZE = KEYFRAME + 1
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
-_EVENT_KINDS = frozenset(range(NI_STEP, PRE + 1))
+_EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1))
 _DEFAULT_TUNING_Q = pitch_grid.tuning_to_q(0.0)
 
 _GO_NONE, _GO_DERIVE, _GO_VALUE = 0, 1, 2
 
 GLOBAL_REGS = (21, 22, 23, 24)
 
-_RANK_PRE, _RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = -1, 0, 1, 2, 3
+_RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = 0, 1, 2, 3
+_FLAG_OAD, _FLAG_OSR, _FLAG_HRAD, _FLAG_HRSR = 1, 2, 4, 8
 
 
 def _is_digit(tok: int) -> bool:
@@ -346,13 +346,16 @@ def _freq_layer(settled, v: int):
 
 
 def _cas_changes(ow: OrderedWrites) -> dict[int, list[tuple[int, int, int]]]:
-    """Per-voice ordered CTRL/AD/SR write sequences ``[(frame, reg, val)]`` in driver order (sub-frame
-    resolution). ALL writes are kept -- a same-value rewrite is activity too (zero-drop contract); it
-    types as a plain field event since the gate state is unchanged."""
+    """Per-voice ordered CTRL/AD/SR *change* sequences ``[(frame, reg, val)]`` in driver order
+    (sub-frame resolution). Same-value rewrites are chip no-ops (latch semantics, verified) and are
+    canonicalized away."""
     seqs: dict[int, list[tuple[int, int, int]]] = {0: [], 1: [], 2: []}
+    cur = [0] * NUM_REGS
     for f, reg, val in zip(ow.frame.tolist(), ow.reg.tolist(), ow.val.tolist()):
         if reg <= 20 and reg % 7 >= 4:
-            seqs[reg // 7].append((f, reg, val))
+            if cur[reg] != val:
+                seqs[reg // 7].append((f, reg, val))
+            cur[reg] = val
     return seqs
 
 
@@ -422,6 +425,64 @@ def _recover_tick(durs) -> tuple[int, int]:
     return best[2], best[3]
 
 
+def _fold_envelope(raw, durinfo, remove):
+    """Claim each NOTE_ON's envelope lifecycle from the change sequence: the onset-frame AD/SR (the
+    instrument) and the gate-OFF hard-restart prep AD/SR at onset-k (timing chip-inert there, value
+    essential for the attack -- measured). Returns ``(folds, claimed)``: ``folds[i] = (flags, oad, osr,
+    hr_off, hr_ad, hr_sr)`` per NOTE_ON index; claimed indices stop being standalone events.
+    """
+    gates = []
+    gate = 0
+    for _f, tok, val in raw:
+        if tok in (FLD_NOTE_ON, FLD_CTRL):
+            gate = val & 1
+        gates.append(gate)
+    by_frame: dict = collections.defaultdict(dict)
+    for i, (f, tok, _val) in enumerate(raw):
+        if tok in (FLD_AD, FLD_SR) and i not in remove:
+            by_frame[f][tok] = i
+    folds: dict = {}
+    claimed: set = set()
+    for i, (f, tok, val) in enumerate(raw):
+        if tok != FLD_NOTE_ON:
+            continue
+        flags = 0
+        oad = osr = hr_ad = hr_sr = 0
+        hr_off = 0
+        slot = by_frame.get(f, {})
+        j = slot.get(FLD_AD)
+        if j is not None and j not in claimed:
+            flags |= _FLAG_OAD
+            oad = raw[j][2]
+            claimed.add(j)
+        j = slot.get(FLD_SR)
+        if j is not None and j not in claimed:
+            flags |= _FLAG_OSR
+            osr = raw[j][2]
+            claimed.add(j)
+        for k in range(1, 9):
+            slot = by_frame.get(f - k, {})
+            cand = [
+                (tok2, j2)
+                for tok2, j2 in slot.items()
+                if j2 not in claimed and gates[j2] == 0
+            ]
+            if not cand:
+                continue
+            hr_off = k
+            for tok2, j2 in cand:
+                if tok2 == FLD_AD:
+                    flags |= _FLAG_HRAD
+                    hr_ad = raw[j2][2]
+                else:
+                    flags |= _FLAG_HRSR
+                    hr_sr = raw[j2][2]
+                claimed.add(j2)
+            break
+        folds[i] = (flags, oad, osr, hr_off, hr_ad, hr_sr)
+    return folds, claimed
+
+
 def _note_layer(seq, v: int):
     """One voice's cas change sequence -> (header token-lists, [(frame, sort_key, tokens)] events).
     Gate-offs are removed and derived from NOTE_ON durations -- always (no NOTE OFF, no fallback);
@@ -429,6 +490,7 @@ def _note_layer(seq, v: int):
     """
     raw, durinfo, remove = _typed_cas(seq)
     modes = _assign_gate_off_modes(raw, durinfo, remove)
+    folds, claimed = _fold_envelope(raw, durinfo, remove)
     durs = [d for (m, d, _c, _g) in durinfo.values() if m != _GO_NONE]
     tick, offset = _recover_tick(durs)
     voice_tok = VOICE_BASE + v
@@ -441,7 +503,7 @@ def _note_layer(seq, v: int):
     evs = []
     sub = 0
     for i, (f, tok, val) in enumerate(raw):
-        if i in remove:
+        if i in remove or i in claimed:
             continue
         body = [tok]
         if tok in (FLD_NOTE_ON, FLD_CTRL):
@@ -449,6 +511,18 @@ def _note_layer(seq, v: int):
         else:
             _emit_env_val(body, val)
         if tok == FLD_NOTE_ON:
+            flags, oad, osr, hr_off, hr_ad, hr_sr = folds[i]
+            _emit_u(body, flags)
+            if flags & _FLAG_OAD:
+                _emit_env_val(body, oad)
+            if flags & _FLAG_OSR:
+                _emit_env_val(body, osr)
+            if flags & (_FLAG_HRAD | _FLAG_HRSR):
+                _emit_u(body, hr_off)
+                if flags & _FLAG_HRAD:
+                    _emit_env_val(body, hr_ad)
+                if flags & _FLAG_HRSR:
+                    _emit_env_val(body, hr_sr)
             d = durinfo[i][1]
             mode, c_off = modes.get(i, (_GO_NONE, 0))
             _emit_u(body, mode)
@@ -491,17 +565,29 @@ def _slot_gate_offs(entries, offs):
     return out
 
 
-def _voice_assembly(raw, durinfo, remove):
-    """The canonical per-frame cas assembly of one voice: ``{frame: [("OFF", note_idx) | (tok, val)]}``
-    -- kept entries in driver order with each paired gate-off slotted per :func:`_slot_gate_offs`.
-    Shared by the encoder (mode assignment), :func:`canonical_writes` and (structurally) the decoder, so
-    the DERIVE-vs-VALUE decision is made against the gate-off's *canonical* position, not its dump
-    position (a same-frame CTRL change may be reordered across the off's slot)."""
+def _voice_assembly(raw, durinfo, remove, folds=None, claimed=None):
+    """The canonical per-frame cas assembly of one voice: ``{frame: [("OFF", note_idx) | ("OAD"/"OSR"/
+    "HRAD"/"HRSR", val) | (tok, val)]}`` -- kept entries in driver order, each NOTE_ON's folded onset
+    envelope inserted immediately before it (canonical AD,SR order), its HR prep pair leading the prep
+    frame, and gate-offs slotted per :func:`_slot_gate_offs`. Shared by the encoder, the canonical
+    oracle and (structurally) the decoder so all three order identically."""
+    claimed = claimed or set()
     kept_by_f: dict = collections.defaultdict(list)
+    hr_by_f: dict = collections.defaultdict(list)
     offs_by_f: dict = collections.defaultdict(list)
     for i, (f, tok, val) in enumerate(raw):
-        if i in remove:
+        if i in remove or i in claimed:
             continue
+        if folds and tok == FLD_NOTE_ON and i in folds:
+            flags, oad, osr, hr_off, hr_ad, hr_sr = folds[i]
+            if flags & _FLAG_OAD:
+                kept_by_f[f].append(("OAD", oad))
+            if flags & _FLAG_OSR:
+                kept_by_f[f].append(("OSR", osr))
+            if flags & _FLAG_HRAD:
+                hr_by_f[f - hr_off].append(("HRAD", hr_ad))
+            if flags & _FLAG_HRSR:
+                hr_by_f[f - hr_off].append(("HRSR", hr_sr))
         kept_by_f[f].append((tok, val))
     for i, (mode, _d, _c, goff) in durinfo.items():
         if mode == _GO_NONE:
@@ -510,9 +596,10 @@ def _voice_assembly(raw, durinfo, remove):
         off_f = raw[goff][0]
         offs_by_f[off_f].append((off_f > onset_f, i, onset_f))
     out = {}
-    for f in sorted(set(kept_by_f) | set(offs_by_f)):
+    for f in sorted(set(kept_by_f) | set(hr_by_f) | set(offs_by_f)):
         offs = sorted(offs_by_f.get(f, ()), key=lambda o: (not o[0], o[2]))
-        out[f] = _slot_gate_offs(kept_by_f.get(f, ()), [(o[0], o[1]) for o in offs])
+        entries = hr_by_f.get(f, []) + kept_by_f.get(f, [])
+        out[f] = _slot_gate_offs(entries, [(o[0], o[1]) for o in offs])
     return out
 
 
@@ -536,28 +623,6 @@ def _assign_gate_off_modes(raw, durinfo, remove):
     return modes
 
 
-def _pre_writes(ow: OrderedWrites, settled) -> dict:
-    """Per ``(group_voice, frame)``: ordered transient freq/PW/global writes ``[(reg, val)]`` -- every
-    such write except a reg's frame-final write when it lands a settled change (that one is implied by
-    the channel). With these, :func:`canonical_writes` is an exact intra-frame permutation of the dump:
-    zero writes are dropped (the Commando freq re-fire and player init wipes become PRE events).
-    """
-    pres: dict = collections.defaultdict(list)
-    for f, writes in enumerate(ow.by_frame()):
-        last = {}
-        for k, (reg, _val) in enumerate(writes):
-            last[reg] = k
-        for k, (reg, val) in enumerate(writes):
-            if reg <= 20 and reg % 7 >= 4:
-                continue
-            prev = int(settled[f - 1, reg]) if f else 0
-            if last[reg] == k and int(settled[f, reg]) != prev:
-                continue
-            gv = GLOBAL if reg >= 21 else reg // 7
-            pres[(gv, f)].append((reg, val))
-    return pres
-
-
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
     PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [transient PRE
@@ -569,13 +634,13 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
         return []
     settled = settled_grid(ow)
     seqs = _cas_changes(ow)
-    pres = _pre_writes(ow, settled)
     asm = {}
     raws = {}
     durinfos = {}
     for v in range(3):
         raw, durinfo, remove = _typed_cas(seqs[v])
-        asm[v] = _voice_assembly(raw, durinfo, remove)
+        folds, claimed = _fold_envelope(raw, durinfo, remove)
+        asm[v] = _voice_assembly(raw, durinfo, remove, folds, claimed)
         raws[v] = raw
         durinfos[v] = durinfo
     out: list[tuple[int, int, int]] = []
@@ -583,8 +648,6 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     for f in range(n):
         row = settled[f]
         for v in range(3):
-            for reg, val in pres.get((v, f), ()):
-                out.append((f, int(reg), int(val)))
             lo, hi = freq_regs(v)
             plo, phi = pw_regs(v)
             for r in (lo, hi, plo, phi):
@@ -596,14 +659,13 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
                     out.append((f, cr, int(raws[v][durinfos[v][e[1]][3]][2])))
                 else:
                     tok, val = e
-                    reg = (
-                        cr
-                        if tok in (FLD_NOTE_ON, FLD_CTRL)
-                        else (ad_reg(v) if tok == FLD_AD else sr_reg(v))
-                    )
+                    if tok in (FLD_NOTE_ON, FLD_CTRL):
+                        reg = cr
+                    elif tok in (FLD_AD, "OAD", "HRAD"):
+                        reg = ad_reg(v)
+                    else:
+                        reg = sr_reg(v)
                     out.append((f, reg, int(val)))
-        for reg, val in pres.get((GLOBAL, f), ()):
-            out.append((f, int(reg), int(val)))
         for r in GLOBAL_REGS:
             if row[r] != prev[r]:
                 out.append((f, r, int(row[r])))
@@ -659,12 +721,6 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
             events += _series_events(
                 settled[:, reg], GLOBAL, reg, G_STEP, G_RAMP, signed=False, reg=reg
             )
-    for (gv, f), lst in _pre_writes(ow, settled).items():
-        for idx, (reg, val) in enumerate(lst):
-            body = [PRE, REG_BASE + reg]
-            _emit_s(body, val - (int(settled[f - 1, reg]) if f else 0))
-            events.append((f, (gv, _RANK_PRE, idx), body))
-
     for h in headers:
         out.extend(h)
 
@@ -694,11 +750,6 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
                 f"v3 roundtrip diverged at canonical write {k}: "
                 f"got {got[k] if k < len(got) else None} "
                 f"want {want[k] if k < len(want) else None}"
-            )
-        if collections.Counter(got) != collections.Counter(ow.triples()):
-            raise AssertionError(
-                "canonical form is not a per-frame permutation of the dump "
-                "(zero-drop invariant violated)"
             )
     return out
 
@@ -772,7 +823,7 @@ class _Decoder:
         self.chan_ops = collections.defaultdict(list)
         self.cas = collections.defaultdict(list)
         self.offs = collections.defaultdict(list)
-        self.pres = collections.defaultdict(list)
+        self.hr = collections.defaultdict(list)
 
     def _u(self):
         v, self.pos = _read_u(self.t, self.pos)
@@ -805,13 +856,7 @@ class _Decoder:
     def _parse_event(self, f: int, voice: int) -> None:
         kind = self.t[self.pos]
         self.pos += 1
-        if kind == PRE:
-            if not _is_reg(self.t[self.pos]):
-                raise ValueError(f"expected reg token after PRE at {self.pos}")
-            reg = self.t[self.pos] - REG_BASE
-            self.pos += 1
-            self.pres[(voice, f)].append((reg, self._s()))
-        elif kind == NI_STEP:
+        if kind == NI_STEP:
             self.freq_active[voice] = True
             self.chan_ops[f].append((self.ni[voice], "set_rel", self._s()))
         elif kind == NI_RAMP:
@@ -846,6 +891,22 @@ class _Decoder:
             else:
                 val, self.pos = _read_env_val(self.t, self.pos)
             self.cas_active[voice] = True
+            if kind == FLD_NOTE_ON:
+                flags = self._u()
+                if flags & _FLAG_OAD:
+                    oad, self.pos = _read_env_val(self.t, self.pos)
+                    self.cas[(voice, f)].append(("OAD", oad))
+                if flags & _FLAG_OSR:
+                    osr, self.pos = _read_env_val(self.t, self.pos)
+                    self.cas[(voice, f)].append(("OSR", osr))
+                if flags & (_FLAG_HRAD | _FLAG_HRSR):
+                    hr_off = self._u()
+                    if flags & _FLAG_HRAD:
+                        hr_ad, self.pos = _read_env_val(self.t, self.pos)
+                        self.hr[(voice, f - hr_off)].append(("HRAD", hr_ad))
+                    if flags & _FLAG_HRSR:
+                        hr_sr, self.pos = _read_env_val(self.t, self.pos)
+                        self.hr[(voice, f - hr_off)].append(("HRSR", hr_sr))
             self.cas[(voice, f)].append((kind, val))
             if kind == FLD_NOTE_ON:
                 mode = self._u()
@@ -954,8 +1015,6 @@ class _Decoder:
                     shape, length, rel, rest = args
                     chan.ramp(f, shape, length, [chan.at(f) + rel, *rest])
             for v in range(3):
-                for reg, payload in self.pres.get((v, f), ()):
-                    out.append((f, reg, int(prev_byte[reg] + payload)))
                 if self.freq_active[v]:
                     lo, hi = freq_regs(v)
                     freq = self._freq_base(v, self.ni[v].at(f)) + self.fd[v].at(f)
@@ -973,7 +1032,7 @@ class _Decoder:
                 offs = self.offs.get((v, f), ())
                 offs = sorted(offs, key=lambda o: (not o[0], o[3]))
                 merged = _slot_gate_offs(
-                    self.cas.get((v, f), ()),
+                    self.hr.get((v, f), []) + self.cas.get((v, f), []),
                     [(o[0], (o[1], o[2])) for o in offs],
                 )
                 cr = ctrl_reg(v)
@@ -990,14 +1049,12 @@ class _Decoder:
                         if tok in (FLD_NOTE_ON, FLD_CTRL):
                             ctrl_state[v] = val
                             out.append((f, cr, val))
-                        elif tok == FLD_AD:
+                        elif tok in (FLD_AD, "OAD", "HRAD"):
                             self._ad_state[v] = val
                             out.append((f, ad_reg(v), val))
                         else:
                             self._sr_state[v] = val
                             out.append((f, sr_reg(v), val))
-            for reg, payload in self.pres.get((GLOBAL, f), ()):
-                out.append((f, reg, int(prev_byte[reg] + payload)))
             for r in GLOBAL_REGS:
                 if not self.g_active[r]:
                     continue

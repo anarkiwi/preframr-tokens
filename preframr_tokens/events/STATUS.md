@@ -5,29 +5,32 @@ Implements the escape-free, factored, corpus-global event/tracker token model of
 ## v3 — the canonical contract (CURRENT; supersedes §2.8 byte-order fidelity)
 
 The fidelity contract was **corrected** (2026-06-11): the oracle is `stream.canonical_writes(dump)` —
-the dump's audibly-faithful canonical form — NOT the raw byte order. It is an exact **intra-frame
-permutation** of the dump's writes: **zero writes are dropped** (enforced by a multiset assertion on
-every `encode`). Concretely:
+the dump's audibly-faithful canonical form — NOT the raw byte order. Within each frame the settled
+musical content is exact; sub-frame freq/PW/global transients (0.13% of in-scope writes; measured
+−27 dB under coincident content via the shared-clock-schedule A/B harness — masked) and same-value
+rewrites (chip latch no-ops, verified on reSID) are canonicalized away. The earlier PRE primitive that
+carried them was **removed** (a <0.5% corner case must correct the model, not add a construct).
+Concretely:
 
-- **CTRL/ADSR**: ALL *change* activity preserved as ordered typed events at **sub-frame** resolution
-  (hard-restart `CTRL,CTRL` and `SR,AD,NOTE_ON` onset sequences are events in driver order — the
-  previously-literalized, most musically critical class). Gate 0→1 = typed `NOTE_ON` carrying the §4
-  mixed-radix duration; **gate 1→0 is ALWAYS derived** at onset+duration. There is **no NOTE OFF
-  token and no fallback path** — structurally sound: gate only reaches 1 via a NOTE_ON, so every
-  gate-off pairs (measured: 0 unpaired across 7M in-scope writes). The DERIVE/VALUE release mode is
-  decided at the gate-off's *canonical* slot (`_assign_gate_off_modes`), not its dump position.
+- **CTRL/ADSR**: all *change* activity preserved as ordered typed events at **sub-frame** resolution.
+  Gate 0→1 = typed `NOTE_ON` carrying the §4 mixed-radix duration; **gate 1→0 is ALWAYS derived** at
+  onset+duration (no NOTE OFF token, no fallback; 0 unpaired across 7M in-scope writes; DERIVE/VALUE
+  decided at the canonical slot). **NOTE_ON owns the note's envelope lifecycle**: the onset-frame
+  AD/SR (the instrument, 50.5% of all AD/SR changes) and the gate-OFF hard-restart prep pair at
+  onset−k (36.6%, 89% at k≤2) are NOTE_ON fields (flags + env nibbles + prep offset). Measured on
+  reSID: an AD write is inert outside attack/decay (0.00% output change in sustain) but essential to
+  the next attack (dropping: 13.9% rel-RMS), so its gate-OFF timing is canonical, not content.
+  Genuine gate-ON mid-note AD/SR changes (12.9%) remain standalone events. Onset envelope
+  canonicalizes to AD,SR-before-gate (chip-inert reorder).
 - **freq/PW**: settled value per frame, canonically FIRST in the voice's frame group (reg-offset
-  ascending). Transient same-frame pre-writes (0.13% of in-scope writes: the Commando freq re-fire —
-  dominant payload = prev byte −1 — and player init wipes) are **`PRE` events**: `[PRE][reg][signed
-  delta vs the reg's previous-frame byte]`, slotted at the head of their voice group in driver order.
-  Nothing is dropped. (The freq/PW-between-two-CTRL-changes position exception measured 0.71%, all
+  ascending). (The freq/PW-between-two-CTRL-changes position exception measured 0.71%, all
   hard-restart onsets — position canonicalization only; Facemorph's noise→tonal instrument verified
   strictly inter-frame.)
 - **globals** (filter/vol): settled, canonically LAST in the frame, reg ascending.
 - **writes are implied, not transmitted**: the canonical write set = "bytes whose settled value
-  changed" + PRE events + the cas write sequence (ALL cas writes kept, including the 10-in-1.6M
-  same-value rewrites). The v1/v2 ORDER descriptor and ALL literal mechanisms are **gone** — every
-  write value derives from modeled state.
+  changed" + the cas change sequence (+ derived gate-offs and folded envelope writes at their
+  canonical slots). The v1/v2 ORDER descriptor and ALL literal mechanisms are **gone** — every write
+  value derives from modeled state.
 - **voice-grouped frames**: `[DT]([VOICE][kind-led event bodies]*)*` — the VOICE token appears once
   per voice per frame, and event bodies are voice-free, so a patch (drum sequence, instrument) emits
   identical tokens on any voice; BPE learns voice-portable patch fragments (voice tokens fell
@@ -41,7 +44,7 @@ recovered by exact-grid fit with groove offset ∈ {-1,0,+1} — the ±1/unconst
 measured degenerate). Pitch is interval-coded (`NI_STEP/NI_RAMP`); freq residual and global lanes are
 STEP/RAMP events with no-op suppression (held value = no event; HOLD = STEP with no length); gesture
 covers use the emitted-token cost model (§8.6 completed — `mdl_parse(cost_model=...)`). `encode`
-self-verifies `decode == canonical_writes` + the permutation multiset (fail loudly).
+self-verifies `decode == canonical_writes` (fail loudly).
 
 **Learnability layer (measured in, 2026-06-11):**
 - **Typed value nibbles** (§3.5 restored): CTRL bytes = `NIB_WAVE` (waveform) + `NIB_ART`
@@ -60,15 +63,18 @@ self-verifies `decode == canonical_writes` + the permutation multiset (fail loud
 - Measured & rejected: DT-in-ticks (72.5% of event-frame DTs are 1, 95.5% ≤ 4 — already one digit);
   POLY degree cap (deg≥2 = 9% of POLYs, chosen by the cost DP because it pays).
 
-Vocab: 128 atoms (32 digits, 25 regs, 4 voices, 18 kinds/shapes, 48 typed nibbles, KEYFRAME).
+Vocab: 127 atoms (32 digits, 25 regs, 4 voices, 17 kinds/shapes, 48 typed nibbles, KEYFRAME).
+Lifecycle fold measured (59 in-scope tunes): atomic 1.70 tok/write; post-BPE **0.21 tok/write at 1.80
+bits/write order-0** (−10% vs pre-fold) — the composite note events are prime BPE material. Goto80
+catalog: standalone AD/SR events eliminated from the distribution (652k → folded).
 
 **Verified**: canonical roundtrip on the 5 drivers + in-scope 200-sample corpus sweep; determinism;
 no-NOTE-OFF, driver-order cas, freq-first/globals-last reorder, retrigger/blip chains pinned in
 `tests/test_events_stream.py`. Full suite green except 2 pre-existing failures (GEN_TABLE tiering,
 decompose_voice removal).
 
-**Measured** (59 in-scope tunes + 5 drivers, 1.6M writes; canonical = **100.0%** of raw writes —
-zero-drop, every tune):
+**Measured** (59 in-scope tunes + 5 drivers, 1.6M writes; canonical = 99.9% of raw writes — the
+0.13% masked sub-frame transients are canonicalized away, see above):
 
 | | atomic tok/write | atomic H1 bits/write | post-BPE tok/write (drivers, 1000 merges) | post-BPE H0 bits/write |
 |---|---|---|---|---|

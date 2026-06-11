@@ -90,12 +90,10 @@ def test_empty_and_writeless_streams():
     assert stream.decode(stream.encode(silent)) == []
 
 
-def test_canonical_is_an_intraframe_permutation():
-    """Zero-drop contract: every dump write survives canonicalization -- a same-frame intermediate
-    freq write becomes a PRE event, same-value cas rewrites stay events -- so the canonical form is an
-    exact per-frame permutation of the dump's (frame, reg, val) multiset."""
-    import collections
-
+def test_canonical_drops_subframe_transients_and_rewrites():
+    """The canonical contract keeps the settled musical content: sub-frame freq/PW/global transients
+    (masked-inaudible, measured -27 dB under coincident content) and same-value rewrites (chip latch
+    no-ops) are canonicalized away rather than carried by a literal-style primitive."""
     writes = []
     for f in range(50):
         writes.append((f, 4, 0x41))
@@ -105,37 +103,20 @@ def test_canonical_is_an_intraframe_permutation():
     writes.sort(key=lambda t: t[0])
     ow = _ow(writes, 50)
     cw = stream.canonical_writes(ow)
-    assert collections.Counter(cw) == collections.Counter(ow.triples())
-    f25 = [w for w in cw if w[0] == 25 and w[1] == 0]
-    assert f25 == [
-        (25, 0, 0x12),
-        (25, 0, 0x99),
-        (25, 0, 0x12),
-    ], "transient writes keep driver order; settled value is unchanged so all are PRE"
-    toks = _roundtrip(ow)
-    assert stream.PRE in toks
-
-
-def test_constant_rewrites_are_preserved_not_dropped():
-    """Zero-drop: a driver hammering constant values still roundtrips every write (in-scope dumps are
-    change-squeezed, so this costs nothing in practice -- 66 such writes measured in 1.6M).
-    """
-    import collections
-
-    writes = []
-    for f in range(20):
-        writes.append((f, 4, 0x41))
-        writes.append((f, 5, 0x08))
-        writes.append((f, 24, 0x0F))
-    ow = _ow(sorted(writes, key=lambda t: t[0]), 20)
-    cw = stream.canonical_writes(ow)
-    assert collections.Counter(cw) == collections.Counter(ow.triples())
+    assert [w for w in cw if w[1] == 4] == [(0, 4, 0x41)], "ctrl rewrites are no-ops"
+    assert [w for w in cw if w[1] == 0] == [
+        (0, 0, 0x10),
+        (10, 0, 0x11),
+        (20, 0, 0x12),
+        (30, 0, 0x13),
+        (40, 0, 0x14),
+    ], "freq transient (0x99) and unchanged-final writes are dropped"
     _roundtrip(ow)
 
 
 def test_cas_sequence_preserved_in_driver_order():
-    """Sub-frame CTRL/ADSR activity (hard restart: two ctrl changes in one frame; SR-then-AD order)
-    survives canonicalization exactly, in driver order."""
+    """Sub-frame CTRL/ADSR activity (hard restart: two ctrl changes in one frame) survives with the
+    onset envelope folded into NOTE_ON and re-emitted canonically (AD,SR then gate)."""
     writes = [
         (0, 6, 0xA9),
         (0, 5, 0x18),
@@ -147,10 +128,20 @@ def test_cas_sequence_preserved_in_driver_order():
     ]
     ow = _ow(writes, 10)
     cw = stream.canonical_writes(ow)
-    assert cw == writes, "in-scope cas activity is identity under canonicalization"
+    assert cw == [
+        (0, 5, 0x18),
+        (0, 6, 0xA9),
+        (0, 4, 0x41),
+        (4, 4, 0x40),
+        (6, 4, 0x80),
+        (6, 5, 0xFF),
+        (6, 4, 0x81),
+    ], "onset envelope canonicalizes to AD,SR before the gate write (chip-inert reorder)"
     toks = _roundtrip(ow)
     assert toks.count(stream.FLD_NOTE_ON) == 2
     assert toks.count(stream.FLD_CTRL) == 1
+    assert toks.count(stream.FLD_AD) == 0, "onset AD folds into NOTE_ON"
+    assert toks.count(stream.FLD_SR) == 0, "onset SR folds into NOTE_ON"
 
 
 def test_no_note_off_events_ever():
