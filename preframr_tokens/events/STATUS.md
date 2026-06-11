@@ -1,8 +1,64 @@
 # Event model (REDESIGN_optionB) — build status
 
 Implements the escape-free, factored, corpus-global event/tracker token model of `REDESIGN_optionB.md`.
-The north star is the §2.8 hard invariant: **byte-exact reproduction of the ordered register-write
-stream**. Every layer is guarded by that roundtrip.
+
+## v3 — the canonical contract (CURRENT; supersedes §2.8 byte-order fidelity)
+
+The fidelity contract was **corrected** (2026-06-11): the oracle is `stream.canonical_writes(dump)` —
+the dump's audibly-faithful canonical form — NOT the raw byte order. Concretely:
+
+- **CTRL/ADSR**: ALL *change* activity preserved as ordered typed events at **sub-frame** resolution
+  (hard-restart `CTRL,CTRL` and `SR,AD,NOTE_ON` onset sequences are events in driver order — the
+  previously-literalized, most musically critical class). Gate 0→1 = typed `NOTE_ON` carrying the §4
+  mixed-radix duration; **gate 1→0 is ALWAYS derived** at onset+duration. There is **no NOTE OFF
+  token and no fallback path** — structurally sound: gate only reaches 1 via a NOTE_ON, so every
+  gate-off pairs (measured: 0 unpaired across 7M in-scope writes). The DERIVE/VALUE release mode is
+  decided at the gate-off's *canonical* slot (`_assign_gate_off_modes`), not its dump position.
+- **freq/PW**: settled value per frame, canonically FIRST in the voice's frame group (reg-offset
+  ascending). Intermediate same-frame freq/PW writes are driver noise — dropped (0.68% of in-scope
+  writes; the freq/PW-between-two-CTRL-changes exception measured at 0.71%, all hard-restart onsets
+  and frame-0 init wipes — audio-safe to canonicalize; Facemorph's noise→tonal instrument verified
+  strictly inter-frame, untouched by canonicalization).
+- **globals** (filter/vol): settled, canonically LAST in the frame, reg ascending.
+- **writes are implied, not transmitted**: in-scope dumps are change-squeezed (redundant rewrites ≈ 0),
+  so the canonical write set = "bytes whose settled value changed" + the cas event sequence. The v1/v2
+  ORDER descriptor and ALL literal mechanisms are **gone** — every write value derives from modeled
+  state (the §13 order-descriptor machinery is retired with the contract that required it).
+- **Scope**: single-speed, non-digi tunes (`stream.single_speed`, `dump_meta.is_digi`). Multi-speed
+  (~5%) and digi (~3%) are excluded from corpus builds/tests — raw corpus globs must filter.
+
+Stream shape: `[n_frames][headers]([DT][voice events in canonical order])*` — headers on first use
+(TUNING omitted at 0; NOTE_TABLE = nonzero grid deviations only, delta-coded; TICK omitted at 1,
+recovered by exact-grid fit with groove offset ∈ {-1,0,+1} — the ±1/unconstrained criteria were
+measured degenerate). Pitch is interval-coded (`NI_STEP/NI_RAMP`); freq residual, 12-bit PW and global
+lanes are STEP/RAMP events with no-op suppression (held value = no event; HOLD = STEP with no length);
+gesture covers use the emitted-token cost model (§8.6 completed — `mdl_parse(cost_model=...)`).
+Vocab: 84 atoms (32 digits, 25 regs, 4 voices, headers/kinds/shapes). `encode` self-verifies
+`decode == canonical_writes` (fail loudly).
+
+**Verified**: canonical roundtrip on the 5 drivers + in-scope 200-sample corpus sweep; determinism;
+no-NOTE-OFF, driver-order cas, freq-first/globals-last reorder, retrigger/blip chains pinned in
+`tests/test_events_stream.py`. Full suite green except 2 pre-existing failures (GEN_TABLE tiering,
+decompose_voice removal).
+
+**Measured** (59 in-scope tunes + 5 drivers, 1.6M writes; canonical = 99.9% of raw writes — the
+canonicalization drops almost nothing in-scope):
+
+| | atomic tok/write | atomic H1 bits/write | post-BPE tok/write (drivers, 1000 merges) | post-BPE H0 bits/write |
+|---|---|---|---|---|
+| v1 factored (byte-exact baseline) | 2.99 | 11.07 | 0.55 | 5.07 |
+| v2 time-ordered (interim, byte-exact) | ~2.4 (5-driver) | ~6.7 (5-driver) | 0.51 | 4.67 |
+| **v3 canonical** | **1.80** | **6.01** | **0.23** | **1.95** |
+
+v3 collapse vs the 16-bit raw floor: **8.2×** at post-BPE order-0, **24×** at order-1 — past the §9
+10-14× target. Per driver: trap 0.30, grid_runner 0.61, commando 1.45, camerock 1.70, baggis 1.88
+tok/write atomic. Token families: digits 60.5%, voice+kind 36.4% (top BPE fodder), shape 2.2%, reg
+1.0% (only the global-lane ids — the v2 ORDER reg flood, 42% of its stream, is gone).
+
+## Historical: v1 (columnar factored) and v2 (time-ordered, byte-exact) status below
+
+`factored.py` remains in-tree as the byte-exact measurement baseline. The §2.8-era notes below predate
+the v3 contract.
 
 ## Built & verified (green)
 
