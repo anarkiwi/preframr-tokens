@@ -108,6 +108,11 @@ def meta_code_hash() -> str:
     return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
 
 
+def raw_is_digi(raw_df: pd.DataFrame) -> bool:
+    """The ``is_digi`` classification computed directly from a raw dump DataFrame (no sidecar)."""
+    return bool(_build_meta_from_raw(Path(""), raw_df)["is_digi"])
+
+
 def write_meta(dump_path: str | Path, raw_df: pd.DataFrame) -> Path:
     meta_path = meta_path_for(dump_path)
     fields = _build_meta_from_raw(Path(dump_path), raw_df)

@@ -1,5 +1,6 @@
 """Torch-free corpus orchestration: parse + tokenize + disk-cache .blocks.npy + load metadata routing. Owns the RegTokenizer + corpus-wide state (reg_widths, n_vocab, n_words, tokenize metadata). Main-repo torch.utils.data.Dataset adapters compose a Corpus + a BlockMapper to expose the train-side interface."""
 
+import collections
 import concurrent.futures
 import json
 import multiprocessing
@@ -21,7 +22,10 @@ from preframr_tokens.blocks import (
     parser_worker,
     reg_widths_path,
 )
+from preframr_tokens.dump_meta import raw_is_digi, read_meta
 from preframr_tokens.events import dataset as events_dataset
+from preframr_tokens.events import oracle as events_oracle
+from preframr_tokens.events import stream as events_stream
 from preframr_tokens.regtokenizer import (
     RegTokenizer,
     TOKEN_PDTYPE,
@@ -397,11 +401,42 @@ class Corpus:
         self.tokenizer.tokens = events_dataset.events_alphabet()
 
         irq_by_file = {}
+        in_scope = set()
+        skipped = collections.Counter()
         for df_file in df_files:
             try:
-                irq_by_file[df_file] = int(self._read_dump(df_file)["irq"].min())
+                df = self._read_dump(df_file)
             except Exception:  # pylint: disable=broad-except
-                irq_by_file[df_file] = 0
+                skipped["unreadable"] += 1
+                continue
+            ow = events_oracle.ordered_writes(df)
+            if len(ow) == 0:
+                skipped["empty"] += 1
+                continue
+            if not events_stream.single_speed(ow):
+                skipped["multispeed"] += 1
+                continue
+            meta = read_meta(df_file)
+            if meta is not None and not meta.stale:
+                digi = meta.is_digi
+            else:
+                digi = raw_is_digi(df)
+            if digi:
+                skipped["digi"] += 1
+                continue
+            in_scope.add(df_file)
+            irq_by_file[df_file] = int(df["irq"].min()) if len(df) else 0
+        if skipped:
+            self.logger.info(
+                "events scope filter (single-speed, non-digi): kept %u of %u dumps, skipped %s",
+                len(in_scope),
+                len(df_files),
+                dict(skipped),
+            )
+        train_files = [f for f in train_files if f in in_scope]
+        val_files = [f for f in val_files if f in in_scope]
+        kind_by_file = {f: k for f, k in kind_by_file.items() if f in in_scope}
+        df_files = train_files + val_files
         self._tokenize_meta = TokenizeMeta(
             irq_by_file=irq_by_file,
             rotations_by_file={f: 1 for f in df_files},
