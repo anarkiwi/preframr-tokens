@@ -54,11 +54,6 @@ GLOBAL_REGS = (21, 22, 23, 24)
 
 _RANK_NI, _RANK_FD, _RANK_PW, _RANK_CAS = 0, 1, 2, 3
 _FLAG_OAD, _FLAG_OSR, _FLAG_HRAD, _FLAG_HRSR = 1, 2, 4, 8
-# Which side of the gate edge the driver wrote the folded onset envelope on. The side is CONTENT:
-# drivers split conventions (grid_runner/commando write gate-then-AD/SR, camerock/baggis the
-# reverse) and a write crossing the edge changes which compare governs the gate=0 dwell / the
-# attack's first steps -- ADSR-bug stall states flip value-dependently (preframr-audio
-# test_release_write_position / test_gate_adsr_reference).
 _FLAG_OAD_PRE, _FLAG_OSR_PRE = 16, 32
 
 
@@ -547,15 +542,11 @@ def _note_layer(seq, v: int):
 
 
 def _slot_gate_offs(entries, offs):
-    """Insert derived gate-offs (``("OFF", payload)``) into one voice+frame's ordered cas ``entries``.
-    Rule: an inherited off (onset in an earlier frame) goes before the frame's first NOTE_ON (retrigger
-    keeps gate semantics) else at the end; a same-frame off goes immediately after its own NOTE_ON --
-    the i-th same-frame off after the i-th NOTE_ON, exact because ons/offs alternate within a frame.
-    The NOTE_ON's glued onset-envelope entries stay on their recorded side of it: an inherited off
-    goes before the pre-side OAD/OSR group, and a same-frame off goes after the post-side group
-    (writes must not cross a gate edge they did not cross in the dump -- the preframr-audio
-    liveness matrix / gate reference).
-    """
+    """Insert derived gate-offs (``("OFF", payload)``) into one voice+frame's ordered cas ``entries``:
+    an inherited off (onset in an earlier frame) goes before the frame's first NOTE_ON's pre-side
+    OAD/OSR group (retrigger keeps gate semantics) else at the end; the i-th same-frame off goes after
+    the i-th NOTE_ON's post-side group -- glued onset envelope never crosses a gate edge it did not
+    cross in the dump (preframr-audio liveness matrix / gate reference)."""
     if not offs:
         return list(entries)
     inherited = [o for o in offs if o[0]]
@@ -602,13 +593,10 @@ def _insert_hr(merged, hr):
 
 def _voice_assembly(raw, durinfo, remove, folds=None, claimed=None):
     """The canonical per-frame cas assembly of one voice: ``{frame: [("OFF", note_idx) | ("OAD"/"OSR"/
-    "HRAD"/"HRSR", val) | (tok, val)]}`` -- kept entries in driver order, each NOTE_ON's folded onset
-    envelope re-emitted on the RECORDED side of the gate edge (the ``_FLAG_O*_PRE`` bits; the side is
-    content -- a write crossing the edge flips ADSR-bug stall states value-dependently, and driver
-    conventions split), AD before SR within a side, its HR prep pair on the gate=0 side of the prep
-    frame's gate-off (:func:`_insert_hr`), and gate-offs slotted per :func:`_slot_gate_offs`. Shared
-    by the encoder, the canonical oracle and (structurally) the decoder so all three order
-    identically."""
+    "HRAD"/"HRSR", val) | (tok, val)]}`` -- kept entries in driver order, folded onset envelope on its
+    RECORDED side of the gate edge (``_FLAG_O*_PRE``, AD before SR within a side: crossings flip
+    ADSR-bug stalls, driver conventions split), HR prep on the gate=0 side of the prep frame's off
+    (:func:`_insert_hr`), offs per :func:`_slot_gate_offs`; shared by all three."""
     claimed = claimed or set()
     kept_by_f: dict = collections.defaultdict(list)
     hr_by_f: dict = collections.defaultdict(list)
@@ -669,11 +657,10 @@ def _assign_gate_off_modes(raw, durinfo, remove):
 
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
-    PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [transient PRE
-    writes in driver order][changed freq lo,hi][changed pw lo,hi][cas write sequence in driver order
-    with gate-offs slotted per the derived rule, folded onset envelope on its recorded side of the
-    gate edge and HR prep on the gate=0 side of the off edge -- gate-edge crossings are content];
-    then the global group's PRE writes + changed globals reg-ascending."""
+    PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [changed freq
+    lo,hi][changed pw lo,hi][cas write sequence in driver order, gate-offs derived, onset envelope on
+    its recorded gate-edge side, HR prep on the gate=0 side of the off -- gate-edge crossings are
+    content]; then changed globals reg-ascending."""
     n = ow.n_frames
     if n == 0:
         return []
