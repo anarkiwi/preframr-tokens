@@ -1,8 +1,8 @@
-"""v3 canonical event codec: the oracle is :func:`canonical_writes`, an exact intra-frame PERMUTATION
-of the dump (zero drops) -- CTRL/ADSR activity as ordered typed events at sub-frame resolution (gate-on
-= NOTE_ON with duration; gate-off ALWAYS derived, no NOTE OFF token), settled freq/PW first per voice
-group with transient pre-writes as delta-coded PRE events, globals last; frames are voice-grouped
-([DT]([VOICE][kind-led bodies]*)*) so a patch's tokens are voice-invariant. Scope: single-speed non-digi.
+"""v3 canonical event codec: the oracle is :func:`canonical_writes` -- CTRL/AD/SR change
+activity as ordered typed events at sub-frame resolution (gate-on = NOTE_ON with duration;
+gate-off ALWAYS derived, no NOTE OFF token), with freq/PW/globals emitted from SETTLED
+end-of-frame state (intra-frame transients and same-value rewrites are canonicalized away --
+licensed by raw-vs-canonical renders at the reSID noise floor). Scope: single-speed non-digi.
 """
 
 from __future__ import annotations
@@ -652,11 +652,11 @@ def _assign_gate_off_modes(raw, durinfo, remove):
 
 
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
-    """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
-    PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [changed freq
-    lo,hi][changed pw lo,hi][cas write sequence in driver order, gate-offs derived, onset envelope on
-    its recorded gate-edge side, HR prep on the gate=0 side of the off -- gate-edge crossings are
-    content]; then changed globals reg-ascending."""
+    """The fidelity target: the dump's audibly-faithful canonical form. Per frame: voices
+    ascending, each as [settled-changed freq lo,hi][settled-changed pw lo,hi][cas write sequence
+    in driver order, gate-offs derived, onset envelope on its recorded gate-edge side, HR prep on
+    the gate=0 side of the off]; then settled-changed globals reg-ascending. CAS order is
+    preserved exactly; freq/PW/global intra-frame transients settle to end-of-frame."""
     n = ow.n_frames
     if n == 0:
         return []

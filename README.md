@@ -122,8 +122,10 @@ predict — intervals, durations, timbre); structural = everything else
 
 ### Fidelity contract
 
-The oracle is `events.stream.canonical_writes(ow)`: a byte-exact
-**intra-frame permutation** of the dump's writes (zero drops). Per
+The oracle is `events.stream.canonical_writes(ow)`:
+byte-exact CTRL/AD/SR change activity in driver order, plus freq/PW/globals
+from the settled end-of-frame state (intra-frame transients and same-value
+rewrites canonicalize away — licensed by reSID noise-floor renders). Per
 frame: per voice 0→2, changed settled freq then PW; then the voice's
 CTRL/AD/SR sequence in driver order — gate-ons become `FLD_NOTE_ON`,
 gate-offs are **derived** (no NOTE OFF token), onset envelope nibbles

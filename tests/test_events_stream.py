@@ -114,6 +114,22 @@ def test_canonical_drops_subframe_transients_and_rewrites():
     _roundtrip(ow)
 
 
+def test_intra_frame_freq_transient_settles_to_end_of_frame():
+    """One frame rewrites voice-0 freq_lo to a DIFFERENT value (0x40 then 0x80): canonical_writes keeps
+    exactly one reg-0 write for that frame (the LAST value) and encode(verify=True) self-verifies --
+    pinning the post-PRE behavior that intra-frame freq transients settle to end-of-frame state.
+    """
+    writes = [
+        (0, 4, 0x41),
+        (0, 0, 0x40),
+        (0, 0, 0x80),
+    ]
+    ow = _ow(writes, 4)
+    reg0 = [w for w in stream.canonical_writes(ow) if w[1] == 0]
+    assert reg0 == [(0, 0, 0x80)], reg0
+    _roundtrip(ow)
+
+
 def test_cas_sequence_preserved_in_driver_order():
     """Sub-frame CTRL/ADSR activity (hard restart: two ctrl changes in one frame) survives with the
     onset envelope folded into NOTE_ON and re-emitted on the RECORDED side of the gate edge (AD
