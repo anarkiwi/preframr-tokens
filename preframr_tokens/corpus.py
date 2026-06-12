@@ -61,6 +61,7 @@ class TokenizeMeta:
     kind_by_file: dict = field(default_factory=dict)
     reg_widths: dict = field(default_factory=dict)
     val_subsets: list = field(default_factory=list)
+    format_version: int = 0
 
 
 class Corpus:
@@ -256,8 +257,25 @@ class Corpus:
             return
         sidecar = reg_widths_path(df_map_csv_path)
         self.logger.info("writing reg_widths to %s", sidecar)
+        data = {str(k): int(v) for k, v in meta.reg_widths.items()}
+        if meta.format_version:
+            data["_event_format_version"] = int(meta.format_version)
         with open(sidecar, "w") as f:
-            json.dump({str(k): int(v) for k, v in meta.reg_widths.items()}, f)
+            json.dump(data, f)
+
+    def _load_reg_widths_sidecar(self, sidecar):
+        """Read a reg-widths sidecar into ``{reg: width}``; when the artifact carries an event-format
+        version, reject a mismatch with the running codec. Parse-domain sidecars omit the key and load
+        unchanged (pre-versioning artifacts proceed)."""
+        with open(sidecar) as f:
+            raw = json.load(f)
+        fmt = raw.pop("_event_format_version", None)
+        if fmt is not None and int(fmt) != events_stream.EVENT_FORMAT_VERSION:
+            raise ValueError(
+                f"event-format version mismatch: artifact {int(fmt)} != code "
+                f"{events_stream.EVENT_FORMAT_VERSION}; re-run the tokenize stage"
+            )
+        return {int(k): int(v) for k, v in raw.items()}
 
     def encode_and_save_cached_blocks(self, cached_blocks):
         """Encode each cached voiced-block df via the now-finalised tokenizer and write .blocks.npy. Failures (alphabet doesn't cover a row's (op, reg, subreg, val)) propagate; this is the catch point for any bug in the alphabet-building pipeline."""
@@ -457,6 +475,7 @@ class Corpus:
             val_subsets=(
                 list(parse_eval_reglogs(eval_reglogs).keys()) if eval_reglogs else []
             ),
+            format_version=events_stream.EVENT_FORMAT_VERSION,
         )
 
         if self.args.token_csv:
@@ -512,10 +531,7 @@ class Corpus:
             if required.issubset(df_map_df.columns):
                 sidecar = reg_widths_path(df_map_csv)
                 if os.path.exists(sidecar):
-                    with open(sidecar) as f:
-                        self.reg_widths = {
-                            int(k): int(v) for k, v in json.load(f).items()
-                        }
+                    self.reg_widths = self._load_reg_widths_sidecar(sidecar)
                     df_map_df = df_map_df.drop_duplicates("dump_file")
                     n_seq = 0
                     for _, row in df_map_df.iterrows():
@@ -645,8 +661,7 @@ class Corpus:
             and os.path.exists(sidecar)
         )
         if cached:
-            with open(sidecar) as f:
-                self.reg_widths = {int(k): int(v) for k, v in json.load(f).items()}
+            self.reg_widths = self._load_reg_widths_sidecar(sidecar)
             irq = int(target_row["irq"])
             blocks_path = target_file.replace(DUMP_SUFFIX, ".0.blocks.npy")
             assert os.path.exists(

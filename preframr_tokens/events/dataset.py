@@ -36,7 +36,7 @@ BOUNDARY_ISOLATION_NS = tuple(
     [stream.VOICE_BASE + 1 + v for v in range(4)] + [stream.KEYFRAME + 1]
 )
 
-ATOM_CACHE_VERSION = 1
+ATOM_CACHE_VERSION = stream.EVENT_FORMAT_VERSION
 _ATOM_DTYPE = np.int32
 
 

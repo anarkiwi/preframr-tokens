@@ -4,6 +4,7 @@ trains a BPE over the event token streams. The whole-tune block stream decodes b
 """
 
 import glob
+import json
 import logging
 import os
 import tempfile
@@ -11,7 +12,9 @@ import types
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from preframr_tokens.blocks import reg_widths_path
 from preframr_tokens.corpus import Corpus
 from preframr_tokens.events import dataset as events_dataset
 from preframr_tokens.events import oracle, stream
@@ -110,3 +113,23 @@ def test_preload_trains_bpe_over_events_and_round_trips():
             bpe = np.asarray(_reassemble(bp), dtype=np.uint32)
             nspace = list(c.tokenizer.decode(bpe))
             assert events_dataset.ids_to_writes(nspace) == stream.canonical_writes(ow)
+
+
+def test_event_format_version_mismatch_raises():
+    """The reg-widths sidecar embeds the event-format version; the fast path rejects an artifact whose
+    version differs from the running codec (a stale-codec guard), while a missing key still loads.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        for i in range(2):
+            _synth_dump(os.path.join(d, f"song{i}.dump.parquet"), i)
+        c = Corpus(_args(d, tkvocab=0), logging.getLogger("t"))
+        c.preload()
+        sidecar = reg_widths_path(c.args.df_map_csv)
+        with open(sidecar) as f:
+            data = json.load(f)
+        assert data.get("_event_format_version") == stream.EVENT_FORMAT_VERSION
+        data["_event_format_version"] = 999
+        with open(sidecar, "w") as f:
+            json.dump(data, f)
+        with pytest.raises(ValueError):
+            list(c.iter_block_seqs())

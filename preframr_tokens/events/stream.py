@@ -43,6 +43,7 @@ NIB_ART = NIB_WAVE + 16
 NIB_ENV = NIB_ART + 16
 KEYFRAME = NIB_ENV + 16
 VOCAB_SIZE = KEYFRAME + 1
+EVENT_FORMAT_VERSION = 1
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
 _EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1))
@@ -1203,6 +1204,7 @@ def roundtrip_ok(df) -> bool:
 
 
 __all__ = [
+    "EVENT_FORMAT_VERSION",
     "KEYFRAME",
     "VOCAB_SIZE",
     "canonical_writes",
