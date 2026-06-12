@@ -333,3 +333,39 @@ def test_corpus_sample_canonical_roundtrip():
         ), f"diverged: {path}"
         checked += 1
     assert checked >= 50, f"only {checked} corpus tunes checked"
+
+
+def _is_unit_head(tok):
+    return (
+        stream._is_digit(tok)  # pylint: disable=protected-access
+        or stream._is_voice(tok)  # pylint: disable=protected-access
+        or tok in stream._EVENT_KINDS  # pylint: disable=protected-access
+    )
+
+
+def _assert_unit_starts(atoms):
+    starts = stream.unit_starts(atoms)
+    assert starts and starts[0] == 0
+    assert all(b > a for a, b in zip(starts, starts[1:]))
+    assert all(_is_unit_head(atoms[s]) for s in starts)
+    bounds = starts[1:] + [len(atoms)]
+    assert bounds[-1] == len(atoms)
+    assert all(b > a for a, b in zip(starts, bounds))
+    return starts
+
+
+def test_unit_starts_synthetic_segmentation():
+    atoms = stream.encode(_synthetic_layers())
+    _assert_unit_starts(atoms)
+    assert stream.decode(atoms) == stream.canonical_writes(_synthetic_layers())
+
+
+@pytest.mark.parametrize("name", sorted(_DRIVERS))
+def test_unit_starts_driver_segmentation(name):
+    path = os.path.join(_CACHE, _DRIVERS[name])
+    if not os.path.exists(path):
+        pytest.skip(f"driver fixture {name} not cached at {path}")
+    ow = oracle.ordered_writes(pd.read_parquet(path))
+    atoms = stream.encode(ow)
+    _assert_unit_starts(atoms)
+    assert stream.decode(atoms) == stream.canonical_writes(ow)
