@@ -124,12 +124,11 @@ def dump_block_ids(
 
 
 def dump_token_ids(df, df_file: str | None = None) -> list[int]:
-    """A whole tune's pre-BPE event token stream in n-space (the unit BPE trains over and the model
-    decodes from). Byte-exact: ``ids_to_writes(dump_token_ids(df))`` reproduces the ordered writes.
-    When ``df_file`` is given, a codec-version-keyed ``.atoms.zst`` sidecar next to the dump is reused
-    if present (skipping ``stream.encode`` + its self-verify) and populated otherwise (best-effort; a
-    read-only dump tree just recomputes). The atom stream is tkvocab-independent, so pre-populating
-    these sidecars lets a vocab sweep skip the encode and only retrain BPE.
+    """A whole tune's pre-BPE event token stream in n-space (the unit BPE trains over; byte-exact:
+    ``ids_to_writes(dump_token_ids(df))`` reproduces the ordered writes). When ``df_file`` is given, a
+    codec-version-keyed ``.atoms.zst`` sidecar next to the dump is reused if present (skipping
+    ``stream.encode`` + its self-verify) and populated otherwise (best-effort; read-only trees
+    recompute) -- the atom stream is tkvocab-independent, so pre-populating it skips a sweep's encode.
     """
     path = _atom_cache_path(df_file) if df_file is not None else None
     if path is not None:
