@@ -101,4 +101,6 @@ enable = [
     "pointless-statement",
     "using-constant-test",
     "raise-missing-from",
+    "unused-import",
+    "unused-variable",
 ]
