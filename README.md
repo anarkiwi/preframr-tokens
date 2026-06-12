@@ -193,7 +193,8 @@ consumes.
   `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
   `settled_grid`), `varint` (BE base-16 zig-zag codec), `pipeline` /
   `dataset` (frame-window blocking + training arrays), `generate`
-  (token ids → ordered writes).
+  (token ids → ordered writes), `constrained` (per-step
+  grammar-validity mask for sampling over the event alphabet).
 - `preframr_tokens.reglogparser` -- SID dump → parsed dataframe
   pipeline. `RegLogParser`, plus `read_initial_irq` (first-frame IRQ
   read off a parser-output df, with PAL default).
