@@ -199,6 +199,8 @@ consumes.
   read off a parser-output df, with PAL default).
 - `preframr_tokens.regtokenizer` -- alphabet build + unigram tokenizer
   fit. `RegTokenizer`.
+- `preframr_tokens.bpe_audit` -- merge-table boundary audit
+  (voice/KEYFRAME-crossing + multi-kind merges; run after any unigram train).
 - `preframr_tokens.macros.*` -- declarative `Transform` registry plus
   the macro / pre-norm passes (slope, preset, hard_restart,
   legato_per_cluster, voice_block_order, ctrl_bigram, loop, etc.).
