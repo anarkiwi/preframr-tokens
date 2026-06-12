@@ -130,6 +130,28 @@ def test_intra_frame_freq_transient_settles_to_end_of_frame():
     _roundtrip(ow)
 
 
+def test_chunk_keyframe_carries_note_table_devs():
+    """chunk_keyframe snapshots recovered NOTE_TABLE deviations (not just TUNING/TICK), so a chunk's
+    conditioning implies the right absolute freqs for deviated notes; the bracketed segment stays
+    decode-transparent. An off-grid note plus an on-grid note pins tuning so the off-grid one deviates.
+    """
+    off = pitch_grid.note_freq_at(49, 0.0) + 7
+    on = pitch_grid.note_freq_at(54, 0.0)
+    writes = []
+    for f in range(40):
+        F = off if f < 20 else on
+        writes.append((f, 0, F & 0xFF))
+        writes.append((f, 1, (F >> 8) & 0xFF))
+        writes.append((f, 4, 0x41))
+    ow = _ow(sorted(writes, key=lambda t: t[0]), 40)
+    tokens = stream.encode(ow)
+    assert stream.NOTE_TABLE in tokens, "fixture must recover a note-table deviation"
+    kf = stream.chunk_keyframe(tokens, upto=len(tokens))
+    assert kf[0] == stream.KEYFRAME and kf[-1] == stream.KEYFRAME
+    assert stream.NOTE_TABLE in kf, "keyframe must carry note-table deviations"
+    assert stream.decode(stream.strip_keyframes(kf + tokens)) == stream.decode(tokens)
+
+
 def test_cas_sequence_preserved_in_driver_order():
     """Sub-frame CTRL/ADSR activity (hard restart: two ctrl changes in one frame) survives with the
     onset envelope folded into NOTE_ON and re-emitted on the RECORDED side of the gate edge (AD

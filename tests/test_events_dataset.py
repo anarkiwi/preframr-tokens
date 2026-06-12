@@ -124,7 +124,7 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
     segment carrying the tune's tick/tuning headers + per-voice state; segments strip away for
     decode (the canonical stream stays redundancy-free)."""
     frames = []
-    for rep in range(6):
+    for rep in range(12):
         d = _synth_df()
         d["irq"] = d["irq"] + rep * 60
         d["clock"] = d["clock"] + rep * 100000
@@ -133,7 +133,7 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
 
     df = pd.concat(frames, ignore_index=True)
     tk = dataset.make_tokenizer(_args())
-    arr = dataset.encode_block_array(tk, df, 128)
+    arr = dataset.encode_block_array(tk, df, 256)
     kf_n = stream.KEYFRAME + 1
     assert arr.shape[0] >= 2, "synth tune must span multiple chunks"
     for row in arr[1:]:

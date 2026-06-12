@@ -1133,6 +1133,14 @@ def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:
         if d.freq_active[v]:
             out += [voice_tok, TUNING]
             _emit_u(out, d.q[v])
+        if d.freq_active[v] and d.devs[v]:
+            out += [voice_tok, NOTE_TABLE]
+            _emit_u(out, len(d.devs[v]))
+            prev = 0
+            for note in sorted(d.devs[v]):
+                _emit_s(out, note - prev)
+                _emit_s(out, d.devs[v][note])
+                prev = note
         if d.tick[v] != (1, 0):
             out += [voice_tok, TICK]
             _emit_u(out, d.tick[v][0])
