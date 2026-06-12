@@ -1,4 +1,4 @@
-"""Byte-exact ordered-write roundtrip for the event model (REDESIGN_optionB §9, the §2.8 hard invariant):
+"""Byte-exact ordered-write roundtrip for the event model:
 the fidelity oracle is the exact ordered ``(frame, reg, val)`` write stream, not the settled grid. The full
 pipeline (ordered writes -> encode -> tokenize -> de-tokenize -> decode -> ordered writes) must reproduce
 the source byte-for-byte in order on the 5 driver fixtures and a corpus sample. This is the guard every
@@ -124,7 +124,7 @@ def test_factored_synthetic_layers_byte_exact():
 
 
 def test_vocab_is_complete_and_escape_free():
-    """Every token belongs to a bounded field-family range; there is no literal/escape token (§2.2)."""
+    """Every token belongs to a bounded field-family range; there is no literal/escape token."""
     assert tokenize.VOCAB_SIZE == tokenize.DELTA_BASE + 32
     ow = oracle.OrderedWrites(
         frame=__import__("numpy").array([0, 0, 1, 5, 5]),

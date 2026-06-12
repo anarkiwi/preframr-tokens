@@ -1,4 +1,4 @@
-"""Events-native tokenizer + dataset build (REDESIGN_optionB §7.1, step 2-3). The event token stream is a
+"""Events-native tokenizer + dataset build. The event token stream is a
 flat list of small atom ids, so the existing ``RegTokenizer`` unicode-serialize + BPE + encode/decode layer
 is reused verbatim with the fixed ``stream.VOCAB_SIZE``-atom alphabet; only the (op,reg,subreg,val)
 alphabet-building and ``merge_token_df`` are bypassed (event ids ARE the "n" stream). Atom ids are offset

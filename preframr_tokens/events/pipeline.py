@@ -1,4 +1,4 @@
-"""Events-native production tokenization (REDESIGN_optionB §7.1): the raw dump is encoded directly by
+"""Events-native production tokenization: the raw dump is encoded directly by
 the canonical stream codec (``events.stream``). A tune is sliced into self-contained frame-window blocks,
 each encoded to a flat token-id list (the pre-BPE "n" stream) that decodes to the window's canonical
 writes, so the model trains on self-delimiting event tokens (no ids, no per-tune codebook); BPE over
@@ -54,7 +54,7 @@ def block_writes(tokens: list[int]) -> list[tuple[int, int, int]]:
 def dump_blocks(
     df: pd.DataFrame, frames_per_block: int, stride: int | None = None
 ) -> list[list[int]]:
-    """Raw dump DataFrame -> list of self-contained event-token blocks (the §7.1 tokenization)."""
+    """Raw dump DataFrame -> list of self-contained event-token blocks (the tokenization)."""
     ow = ordered_writes(df)
     return [block_tokens(w) for w in iter_windows(ow, frames_per_block, stride)]
 

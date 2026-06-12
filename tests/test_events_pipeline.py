@@ -1,4 +1,4 @@
-"""Events-native tokenization pipeline guards (REDESIGN_optionB §7.1): frame-window blocking is byte-exact
+"""Events-native tokenization pipeline guards: frame-window blocking is byte-exact
 per block and reassembles to the whole tune, and the block array is the fixed-shape model input.
 """
 

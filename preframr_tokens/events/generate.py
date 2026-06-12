@@ -1,4 +1,4 @@
-"""Events-native generation decode (REDESIGN_optionB §7.1, step 4): generated BPE ids -> ordered
+"""Events-native generation decode: generated BPE ids -> ordered
 canonical register writes -> a render-ready raw-dump DataFrame, via ``tokenizer.decode`` (BPE -> n-space
 atoms) then :func:`dataset.ids_to_writes`. The stream decoder is a strict grammar parser (an invalid
 stream raises loudly); constrained-sampling masking is a generation-time optimization on top (the

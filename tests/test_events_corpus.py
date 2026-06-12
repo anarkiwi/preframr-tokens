@@ -1,4 +1,4 @@
-"""Events-native corpus dataset-build guards (REDESIGN_optionB §7.1, step 3): Corpus.preload globs raw
+"""Events-native corpus dataset-build guards: Corpus.preload globs raw
 dumps, sets the fixed event alphabet, writes per-dump .blocks.npy + df-map + reg-widths, and (with tkvocab)
 trains a BPE over the event token streams. The whole-tune block stream decodes byte-exact both ways.
 """

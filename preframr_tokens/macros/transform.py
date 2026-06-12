@@ -55,7 +55,6 @@ class Transform(ABC):
     DEFAULT_PARAMS: ClassVar[dict[str, Any]] = {}
     LOSSY_TOLERANCE: ClassVar[float] = 0.0
     REQUIRES_OPS: ClassVar[frozenset[int]] = frozenset()
-    REQUIRES_REGS: ClassVar[frozenset[int]] = frozenset()
     PROVIDES_OPS: ClassVar[frozenset[int]] = frozenset()
     CONSUMES_OPS: ClassVar[frozenset[int]] = frozenset()
     IDEMPOTENT: ClassVar[bool] = False

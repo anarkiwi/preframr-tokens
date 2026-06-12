@@ -721,8 +721,6 @@ class PendingSlot(IntEnum):
     PR_LEN = 4
     PR_OV_COUNT = 5
     PR_OV_COUNT_OPTIONAL = 8
-    SLOPE_TERM_LO = 6
-    SLOPE_RUNTIME = 7
 
 
 _FLAG_TO_PENDING = {
@@ -813,8 +811,6 @@ class StreamState:
     pending_pr_len = _make_slot_property(PendingSlot.PR_LEN)
     pending_pr_ov_count = _make_slot_property(PendingSlot.PR_OV_COUNT)
     pending_pr_ov_count_optional = _make_slot_property(PendingSlot.PR_OV_COUNT_OPTIONAL)
-    pending_slope_term_lo = _make_slot_property(PendingSlot.SLOPE_TERM_LO)
-    pending_slope_runtime = _make_slot_property(PendingSlot.SLOPE_RUNTIME)
 
     def __init__(
         self,

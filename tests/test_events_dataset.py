@@ -1,4 +1,4 @@
-"""Events-native tokenizer/alphabet guards (REDESIGN_optionB §7.1, step 2): the fixed event-atom alphabet,
+"""Events-native tokenizer/alphabet guards: the fixed event-atom alphabet,
 the PAD-reserving n-space offset, and byte-exact block<->ids round-trips through the reused RegTokenizer
 layer.
 """

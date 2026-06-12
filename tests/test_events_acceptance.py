@@ -1,4 +1,4 @@
-"""Acceptance guards for the event model (REDESIGN_optionB §9), the fast (corpus-free) subset: the no-escape
+"""Acceptance guards for the event model, the fast (corpus-free) subset: the no-escape
 invariant, the expansion guard, the note layer, encode determinism, and tokenizer/grammar completeness. The
 byte-exact ordered-stream roundtrip on drivers + corpus lives in ``test_events_roundtrip.py``; the BPE
 collapse/bits measurement is ``preframr_tokens.events.measure``.
@@ -20,7 +20,7 @@ def _ow(writes, n):
 
 
 def test_no_escape_every_value_decodes_over_one_alphabet():
-    """§2.2: every numeric field is the complete escape-free zig-zag/varint over ONE digit alphabet --
+    """Every numeric field is the complete escape-free zig-zag/varint over ONE digit alphabet --
     a rare large value is more digits of the same alphabet, never a different path. Exhaustively check
     the signed varint round-trips across the full byte range and large magnitudes."""
     for v in list(range(-300, 301)) + [-70000, 65535, 1 << 20]:
@@ -41,7 +41,7 @@ def test_gesture_basis_is_lossless_for_all_shapes():
 
 
 def test_expansion_guard_factored_not_larger_than_verbatim():
-    """§9 expansion guard: the factored encoding never exceeds the v0 verbatim token count on a held
+    """Expansion guard: the factored encoding never exceeds the v0 verbatim token count on a held
     note + ramp (a case the factoring must win, not lose)."""
     writes = []
     for f in range(40):
@@ -63,7 +63,7 @@ def test_encode_is_deterministic():
 
 
 def test_note_layer_gate_on_typed_and_byte_exact():
-    """§8.3/§6: CTRL/AD/SR ride the note layer, not the byte lanes. A gate-on (CTRL bit0 0->1) is an
+    """CTRL/AD/SR ride the note layer, not the byte lanes. A gate-on (CTRL bit0 0->1) is an
     explicit ``FLD_NOTE_ON`` edge; gate-off is just a plain CTRL edge (no note-off token); the sustained
     envelope is the ABSENCE of AD/SR edges between notes. The voice's settled CTRL/AD/SR series round-trip
     exactly through the note section, and a hard-restart (AD rewritten across frames) is reproduced.
@@ -99,7 +99,7 @@ def test_note_layer_gate_on_typed_and_byte_exact():
 
 
 def test_note_duration_carried_and_gate_off_derived():
-    """§4/§6: a note carries its duration (mixed-radix q*tick+r) on the NOTE_ON and the gate-off is
+    """A note carries its duration (mixed-radix q*tick+r) on the NOTE_ON and the gate-off is
     DERIVED, not stored as an edge. Here gate-off CTRL 0x10 == body waveform 0x11 with the gate bit
     cleared, so the gate-off edge is removed (mode DERIVE) and reconstruction stays byte-exact.
     """
@@ -138,7 +138,7 @@ def test_note_duration_carried_and_gate_off_derived():
 
 
 def test_pw_combined_lane_byte_exact():
-    """§8.5: PW lo/hi are encoded as one combined 12-bit value lane (adjacent bit ranges), which is
+    """PW lo/hi are encoded as one combined 12-bit value lane (adjacent bit ranges), which is
     byte-exact -- the lo/hi bytes split back exactly -- and lets a PW sweep be one ramp. A lo-byte wrap
     with a hi-nibble step round-trips to the exact two source bytes."""
     writes = []

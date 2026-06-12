@@ -1,8 +1,8 @@
-"""Factored v1 codec (REDESIGN_optionB §7.0, §8): per-register gesture lanes + a per-frame ORDER descriptor
+"""Factored v1 codec: per-register gesture lanes + a per-frame ORDER descriptor
 + a freq two-layer + a note/attack layer, each a complete escape-free encoding. Value lanes cover each
 register's series losslessly with HOLD/POLY/PERIOD gestures; the ORDER descriptor is the ordered reg-id list
-per frame (byte-exact intra-frame order, §13); multi-speed sub-frame repeats emit a literal write-run, not
-an escape. Decode is asserted equal to the source write stream (§7) over one self-delimiting alphabet (§7.1).
+per frame (byte-exact intra-frame order); multi-speed sub-frame repeats emit a literal write-run, not
+an escape. Decode is asserted equal to the source write stream over one self-delimiting alphabet.
 """
 
 from __future__ import annotations
@@ -176,9 +176,7 @@ def _freq16(settled, v: int) -> np.ndarray:
 
 
 def _note_base(ni: np.ndarray, tuning: float, table: dict) -> np.ndarray:
-    """Per-frame freq base: the recovered note-table entry where present, else the equal-tempered grid
-    (§8.2). With the table, a static note's residual is 0 -- the delta lane collapses to HOLD(0).
-    """
+    """Per-frame freq base: the recovered note-table entry where present, else the equal-tempered grid. With the table, a static note's residual is 0 -- the delta lane collapses to HOLD(0)."""
     base = pitch_grid.note_freq(ni, tuning).copy()
     for note, freq in table.items():
         base[ni == note] = freq
@@ -186,11 +184,10 @@ def _note_base(ni: np.ndarray, tuning: float, table: dict) -> np.ndarray:
 
 
 def _emit_freq_voice(out: list[int], settled, v: int) -> None:
-    """Emit a voice's freq as a tuning header + note-table deviations + note-index cover + delta cover
-    (§8.2-8.4). ``freq = base(note_index) + delta`` is exact by construction (``delta`` is the residual),
+    """Emit a voice's freq as a tuning header + note-table deviations + note-index cover + delta cover. ``freq = base(note_index) + delta`` is exact by construction (``delta`` is the residual),
     so the lane is byte-exact for any note-index choice; nearest-grid index + the recovered table is the
-    greedy bootstrap of the §8.4 joint DP. Static notes -> delta HOLD(0); a transpose is the same
-    note-index intervals at a different anchor (key-invariant, §8 transpose)."""
+    greedy bootstrap of the joint DP. Static notes -> delta HOLD(0); a transpose is the same
+    note-index intervals at a different anchor (key-invariant, transpose)."""
     F = _freq16(settled, v)
     q = pitch_grid.tuning_to_q(pitch_grid.voice_tuning(F))
     tuning = pitch_grid.q_to_tuning(q)
@@ -258,7 +255,7 @@ def _gate_durations(C) -> list[int]:
 
 
 def _recover_tick(C) -> tuple[int, int]:
-    """Per-voice ``(tick, offset)`` for the mixed-radix time scheme (§4, §8.1): ``tick`` is the largest
+    """Per-voice ``(tick, offset)`` for the mixed-radix time scheme: ``tick`` is the largest
     unit in [2,32] for which >=90% of gate-on durations land within +-1 of a multiple; ``offset`` is the
     mode of the on-grid residual. ``tick==1`` means raw varint (no usable duration grid).
     """
@@ -277,7 +274,7 @@ def _recover_tick(C) -> tuple[int, int]:
 
 
 def _emit_dt(out: list[int], d: int, tick: int, offset: int) -> None:
-    """Emit a time delta as mixed-radix ``q*tick + r + offset`` (§4); ``tick==1`` falls back to raw."""
+    """Emit a time delta as mixed-radix ``q*tick + r + offset``; ``tick==1`` falls back to raw."""
     if tick <= 1:
         _emit_u(out, d)
         return
@@ -296,7 +293,7 @@ def _read_dt(tokens: list[int], pos: int, tick: int, offset: int) -> tuple[int, 
 
 def _note_edges(settled, v: int) -> list[tuple[int, int, int]]:
     """Ordered ``(frame, field_tok, value)`` edges covering the settled CTRL/AD/SR change-points of voice
-    ``v``. CTRL edges that turn the gate on (bit0 0->1) are typed ``FLD_NOTE_ON`` (§6).
+    ``v``. CTRL edges that turn the gate on (bit0 0->1) are typed ``FLD_NOTE_ON``.
     """
     cr, ar, srg = ctrl_reg(v), ad_reg(v), sr_reg(v)
     C = settled[:, cr]
@@ -330,7 +327,7 @@ _GO_NONE, _GO_DERIVE, _GO_VALUE = 0, 1, 2
 
 def _pair_gateoffs(edges: list[tuple[int, int, int]]) -> tuple[dict, set]:
     """Match each NOTE_ON to its gate-off CTRL edge (next bit0-clear before the next NOTE_ON), returning
-    ``durinfo[note_idx] = (mode, duration, c_off)`` and the gate-off edge indices to drop (§4/§6). ``mode``
+    ``durinfo[note_idx] = (mode, duration, c_off)`` and the gate-off edge indices to drop. ``mode``
     is ``_GO_DERIVE`` when the gate-off byte == the held waveform with the gate bit cleared, ``_GO_VALUE``
     when it differs (``c_off`` carries it), or ``_GO_NONE`` when no gate-off precedes the next note.
     """
@@ -476,7 +473,7 @@ def _read_note_voice(tokens: list[int], pos: int, n: int, series: dict) -> int:
 
 
 def _emit_pw_voice(out: list[int], settled, v: int) -> None:
-    """Emit a voice's pulse width as one combined 12-bit value lane (§8.5): PW lo (reg 7v+2) and hi (reg
+    """Emit a voice's pulse width as one combined 12-bit value lane: PW lo (reg 7v+2) and hi (reg
     7v+3) are adjacent bit ranges, so ``(hi << 8) | lo`` is byte-exact and contiguous -- a PW sweep is one
     ramp instead of two byte covers that fight each other at the lo-byte wrap."""
     lo, hi = pw_regs(v)
@@ -568,7 +565,7 @@ def encode(ow: OrderedWrites) -> list[int]:
 
 
 def decode(tokens: list[int]) -> list[tuple[int, int, int]]:
-    """Factored v1 token id list -> ordered ``(frame, reg, value)`` writes (the §7 fidelity target)."""
+    """Factored v1 token id list -> ordered ``(frame, reg, value)`` writes (the fidelity target)."""
     pos = 0
     n, pos = _read_u(tokens, pos)
     series = {}

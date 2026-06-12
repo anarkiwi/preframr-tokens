@@ -37,29 +37,6 @@ class _FastRow:
         self.Index = Index
 
 
-def _frame_arrays(f_df):
-    """Extract per-row arrays for a frame group. Used by hot pass loops
-    that previously walked via ``itertuples`` (slow: per-row namedtuple +
-    per-cell pandas indexing). Caller iterates by integer index.
-    """
-    cols = {
-        "reg": f_df["reg"].to_numpy(),
-        "val": f_df["val"].to_numpy(),
-        "op": f_df["op"].to_numpy(),
-        "diff": f_df["diff"].to_numpy(),
-        "Index": f_df.index.to_numpy(),
-    }
-    if "subreg" in f_df.columns:
-        cols["subreg"] = f_df["subreg"].to_numpy()
-    else:
-        cols["subreg"] = np.full(len(f_df), -1, dtype=np.int64)
-    if "description" in f_df.columns:
-        cols["description"] = f_df["description"].to_numpy()
-    else:
-        cols["description"] = np.zeros(len(f_df), dtype=np.int64)
-    return cols
-
-
 def _df_arrays_and_frames(df):
     """Extract whole-df column arrays once, plus frame-start positions."""
     regs = df["reg"].to_numpy()
@@ -99,7 +76,6 @@ SUBREG_REGS = tuple(
     base + v * VOICE_REG_SIZE for v in range(VOICES) for base in _PER_VOICE_SUBREG_BASES
 ) + (FILTER_REG, MODE_VOL_REG)
 
-PWM_REGS_BY_VOICE = tuple(2 + v * VOICE_REG_SIZE for v in range(VOICES))
 FREQ_REGS_BY_VOICE = tuple(0 + v * VOICE_REG_SIZE for v in range(VOICES))
 CTRL_REGS_BY_VOICE = tuple(4 + v * VOICE_REG_SIZE for v in range(VOICES))
 AD_REGS_BY_VOICE = tuple(5 + v * VOICE_REG_SIZE for v in range(VOICES))
@@ -134,7 +110,6 @@ class DecodeState:
         self.pending_set_writes = defaultdict(list)
         self.pending_program = {}
         self.program_pos = 0
-        self.codebooks = {}
         self.pending_sweep = None
         self.pending_gen_tri = None
         self.pending_melody_interval = None
@@ -149,9 +124,6 @@ class DecodeState:
         self.pending_gen_tuning_flo = 0
         self.pending_subreg_reg = None
         self.pending_subreg_nibbles = set()
-        self.last_ctrl = {v: 0 for v in range(VOICES)}
-        self.pending_filter_triple_hi = 0
-        self.pending_filter_triple_lo = 0
         self.pending_deferred_pre_unroll = []
         self.pending_deferred_post_marker = []
         if seed:

@@ -50,7 +50,7 @@ Source = "https://github.com/anarkiwi/preframr-tokens"
 Issues = "https://github.com/anarkiwi/preframr-tokens/issues"
 
 [tool.setuptools]
-packages = ["preframr_tokens", "preframr_tokens.macros"]
+packages = ["preframr_tokens", "preframr_tokens.macros", "preframr_tokens.events"]
 
 [tool.setuptools.package-data]
 preframr_tokens = ["py.typed"]

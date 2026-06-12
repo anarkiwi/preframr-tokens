@@ -1,8 +1,8 @@
-"""Self-contained gesture cover + replay over the MDL primitive basis (REDESIGN_optionB §8.4-8.5): a
+"""Self-contained gesture cover + replay over the MDL primitive basis: a
 per-frame value series is covered losslessly by HOLD/POLY/PERIOD gestures via ``mdl_core.mdl_parse`` (the
 kept MDL engine). Each gesture carries exactly the complete-value fields the decoder needs to replay it --
 no codebook id, no per-tune bank. This module owns the replay arithmetic so the event model does not depend
-on the retired ``codebook``/``mdl_gesture_pass`` machinery (§7.1).
+on the retired ``codebook``/``mdl_gesture_pass`` machinery.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class Gesture:
 def cover(series, wrap: bool = False, cost_model=None) -> list[Gesture]:
     """Optimal lossless HOLD/POLY/PERIOD cover of ``series`` (``wrap`` for 16-bit register channels).
     ``cost_model`` (see :func:`mdl_core.mdl_parse`) switches the parse objective from the legacy
-    bootstrap bit cost to the caller's serialized cost (e.g. emitted-token count, §8.6).
+    bootstrap bit cost to the caller's serialized cost (e.g. emitted-token count).
     """
     s = np.asarray(series, dtype=np.int64)
     out: list[Gesture] = []

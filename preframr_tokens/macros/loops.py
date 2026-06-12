@@ -144,10 +144,6 @@ EXTRA_ISOLATION_HEAD_OPS: tuple[tuple[int, int], ...] = ()
 _FREQ_REGS_VOICED = frozenset(FREQ_REGS_BY_VOICE)
 
 
-def _is_frame_marker_row(row):
-    return row[0] in _FRAME_MARKER_REGS
-
-
 def expand_loops(df):
     """Materialize PATTERN_REPLAY and DO_LOOP rows into literal frame copies."""
     if "op" not in df.columns:

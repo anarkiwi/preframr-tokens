@@ -1,6 +1,6 @@
-"""Serialize the event stream to/from a flat token-id stream (REDESIGN_optionB §3.4): tokens are small ints
-in disjoint per-field-family ranges, so the stream is self-delimiting (grammar §7.1) and BPE-able, the only
-"dictionary" (§2.3). Every field is a complete value over the escape-free zig-zag varint of
+"""Serialize the event stream to/from a flat token-id stream: tokens are small ints
+in disjoint per-field-family ranges, so the stream is self-delimiting and BPE-able, the only
+"dictionary". Every field is a complete value over the escape-free zig-zag varint of
 :mod:`preframr_tokens.events.varint` -- no ids, no escape. v0 serializes ``WRITE`` events as
 ``DT || REG || DELTA`` (DELTA = signed zig-zag change from the held value); stream order == write order.
 """

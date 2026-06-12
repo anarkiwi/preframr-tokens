@@ -382,7 +382,7 @@ class Corpus:
                 np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
 
     def preload(self, tokens=None, tkmodel=None):
-        """Events-native tokenize-stage orchestrator (REDESIGN_optionB §7.1): the raw dump is encoded by
+        """Events-native tokenize-stage orchestrator: the raw dump is encoded by
         the factored codec, replacing parse -> (op,reg,subreg,val) alphabet -> merge_token_df. (a) explicit
         tokens -> load; (b) preload-from-disk; (c) glob raw dumps, set the fixed event alphabet, train BPE
         over the event token streams (tkvocab>0), write tokens.csv / df-map / reg-widths, and save the
