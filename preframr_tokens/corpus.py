@@ -370,18 +370,26 @@ class Corpus:
         return train, val, kind_by_file
 
     def _encode_and_save_events(self, df_files):
-        """Write each dump's ``.0.blocks.npy`` of BPE-encoded event token blocks (the model input)."""
+        """Write each dump's ``.0.blocks.npy`` of BPE-encoded event token blocks (the model input). Thread
+        pool: the shared tokenizer's Rust encode/decode, the zstd ``.atoms.zst`` reads and ``np.save`` all
+        release the GIL, so this parallelises without pickling the tokenizer (mirrors ``train_tokenizer``'s
+        uni-write pass)."""
         block_size = self.args.seq_len + 1
-        for df_file in df_files:
+
+        def _encode_one(df_file):
             try:
                 df = self._read_dump(df_file)
             except Exception:  # pylint: disable=broad-except
-                continue
+                return
             arr = events_dataset.encode_block_array(
                 self.tokenizer, df, block_size, df_file=df_file
             )
             if arr.shape[0]:
                 np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
+
+        workers = min(8, (os.cpu_count() or 4))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(_encode_one, df_files))
 
     def preload(self, tokens=None, tkmodel=None):
         """Events-native tokenize-stage orchestrator: the raw dump is encoded by
