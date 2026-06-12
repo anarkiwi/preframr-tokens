@@ -377,7 +377,9 @@ class Corpus:
                 df = self._read_dump(df_file)
             except Exception:  # pylint: disable=broad-except
                 continue
-            arr = events_dataset.encode_block_array(self.tokenizer, df, block_size)
+            arr = events_dataset.encode_block_array(
+                self.tokenizer, df, block_size, df_file=df_file
+            )
             if arr.shape[0]:
                 np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
 
@@ -473,7 +475,7 @@ class Corpus:
                         df = self._read_dump(df_file)
                     except Exception:  # pylint: disable=broad-except
                         continue
-                    ids = events_dataset.dump_token_ids(df)
+                    ids = events_dataset.dump_token_ids(df, df_file)
                     if ids:
                         yield df_file, pd.DataFrame(
                             {"n": np.asarray(ids, dtype=np.int64)}

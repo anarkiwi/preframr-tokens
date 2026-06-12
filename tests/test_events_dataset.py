@@ -91,6 +91,34 @@ def test_encode_block_array_chunks_whole_tune_byte_exact():
     )
 
 
+def test_dump_token_ids_atom_cache_roundtrip(tmp_path):
+    """``df_file`` populates a codec-version-keyed ``.atoms.zst`` sidecar and a second call reuses it,
+    ignoring the df it is handed -- the tkvocab-independent encode runs once."""
+    df = _synth_df()
+    df_file = str(tmp_path / "song.1.dump.parquet")
+    df.to_parquet(df_file)
+    expected = dataset.dump_token_ids(df)
+    first = dataset.dump_token_ids(df, df_file)
+    assert first == expected
+    caches = list(tmp_path.glob("*.atoms.zst"))
+    assert len(caches) == 1, "atom stream cached next to the dump"
+    reused = dataset.dump_token_ids(_synth_df().iloc[:7], df_file)
+    assert reused == expected, "second call reuses the cache, not the new df"
+
+
+def test_encode_block_array_uses_atom_cache(tmp_path):
+    """``encode_block_array(df_file=...)`` populates the same atom cache and stays byte-identical to the
+    uncached path."""
+    df = _synth_df()
+    df_file = str(tmp_path / "song.1.dump.parquet")
+    df.to_parquet(df_file)
+    tk = dataset.make_tokenizer(_args())
+    arr_cached = dataset.encode_block_array(tk, df, 32, df_file=df_file)
+    assert list(tmp_path.glob("*.atoms.zst")), "block encode populates the atom cache"
+    arr_plain = dataset.encode_block_array(tk, df, 32)
+    assert np.array_equal(arr_cached, arr_plain), "cached path matches direct encode"
+
+
 def test_keyframe_prefixes_make_chunks_self_interpreting():
     """With a roomy block size, every chunk after the first is led by a KEYFRAME conditioning
     segment carrying the tune's tick/tuning headers + per-voice state; segments strip away for

@@ -8,12 +8,15 @@ by +1 into "n" space so id 0 is reserved for PAD, matching the model's zero-padd
 from __future__ import annotations
 
 import logging
+import os
 
 import numpy as np
 import pandas as pd
+import zstandard as zstd
 
 from preframr_tokens.regtokenizer import RegTokenizer
 from preframr_tokens.stfconstants import (
+    DUMP_SUFFIX,
     OP_PDTYPE,
     PAD_REG,
     SET_OP,
@@ -28,6 +31,45 @@ from .oracle import ordered_writes
 from .pipeline import VOCAB_SIZE, iter_windows
 
 PAD_ID = 0
+
+ATOM_CACHE_VERSION = 1
+_ATOM_DTYPE = np.int32
+
+
+def _atom_cache_path(df_file: str) -> str:
+    """In-place, codec-version-keyed atom-stream cache path next to the real dump
+    (symlinks resolved). Lets a tkvocab sweep reuse the tkvocab-independent pre-BPE
+    encode instead of re-running ``stream.encode`` + its self-verify. Bump
+    ``ATOM_CACHE_VERSION`` whenever the event codec (``ordered_writes`` /
+    ``stream.encode``) changes so stale caches are skipped, never mis-read."""
+    real = os.path.realpath(df_file)
+    return real.replace(DUMP_SUFFIX, f".{ATOM_CACHE_VERSION}.atoms.zst")
+
+
+def _read_atom_cache(path: str) -> list[int] | None:
+    """Return the cached n-space atom ids, or ``None`` when absent/unreadable."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with zstd.open(path, "rb") as fh:
+            buf = fh.read()
+        return np.frombuffer(buf, dtype=_ATOM_DTYPE).tolist()
+    except (OSError, ValueError):
+        return None
+
+
+def _write_atom_cache(path: str, ids: list[int]) -> None:
+    """Best-effort atomic write of the atom stream; silently skips a read-only tree."""
+    tmp = f"{path}.tmp-{os.getpid()}"
+    try:
+        with zstd.open(tmp, "wb") as fh:
+            fh.write(np.asarray(ids, dtype=_ATOM_DTYPE).tobytes())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def events_alphabet() -> pd.DataFrame:
@@ -81,15 +123,31 @@ def dump_block_ids(
     return [block_to_ids(w) for w in iter_windows(ow, frames_per_block, stride)]
 
 
-def dump_token_ids(df) -> list[int]:
+def dump_token_ids(df, df_file: str | None = None) -> list[int]:
     """A whole tune's pre-BPE event token stream in n-space (the unit BPE trains over and the model
     decodes from). Byte-exact: ``ids_to_writes(dump_token_ids(df))`` reproduces the ordered writes.
+    When ``df_file`` is given, a codec-version-keyed ``.atoms.zst`` sidecar next to the dump is reused
+    if present (skipping ``stream.encode`` + its self-verify) and populated otherwise (best-effort; a
+    read-only dump tree just recomputes). The atom stream is tkvocab-independent, so pre-populating
+    these sidecars lets a vocab sweep skip the encode and only retrain BPE.
     """
-    return [a + 1 for a in stream.encode(ordered_writes(df))]
+    path = _atom_cache_path(df_file) if df_file is not None else None
+    if path is not None:
+        cached = _read_atom_cache(path)
+        if cached is not None:
+            return cached
+    ids = [a + 1 for a in stream.encode(ordered_writes(df))]
+    if path is not None:
+        _write_atom_cache(path, ids)
+    return ids
 
 
 def encode_block_array(
-    tokenizer: RegTokenizer, df, block_size: int, stride: int | None = None
+    tokenizer: RegTokenizer,
+    df,
+    block_size: int,
+    stride: int | None = None,
+    df_file: str | None = None,
 ) -> np.ndarray:
     """Materialise a tune into the model's ``(n_blocks, block_size)`` int32 array: BPE-encode the whole-
     tune event stream and chunk it to ``block_size``; with the default stride each chunk is led by a
@@ -97,7 +155,7 @@ def encode_block_array(
     state at the boundary) so every training chunk can interpret its durations/intervals. An explicit
     ``stride`` keeps plain prefix-free chunking; ``ids_to_writes`` strips segments before decode.
     """
-    atoms_n = dump_token_ids(df)
+    atoms_n = dump_token_ids(df, df_file)
     seq = tokenizer.encode(np.asarray(atoms_n, dtype=np.int32)).astype(np.int32)
     n = len(seq)
     if n == 0:
