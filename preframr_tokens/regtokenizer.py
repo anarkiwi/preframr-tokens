@@ -73,6 +73,7 @@ class RegTokenizer:
         self.frame_tokens = []
         self.splitters = SPLITTERS
         self.splitchs = SPLITCHS
+        self.isolation_ns = None
 
     def _resync_splitters_from_tokens(self):
         """Single source of truth for the ``splitters`` invariant:
@@ -155,6 +156,12 @@ class RegTokenizer:
         unicode_str = self.encode_unicode(atomic_ids)
         return "".join(sorted(set(unicode_str)))
 
+    def _isolation_chars_for_ns(self, ns):
+        """Unicode chars for the given n-space ids; merged into the unigram isolation set."""
+        if not ns:
+            return ""
+        return "".join(sorted(set(self.encode_unicode(np.array(ns, dtype=np.int64)))))
+
     def train_tokenizer(self, dfs):
         frame_tokens = 1
         if self.tokens is not None and len(self.tokens):
@@ -172,6 +179,9 @@ class RegTokenizer:
                 "from unigram merges",
                 len(isolation_chars),
             )
+        if self.isolation_ns:
+            ns_chars = self._isolation_chars_for_ns(self.isolation_ns)
+            isolation_chars = "".join(sorted(set(isolation_chars) | set(ns_chars)))
 
         def write_uni(t):
             df_file, df, i = t

@@ -32,6 +32,10 @@ from .pipeline import VOCAB_SIZE, iter_windows
 
 PAD_ID = 0
 
+BOUNDARY_ISOLATION_NS = tuple(
+    [stream.VOICE_BASE + 1 + v for v in range(4)] + [stream.KEYFRAME + 1]
+)
+
 ATOM_CACHE_VERSION = 1
 _ATOM_DTYPE = np.int32
 
