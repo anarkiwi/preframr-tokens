@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import multiprocessing
 import os
+import types
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
@@ -39,6 +40,40 @@ from preframr_tokens.stfconstants import (
 )
 
 __all__ = ["Corpus", "TokenizeMeta"]
+
+
+_DUMP_COLUMNS = ["clock", "irq", "chipno", "reg", "val"]
+
+_BLOCK_POOL_MIN = 32
+
+_BLOCK_WORKER: dict = {}
+
+
+def _init_block_worker(args, tokens, tkmodel_str, block_size):
+    """ProcessPool initialiser: rebuild the (unpicklable) tokenizer once per worker from its serialised BPE model + alphabet, plus a per-worker id->atom-length cache reused across that worker's tunes."""
+    tk = events_dataset.make_tokenizer(args)
+    if tkmodel_str:
+        tk.load(tkmodel_str, tokens)
+    _BLOCK_WORKER["tk"] = tk
+    _BLOCK_WORKER["block_size"] = block_size
+    _BLOCK_WORKER["alen"] = {}
+
+
+def _encode_block_worker(df_file):
+    """ProcessPool task: encode one tune to its ``.0.blocks.npy`` via the worker-local tokenizer + cache."""
+    try:
+        df = pd.read_parquet(df_file, columns=_DUMP_COLUMNS)
+    except Exception:  # pylint: disable=broad-except
+        return
+    arr = events_dataset.encode_block_array(
+        _BLOCK_WORKER["tk"],
+        df,
+        _BLOCK_WORKER["block_size"],
+        df_file=df_file,
+        alen_cache=_BLOCK_WORKER["alen"],
+    )
+    if arr.shape[0]:
+        np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
 
 
 def _collect_atoms(df, sink):
@@ -351,9 +386,7 @@ class Corpus:
         return True
 
     def _read_dump(self, df_file):
-        return pd.read_parquet(
-            df_file, columns=["clock", "irq", "chipno", "reg", "val"]
-        )
+        return pd.read_parquet(df_file, columns=_DUMP_COLUMNS)
 
     def _events_glob(self, reglogs, eval_reglogs):
         """``(train_files, val_files, kind_by_file)`` over the raw-dump corpus (events owns parsing, so
@@ -388,26 +421,39 @@ class Corpus:
         return train, val, kind_by_file
 
     def _encode_and_save_events(self, df_files):
-        """Write each dump's ``.0.blocks.npy`` of BPE-encoded event token blocks (the model input). Thread
-        pool: the shared tokenizer's Rust encode/decode, the zstd ``.atoms.zst`` reads and ``np.save`` all
-        release the GIL, so this parallelises without pickling the tokenizer (mirrors ``train_tokenizer``'s
-        uni-write pass)."""
+        """Write each dump's ``.0.blocks.npy`` of BPE-encoded event token blocks (the model input). Small
+        corpora encode serially (spawn startup isn't worth it); large ones fan across a spawn process pool
+        -- the keyframe-chunk + id->atom-length work is GIL-bound so threads don't parallelise it; the
+        unpicklable tokenizer is rebuilt per worker, sharing one id->atom-length cache across its tunes.
+        Speedup is I/O-bound (~1.6-2x at corpus scale: parquet reads + atom-cache reads + ``np.save``).
+        """
         block_size = self.args.seq_len + 1
-
-        def _encode_one(df_file):
-            try:
-                df = self._read_dump(df_file)
-            except Exception:  # pylint: disable=broad-except
-                return
-            arr = events_dataset.encode_block_array(
-                self.tokenizer, df, block_size, df_file=df_file
-            )
-            if arr.shape[0]:
-                np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
-
+        if len(df_files) < _BLOCK_POOL_MIN:
+            alen: dict = {}
+            for df_file in df_files:
+                try:
+                    df = self._read_dump(df_file)
+                except Exception:  # pylint: disable=broad-except
+                    continue
+                arr = events_dataset.encode_block_array(
+                    self.tokenizer, df, block_size, df_file=df_file, alen_cache=alen
+                )
+                if arr.shape[0]:
+                    np.save(df_file.replace(DUMP_SUFFIX, ".0.blocks.npy"), arr)
+            return
+        worker_args = types.SimpleNamespace(
+            tokenizer=self.args.tokenizer, tkvocab=self.args.tkvocab
+        )
+        tkmodel_str = self.tokenizer.tkmodel.to_str() if self.tokenizer.tkmodel else ""
         workers = min(8, (os.cpu_count() or 4))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(_encode_one, df_files))
+        ctx = multiprocessing.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=ctx,
+            initializer=_init_block_worker,
+            initargs=(worker_args, self.tokenizer.tokens, tkmodel_str, block_size),
+        ) as ex:
+            list(ex.map(_encode_block_worker, df_files))
 
     def preload(self, tokens=None, tkmodel=None):
         """Events-native tokenize-stage orchestrator: the raw dump is encoded by

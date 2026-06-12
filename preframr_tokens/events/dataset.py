@@ -153,12 +153,13 @@ def encode_block_array(
     block_size: int,
     stride: int | None = None,
     df_file: str | None = None,
+    alen_cache: dict[int, int] | None = None,
 ) -> np.ndarray:
     """Materialise a tune into the model's ``(n_blocks, block_size)`` int32 array: BPE-encode the whole-
     tune event stream and chunk it to ``block_size``; with the default stride each chunk is led by a
-    BPE-encoded KEYFRAME conditioning segment (:func:`stream.chunk_keyframe`: tick/tuning + per-voice
-    state at the boundary) so every training chunk can interpret its durations/intervals. An explicit
-    ``stride`` keeps plain prefix-free chunking; ``ids_to_writes`` strips segments before decode.
+    BPE-encoded KEYFRAME segment (:func:`stream.chunk_keyframe`) so it can interpret durations/intervals
+    (explicit ``stride`` keeps plain prefix-free chunking; ``ids_to_writes`` strips segments). Pass a shared
+    ``alen_cache`` to reuse the tkvocab-fixed id->atom-length table across tunes (else it is the hot loop).
     """
     atoms_n = dump_token_ids(df, df_file)
     seq = tokenizer.encode(np.asarray(atoms_n, dtype=np.int32)).astype(np.int32)
@@ -176,7 +177,8 @@ def encode_block_array(
                 break
         return np.stack(rows)
     atoms = [int(a) - 1 for a in atoms_n]
-    alen_cache: dict[int, int] = {}
+    if alen_cache is None:
+        alen_cache = {}
 
     def _alen(i: int) -> int:
         if i not in alen_cache:

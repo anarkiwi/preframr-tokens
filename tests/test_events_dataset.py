@@ -10,6 +10,7 @@ import types
 import numpy as np
 import pandas as pd
 
+from preframr_tokens import corpus
 from preframr_tokens.events import dataset, oracle, pipeline, stream
 from preframr_tokens.macros import pitch_grid
 from preframr_tokens.stfconstants import DUMP_SUFFIX
@@ -148,6 +149,36 @@ def test_encode_block_array_uses_atom_cache(tmp_path):
     assert list(tmp_path.glob("*.atoms.zst")), "block encode populates the atom cache"
     arr_plain = dataset.encode_block_array(tk, df, 32)
     assert np.array_equal(arr_cached, arr_plain), "cached path matches direct encode"
+
+
+def test_block_worker_writes_blocks_byte_identical(tmp_path):
+    """The ProcessPool block-worker funcs (run in-process here) rebuild the tokenizer from its serialized
+    state and write a tune's ``.0.blocks.npy`` byte-identical to a direct ``encode_block_array``.
+    """
+    df = _synth_df()
+    df_file = str(tmp_path / "song.1.dump.parquet")
+    df.to_parquet(df_file)
+    args = types.SimpleNamespace(tokenizer="unigram", tkvocab=0)
+    tk = dataset.make_tokenizer(args)
+    block_size = 33
+    corpus._init_block_worker(args, tk.tokens, "", block_size)
+    corpus._encode_block_worker(df_file)
+    out = df_file.replace(".dump.parquet", ".0.blocks.npy")
+    assert os.path.exists(out), "worker wrote the block array"
+    saved = np.load(out)
+    direct = dataset.encode_block_array(tk, df, block_size, df_file=df_file)
+    assert np.array_equal(saved, direct), "worker output matches a direct encode"
+
+
+def test_alen_cache_shared_across_calls_matches():
+    """A shared ``alen_cache`` (the parallel block pass reuses one per worker) yields the same array as the
+    default per-call cache."""
+    df = _synth_df()
+    tk = dataset.make_tokenizer(_args())
+    shared: dict = {}
+    a = dataset.encode_block_array(tk, df, 128, alen_cache=shared)
+    b = dataset.encode_block_array(tk, df, 128)
+    assert np.array_equal(a, b) and shared, "shared cache populated + result unchanged"
 
 
 def test_keyframe_prefixes_make_chunks_self_interpreting():
