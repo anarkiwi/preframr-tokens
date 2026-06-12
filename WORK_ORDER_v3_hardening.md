@@ -3,9 +3,13 @@
 **Mission:** action the 2026-06-12 critical analysis of the v3 event model: truth-up the fidelity
 contract language, fix the KEYFRAME snapshot gap, add generation-side decode/masking support, guard
 the BPE dictionary (stack fix + boundary isolation + merge audit), embed a format version, and
-remove verified-dead code. Everything below is pre-researched against this repo at commit `81f3bc6`
+remove verified-dead code. Everything below is pre-researched against this repo at commit `e1c5917`
 plus the sibling repos (`preframr`, `preframr-xpt`) — **no further research is required**; if an
-anchor has drifted, re-locate by the named symbol, not the line number.
+anchor has drifted, re-locate by the named symbol, not the line number. Recent context you do not
+need to act on: `.atoms.zst` atom-stream caching (`ATOM_CACHE_VERSION`, P6 builds on it) and the
+block-encode pass now running on a ThreadPoolExecutor with a SHARED tokenizer
+(`corpus._encode_and_save_events`) — `chunk_keyframe`/`encode_block_array` (P2) are pure/thread-safe
+under it, and encode failures still propagate loudly through `ex.map`.
 
 ## Ground rules (read fully before starting)
 
@@ -362,7 +366,9 @@ Commit: `feat(events): event-grammar sampling mask (EventStreamState)`
 
 ## P9 — wrap up
 
-1. `pyproject.toml`: `fallback_version` `0.48.0` → `0.49.0`. Do not tag/release.
+1. `pyproject.toml`: bump `fallback_version` by one minor from its CURRENT value (at writing
+   `0.50.0` → `0.51.0`; sibling agents bump it frequently — read it, don't assume). Do not
+   tag/release.
 2. `./run_tests.sh` full green.
 3. `git rm WORK_ORDER_v3_hardening.md` (this file) — include in the final commit:
    `chore(release): bump fallback_version to 0.49.0; remove executed work order`
