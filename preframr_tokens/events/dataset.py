@@ -107,11 +107,13 @@ def block_to_ids(ow_window) -> list[int]:
     return [a + 1 for a in stream.encode(ow_window)]
 
 
-def ids_to_writes(n_ids) -> list[tuple[int, int, int]]:
+def ids_to_writes(n_ids, extend=False) -> list[tuple[int, int, int]]:
     """Inverse of :func:`block_to_ids` (dropping PAD and any KEYFRAME conditioning segments): n-space
-    ids -> ordered ``(frame, reg, val)``."""
+    ids -> ordered ``(frame, reg, val)``. ``extend=True`` replays continuations past the declared
+    frame count (generation)."""
     return stream.decode(
-        stream.strip_keyframes([int(n) - 1 for n in n_ids if int(n) > 0])
+        stream.strip_keyframes([int(n) - 1 for n in n_ids if int(n) > 0]),
+        extend=extend,
     )
 
 

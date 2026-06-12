@@ -12,14 +12,15 @@ import pandas as pd
 from .dataset import ids_to_writes
 
 
-def tokens_to_writes(tokenizer, bpe_ids) -> list[tuple[int, int, int]]:
+def tokens_to_writes(tokenizer, bpe_ids, extend=False) -> list[tuple[int, int, int]]:
     """Generated BPE ids -> ordered ``(frame, reg, val)`` writes. ``tokenizer.decode`` undoes the BPE to
     the n-space atom stream; trailing PAD (0) is dropped; the stream decoder replays it (raising on a
-    grammatically invalid stream)."""
+    grammatically invalid stream). ``extend=True`` replays continuations past the declared frame count.
+    """
     nspace = list(tokenizer.decode(np.asarray(bpe_ids, dtype=np.uint32)))
     while nspace and int(nspace[-1]) == 0:
         nspace.pop()
-    return ids_to_writes(nspace)
+    return ids_to_writes(nspace, extend=extend)
 
 
 def writes_to_dump_df(writes, chipno: int = 0) -> pd.DataFrame:
@@ -45,9 +46,13 @@ def writes_to_dump_df(writes, chipno: int = 0) -> pd.DataFrame:
     )
 
 
-def tokens_to_dump_df(tokenizer, bpe_ids, chipno: int = 0) -> pd.DataFrame:
+def tokens_to_dump_df(
+    tokenizer, bpe_ids, chipno: int = 0, extend=False
+) -> pd.DataFrame:
     """Generated BPE ids -> render-ready raw-dump DataFrame (compose of the two steps above)."""
-    return writes_to_dump_df(tokens_to_writes(tokenizer, bpe_ids), chipno=chipno)
+    return writes_to_dump_df(
+        tokens_to_writes(tokenizer, bpe_ids, extend=extend), chipno=chipno
+    )
 
 
 __all__ = ["tokens_to_dump_df", "tokens_to_writes", "writes_to_dump_df"]

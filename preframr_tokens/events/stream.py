@@ -1101,15 +1101,17 @@ class _Decoder:
                     prev_byte[r] = b
         return out
 
-    def run(self) -> list[tuple[int, int, int]]:
-        n, _last = self.parse()
-        return self.replay(n)
+    def run(self, extend: bool = False) -> list[tuple[int, int, int]]:
+        n, last = self.parse()
+        return self.replay(max(n, last + 1) if extend else n)
 
 
-def decode(tokens: list[int]) -> list[tuple[int, int, int]]:
+def decode(tokens: list[int], extend: bool = False) -> list[tuple[int, int, int]]:
     """v3 token stream -> the canonical ordered ``(frame, reg, value)`` writes. Strict grammar parser:
-    malformed streams raise rather than silently mis-decoding."""
-    return _Decoder(tokens).run()
+    malformed streams raise. Default truncates at the declared frame count; ``extend=True`` replays
+    through the last parsed group (for model-generated continuations past the header count).
+    """
+    return _Decoder(tokens).run(extend=extend)
 
 
 def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:

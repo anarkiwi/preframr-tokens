@@ -7,11 +7,30 @@ import types
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.events import dataset, generate, oracle, stream
+from preframr_tokens.events import dataset, generate, oracle, stream, varint
+from preframr_tokens.macros import pitch_grid
 
 
 def _args():
     return types.SimpleNamespace(tokenizer="unigram", tkvocab=0)
+
+
+def _ow_4frame():
+    """A 4-frame voice-0 tune whose non-arithmetic notes stay one event-group per frame (no single-
+    ramp collapse), so the last group is at frame 3 and a DT=1 continuation lands at frame 4.
+    """
+    writes = []
+    for f, nt in enumerate((49, 56, 50, 58)):
+        fr = pitch_grid.note_freq_at(nt, 0.0)
+        writes += [(f, 0, fr & 0xFF), (f, 1, (fr >> 8) & 0xFF), (f, 4, 0x41)]
+    writes.sort(key=lambda t: t[0])
+    return oracle.OrderedWrites(
+        frame=np.array([w[0] for w in writes], dtype=np.int64),
+        reg=np.array([w[1] for w in writes], dtype=np.int64),
+        val=np.array([w[2] for w in writes], dtype=np.int64),
+        n_frames=4,
+        irq=np.arange(4, dtype=np.int64),
+    )
 
 
 def _synth_df():
@@ -66,3 +85,29 @@ def test_render_df_carries_frame_timing():
     assert out["reg"].tolist() == [r for _, r, _ in src]
     assert out["val"].tolist() == [v for _, _, v in src]
     assert out["clock"].is_monotonic_increasing
+
+
+def test_decode_extend_replays_past_declared_frame_count():
+    """decode/generate default truncate at the declared frame count; extend=True replays a
+    hand-appended continuation group (DT=1, voice-0 NI step +2), adding writes at the new frame.
+    """
+    ow = _ow_4frame()
+    toks = stream.encode(ow)
+    extra = (
+        [stream.VAR_BASE + d for d in varint.encode_unsigned(1)]
+        + [stream.VOICE_BASE + 0, stream.NI_STEP]
+        + [stream.VAR_BASE + d for d in varint.encode_signed(2)]
+    )
+    ext = toks + extra
+    assert stream.decode(ext) == stream.decode(
+        toks
+    ), "default truncates the extra group"
+    assert any(
+        f == 4 for f, _, _ in stream.decode(ext, extend=True)
+    ), "extend replays the appended frame-4 group"
+    tk = dataset.make_tokenizer(_args())
+    nspace = [a + 1 for a in ext]
+    assert generate.tokens_to_writes(tk, nspace) == stream.decode(toks)
+    assert any(
+        f == 4 for f, _, _ in generate.tokens_to_writes(tk, nspace, extend=True)
+    ), "generate extend pass-through reaches frame 4"
