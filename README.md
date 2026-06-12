@@ -122,8 +122,10 @@ predict — intervals, durations, timbre); structural = everything else
 
 ### Fidelity contract
 
-The oracle is `events.stream.canonical_writes(ow)`: a byte-exact
-**intra-frame permutation** of the dump's writes (zero drops). Per
+The oracle is `events.stream.canonical_writes(ow)`:
+byte-exact CTRL/AD/SR change activity in driver order, plus freq/PW/globals
+from the settled end-of-frame state (intra-frame transients and same-value
+rewrites canonicalize away — licensed by reSID noise-floor renders). Per
 frame: per voice 0→2, changed settled freq then PW; then the voice's
 CTRL/AD/SR sequence in driver order — gate-ons become `FLD_NOTE_ON`,
 gate-offs are **derived** (no NOTE OFF token), onset envelope nibbles
@@ -191,12 +193,15 @@ consumes.
   `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
   `settled_grid`), `varint` (BE base-16 zig-zag codec), `pipeline` /
   `dataset` (frame-window blocking + training arrays), `generate`
-  (token ids → ordered writes).
+  (token ids → ordered writes), `constrained` (per-step
+  grammar-validity mask for sampling over the event alphabet).
 - `preframr_tokens.reglogparser` -- SID dump → parsed dataframe
   pipeline. `RegLogParser`, plus `read_initial_irq` (first-frame IRQ
   read off a parser-output df, with PAL default).
 - `preframr_tokens.regtokenizer` -- alphabet build + unigram tokenizer
   fit. `RegTokenizer`.
+- `preframr_tokens.bpe_audit` -- merge-table boundary audit
+  (voice/KEYFRAME-crossing + multi-kind merges; run after any unigram train).
 - `preframr_tokens.macros.*` -- declarative `Transform` registry plus
   the macro / pre-norm passes (slope, preset, hard_restart,
   legato_per_cluster, voice_block_order, ctrl_bigram, loop, etc.).

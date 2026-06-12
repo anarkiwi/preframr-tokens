@@ -1,17 +1,16 @@
-"""Byte-exact ordered-write roundtrip for the event model:
-the fidelity oracle is the exact ordered ``(frame, reg, val)`` write stream, not the settled grid. The full
-pipeline (ordered writes -> encode -> tokenize -> de-tokenize -> decode -> ordered writes) must reproduce
-the source byte-for-byte in order on the 5 driver fixtures and a corpus sample. This is the guard every
-factored layer (notes, gestures, order descriptor) must keep green.
-"""
+"""Byte-exact ordered-write roundtrip for the v3 stream codec on the 5 driver fixtures and a corpus
+sample: ``stream.decode(stream.encode(ow)) == stream.canonical_writes(ow)`` per fixture. This is the
+fidelity guard the encode self-verify (verify=True) also enforces on every call."""
 
 import glob
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from preframr_tokens.events import decoder, encoder, factored, oracle, tokenize
+from preframr_tokens import dump_meta
+from preframr_tokens.events import oracle, stream
 
 _CACHE = os.environ.get(
     "PREFRAMR_SID_FIXTURE_CACHE", "/scratch/preframr/sid_fixture_cache"
@@ -27,66 +26,7 @@ _DRIVERS = {
 }
 
 
-def _roundtrip(df: pd.DataFrame) -> tuple[list, list, int]:
-    """Full pipeline; returns ``(decoded_triples, source_triples, n_tokens)``."""
-    ow = oracle.ordered_writes(df)
-    events = encoder.encode(ow)
-    tokens = tokenize.to_tokens(events)
-    decoded = decoder.decode(tokenize.from_tokens(tokens))
-    return decoded, ow.triples(), len(tokens)
-
-
-@pytest.mark.parametrize("name", sorted(_DRIVERS))
-def test_driver_byte_exact(name):
-    path = os.path.join(_CACHE, _DRIVERS[name])
-    if not os.path.exists(path):
-        pytest.skip(f"driver fixture {name} not cached at {path}")
-    decoded, source, _ = _roundtrip(pd.read_parquet(path))
-    assert decoded == source, f"{name} diverged from the ordered write stream"
-
-
-@pytest.mark.parametrize("name", sorted(_DRIVERS))
-def test_driver_byte_exact_factored(name):
-    """The factored v1 codec (gesture lanes + ORDER descriptor) is byte-exact AND no larger than v0."""
-    path = os.path.join(_CACHE, _DRIVERS[name])
-    if not os.path.exists(path):
-        pytest.skip(f"driver fixture {name} not cached at {path}")
-    ow = oracle.ordered_writes(pd.read_parquet(path))
-    tokens = factored.encode(ow)
-    assert factored.decode(tokens) == ow.triples(), f"{name} factored diverged"
-    v0_tokens = tokenize.to_tokens(encoder.encode(ow))
-    assert len(tokens) <= len(v0_tokens), f"{name} factored expanded vs v0"
-
-
-def test_corpus_sample_byte_exact():
-    files = sorted(glob.glob(os.path.join(_CORPUS, "*", "*", "*.dump.parquet")))
-    if not files:
-        pytest.skip(f"no corpus dumps under {_CORPUS}")
-    import random
-
-    random.Random(1).shuffle(files)
-    checked = 0
-    for path in files[:200]:
-        try:
-            df = pd.read_parquet(path, columns=["clock", "irq", "chipno", "reg", "val"])
-        except Exception:
-            continue
-        ow = oracle.ordered_writes(df)
-        if len(ow) == 0:
-            continue
-        decoded, source, _ = _roundtrip(df)
-        assert decoded == source, f"v0 diverged: {path}"
-        assert (
-            factored.decode(factored.encode(ow)) == source
-        ), f"factored diverged: {path}"
-        checked += 1
-    assert checked >= 50, f"only {checked} corpus tunes checked"
-
-
 def _ow_from_writes(writes, n_frames):
-    """Build an OrderedWrites from a list of ``(frame, reg, val)`` in source order."""
-    import numpy as np
-
     return oracle.OrderedWrites(
         frame=np.array([f for f, _, _ in writes], dtype=np.int64),
         reg=np.array([r for _, r, _ in writes], dtype=np.int64),
@@ -96,18 +36,29 @@ def _ow_from_writes(writes, n_frames):
     )
 
 
-def test_factored_synthetic_layers_byte_exact():
-    """The factored codec is byte-exact on the tricky cases: a multi-speed sub-frame repeat (literal
-    run), freq vibrato around a held grid note (freq two-layer), a scalar PW ramp (POLY), and a redundant
-    write -- without touching the slow corpus."""
+@pytest.mark.parametrize("name", sorted(_DRIVERS))
+def test_driver_canonical_roundtrip(name):
+    path = os.path.join(_CACHE, _DRIVERS[name])
+    if not os.path.exists(path):
+        pytest.skip(f"driver fixture {name} not cached at {path}")
+    ow = oracle.ordered_writes(pd.read_parquet(path))
+    assert stream.decode(stream.encode(ow, verify=False)) == stream.canonical_writes(
+        ow
+    ), f"{name} diverged from the ordered write stream"
+
+
+def test_synthetic_layers_canonical_roundtrip():
+    """The stream codec is byte-exact on the tricky synthetic cases without the corpus: freq vibrato
+    around a held grid note, a scalar PW ramp, a hard restart, gate-off, and same-frame ctrl activity.
+    """
     from preframr_tokens.macros import pitch_grid
 
     writes = []
     base = pitch_grid.note_freq_at(49, 0.0)
     for f in range(20):
-        F = base if f < 8 else base + int(6 * ((f % 4) - 2))
-        writes.append((f, 0, F & 0xFF))
-        writes.append((f, 1, (F >> 8) & 0xFF))
+        fr = base if f < 8 else base + int(6 * ((f % 4) - 2))
+        writes.append((f, 0, fr & 0xFF))
+        writes.append((f, 1, (fr >> 8) & 0xFF))
     for f in range(20):
         writes.append((f, 2, 64 + 3 * f if f else 64))
     for f in range(20):
@@ -120,20 +71,30 @@ def test_factored_synthetic_layers_byte_exact():
     writes.append((5, 4, 0x21))
     writes.sort(key=lambda t: t[0])
     ow = _ow_from_writes(writes, 20)
-    assert factored.decode(factored.encode(ow)) == ow.triples()
+    assert stream.decode(stream.encode(ow, verify=False)) == stream.canonical_writes(ow)
 
 
-def test_vocab_is_complete_and_escape_free():
-    """Every token belongs to a bounded field-family range; there is no literal/escape token."""
-    assert tokenize.VOCAB_SIZE == tokenize.DELTA_BASE + 32
-    ow = oracle.OrderedWrites(
-        frame=__import__("numpy").array([0, 0, 1, 5, 5]),
-        reg=__import__("numpy").array([4, 4, 0, 1, 1]),
-        val=__import__("numpy").array([17, 17, 255, 0, 200]),
-        n_frames=6,
-        irq=__import__("numpy").array([0, 1, 2, 3, 4, 5]),
-    )
-    decoded = decoder.decode(
-        tokenize.from_tokens(tokenize.to_tokens(encoder.encode(ow)))
-    )
-    assert decoded == ow.triples()
+def test_corpus_sample_canonical_roundtrip():
+    files = sorted(glob.glob(os.path.join(_CORPUS, "*", "*", "*.dump.parquet")))
+    if not files:
+        pytest.skip(f"no corpus dumps under {_CORPUS}")
+    import random
+
+    random.Random(1).shuffle(files)
+    checked = 0
+    for path in files[:200]:
+        try:
+            df = pd.read_parquet(path, columns=["clock", "irq", "chipno", "reg", "val"])
+        except Exception:  # pylint: disable=broad-except
+            continue
+        ow = oracle.ordered_writes(df)
+        if len(ow) == 0 or not stream.single_speed(ow):
+            continue
+        meta = dump_meta.read_meta(path)
+        if meta is not None and meta.is_digi:
+            continue
+        assert stream.decode(
+            stream.encode(ow, verify=False)
+        ) == stream.canonical_writes(ow), f"diverged: {path}"
+        checked += 1
+    assert checked >= 50, f"only {checked} corpus tunes checked"

@@ -3,16 +3,47 @@ the PAD-reserving n-space offset, and byte-exact block<->ids round-trips through
 layer.
 """
 
+import os
+import tempfile
 import types
 
 import numpy as np
 import pandas as pd
 
 from preframr_tokens.events import dataset, oracle, pipeline, stream
+from preframr_tokens.macros import pitch_grid
+from preframr_tokens.stfconstants import DUMP_SUFFIX
 
 
 def _args():
     return types.SimpleNamespace(tokenizer="unigram", tkvocab=0)
+
+
+def _multi_voice_df(k):
+    """A 3-voice synthetic dump (each voice gated with a per-stream note walk) so VOICE_BASE atoms
+    recur and a unigram would weld across them without boundary isolation."""
+    rng = np.random.default_rng(k)
+    writes = []
+    for f in range(48):
+        for v in range(3):
+            base = 7 * v
+            nt = 40 + v * 5 + int(rng.integers(0, 12))
+            fr = pitch_grid.note_freq_at(nt, 0.0)
+            writes.append((f, base + 0, fr & 0xFF))
+            writes.append((f, base + 1, (fr >> 8) & 0xFF))
+            writes.append((f, base + 4, 0x41 if (f + v) % 6 else 0x40))
+            writes.append((f, base + 5, 0x08))
+            writes.append((f, base + 6, 0xA9))
+    writes.sort(key=lambda t: t[0])
+    return pd.DataFrame(
+        {
+            "clock": np.arange(len(writes), dtype=np.int64),
+            "irq": np.array([w[0] for w in writes], dtype=np.int64),
+            "chipno": np.zeros(len(writes), dtype=np.int64),
+            "reg": np.array([w[1] for w in writes], dtype=np.int64),
+            "val": np.array([w[2] for w in writes], dtype=np.int64),
+        }
+    )
 
 
 def _synth_df():
@@ -124,7 +155,7 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
     segment carrying the tune's tick/tuning headers + per-voice state; segments strip away for
     decode (the canonical stream stays redundancy-free)."""
     frames = []
-    for rep in range(6):
+    for rep in range(12):
         d = _synth_df()
         d["irq"] = d["irq"] + rep * 60
         d["clock"] = d["clock"] + rep * 100000
@@ -133,7 +164,7 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
 
     df = pd.concat(frames, ignore_index=True)
     tk = dataset.make_tokenizer(_args())
-    arr = dataset.encode_block_array(tk, df, 128)
+    arr = dataset.encode_block_array(tk, df, 256)
     kf_n = stream.KEYFRAME + 1
     assert arr.shape[0] >= 2, "synth tune must span multiple chunks"
     for row in arr[1:]:
@@ -145,3 +176,60 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
     assert stream.strip_keyframes([int(x) - 1 for row in arr for x in row if x]) == [
         n - 1 for n in dataset.dump_token_ids(df)
     ]
+
+
+def _train_isolation(streams, isolate):
+    """Train a unigram over the n-space streams with/without boundary isolation; return its vocab."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        args = types.SimpleNamespace(
+            tokenizer="unigram",
+            tkvocab=160,
+            tkmodel=os.path.join(tmpdir, "tk.json"),
+        )
+        tok = dataset.make_tokenizer(args)
+        if isolate:
+            tok.isolation_ns = dataset.BOUNDARY_ISOLATION_NS
+        dfs = [
+            (
+                os.path.join(tmpdir, f"s{i}{DUMP_SUFFIX}"),
+                pd.DataFrame({"n": np.asarray(s, dtype=np.int64)}),
+                0,
+            )
+            for i, s in enumerate(streams)
+        ]
+        tok.train_tokenizer(dfs)
+        return dict(tok.tkmodel.get_vocab()), tok
+
+
+def _boundary_crossing_pieces(vocab, tok):
+    """Pieces (vocab keys, skipping <unk>) decoding to >1 atom that include a BOUNDARY_ISOLATION_NS id."""
+    bset = set(dataset.BOUNDARY_ISOLATION_NS)
+    crossing = []
+    for piece in vocab:
+        if piece == "<unk>":
+            continue
+        ids = [int(x) for x in tok.decode_unicode(piece)]
+        if len(ids) > 1 and any(i in bset for i in ids):
+            crossing.append(ids)
+    return crossing
+
+
+def test_boundary_isolation_keeps_voice_atoms_unmerged():
+    """With bpe_isolate_boundaries on, no unigram merge welds across a VOICE/KEYFRAME boundary: every
+    vocab piece carrying a BOUNDARY_ISOLATION_NS id is a single atom. Isolation-off is the A/B control
+    (only required to train green and to show welds occur), proving the isolation made the difference.
+    """
+    streams = [dataset.dump_token_ids(_multi_voice_df(k)) for k in range(20)]
+    vocab_off, _tok_off = _train_isolation(streams, isolate=False)
+    vocab_on, tok_on = _train_isolation(streams, isolate=True)
+    assert (
+        _boundary_crossing_pieces(vocab_on, tok_on) == []
+    ), "isolation must leave no voice/KEYFRAME-crossing merges"
+    bset = set(dataset.BOUNDARY_ISOLATION_NS)
+    on_has_boundary = any(
+        int(x) in bset
+        for piece in vocab_on
+        if piece != "<unk>"
+        for x in tok_on.decode_unicode(piece)
+    )
+    assert on_has_boundary, "boundary atoms must appear (else the check is vacuous)"

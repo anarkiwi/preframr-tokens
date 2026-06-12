@@ -1,6 +1,6 @@
-"""Collapse / bits measurement for the factored event stream: compression
+"""Collapse / bits measurement for event token streams: compression
 comes from BPE over a complete escape-free encoding, not a dictionary+escape. This trains a corpus-global
-greedy BPE over the factored token streams (the shared statistics ARE the dictionary) and reports the
+greedy BPE over the event token streams (the shared statistics ARE the dictionary) and reports the
 order-0 coding cost in bits before/after, against the raw 2-byte-per-write floor. It is a measurement, not a
 learned LM; the trained-model bits/write will be lower still.
 """

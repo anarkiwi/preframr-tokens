@@ -1,8 +1,8 @@
-"""v3 canonical event codec: the oracle is :func:`canonical_writes`, an exact intra-frame PERMUTATION
-of the dump (zero drops) -- CTRL/ADSR activity as ordered typed events at sub-frame resolution (gate-on
-= NOTE_ON with duration; gate-off ALWAYS derived, no NOTE OFF token), settled freq/PW first per voice
-group with transient pre-writes as delta-coded PRE events, globals last; frames are voice-grouped
-([DT]([VOICE][kind-led bodies]*)*) so a patch's tokens are voice-invariant. Scope: single-speed non-digi.
+"""v3 canonical event codec: the oracle is :func:`canonical_writes` -- CTRL/AD/SR change
+activity as ordered typed events at sub-frame resolution (gate-on = NOTE_ON with duration;
+gate-off ALWAYS derived, no NOTE OFF token), with freq/PW/globals emitted from SETTLED
+end-of-frame state (intra-frame transients and same-value rewrites are canonicalized away --
+licensed by raw-vs-canonical renders at the reSID noise floor). Scope: single-speed non-digi.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ NIB_ART = NIB_WAVE + 16
 NIB_ENV = NIB_ART + 16
 KEYFRAME = NIB_ENV + 16
 VOCAB_SIZE = KEYFRAME + 1
+EVENT_FORMAT_VERSION = 1
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
 _EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1))
@@ -652,11 +653,11 @@ def _assign_gate_off_modes(raw, durinfo, remove):
 
 
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
-    """The fidelity target: the dump's audibly-faithful canonical form -- an exact intra-frame
-    PERMUTATION of the dump's writes (zero drops). Per frame: voices ascending, each as [changed freq
-    lo,hi][changed pw lo,hi][cas write sequence in driver order, gate-offs derived, onset envelope on
-    its recorded gate-edge side, HR prep on the gate=0 side of the off -- gate-edge crossings are
-    content]; then changed globals reg-ascending."""
+    """The fidelity target: the dump's audibly-faithful canonical form. Per frame: voices
+    ascending, each as [settled-changed freq lo,hi][settled-changed pw lo,hi][cas write sequence
+    in driver order, gate-offs derived, onset envelope on its recorded gate-edge side, HR prep on
+    the gate=0 side of the off]; then settled-changed globals reg-ascending. CAS order is
+    preserved exactly; freq/PW/global intra-frame transients settle to end-of-frame."""
     n = ow.n_frames
     if n == 0:
         return []
@@ -1101,15 +1102,17 @@ class _Decoder:
                     prev_byte[r] = b
         return out
 
-    def run(self) -> list[tuple[int, int, int]]:
-        n, _last = self.parse()
-        return self.replay(n)
+    def run(self, extend: bool = False) -> list[tuple[int, int, int]]:
+        n, last = self.parse()
+        return self.replay(max(n, last + 1) if extend else n)
 
 
-def decode(tokens: list[int]) -> list[tuple[int, int, int]]:
+def decode(tokens: list[int], extend: bool = False) -> list[tuple[int, int, int]]:
     """v3 token stream -> the canonical ordered ``(frame, reg, value)`` writes. Strict grammar parser:
-    malformed streams raise rather than silently mis-decoding."""
-    return _Decoder(tokens).run()
+    malformed streams raise. Default truncates at the declared frame count; ``extend=True`` replays
+    through the last parsed group (for model-generated continuations past the header count).
+    """
+    return _Decoder(tokens).run(extend=extend)
 
 
 def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:
@@ -1133,6 +1136,14 @@ def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:
         if d.freq_active[v]:
             out += [voice_tok, TUNING]
             _emit_u(out, d.q[v])
+        if d.freq_active[v] and d.devs[v]:
+            out += [voice_tok, NOTE_TABLE]
+            _emit_u(out, len(d.devs[v]))
+            prev = 0
+            for note in sorted(d.devs[v]):
+                _emit_s(out, note - prev)
+                _emit_s(out, d.devs[v][note])
+                prev = note
         if d.tick[v] != (1, 0):
             out += [voice_tok, TICK]
             _emit_u(out, d.tick[v][0])
@@ -1193,6 +1204,7 @@ def roundtrip_ok(df) -> bool:
 
 
 __all__ = [
+    "EVENT_FORMAT_VERSION",
     "KEYFRAME",
     "VOCAB_SIZE",
     "canonical_writes",

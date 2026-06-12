@@ -32,7 +32,11 @@ from .pipeline import VOCAB_SIZE, iter_windows
 
 PAD_ID = 0
 
-ATOM_CACHE_VERSION = 1
+BOUNDARY_ISOLATION_NS = tuple(
+    [stream.VOICE_BASE + 1 + v for v in range(4)] + [stream.KEYFRAME + 1]
+)
+
+ATOM_CACHE_VERSION = stream.EVENT_FORMAT_VERSION
 _ATOM_DTYPE = np.int32
 
 
@@ -107,11 +111,13 @@ def block_to_ids(ow_window) -> list[int]:
     return [a + 1 for a in stream.encode(ow_window)]
 
 
-def ids_to_writes(n_ids) -> list[tuple[int, int, int]]:
+def ids_to_writes(n_ids, extend=False) -> list[tuple[int, int, int]]:
     """Inverse of :func:`block_to_ids` (dropping PAD and any KEYFRAME conditioning segments): n-space
-    ids -> ordered ``(frame, reg, val)``."""
+    ids -> ordered ``(frame, reg, val)``. ``extend=True`` replays continuations past the declared
+    frame count (generation)."""
     return stream.decode(
-        stream.strip_keyframes([int(n) - 1 for n in n_ids if int(n) > 0])
+        stream.strip_keyframes([int(n) - 1 for n in n_ids if int(n) > 0]),
+        extend=extend,
     )
 
 

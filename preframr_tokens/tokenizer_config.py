@@ -33,6 +33,7 @@ PARSER_DEFAULTS = {
     "meta_irq_lo": 0,
     "meta_irq_hi": 0,
     "meta_require": False,
+    "bpe_isolate_boundaries": False,
 }
 
 _MACRO_FLAGS_CACHE: tuple[str, ...] | None = None

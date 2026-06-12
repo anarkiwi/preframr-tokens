@@ -1,31 +1,21 @@
-"""Acceptance guards for the event model, the fast (corpus-free) subset: the no-escape
-invariant, the expansion guard, the note layer, encode determinism, and tokenizer/grammar completeness. The
-byte-exact ordered-stream roundtrip on drivers + corpus lives in ``test_events_roundtrip.py``; the BPE
-collapse/bits measurement is ``preframr_tokens.events.measure``.
+"""Acceptance guards for the event primitives that survived the v0/factored-codec removal: the
+escape-free varint codec, the lossless gesture basis, the ordered-write oracle, and the SID register-map
+helpers. The stream codec's own byte-exact roundtrip lives in test_events_roundtrip / test_events_stream.
 """
 
 import numpy as np
+import pandas as pd
+import pytest
 
-from preframr_tokens.events import factored, gestures, oracle, tokenize, varint
-
-
-def _ow(writes, n):
-    return oracle.OrderedWrites(
-        frame=np.array([f for f, _, _ in writes], dtype=np.int64),
-        reg=np.array([r for _, r, _ in writes], dtype=np.int64),
-        val=np.array([v for _, _, v in writes], dtype=np.int64),
-        n_frames=n,
-        irq=np.arange(n, dtype=np.int64),
-    )
+from preframr_tokens.events import gestures, oracle, schema, varint
+from preframr_tokens.events.gestures import Gesture
 
 
 def test_no_escape_every_value_decodes_over_one_alphabet():
-    """Every numeric field is the complete escape-free zig-zag/varint over ONE digit alphabet --
-    a rare large value is more digits of the same alphabet, never a different path. Exhaustively check
-    the signed varint round-trips across the full byte range and large magnitudes."""
+    """Every numeric field is the complete escape-free zig-zag/varint over ONE digit alphabet -- a rare
+    large value is just more digits of the same alphabet, never a different path."""
     for v in list(range(-300, 301)) + [-70000, 65535, 1 << 20]:
         assert varint.unzigzag(varint.decode_unsigned(varint.encode_signed(v))[0]) == v
-    assert factored.VOCAB_SIZE == factored.PW_MARK + 1
 
 
 def test_gesture_basis_is_lossless_for_all_shapes():
@@ -40,121 +30,52 @@ def test_gesture_basis_is_lossless_for_all_shapes():
         assert (gestures.replay(gestures.cover(s), len(s)) == s).all()
 
 
-def test_expansion_guard_factored_not_larger_than_verbatim():
-    """Expansion guard: the factored encoding never exceeds the v0 verbatim token count on a held
-    note + ramp (a case the factoring must win, not lose)."""
-    writes = []
-    for f in range(40):
-        writes.append((f, 21, 100 + 2 * f))
-        writes.append((f, 24, 15))
-    ow = _ow(sorted(writes, key=lambda t: t[0]), 40)
-    factored_n = len(factored.encode(ow))
-    from preframr_tokens.events import encoder
-
-    v0_n = len(tokenize.to_tokens(encoder.encode(ow)))
-    assert factored_n < v0_n
-    assert factored.decode(factored.encode(ow)) == ow.triples()
-
-
-def test_encode_is_deterministic():
-    writes = [(f, 0, f & 0xFF) for f in range(25)] + [(f, 1, 0) for f in range(25)]
-    ow = _ow(sorted(writes, key=lambda t: t[0]), 25)
-    assert factored.encode(ow) == factored.encode(ow)
-
-
-def test_note_layer_gate_on_typed_and_byte_exact():
-    """CTRL/AD/SR ride the note layer, not the byte lanes. A gate-on (CTRL bit0 0->1) is an
-    explicit ``FLD_NOTE_ON`` edge; gate-off is just a plain CTRL edge (no note-off token); the sustained
-    envelope is the ABSENCE of AD/SR edges between notes. The voice's settled CTRL/AD/SR series round-trip
-    exactly through the note section, and a hard-restart (AD rewritten across frames) is reproduced.
-    """
-    from preframr_tokens.events.schema import ad_reg, ctrl_reg, sr_reg
-
-    n = 30
-    settled = np.zeros((n, 25), dtype=np.int64)
-    cr, ar, srg = ctrl_reg(0), ad_reg(0), sr_reg(0)
-    for f in range(n):
-        settled[f, cr] = (
-            0x40 if f < 2 else (0x41 if f < 10 else (0x11 if f < 20 else 0x10))
-        )
-        settled[f, ar] = 0x00 if f < 2 else (0xFF if f == 2 else 0x08)
-        settled[f, srg] = 0xA9
-
-    edges = factored._note_edges(settled, 0)
-    note_on = [e for e in edges if e[1] == factored.FLD_NOTE_ON]
-    assert [f for f, _, _ in note_on] == [
-        2
-    ], "exactly one gate-on edge, typed NOTE_ON, at frame 2"
-    assert any(f == 20 and t == factored.FLD_CTRL for f, t, _ in edges)
-    assert sum(1 for _, t, _ in edges if t == factored.FLD_SR) == 1
-
-    out: list[int] = []
-    factored._emit_note_voice(out, settled, 0)
-    series: dict = {}
-    pos = factored._read_note_voice(out, 0, n, series)
-    assert pos == len(out)
-    assert (series[cr] == settled[:, cr]).all()
-    assert (series[ar] == settled[:, ar]).all()
-    assert (series[srg] == settled[:, srg]).all()
-
-
-def test_note_duration_carried_and_gate_off_derived():
-    """A note carries its duration (mixed-radix q*tick+r) on the NOTE_ON and the gate-off is
-    DERIVED, not stored as an edge. Here gate-off CTRL 0x10 == body waveform 0x11 with the gate bit
-    cleared, so the gate-off edge is removed (mode DERIVE) and reconstruction stays byte-exact.
-    """
-    from preframr_tokens.events.schema import ad_reg, ctrl_reg, sr_reg
-
-    n = 30
-    settled = np.zeros((n, 25), dtype=np.int64)
-    cr, ar, srg = ctrl_reg(0), ad_reg(0), sr_reg(0)
-    for f in range(n):
-        settled[f, cr] = (
-            0x40 if f < 2 else (0x41 if f < 10 else (0x11 if f < 20 else 0x10))
-        )
-        settled[f, ar] = 0x08
-        settled[f, srg] = 0xA9
-
-    edges = factored._note_edges(settled, 0)
-    durinfo, remove = factored._pair_gateoffs(edges)
-    note_idx = next(i for i, e in enumerate(edges) if e[1] == factored.FLD_NOTE_ON)
-    mode, dur, _c_off = durinfo[note_idx]
-    assert (
-        mode == factored._GO_DERIVE
-    ), "0x10 == 0x11 & ~gate -> gate-off value is derived"
-    assert dur == 20 - 2, "duration is gate-on(f=2) to gate-off(f=20)"
-    goff_idx = next(
-        i for i, e in enumerate(edges) if e[0] == 20 and e[1] == factored.FLD_CTRL
+def test_ordered_writes_oracle_chip0_clock_sorted():
+    """ordered_writes keeps chipno==0, drops regs>24, clock-sorts (stable), and maps irq to dense
+    frames; triples() is the byte-exact target and by_frame groups per dense frame."""
+    df = pd.DataFrame(
+        {
+            "clock": [2, 1, 5, 6, 4],
+            "irq": [100, 100, 100, 200, 200],
+            "chipno": [0, 0, 1, 0, 0],
+            "reg": [1, 0, 4, 30, 0],
+            "val": [0x22, 0x11, 0x99, 0x88, 0x33],
+        }
     )
-    assert (
-        goff_idx in remove
-    ), "the gate-off edge is dropped (synthesized from duration, no note-off)"
-
-    out: list[int] = []
-    factored._emit_note_voice(out, settled, 0)
-    series: dict = {}
-    factored._read_note_voice(out, 0, n, series)
-    assert (series[cr] == settled[:, cr]).all()
+    ow = oracle.ordered_writes(df)
+    assert ow.n_frames == 2
+    assert ow.triples() == [(0, 0, 0x11), (0, 1, 0x22), (1, 0, 0x33)]
+    assert ow.by_frame() == [[(0, 0x11), (1, 0x22)], [(0, 0x33)]]
 
 
-def test_pw_combined_lane_byte_exact():
-    """PW lo/hi are encoded as one combined 12-bit value lane (adjacent bit ranges), which is
-    byte-exact -- the lo/hi bytes split back exactly -- and lets a PW sweep be one ramp. A lo-byte wrap
-    with a hi-nibble step round-trips to the exact two source bytes."""
-    writes = []
-    for f in range(40):
-        pw = 0x0F0 + 6 * f
-        writes.append((f, 2, pw & 0xFF))
-        writes.append((f, 3, (pw >> 8) & 0xFF))
-    ow = _ow(sorted(writes, key=lambda t: t[0]), 40)
-    tokens = factored.encode(ow)
-    assert factored.PW_MARK in tokens, "PW rides the combined lane"
-    assert factored.decode(tokens) == ow.triples()
+def test_schema_register_map_helpers():
+    """The voice register-map helpers address the per-voice SID layout and the gate bit; Shape is the
+    gesture-basis enum imported by gestures."""
+    assert schema.freq_regs(1) == (7, 8)
+    assert schema.pw_regs(2) == (16, 17)
+    assert (schema.ctrl_reg(0), schema.ad_reg(0), schema.sr_reg(0)) == (4, 5, 6)
+    assert schema.gate_on(0x41) and not schema.gate_on(0x40)
+    assert (schema.Shape.HOLD, schema.Shape.POLY, schema.Shape.PERIOD) == (0, 1, 2)
 
 
-def test_decoder_rejects_malformed_stream():
-    """The token grammar is strict: a truncated varint / missing ORDER_MARK fails loudly (no escape)."""
-    import pytest
+def test_replay_one_covers_poly_wrap_and_period():
+    """replay_one reconstructs a 16-bit-wrapping POLY and a PERIOD gesture and rejects an unknown
+    shape (the per-gesture inverse of the cover split, exercised without the full cover/parse).
+    """
+    poly = Gesture(schema.Shape.POLY, 0, 3, (0xFFFF, 2))
+    assert gestures.replay_one(poly, wrap=True) == [0xFFFF, 1, 3]
+    period = Gesture(schema.Shape.PERIOD, 0, 5, (100, 2, -1))
+    assert gestures.replay_one(period) == [100, 102, 101, 103, 102]
+    period_wrap = Gesture(schema.Shape.PERIOD, 0, 3, (0xFFFF, 2))
+    assert gestures.replay_one(period_wrap, wrap=True) == [0xFFFF, 1, 3]
+    with pytest.raises(ValueError):
+        gestures.replay_one(Gesture(99, 0, 1, (0,)))
 
-    with pytest.raises(Exception):
-        factored.decode([factored.VAR_BASE + varint.CONT])
+
+def test_varint_rejects_negative_and_truncated():
+    """The unsigned codec rejects a negative input and a continue-bit-terminated truncation (no escape,
+    no silent tolerance)."""
+    with pytest.raises(ValueError):
+        varint.encode_unsigned(-1)
+    with pytest.raises(ValueError):
+        varint.decode_unsigned([varint.CONT | 1])

@@ -1,4 +1,5 @@
 import concurrent.futures
+import os
 import re
 import zstandard as zstd
 from tokenizers import (
@@ -112,6 +113,7 @@ def train_worker(
     initial_alphabet=None,
     isolation_chars="",
 ):
+    os.environ.setdefault("RUST_MIN_STACK", "2000000000")
     if initial_alphabet is None:
         initial_alphabet = []
 

@@ -1,13 +1,11 @@
-"""Event schema + SID register map: the model reads/writes a typed event
-stream (a ``list[Event]``) distinct from the register-write df. Every field is a complete value over a
-small fixed alphabet -- no ids, no DEF/REF, no escape -- so BPE over the serialized tokens is the only
-"dictionary". Defines the kinds, the SID register layout, and the lane classification the
-encoder/decoder share.
+"""SID register map + gesture-shape enum for the event codec: the per-voice freq/PW/CTRL/AD/SR register
+ids, the global-register set, and the ``Shape`` gesture basis (HOLD/POLY/PERIOD). Every field is a
+complete value over a small fixed alphabet -- no ids, no DEF/REF, no escape -- so BPE over the serialized
+tokens is the only dictionary. Imported by ``stream`` (register helpers) and ``gestures`` (Shape).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import IntEnum
 
 NUM_REGS = 25
@@ -63,32 +61,7 @@ def gate_on(ctrl_val: int) -> bool:
     return bool(ctrl_val & 0x01)
 
 
-class Kind(IntEnum):
-    """The event-kind alphabet (one token, drives the grammar).
-    Only WRITE is wired into the encoder/decoder/tokenizer today; the v3
-    stream codec models the rest with its own integer token constants."""
-
-    WRITE = 12
-
-
 class Shape(IntEnum):
     HOLD = 0
     POLY = 1
     PERIOD = 2
-
-
-@dataclass
-class Event:
-    """One musical event: a ``Kind``, a ``VOICE`` tag (0..2 or :data:`GLOBAL`), the frame it occurs on
-    (absolute; ``DT`` is derived at serialization), and kind-specific fields. Fields are plain Python
-    ints / lists of ints -- every one a complete value over a small alphabet. ``raw`` carries the
-    v0 single-write payload ``(reg, value)`` until the factored layers subsume it.
-    """
-
-    kind: Kind
-    frame: int
-    voice: int = GLOBAL
-    fields: dict = field(default_factory=dict)
-
-    def __repr__(self) -> str:
-        return f"Event({self.kind.name}, f={self.frame}, v={self.voice}, {self.fields})"
