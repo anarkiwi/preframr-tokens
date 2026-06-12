@@ -1,6 +1,6 @@
 """v3 canonical event codec: the oracle is :func:`canonical_writes`, an exact intra-frame PERMUTATION
 of the dump (zero drops) -- CTRL/ADSR activity as ordered typed events at sub-frame resolution (gate-on
-= NOTE_ON with §4 duration; gate-off ALWAYS derived, no NOTE OFF token), settled freq/PW first per voice
+= NOTE_ON with duration; gate-off ALWAYS derived, no NOTE OFF token), settled freq/PW first per voice
 group with transient pre-writes as delta-coded PRE events, globals last; frames are voice-grouped
 ([DT]([VOICE][kind-led bodies]*)*) so a patch's tokens are voice-invariant. Scope: single-speed non-digi.
 """
@@ -99,10 +99,6 @@ def _read_env_val(tokens, pos: int) -> tuple[int, int]:
     return (hi << 4) | lo, pos
 
 
-def _is_reg(tok: int) -> bool:
-    return REG_BASE <= tok < REG_BASE + NUM_REGS
-
-
 def _is_voice(tok: int) -> bool:
     return VOICE_BASE <= tok < VOICE_BASE + 4
 
@@ -152,7 +148,7 @@ def _iround(x: float) -> int:
 
 
 def single_speed(ow: OrderedWrites) -> bool:
-    """§13 multi-speed test: a tune is multi-speed when the median per-frame max same-reg repeat
+    """Multi-speed test: a tune is multi-speed when the median per-frame max same-reg repeat
     count is >= 2 (the player runs N times per IRQ frame)."""
     reps = []
     for writes in ow.by_frame():
@@ -315,7 +311,7 @@ def _canonical_tuning(t: float) -> float:
 
 def _freq_layer(settled, v: int):
     """Voice freq -> (header token-lists, ni series, delta series); shared reconstruction contract:
-    ``freq = note_freq(ni, tuning) + dev[ni] + delta`` (nonzero deviations only, §12 #4).
+    ``freq = note_freq(ni, tuning) + dev[ni] + delta`` (nonzero deviations only).
     """
     F = _freq16(settled, v)
     q = pitch_grid.tuning_to_q(_canonical_tuning(pitch_grid.voice_tuning(F)))
@@ -361,7 +357,7 @@ def _cas_changes(ow: OrderedWrites) -> dict[int, list[tuple[int, int, int]]]:
 
 
 def _typed_cas(seq):
-    """Type a voice's cas change sequence (gate 0->1 CTRL changes become ``FLD_NOTE_ON``, §6) and pair
+    """Type a voice's cas change sequence (gate 0->1 CTRL changes become ``FLD_NOTE_ON``) and pair
     each note to its gate-off: ``durinfo[i] = (mode, dur, off_val, off_idx)`` plus the off indices --
     every gate 1->0 pairs structurally, since gate only reaches 1 via a NOTE_ON."""
     raw = []
@@ -404,7 +400,7 @@ def _typed_cas(seq):
 
 
 def _recover_tick(durs) -> tuple[int, int]:
-    """Per-voice ``(tick, offset)`` for §4 durations: the unit in [2,32] whose exact residual grid
+    """Per-voice ``(tick, offset)`` for durations: the unit in [2,32] whose exact residual grid
     (offset constrained to {-1,0,+1}) covers >=90% of gate-on durations, ranked by mass then smallest
     ``|offset|`` then largest tick; >=4 durations required else raw tick=1. The exactness + offset
     constraints keep recovery stable (±1/unconstrained criteria measured degenerate); the off-grid
@@ -707,7 +703,7 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
 
 def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
     """Ordered write stream -> v3 canonical token stream. Verifies
-    ``decode(out) == canonical_writes(ow)`` by default (fail loudly, §7.0)."""
+    ``decode(out) == canonical_writes(ow)`` by default (fail loudly)."""
     n = ow.n_frames
     out: list[int] = []
     _emit_u(out, n)

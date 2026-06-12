@@ -28,14 +28,6 @@ def _voice_ctrl_regs():
     return list(VOICE_CTRL_REG.values())
 
 
-def _scaffold_ctrl_set_pair(ctrl_reg, a, b):
-    return [
-        {"op": SET_OP, "reg": ctrl_reg, "subreg": -1, "val": int(a), "diff": 100},
-        {"op": SET_OP, "reg": FRAME_REG, "subreg": -1, "val": 1, "diff": 19656},
-        {"op": SET_OP, "reg": ctrl_reg, "subreg": -1, "val": int(b), "diff": 100},
-    ]
-
-
 class TestSubstitutabilityRegistry(unittest.TestCase):
     def test_collects_substitutable_ops(self):
         ops = collect_substitutable_ops()

@@ -518,8 +518,6 @@ class VoiceBlockOrderPass(MacroPass):
         snapshots = []
 
         class _SnapshotWalker(FrameWalker):
-            track_instruments = False
-
             def _walk_frame(self, start, end):
                 snap = tuple(
                     (
@@ -605,6 +603,13 @@ class DedupSetPass(MacroPass):
 
     @requires_state
     def apply(self, df, state, args):
+        """Drop SETs whose value already matches running register state. The
+        walker can only ever drop full-byte SETs (subreg == -1); when none
+        exist (typical post-squeeze), skip the per-row walk entirely."""
+        eligible = (df["op"] == SET_OP) & (df["subreg"] == -1)
+        if not eligible.any():
+            return df
+
         class _DedupWalker(FrameWalker):
             def __init__(self, df_, state_):
                 super().__init__(df_, state_)

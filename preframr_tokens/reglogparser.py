@@ -66,7 +66,6 @@ FRAME_DTYPES = {
     "op": OP_PDTYPE,
 }
 
-PY_MTIME = Path(__file__).resolve().stat().st_mtime
 pd.set_option("future.no_silent_downcasting", True)
 
 
@@ -113,11 +112,13 @@ def frame_reg(orig_df):
     """Cumulative frame index (1-based per-FRAME_REG / DELAY_REG marker).
     Returns a Series aligned with ``orig_df.index``.
     """
-    df = orig_df[["reg", "val"]].copy()
-    df.loc[(df["reg"] == FRAME_REG), "val"] = 1
-    m = frame_match(df)
-    df.loc[~m, "val"] = 0
-    return df["val"].cumsum()
+    reg = orig_df["reg"].to_numpy(dtype=np.int64)
+    units = np.zeros(len(reg), dtype=np.int64)
+    units[reg == FRAME_REG] = 1
+    delay_m = reg == DELAY_REG
+    if delay_m.any():
+        units[delay_m] = orig_df["val"].to_numpy()[delay_m].astype(np.int64)
+    return pd.Series(np.cumsum(units), index=orig_df.index, dtype=orig_df["val"].dtype)
 
 
 def norm_df(orig_df):
@@ -331,6 +332,19 @@ def combine_val(reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
     return reg_df[origcols]
 
 
+def _settle_reg_pair(reg_df, reg, diffmax=512, bits=0, lobits=8):
+    """Process the already-extracted rows of one lo/hi reg pair: stable
+    clock sort, combine to one wide value, keep the last settled value per
+    ``clock // diffmax`` bucket, mask off low ``bits``."""
+    reg_df = reg_df.sort_values("clock", kind="stable").copy()
+    reg_df["dclock"] = reg_df["clock"].floordiv(diffmax)
+    reg_df = combine_val(reg_df, reg, 2, lobits=lobits)
+    reg_df = reg_df.drop_duplicates(["dclock"], keep="last")
+    if bits:
+        reg_df["val"] = np.left_shift(np.right_shift(reg_df["val"], bits), bits)
+    return reg_df
+
+
 def combine_reg(orig_df, reg, diffmax=512, bits=0, lobits=8):
     """Settle the 16-bit value spanning ``reg`` (lo) and ``reg+1`` (hi): forward-fill
     both bytes and keep the last settled value per ``clock // diffmax`` bucket, so a
@@ -339,14 +353,10 @@ def combine_reg(orig_df, reg, diffmax=512, bits=0, lobits=8):
     The canonical SID freq/PW/filter combine, shared by the parser and freq audits.
     """
     cond = (orig_df["reg"] == reg) | (orig_df["reg"] == (reg + 1))
-    reg_df = orig_df[cond].sort_values("clock", kind="stable").copy()
-    non_reg_df = orig_df[~cond]
-    reg_df["dclock"] = reg_df["clock"].floordiv(diffmax)
-    reg_df = combine_val(reg_df, reg, 2, lobits=lobits)
-    reg_df = reg_df.drop_duplicates(["dclock"], keep="last")
-    if bits:
-        reg_df["val"] = np.left_shift(np.right_shift(reg_df["val"], bits), bits)
-    df = pd.concat([non_reg_df, reg_df[orig_df.columns]], ignore_index=True)
+    reg_df = _settle_reg_pair(
+        orig_df[cond], reg, diffmax=diffmax, bits=bits, lobits=lobits
+    )
+    df = pd.concat([orig_df[~cond], reg_df[orig_df.columns]], ignore_index=True)
     df = df.astype(orig_df.dtypes)
     return df
 
@@ -425,9 +435,6 @@ class RegLogParser:
         mask = prev.isna() | (prev != df["val"])
         cols = ["clock", "irq", "reg", "val"]
         return df.loc[mask, cols].reset_index(drop=True)
-
-    def _combine_val(self, reg_df, reg, reg_range, dtype=MODEL_PDTYPE, lobits=8):
-        return combine_val(reg_df, reg, reg_range, dtype=dtype, lobits=lobits)
 
     def _combine_reg(self, orig_df, reg, diffmax=512, bits=0, lobits=8):
         return combine_reg(orig_df, reg, diffmax=diffmax, bits=bits, lobits=lobits)
@@ -762,11 +769,21 @@ class RegLogParser:
         return True
 
     def _combine_regs(self, df):
+        """One concat over all 7 settled lo/hi pairs instead of 7 serial
+        combine_reg round-trips; pair order matches the old sequential
+        application so the stable clock sort breaks ties identically."""
+        pairs = []
         for v in range(VOICES):
             v_offset = v * VOICE_REG_SIZE
-            for reg, bits in ((v_offset, 0), ((v_offset + 2), PCM_BITS)):
-                df = self._combine_reg(df, reg=reg, bits=bits)
-        df = self._combine_reg(df, FC_LO_REG, bits=FILTER_BITS)
+            pairs.extend(((v_offset, 0), ((v_offset + 2), PCM_BITS)))
+        pairs.append((FC_LO_REG, FILTER_BITS))
+        parts = []
+        covered = pd.Series(False, index=df.index)
+        for reg, bits in pairs:
+            cond = (df["reg"] == reg) | (df["reg"] == (reg + 1))
+            covered |= cond
+            parts.append(_settle_reg_pair(df[cond], reg, bits=bits)[df.columns])
+        df = pd.concat([df[~covered]] + parts, ignore_index=True).astype(df.dtypes)
         return df.sort_values("clock", kind="stable").reset_index(drop=True)
 
     def _consolidate_frames(self, orig_df):
@@ -775,59 +792,51 @@ class RegLogParser:
         marker is worth ``round(diff / frame_period)`` units, a DELAY its val; the
         run's final marker (the next content frame) is kept verbatim so its
         voice-order survives. Cycle-preserving by construction."""
-        rows = norm_df(orig_df.copy()).to_dict("records")
-        n = len(rows)
+        orig_df = orig_df.reset_index(drop=True)
+        n = len(orig_df)
         if not n:
-            return orig_df.reset_index(drop=True)
+            return orig_df
         frame_period = read_initial_irq(orig_df)
+        reg_arr = orig_df["reg"].to_numpy(dtype=np.int64)
+        val_arr = orig_df["val"].to_numpy()
+        diff_arr = orig_df["diff"].to_numpy()
 
-        def _units(r):
-            if int(r["reg"]) == DELAY_REG:
-                return int(r["val"])
-            return int(round(int(r["diff"]) / frame_period)) if frame_period else 1
+        def _units(k):
+            if reg_arr[k] == DELAY_REG:
+                return int(val_arr[k])
+            return int(round(int(diff_arr[k]) / frame_period)) if frame_period else 1
 
-        def _is_marker(r):
-            return int(r["reg"]) in (FRAME_REG, DELAY_REG)
-
-        out = []
+        out_src = []
+        overrides = []
         i = 0
         while i < n:
-            if not _is_marker(rows[i]):
-                out.append(rows[i])
+            if reg_arr[i] != FRAME_REG and reg_arr[i] != DELAY_REG:
+                out_src.append(i)
                 i += 1
                 continue
             j = i
-            while j < n and _is_marker(rows[j]):
+            while j < n and (reg_arr[j] == FRAME_REG or reg_arr[j] == DELAY_REG):
                 j += 1
-            last = rows[j - 1]
-            if int(last["reg"]) == FRAME_REG:
-                empty = sum(_units(rows[k]) for k in range(i, j - 1))
+            if reg_arr[j - 1] == FRAME_REG:
+                empty = sum(_units(k) for k in range(i, j - 1))
                 if empty > 0:
-                    out.append(
-                        {
-                            **rows[i],
-                            "reg": DELAY_REG,
-                            "val": empty,
-                            "diff": frame_period,
-                        }
-                    )
-                out.append(last)
+                    overrides.append((len(out_src), DELAY_REG, empty))
+                    out_src.append(i)
+                out_src.append(j - 1)
             else:
-                total = sum(_units(rows[k]) for k in range(i, j))
+                total = sum(_units(k) for k in range(i, j))
                 if total - 1 > 0:
-                    out.append(
-                        {
-                            **rows[i],
-                            "reg": DELAY_REG,
-                            "val": total - 1,
-                            "diff": frame_period,
-                        }
-                    )
-                out.append(
-                    {**rows[i], "reg": FRAME_REG, "val": 0, "diff": frame_period}
-                )
+                    overrides.append((len(out_src), DELAY_REG, total - 1))
+                    out_src.append(i)
+                overrides.append((len(out_src), FRAME_REG, 0))
+                out_src.append(i)
             i = j
-        df = pd.DataFrame(out)
+        df = orig_df.iloc[np.asarray(out_src, dtype=np.int64)].reset_index(drop=True)
+        if overrides:
+            pos = [p for p, _, _ in overrides]
+            df.loc[pos, "reg"] = [r for _, r, _ in overrides]
+            df.loc[pos, "val"] = [v for _, _, v in overrides]
+            df.loc[pos, "diff"] = frame_period
         return df[orig_df.columns].astype(orig_df.dtypes).reset_index(drop=True)
 
     def _squeeze_frame_regs(self, orig_df, regs=(0, 2, 21)):

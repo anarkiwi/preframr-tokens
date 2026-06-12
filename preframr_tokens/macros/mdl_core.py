@@ -103,7 +103,7 @@ def mdl_parse(series, wrap=False, cost_model=None):
     via shortest path on the position DAG; returns ``[(kind, i, j, param)]`` with kind ``"H"``
     (param=value), ``"D"`` (param=(N, constant N-th diff)), or ``"P"`` (param=delta cell). ``cost_model``
     (methods ``hold(s,i,j)``, ``poly(s,i,j,N,difftable)``, ``period(s,i,j,cell)``) overrides the legacy
-    bootstrap bit cost with the caller's serialized cost (§8.6, e.g. emitted-token count).
+    bootstrap bit cost with the caller's serialized cost (e.g. emitted-token count).
     """
     s = np.asarray(series, dtype=np.int64)
     n = len(s)

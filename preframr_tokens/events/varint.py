@@ -1,4 +1,4 @@
-"""Complete, escape-free integer codec shared by every numeric field (REDESIGN_optionB §2.2, §3.5): a
+"""Complete, escape-free integer codec shared by every numeric field: a
 signed int is zig-zagged then split into BIG-ENDIAN base-16 digits (most-significant first -- the coarse,
 context-predictable part is committed before the noisy fine digit, which autoregressive models prefer),
 each a token 0..15 with a high continue bit (token 0..31, ``& 16`` => more follow). A common small value
@@ -57,9 +57,3 @@ def decode_unsigned(tokens: list[int], pos: int = 0) -> tuple[int, int]:
         u = (u << 4) | (tok & DIGIT_MASK)
         if not (tok & CONT):
             return u, pos
-
-
-def decode_signed(tokens: list[int], pos: int = 0) -> tuple[int, int]:
-    """Decode one signed varint; returns ``(value, next_pos)``."""
-    u, pos = decode_unsigned(tokens, pos)
-    return unzigzag(u), pos

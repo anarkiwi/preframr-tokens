@@ -1,4 +1,4 @@
-"""Decoder: event stream -> ordered register-write stream (REDESIGN_optionB §7). Driver-replay: it expands
+"""Decoder: event stream -> ordered register-write stream. Driver-replay: it expands
 events to an ordered ``(frame, reg, value)`` list the encoder asserts equals the source oracle byte-for-
 byte, including intra-frame order and same-register repeats. There is NO fall-back-to-literal guard --
 every field is a complete encoding, so divergence is a bug and fails loudly. v0 mirrors the v0 encoder
@@ -11,7 +11,7 @@ from .schema import Event, Kind
 
 
 def decode(events: list[Event]) -> list[tuple[int, int, int]]:
-    """Event stream -> ordered ``(frame, reg, value)`` writes (the fidelity target, §7)."""
+    """Event stream -> ordered ``(frame, reg, value)`` writes (the fidelity target)."""
     out: list[tuple[int, int, int]] = []
     for ev in events:
         if ev.kind == Kind.WRITE:

@@ -1,7 +1,7 @@
-"""Event schema + SID register map (REDESIGN_optionB §3, §3.5): the model reads/writes a typed event
+"""Event schema + SID register map: the model reads/writes a typed event
 stream (a ``list[Event]``) distinct from the register-write df. Every field is a complete value over a
 small fixed alphabet -- no ids, no DEF/REF, no escape -- so BPE over the serialized tokens is the only
-"dictionary" (§2.3). Defines the kinds, the SID register layout, and the lane classification the
+"dictionary". Defines the kinds, the SID register layout, and the lane classification the
 encoder/decoder share.
 """
 
@@ -64,20 +64,10 @@ def gate_on(ctrl_val: int) -> bool:
 
 
 class Kind(IntEnum):
-    """The event-kind alphabet (one token, drives the grammar §7.1)."""
+    """The event-kind alphabet (one token, drives the grammar).
+    Only WRITE is wired into the encoder/decoder/tokenizer today; the v3
+    stream codec models the rest with its own integer token constants."""
 
-    NOTE_ON = 0
-    NOTE_STEP = 1
-    MOD_FREQ = 2
-    MOD_PW = 3
-    MOD_CTRL = 4
-    MOD_CUTOFF = 5
-    FILTER_CTL = 6
-    MOD_VOL = 7
-    TICK = 8
-    TUNING = 9
-    NOTE_TABLE = 10
-    ORDER = 11
     WRITE = 12
 
 
@@ -91,7 +81,7 @@ class Shape(IntEnum):
 class Event:
     """One musical event: a ``Kind``, a ``VOICE`` tag (0..2 or :data:`GLOBAL`), the frame it occurs on
     (absolute; ``DT`` is derived at serialization), and kind-specific fields. Fields are plain Python
-    ints / lists of ints -- every one a complete value over a small alphabet (§3). ``raw`` carries the
+    ints / lists of ints -- every one a complete value over a small alphabet. ``raw`` carries the
     v0 single-write payload ``(reg, value)`` until the factored layers subsume it.
     """
 

@@ -1,4 +1,4 @@
-"""The fidelity oracle (REDESIGN_optionB §0, §2.8, §7): the exact ordered register-write stream -- the raw
+"""The fidelity oracle: the exact ordered register-write stream -- the raw
 dump rows ``(clock, irq, chipno, reg, val)`` filtered to ``chipno==0`` and sorted by ``clock``, NOT the
 settled end-of-frame ``register_state``. That order is audibly significant (hard-restart, gate/ADSR order,
 multi-speed sub-frame writes), so the decoder reproduces it write-for-write. A frame is the index into the
@@ -55,7 +55,7 @@ class OrderedWrites:
 
 def ordered_writes(df: pd.DataFrame) -> OrderedWrites:
     """Build the :class:`OrderedWrites` oracle from a raw dump DataFrame: filter to ``chipno==0`` (v1 is
-    single-SID, §12), sort by ``clock`` (stable, so equal-clock rows keep source order), drop regs > 24,
+    single-SID), sort by ``clock`` (stable, so equal-clock rows keep source order), drop regs > 24,
     map each ``irq`` to a dense frame index, and mask values to a byte. The result is exactly the ordered
     write stream the decoder must reproduce."""
     if "chipno" in df.columns:

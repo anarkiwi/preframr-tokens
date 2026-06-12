@@ -6,7 +6,16 @@ the [preframr](https://github.com/anarkiwi/preframr) research codebase.
 Torch-free. The training-side concerns (model, loss, DataLoader,
 predict) live in the main `preframr` repo; this package contains the
 stable parsing + encoding layer that produces the parsed parquets +
-unigram tokenizer alphabet that downstream training consumes.
+the token alphabet that downstream training consumes.
+
+This README is the API reference for the package, including the
+[input dump format](#the-input-dump-format), the
+[v3 event token alphabet](#the-token-alphabet-v3-event-model) and its
+[fidelity contract](#fidelity-contract), and the
+[parse-domain output schema](#parse-domain-reglogparser). The
+SID-chip behavior facts these encodings rest on are documented (and
+unit-tested) in the
+[preframr-audio README](https://github.com/anarkiwi/preframr-audio).
 
 ## Install
 
@@ -30,16 +39,159 @@ Import from the package root:
 from preframr_tokens import RegLogParser, RegTokenizer, Corpus, reg_class
 ```
 
-`preframr_tokens.__all__` is the semver-promised surface. Two submodules
+`preframr_tokens.__all__` is the semver-promised surface. Three submodules
 are also public, stable namespaces you import directly:
-`preframr_tokens.stfconstants` (reg ids, op codes, dtypes, PAL clock) and
+`preframr_tokens.stfconstants` (reg ids, op codes, dtypes, PAL clock),
 `preframr_tokens.engine_fingerprint` (feature-vector layout, `ClusterTable`,
-`compute_fingerprint`). Every other `preframr_tokens.*` submodule path is
-**internal and may move between releases** — depend on the root re-exports
-instead. The module list below documents that internal structure.
+`compute_fingerprint`), and `preframr_tokens.events` (the v3 event codec:
+`events.stream`, `events.oracle`, `events.pipeline`, `events.dataset`,
+`events.generate`, `events.varint`). Every other `preframr_tokens.*`
+submodule path is **internal and may move between releases** — depend on
+the root re-exports instead. The module list below documents that
+internal structure.
+
+## The input dump format
+
+A raw tune is a `.dump.parquet` (`DUMP_SUFFIX`) of register writes
+captured from a SID player:
+
+| Column | Meaning |
+|---|---|
+| `clock` | absolute PAL φ2 clock cycle of the write |
+| `irq` | IRQ counter; each unique value is one player frame (~19656 cycles, `DEFAULT_IRQ_CYCLES`, ≈50.1 Hz) |
+| `chipno` | SID chip number — v1 scope is single-SID, `chipno != 0` is dropped |
+| `reg` | register 0..24 |
+| `val` | byte written |
+
+Register map (`VOICE_REG_SIZE = 7`, base = `voice * 7`): +0/+1 freq
+lo/hi, +2/+3 pulse-width lo/hi, +4 control (bit0 GATE, bit3 TEST,
+bits4–7 waveform), +5 AD, +6 SR. Globals: 21/22 filter cutoff lo/hi,
+23 resonance/routing, 24 mode/volume. A 16-bit frequency is always
+`(hi << 8) | lo` — the parser settles lo/hi pairs (`combine_reg`)
+so a half-updated pair is never read.
+
+Scope: single-speed (one player call per IRQ frame; `events.stream.single_speed`),
+non-digi (`dump_meta.is_digi`). Multi-speed (~5%) and digi (~3%) tunes
+are rejected up front; an out-of-scope failure is a scope bug, not a
+fidelity bug.
+
+## The token alphabet (v3 event model)
+
+The current tokenizer is the event codec in `preframr_tokens.events`
+(`stream.py`). It is a fixed 127-atom alphabet (`stream.VOCAB_SIZE`);
+BPE over these atoms is the only "dictionary" — there are no DEF/REF
+ids, no literals, and no escape path in the grammar.
+
+| Range | Tokens | Meaning |
+|---|---|---|
+| `VAR_BASE` 0–31 | 32 | varint digits: low 4 bits = base-16 digit, bit 4 = continue flag. Values are big-endian (coarse digit first); signed values are zig-zagged (`events.varint`) |
+| `REG_BASE` 32–56 | 25 | register ids 0..24 (global-lane addressing) |
+| `VOICE_BASE` 57–60 | 4 | voice tags: voice 0/1/2 + GLOBAL |
+| `TUNING` 61, `NOTE_TABLE` 62, `TICK` 63 | 3 | per-voice stream headers: tuning quantization, note-frequency deviation table, gate-duration tick grid |
+| `NI_STEP`/`NI_RAMP` 64/65 | 2 | note-index step / ramp (the melody lane) |
+| `FD_STEP`/`FD_RAMP` 66/67 | 2 | freq-residual step / ramp |
+| `PW_STEP`/`PW_RAMP` 68/69 | 2 | pulse-width step / ramp (combined 12-bit lane) |
+| `FLD_NOTE_ON` 70 | 1 | gate 0→1 CTRL write; owns the envelope lifecycle (onset AD/SR fold, recorded gate-edge side, hard-restart prep, mixed-radix duration) |
+| `FLD_CTRL` 71, `FLD_AD` 72, `FLD_SR` 73 | 3 | non-gate-on CTRL / AD / SR writes |
+| `G_STEP`/`G_RAMP` 74/75 | 2 | global-register step / ramp (followed by a `REG_BASE` token) |
+| `SHAPE_POLY` 76, `SHAPE_PERIOD` 77 | 2 | ramp shapes: polynomial finite-difference params / periodic cell |
+| `NIB_WAVE` 78–93, `NIB_ART` 94–109 | 32 | CTRL value nibbles (waveform high nibble, articulation low nibble) |
+| `NIB_ENV` 110–125 | 16 | envelope nibbles (AD/SR hi+lo; PW duty class) |
+| `KEYFRAME` 126 | 1 | chunk-conditioning segment bracket (structural; `strip_keyframes` removes before decode) |
+
+**Stream grammar.** A stream is a preamble of per-voice headers
+(`[VOICE_v TUNING q]`, `[VOICE_v NOTE_TABLE …]`, `[VOICE_v TICK …]`)
+followed by frame groups:
+
+```
+<n_frames> ( <DT> ( <VOICE_v> <kind-led event body>* )* )*
+```
+
+`DT` is the frame-index delta (unsigned varint). Voices appear in
+ascending order; within a voice, events rank freq (NI/FD) before PW
+before CTRL/envelope. Freq and PW are encoded from the **settled**
+end-of-frame register state; transient pre-writes survive as
+delta-coded events in the residual lanes. The stream is
+self-delimiting: every field family owns a disjoint token range, so
+no separator or escape token exists.
+
+`is_content_atom(tok)` splits the alphabet into loss tiers: content =
+varint digits + typed value nibbles (the payload the model must
+predict — intervals, durations, timbre); structural = everything else
+(reg ids, voice tags, kind/shape markers, KEYFRAME).
+
+### Fidelity contract
+
+The oracle is `events.stream.canonical_writes(ow)`: a byte-exact
+**intra-frame permutation** of the dump's writes (zero drops). Per
+frame: per voice 0→2, changed settled freq then PW; then the voice's
+CTRL/AD/SR sequence in driver order — gate-ons become `FLD_NOTE_ON`,
+gate-offs are **derived** (no NOTE OFF token), onset envelope nibbles
+keep their recorded side of the gate edge, hard-restart prep stays on
+the gate=0 side; then changed globals ascending. "Lossless" means
+`decode(encode(ow)) == canonical_writes(ow)` — same-value rewrites
+(chip latch no-ops) are canonicalized away. Why each of those rules is
+chip-correct (and no stronger normalization is) is pinned by the
+pyresidfp test suites in
+[preframr-audio](https://github.com/anarkiwi/preframr-audio).
+
+`encode(ow, verify=True)` self-verifies that contract on every call
+and raises loudly on miss; `roundtrip_ok(df)` is the one-call smoke
+test. The entry points:
+
+```python
+from preframr_tokens.events import oracle, stream
+
+ow = oracle.ordered_writes(dump_df)   # byte-exact ground truth (clock-sorted, chipno 0)
+tokens = stream.encode(ow)            # verified against canonical_writes
+writes = stream.decode(tokens)        # [(frame, reg, val), ...]
+```
+
+`oracle.settled_grid(ow)` is the per-frame settled `(n_frames, 25)`
+register view — the *musical* read used by the gesture/note parse,
+never the fidelity target. `events.pipeline` / `events.dataset` build
+self-contained event-token blocks for training
+(`Corpus.preload` drives them); `events.generate` decodes generated
+token ids back to ordered writes.
+
+## Parse-domain (RegLogParser)
+
+The pre-events parse pipeline is still the substrate for the macro
+passes, audits and the constrained-decode mask. `RegLogParser(args)`
+is constructed from an `argparse.Namespace`
+(`tokenizer_config.default_tokenizer_args()` /
+`named_config("full_macros")` provide the presets) and
+`parse(name, max_perm=99, require_pq=False, reparse=False)` yields one
+parsed DataFrame per voice rotation:
+
+| Column | Meaning |
+|---|---|
+| `reg` | register id, plus marker registers below |
+| `val` | value (post combine/quantize) |
+| `diff` | clock delta (frame period on FRAME rows) |
+| `op` | op code (`SET_OP = 0` for literal writes; macros emit their own) |
+| `subreg` | sub-register index for multi-row macro atoms (−1 unused) |
+| `irq` | frame period in cycles |
+
+Marker registers (`stfconstants`): `FRAME_REG = -128` (frame boundary;
+`val` packs the per-frame voice order base-4, see `remove_voice_reg` /
+`VALID_VOICEORDERS`), `DELAY_REG = -127` (multi-frame gap, `val` =
+frames), `VOICE_REG = -126` (voice delimiter, `val` = 0 in any trained
+stream), `PAD_REG = -1`. `prepare_df_for_audio` converts a parsed df
+back to the literal-write + marker form the
+[preframr-audio](https://github.com/anarkiwi/preframr-audio) renderer
+consumes.
 
 ## Modules
 
+- `preframr_tokens.events` -- the v3 event codec (see
+  [The token alphabet](#the-token-alphabet-v3-event-model)):
+  `stream` (alphabet, `encode`/`decode`, `canonical_writes`,
+  `chunk_keyframe`/`strip_keyframes`, `roundtrip_ok`, `single_speed`,
+  `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
+  `settled_grid`), `varint` (BE base-16 zig-zag codec), `pipeline` /
+  `dataset` (frame-window blocking + training arrays), `generate`
+  (token ids → ordered writes).
 - `preframr_tokens.reglogparser` -- SID dump → parsed dataframe
   pipeline. `RegLogParser`, plus `read_initial_irq` (first-frame IRQ
   read off a parser-output df, with PAL default).
@@ -69,9 +221,9 @@ instead. The module list below documents that internal structure.
   engine-fingerprint / engine-fp-cluster `df.attrs`.
 - `preframr_tokens.macros.roles` -- single source of truth for macro
   `(op, subreg)` → role classification. `distance_pair_role`,
-  `slope_subreg_role`, `frame_weight_role`, plus the
-  `DISTANCE_PAIR_OPS` table and the `DistancePairSpec` dataclass. The
-  parse-domain reg-id counterpart is `reg_match`.
+  `frame_weight_role`, plus the `DISTANCE_PAIR_OPS` table and the
+  `DistancePairSpec` dataclass. The parse-domain reg-id counterpart is
+  `reg_match`.
 - `preframr_tokens.vocab_signature` -- `VocabSignature` class. Single-
   pass per-vocab-id (loss-tier, frame-time-weight) computation. The
   `tier_classify` and `token_weighting` free functions are thin
@@ -193,8 +345,7 @@ The authoritative promised surface is `preframr_tokens.__all__`
   `StreamState`, `PendingSlot`, `VocabArrays`, `VocabSignature`,
   `Transform` (+ `register` decorator, `PipelineEntry`,
   `TransformPipeline`, `PassBackedTransform`, `RowExpandingTransform`),
-  `DistancePairSpec`, and the pass classes `SlopePass`, `PresetPass`,
-  `PerRegBurstPass`, `GateSlopeShiftPass`.
+  and `DistancePairSpec`.
 - **Decision helpers**: the `tier_classify` (`vocab_id_tier`,
   `build_vocab_tier_ids`, `build_vocab_tier_map`) / `token_weighting`
   (`vocab_frame_weights`) / `VocabSignature` / `read_initial_irq` /
@@ -204,7 +355,7 @@ The authoritative promised surface is `preframr_tokens.__all__`
   `remove_voice_reg`, `validate_back_refs`, `validate_pattern_overlays`,
   `frame_marker_count`, `tail_charge_for_prompt`,
   `ensure_default_transforms_registered`, `get_transform_class`,
-  `distance_pair_role`, `slope_subreg_role`, `frame_weight_role`,
+  `distance_pair_role`, `frame_weight_role`,
   `classify_carveout`, `iter_voiced_blocks`, `reg_widths_path`,
   `self_contained_prompt_df`, `tier_accuracy`, `detect_tail_cycle`,
   `distinct_n`, `load_palettes_attrs`, `dump_palettes_attrs`.

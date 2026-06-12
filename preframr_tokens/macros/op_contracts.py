@@ -71,7 +71,7 @@ __all__ = [
 class MaskRole(Enum):
     """How constrained decode treats an op. ATOM = self-contained single emission, transparent to the
     structural mask/validator (only its reg classification matters); DISTANCE_PAIR / OVERLAY / LOOP_CTRL
-    are the loop-op state machines; CODEBOOK_DEF/STEP/END/REF are the inline-redefinable dictionary ops
+    are the loop-op state machines; CODEBOOK_REF is an inline-redefinable dictionary op
     whose REF is legal iff its id is live (enforced once B2 wires the live id-sets into AbsState).
     """
 
@@ -79,9 +79,6 @@ class MaskRole(Enum):
     DISTANCE_PAIR = "distance_pair"
     OVERLAY = "overlay"
     LOOP_CTRL = "loop_ctrl"
-    CODEBOOK_DEF = "codebook_def"
-    CODEBOOK_STEP = "codebook_step"
-    CODEBOOK_END = "codebook_end"
     CODEBOOK_REF = "codebook_ref"
 
 

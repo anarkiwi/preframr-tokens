@@ -19,7 +19,6 @@ ChipModel = pyresidfp.sound_interface_device.ChipModel
 
 
 SYNTHETIC_AUDIO_NEUTRAL_BOUND = 200
-REAL_FIXTURE_PARSE_BOUND = 0.02
 
 
 def _make_parser(cents: int = 50):

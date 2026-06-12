@@ -1,4 +1,4 @@
-"""Events generation-decode guards (REDESIGN_optionB §7.1, step 4): a generated token stream decodes back
+"""Events generation-decode guards: a generated token stream decodes back
 to the exact ordered writes, and the render-ready dump DataFrame carries the right per-frame timing.
 """
 

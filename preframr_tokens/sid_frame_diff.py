@@ -146,18 +146,3 @@ def diff_dump_vs_pipeline(dump_path, xdf, cents=50, freq_tol=1):
     return diff_states(
         dump_frame_state(dump_path), register_state(xdf), cents=cents, freq_tol=freq_tol
     )
-
-
-def format_report(res):
-    """Render a ``diff_states`` result as human-readable lines."""
-    lines = [f"frames={res['frames']} aligned_offset={res['offset']} ok={res['ok']}"]
-    for cls, info in res["exact"].items():
-        lines.append(
-            f"  EXACT FAIL {cls}: {info['frames']} frames (first {info['first']})"
-        )
-    for cls, info in res["freq"].items():
-        flag = "  FREQ FAIL" if info["over_tol"] else "  freq ok "
-        lines.append(
-            f"{flag} {cls}: over_tol={info['over_tol']} maxdidx={info['max_delta']}"
-        )
-    return "\n".join(lines)

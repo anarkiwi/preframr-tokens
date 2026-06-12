@@ -5,7 +5,6 @@ __all__ = ["LoopPass"]
 from collections import defaultdict
 
 import numpy as np
-import pandas as pd
 
 from preframr_tokens.macros.loops import (
     OVERLAY_BODY_FREQ_DELTA,
@@ -15,7 +14,7 @@ from preframr_tokens.macros.loops import (
     _pattern_overlay_rows,
     _pattern_replay_rows,
 )
-from preframr_tokens.macros.passes_base import MacroPass, _ensure_subreg
+from preframr_tokens.macros.passes_base import MacroPass, _ensure_subreg, _rows_to_df
 from preframr_tokens.macros.state import _FRAME_MARKER_REGS, _build_decode_state
 from preframr_tokens.macros.walker import FrameWalker
 from preframr_tokens.stfconstants import (
@@ -38,17 +37,11 @@ def _slice_into_frames(df):
     return list(zip(starts, ends))
 
 
-def _frame_content(df, start, end):
-    """Hashable, comparable content tuple for a frame -- ignores diff and irq
+def _frame_contents_batch(df, frames):
+    """Hashable, comparable content tuple per frame -- ignores diff and irq
     columns so that sequential identical-content frames at different stream
     times still match.
     """
-    cols = ["reg", "val", "op", "subreg"]
-    return tuple(tuple(int(v) for v in df.iloc[r][cols]) for r in range(start, end))
-
-
-def _frame_contents_batch(df, frames):
-    """Vectorised version of ``_frame_content`` for a whole frame list."""
     regs = df["reg"].to_numpy()
     vals = df["val"].to_numpy()
     ops = df["op"].to_numpy()
@@ -678,11 +671,7 @@ class LoopPass(MacroPass):
         if not out_rows:
             return df
         orig_dtypes = df.dtypes.to_dict()
-        new_df = pd.DataFrame(out_rows)
-        for col in df.columns:
-            if col not in new_df.columns:
-                new_df[col] = 0 if col == "description" else -1
-        new_df = new_df[list(df.columns)]
+        new_df = _rows_to_df(out_rows, df.columns, defaults={"description": 0})
         for col, dt in orig_dtypes.items():
             try:
                 new_df[col] = new_df[col].astype(dt)
