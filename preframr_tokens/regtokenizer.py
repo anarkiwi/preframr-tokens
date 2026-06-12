@@ -28,32 +28,6 @@ from preframr_tokens.stfconstants import (
 )
 
 
-def split_cross_boundary_merges(
-    seq, decode_to_base_ids, base_to_unigram_id, is_melody, n_atoms, dtype=np.int32
-):
-    """Expand any merged Unigram token whose decoded base atoms cross the melody/non-melody
-    boundary back into its base atoms. Pure-melody and pure-non-melody merges (and single
-    base atoms) are kept. Pure: takes ``decode_to_base_ids(uid) -> list[int]``,
-    ``base_to_unigram_id(bid) -> int|None`` (the single-atom Unigram id for that base id),
-    and ``is_melody(bid) -> bool``. Returns a possibly-longer 1-D numpy array of ids."""
-    out = []
-    for tid in seq:
-        tid = int(tid)
-        base_ids = [int(b) for b in decode_to_base_ids(tid)]
-        valid = [b for b in base_ids if 0 <= b < n_atoms]
-        if len(valid) <= 1:
-            out.append(tid)
-            continue
-        melody_n = sum(1 for b in valid if is_melody(b))
-        if melody_n == 0 or melody_n == len(valid):
-            out.append(tid)
-            continue
-        for b in valid:
-            u = base_to_unigram_id(b)
-            out.append(int(u) if u is not None else tid)
-    return np.asarray(out, dtype=dtype)
-
-
 from preframr_tokens.train_worker import train_worker
 
 __all__ = ["RegTokenizer"]
