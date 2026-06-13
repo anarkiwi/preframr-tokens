@@ -4,6 +4,7 @@ byte-exact (space-stripped uni text round-trips, decode reproduces the atom ids)
 
 import logging
 import os
+import time
 import types
 
 import numpy as np
@@ -131,3 +132,32 @@ def test_events_preload_sets_segmenter_and_trains(tmp_path):
     assert c.tokenizer.unit_segmenter is dataset.unit_starts
     assert c.tokenizer.tkmodel is not None
     assert c.tokenizer.tkmodel.get_vocab_size() == 160
+
+
+def test_vocab_is_weld_free_and_round_trips(tmp_path):
+    """The end-to-end point: no learned dictionary piece spans a grammar-unit boundary, and BPE
+    encode/decode stays byte-exact on every fixture. Compression ratio is logged, not asserted.
+    """
+    c, paths = _trained_corpus(tmp_path, tkvocab=160)
+    tk = c.tokenizer
+    ratios = []
+    longest = max(paths, key=lambda p: len(dataset.dump_token_ids(pd.read_parquet(p))))
+    for p in paths:
+        ids = dataset.dump_token_ids(pd.read_parquet(p))
+        starts = set(dataset.unit_starts(ids))
+        seq = tk.encode(np.asarray(ids, dtype=np.int32))
+        pos = 0
+        for tid in seq:
+            alen = len(tk.decode(np.asarray([tid], dtype=np.uint32)))
+            assert not any(
+                pp in starts for pp in range(pos + 1, pos + alen)
+            ), "a dictionary piece welded across a unit boundary"
+            pos += alen
+        assert pos == len(ids)
+        assert list(tk.decode(seq)) == list(ids), "BPE encode/decode is byte-exact"
+        ratios.append(len(ids) / max(1, len(seq)))
+    logging.getLogger("t").info("dictionary compression on fixtures: %s", ratios)
+    ids = dataset.dump_token_ids(pd.read_parquet(longest))
+    t0 = time.monotonic()
+    tk.encode(np.asarray(ids, dtype=np.int32))
+    assert time.monotonic() - t0 < 30, "encoding the longest fixture must be quick"
