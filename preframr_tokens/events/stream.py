@@ -43,7 +43,7 @@ NIB_ART = NIB_WAVE + 16
 NIB_ENV = NIB_ART + 16
 KEYFRAME = NIB_ENV + 16
 VOCAB_SIZE = KEYFRAME + 1
-EVENT_FORMAT_VERSION = 1
+EVENT_FORMAT_VERSION = 2
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
 _EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1))
@@ -853,6 +853,7 @@ class _Decoder:
         self.cas = collections.defaultdict(list)
         self.offs = collections.defaultdict(list)
         self.hr = collections.defaultdict(list)
+        self.unit_starts: list[int] = []
 
     def _u(self):
         v, self.pos = _read_u(self.t, self.pos)
@@ -996,12 +997,14 @@ class _Decoder:
         arbitrary chunk boundaries) instead of raising."""
         t = self.t
         try:
+            self.unit_starts.append(self.pos)
             n = self._u()
             while (
                 self.pos + 1 < len(t)
                 and _is_voice(t[self.pos])
                 and t[self.pos + 1] in _HEADER_KINDS
             ):
+                self.unit_starts.append(self.pos)
                 self._parse_header()
         except (ValueError, IndexError):
             if not tolerant:
@@ -1016,12 +1019,15 @@ class _Decoder:
         m = len(t)
         try:
             while self.pos < m:
+                self.unit_starts.append(self.pos)
                 dt = self._u()
                 cur_f += dt
                 while self.pos < m and _is_voice(t[self.pos]):
+                    self.unit_starts.append(self.pos)
                     voice = t[self.pos] - VOICE_BASE
                     self.pos += 1
                     while self.pos < m and t[self.pos] in _EVENT_KINDS:
+                        self.unit_starts.append(self.pos)
                         self._parse_event(cur_f, voice)
                 if self.pos < m and not _is_digit(t[self.pos]):
                     raise ValueError(f"expected DT, VOICE or event at {self.pos}")
@@ -1203,6 +1209,16 @@ def roundtrip_ok(df) -> bool:
     return decode(encode(ow, verify=False)) == canonical_writes(ow)
 
 
+def unit_starts(tokens) -> list[int]:
+    """Grammar-unit start indices of an atom stream (frame-count varint, per-voice headers, DT runs,
+    voice markers, events) -- the parser itself is the segmenter, so payload digits and DT digits are
+    distinguished exactly. Raises on invalid or KEYFRAME-bearing streams (segment whole-tune ``encode``
+    output only; ``strip_keyframes`` first if needed)."""
+    d = _Decoder(tokens)
+    d.parse()
+    return d.unit_starts
+
+
 __all__ = [
     "EVENT_FORMAT_VERSION",
     "KEYFRAME",
@@ -1215,4 +1231,5 @@ __all__ = [
     "roundtrip_ok",
     "single_speed",
     "strip_keyframes",
+    "unit_starts",
 ]

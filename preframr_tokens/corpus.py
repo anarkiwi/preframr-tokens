@@ -473,6 +473,7 @@ class Corpus:
         )
         df_files = train_files + val_files
         self.tokenizer.tokens = events_dataset.events_alphabet()
+        self.tokenizer.unit_segmenter = events_dataset.unit_starts
         if getattr(self.args, "bpe_isolate_boundaries", False):
             self.tokenizer.isolation_ns = events_dataset.BOUNDARY_ISOLATION_NS
 

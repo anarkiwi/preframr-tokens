@@ -106,6 +106,13 @@ def make_tokenizer(args, logger=logging) -> RegTokenizer:
     return tk
 
 
+def unit_starts(n_ids) -> list[int]:
+    """Grammar-unit start indices for an n-space stream (``dump_token_ids`` output): shift the +1 PAD
+    offset and delegate to :func:`stream.unit_starts` (positions are offset-invariant).
+    """
+    return stream.unit_starts([int(n) - 1 for n in n_ids])
+
+
 def block_to_ids(ow_window) -> list[int]:
     """One frame window -> its pre-BPE token-id block in n-space (atom_id + 1; 0 is PAD)."""
     return [a + 1 for a in stream.encode(ow_window)]
@@ -217,4 +224,5 @@ __all__ = [
     "events_alphabet",
     "ids_to_writes",
     "make_tokenizer",
+    "unit_starts",
 ]

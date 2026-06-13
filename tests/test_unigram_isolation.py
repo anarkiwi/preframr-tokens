@@ -235,11 +235,12 @@ class TestUnigramIsolation(unittest.TestCase):
 
 
 class TestPreTokenizerHelper(unittest.TestCase):
-    def test_no_isolation_chars_falls_back_to_punctuation(self):
-        from tokenizers import pre_tokenizers as pt
-
+    def test_no_isolation_chars_still_splits_on_whitespace(self):
         pre_tok = _build_unigram_pre_tokenizer("")
-        self.assertIsInstance(pre_tok, pt.Punctuation)
+        words = [w for w, _ in pre_tok.pre_tokenize_str("ab cd")]
+        self.assertEqual(
+            words, ["ab", "cd"], "grammar-unit words are whitespace-bounded"
+        )
 
     def test_char_class_collapses_runs(self):
         cls = _isolation_char_class("ABCDE")

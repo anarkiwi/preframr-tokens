@@ -120,6 +120,21 @@ varint digits + typed value nibbles (the payload the model must
 predict — intervals, durations, timbre); structural = everything else
 (reg ids, voice tags, kind/shape markers, KEYFRAME).
 
+### Dictionary segmentation
+
+The unigram BPE that sits on top of the atom alphabet is a
+*dictionary*, and it trains over **grammar-unit words**. The `.uni`
+training text is segmented at every unit start the parser itself emits
+(`stream.unit_starts` / `events.dataset.unit_starts` — the frame-count
+varint, per-voice headers, DT runs, voice markers, and events), one
+whitespace-delimited word per unit. The unigram pre-tokenizer splits
+on that whitespace first, so **no learned piece can span a unit
+boundary** — the constraint is vocabulary purity, not a runtime check.
+Runtime `encode` is therefore unchanged: real streams carry no spaces
+and the `WhitespaceSplit` is a no-op there. Merges stay inside a
+single grammar unit, compressing repetition without welding content
+across event boundaries.
+
 ### Fidelity contract
 
 The oracle is `events.stream.canonical_writes(ow)`:

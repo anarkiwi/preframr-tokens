@@ -251,7 +251,7 @@ def test_boundary_isolation_keeps_voice_atoms_unmerged():
     (only required to train green and to show welds occur), proving the isolation made the difference.
     """
     streams = [dataset.dump_token_ids(_multi_voice_df(k)) for k in range(20)]
-    vocab_off, _tok_off = _train_isolation(streams, isolate=False)
+    _vocab_off, _tok_off = _train_isolation(streams, isolate=False)
     vocab_on, tok_on = _train_isolation(streams, isolate=True)
     assert (
         _boundary_crossing_pieces(vocab_on, tok_on) == []
@@ -264,3 +264,11 @@ def test_boundary_isolation_keeps_voice_atoms_unmerged():
         for x in tok_on.decode_unicode(piece)
     )
     assert on_has_boundary, "boundary atoms must appear (else the check is vacuous)"
+
+
+def test_n_space_unit_starts_matches_atom_space():
+    """The n-space wrapper equals stream.unit_starts after the -1 PAD shift and starts at 0."""
+    ids = dataset.dump_token_ids(_synth_df())
+    starts = dataset.unit_starts(ids)
+    assert starts[0] == 0
+    assert starts == stream.unit_starts([int(n) - 1 for n in ids])

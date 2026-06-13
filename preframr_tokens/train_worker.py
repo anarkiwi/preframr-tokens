@@ -46,18 +46,19 @@ def _isolation_char_class(isolation_chars):
 
 
 def _build_unigram_pre_tokenizer(isolation_chars):
-    """Compose the unigram pre-tokenizer."""
+    """Compose the unigram pre-tokenizer: whitespace-bounded grammar-unit words first (the separator
+    bounds words then vanishes -- it never enters a piece), then isolation singletons, then legacy
+    punctuation. Runtime text has no spaces, so WhitespaceSplit is a no-op there."""
+    parts = [pre_tokenizers.WhitespaceSplit()]
     pattern = _isolation_char_class(isolation_chars)
-    if pattern is None:
-        return pre_tokenizers.Punctuation()
-    return pre_tokenizers.Sequence(
-        [
+    if pattern is not None:
+        parts.append(
             pre_tokenizers.Split(
                 pattern=Regex(pattern), behavior="isolated", invert=False
-            ),
-            pre_tokenizers.Punctuation(),
-        ]
-    )
+            )
+        )
+    parts.append(pre_tokenizers.Punctuation())
+    return pre_tokenizers.Sequence(parts)
 
 
 def get_tk(tkvocab, tokenizer="bpe", initial_alphabet=None, isolation_chars=""):

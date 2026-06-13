@@ -25,6 +25,20 @@ class TestGetTk(unittest.TestCase):
         with self.assertRaises(ValueError):
             get_tk(2048, tokenizer="lzw")
 
+    def test_unigram_whitespace_bounds_words(self):
+        tk, _ = get_tk(2048, tokenizer="unigram", initial_alphabet=["a", "b"])
+        pieces = tk.pre_tokenizer.pre_tokenize_str("ab cd")
+        words = [w for w, _ in pieces]
+        self.assertEqual(words, ["ab", "cd"])
+        self.assertNotIn(" ", "".join(words))
+
+    def test_bpe_pre_tokenizer_has_no_whitespace_split(self):
+        tk, _ = get_tk(2048, tokenizer="bpe", initial_alphabet=["a", "b"])
+        words = [w for w, _ in tk.pre_tokenizer.pre_tokenize_str("ab cd")]
+        self.assertEqual(
+            words, ["ab cd"], "bpe branch keeps the space (no WhitespaceSplit)"
+        )
+
 
 class TestTrainWorker(unittest.TestCase):
     def _write_uni(self, path, text):

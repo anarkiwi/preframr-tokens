@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import stream, varint
+from . import varint
 from .stream import (  # pylint: disable=unused-import
     FD_RAMP,
     FD_STEP,

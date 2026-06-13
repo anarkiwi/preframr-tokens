@@ -6,6 +6,7 @@ descriptor and no literal mechanism. Scope is single-speed non-digi; the corpus 
 
 import glob
 import os
+import random
 
 import numpy as np
 import pandas as pd
@@ -309,27 +310,74 @@ def test_driver_canonical_roundtrip(name):
     assert stream.decode(toks) == stream.canonical_writes(ow), f"{name} diverged"
 
 
-def test_corpus_sample_canonical_roundtrip():
+def _corpus_sample():
+    """The seeded 200-tune sample (cheap: glob + shuffle, no parquet reads) -- parametrizing one case
+    per file lets xdist spread the encode cost across all workers instead of one serial loop.
+    """
     files = sorted(glob.glob(os.path.join(_CORPUS, "*", "*", "*.dump.parquet")))
-    if not files:
-        pytest.skip(f"no corpus dumps under {_CORPUS}")
-    import random
-
     random.Random(1).shuffle(files)
-    checked = 0
-    for path in files[:200]:
-        try:
-            df = pd.read_parquet(path, columns=["clock", "irq", "chipno", "reg", "val"])
-        except Exception:  # pylint: disable=broad-except
-            continue
-        ow = oracle.ordered_writes(df)
-        if len(ow) == 0 or not stream.single_speed(ow):
-            continue
-        meta = dump_meta.read_meta(path)
-        if meta is not None and meta.is_digi:
-            continue
-        assert stream.decode(stream.encode(ow)) == stream.canonical_writes(
-            ow
-        ), f"diverged: {path}"
-        checked += 1
-    assert checked >= 50, f"only {checked} corpus tunes checked"
+    return files[:200]
+
+
+_CORPUS_SAMPLE = _corpus_sample()
+
+
+def test_corpus_sample_has_enough_candidates():
+    if not _CORPUS_SAMPLE:
+        pytest.skip(f"no corpus dumps under {_CORPUS}")
+    assert len(_CORPUS_SAMPLE) >= 50, "corpus sample too small to be meaningful"
+
+
+@pytest.mark.parametrize("path", _CORPUS_SAMPLE or [None])
+def test_corpus_tune_canonical_roundtrip(path):
+    if path is None:
+        pytest.skip(f"no corpus dumps under {_CORPUS}")
+    try:
+        df = pd.read_parquet(path, columns=["clock", "irq", "chipno", "reg", "val"])
+    except Exception:  # pylint: disable=broad-except
+        pytest.skip("unreadable dump")
+    ow = oracle.ordered_writes(df)
+    if len(ow) == 0 or not stream.single_speed(ow):
+        pytest.skip("out of scope (empty or multispeed)")
+    meta = dump_meta.read_meta(path)
+    if meta is not None and meta.is_digi:
+        pytest.skip("digi")
+    assert stream.decode(stream.encode(ow)) == stream.canonical_writes(
+        ow
+    ), f"diverged: {path}"
+
+
+def _is_unit_head(tok):
+    return (
+        stream._is_digit(tok)  # pylint: disable=protected-access
+        or stream._is_voice(tok)  # pylint: disable=protected-access
+        or tok in stream._EVENT_KINDS  # pylint: disable=protected-access
+    )
+
+
+def _assert_unit_starts(atoms):
+    starts = stream.unit_starts(atoms)
+    assert starts and starts[0] == 0
+    assert all(b > a for a, b in zip(starts, starts[1:]))
+    assert all(_is_unit_head(atoms[s]) for s in starts)
+    bounds = starts[1:] + [len(atoms)]
+    assert bounds[-1] == len(atoms)
+    assert all(b > a for a, b in zip(starts, bounds))
+    return starts
+
+
+def test_unit_starts_synthetic_segmentation():
+    atoms = stream.encode(_synthetic_layers())
+    _assert_unit_starts(atoms)
+    assert stream.decode(atoms) == stream.canonical_writes(_synthetic_layers())
+
+
+@pytest.mark.parametrize("name", sorted(_DRIVERS))
+def test_unit_starts_driver_segmentation(name):
+    path = os.path.join(_CACHE, _DRIVERS[name])
+    if not os.path.exists(path):
+        pytest.skip(f"driver fixture {name} not cached at {path}")
+    ow = oracle.ordered_writes(pd.read_parquet(path))
+    atoms = stream.encode(ow)
+    _assert_unit_starts(atoms)
+    assert stream.decode(atoms) == stream.canonical_writes(ow)

@@ -85,7 +85,6 @@ def recover_table(freqs, tuning=None):
     note = note_index(f, tuning)
     table = {}
     for n in sorted({int(x) for x in note[voiced]}):
-        vals = f[voiced & (note == n)]
-        med = float(np.median(vals))
-        table[n] = int(vals[int(np.argmin(np.abs(vals.astype(np.float64) - med)))])
+        vals, cnt = np.unique(f[voiced & (note == n)], return_counts=True)
+        table[n] = int(vals[int(np.argmax(cnt))])
     return table

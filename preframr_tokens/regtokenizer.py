@@ -48,6 +48,7 @@ class RegTokenizer:
         self.splitters = SPLITTERS
         self.splitchs = SPLITCHS
         self.isolation_ns = None
+        self.unit_segmenter = None
 
     def _resync_splitters_from_tokens(self):
         """Single source of truth for the ``splitters`` invariant:
@@ -136,6 +137,19 @@ class RegTokenizer:
             return ""
         return "".join(sorted(set(self.encode_unicode(np.array(ns, dtype=np.int64)))))
 
+    def _uni_text(self, orig_seq):
+        """Unicode-serialize one n-space sequence, injecting a space at each grammar-unit start when a
+        ``unit_segmenter`` is set so no unigram word crosses a unit boundary (U+0020 is never an atom
+        char: event chars live at ``UNICODE_BASE``+, parse-domain low ids map to punctuation).
+        """
+        encoded = self.encode_unicode(orig_seq)
+        if self.unit_segmenter is not None:
+            starts = self.unit_segmenter(orig_seq)
+            assert starts and starts[0] == 0
+            bounds = starts[1:] + [len(encoded)]
+            encoded = " ".join(encoded[a:b] for a, b in zip(starts, bounds))
+        return encoded
+
     def train_tokenizer(self, dfs):
         frame_tokens = 1
         if self.tokens is not None and len(self.tokens):
@@ -160,8 +174,7 @@ class RegTokenizer:
         def write_uni(t):
             df_file, df, i = t
             uni_file = df_file.replace(DUMP_SUFFIX, f".{i}{UNI_SUFFIX}")
-            orig_seq = df["n"].to_numpy()
-            encoded = self.encode_unicode(orig_seq)
+            encoded = self._uni_text(df["n"].to_numpy())
             with zstd.open(uni_file, "w") as f:
                 f.write(encoded)
             return uni_file
