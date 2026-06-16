@@ -16,11 +16,11 @@ from .oracle import writes_to_ordered
 
 def recanon(n_ids, trim: bool = False) -> list[int]:
     """Project a grammatically-valid n-space atom stream onto its canonical form: drop PAD, decode to
-    absolute writes, rebuild the ordered-write oracle, re-encode. A leading ``[KEYFRAME ... KEYFRAME]``
-    seeds the prior SID state (the windowed/keyframe-led rollouts DAgger produces); a keyframe-free
-    continuous stream decodes plainly. ``trim=True`` first trims a mid-event truncated tail. Identity on a
-    canonical keyframe-free window, idempotent, write-preserving. The Tier-4 DAgger oracle (rollout ->
-    nearest valid SID state)."""
+    absolute writes (a leading ``[KEYFRAME ...]`` seeds prior SID state for windowed/keyframe-led
+    rollouts; keyframe-free streams decode plainly), rebuild the ordered-write oracle, re-encode.
+    ``trim=True`` trims a mid-event tail first. Identity on a canonical keyframe-free window, idempotent,
+    write-preserving -- the Tier-4 DAgger oracle (rollout -> nearest valid SID state).
+    """
     atoms = [int(t) - 1 for t in n_ids if int(t) > 0]
     if trim:
         head, writes = stream.trim_to_decodable(atoms)
