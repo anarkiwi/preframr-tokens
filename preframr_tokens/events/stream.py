@@ -854,6 +854,7 @@ class _Decoder:
         self.offs = collections.defaultdict(list)
         self.hr = collections.defaultdict(list)
         self.unit_starts: list[int] = []
+        self._seed_cas = ([0, 0, 0], [0, 0, 0], [0, 0, 0])
 
     def _u(self):
         v, self.pos = _read_u(self.t, self.pos)
@@ -991,6 +992,70 @@ class _Decoder:
             self._base[v][note] = b
         return b
 
+    def seed_keyframe(self) -> None:
+        """Consume a leading ``[KEYFRAME ... KEYFRAME]`` segment at ``self.pos`` and seed this decoder's
+        prior state (the inverse of :func:`chunk_keyframe`): per-voice TUNING/NOTE_TABLE/TICK headers, the
+        snapshot note-index/freq-residual/PW/CTRL/AD/SR and global values (held constant from frame 0), and
+        the per-channel/cas/global active flags. Leaves ``self.pos`` just past the closing KEYFRAME so the
+        body groups decode from this seed."""
+        t = self.t
+        if self.pos >= len(t) or t[self.pos] != KEYFRAME:
+            raise ValueError(f"expected KEYFRAME at {self.pos}")
+        self.pos += 1
+        while (
+            self.pos + 1 < len(t)
+            and _is_voice(t[self.pos])
+            and (t[self.pos + 1] in _HEADER_KINDS)
+        ):
+            self._parse_header()
+        while self.pos < len(t) and _is_voice(t[self.pos]):
+            voice = t[self.pos] - VOICE_BASE
+            self.pos += 1
+            self._seed_voice_body(voice)
+        if self.pos >= len(t) or t[self.pos] != KEYFRAME:
+            raise ValueError(f"expected closing KEYFRAME at {self.pos}")
+        self.pos += 1
+
+    def _seed_voice_body(self, voice: int) -> None:
+        """Seed one voice (or the global lane) from a keyframe body group: NI_STEP/FD_STEP/PW_STEP carry
+        ABSOLUTE snapshot levels (not the body's relative deltas) and FLD_CTRL/FLD_AD/FLD_SR carry the
+        settled CTRL/AD/SR bytes; each present field sets the held channel value and its active flag.
+        """
+        t = self.t
+        cas = self._seed_cas
+        while self.pos < len(t) and t[self.pos] in _EVENT_KINDS:
+            kind = t[self.pos]
+            self.pos += 1
+            if kind == NI_STEP:
+                self.freq_active[voice] = True
+                self.ni[voice].set(0, self._s())
+            elif kind == FD_STEP:
+                self.freq_active[voice] = True
+                self.fd[voice].set(0, self._s())
+            elif kind == PW_STEP:
+                self.pw_active[voice] = True
+                hi, self.pos = _read_nib(t, self.pos, NIB_ENV)
+                self.pw[voice].set(0, (hi << 8) | self._u())
+            elif kind == FLD_CTRL:
+                val, self.pos = _read_ctrl_val(t, self.pos)
+                self.cas_active[voice] = True
+                cas[0][voice] = val
+            elif kind == FLD_AD:
+                val, self.pos = _read_env_val(t, self.pos)
+                self.cas_active[voice] = True
+                cas[1][voice] = val
+            elif kind == FLD_SR:
+                val, self.pos = _read_env_val(t, self.pos)
+                self.cas_active[voice] = True
+                cas[2][voice] = val
+            elif kind == G_STEP:
+                reg = t[self.pos] - REG_BASE
+                self.pos += 1
+                self.g_active[reg] = True
+                self.g[reg].set(0, self._u())
+            else:
+                raise ValueError(f"unexpected keyframe field {kind} at {self.pos - 1}")
+
     def parse(self, tolerant: bool = False) -> tuple[int, int]:
         """Parse headers + frame groups into the per-frame op/event tables; returns ``(n_frames,
         last_group_frame)``. ``tolerant`` swallows a trailing truncated group (for state snapshots at
@@ -1014,8 +1079,17 @@ class _Decoder:
             if self.pos != len(t) and not tolerant:
                 raise ValueError("trailing tokens after empty stream")
             return 0, 0
-        cur_f = 0
-        last_f = 0
+        last_f = self._parse_body_groups(tolerant=tolerant)
+        return n, last_f
+
+    def _parse_body_groups(self, start_f: int = 0, tolerant: bool = False) -> int:
+        """Parse the ``DT [VOICE event*]*`` frame groups from ``self.pos`` into the per-frame tables,
+        starting the frame cursor at ``start_f``; returns the last group's absolute frame. A body slice
+        (a windowed/keyframe-led stream) carries no frame count or headers -- only these groups.
+        """
+        t = self.t
+        cur_f = start_f
+        last_f = start_f
         m = len(t)
         try:
             while self.pos < m:
@@ -1035,16 +1109,16 @@ class _Decoder:
         except (ValueError, IndexError):
             if not tolerant:
                 raise
-        return n, last_f
+        return last_f
 
     def replay(self, n: int) -> list[tuple[int, int, int]]:
         """Replay parsed state over frames ``[0, n)``, deriving the canonical write stream; leaves the
         channel/cas/global state at frame ``n - 1`` (read by :meth:`state`)."""
         out: list[tuple[int, int, int]] = []
         prev_byte = np.zeros(NUM_REGS, dtype=np.int64)
-        ctrl_state = self._ctrl_state = [0, 0, 0]
-        self._ad_state = [0, 0, 0]
-        self._sr_state = [0, 0, 0]
+        ctrl_state = self._ctrl_state = list(self._seed_cas[0])
+        self._ad_state = list(self._seed_cas[1])
+        self._sr_state = list(self._seed_cas[2])
         for f in range(n):
             for chan, op, args in self.chan_ops.get(f, ()):
                 if op == "set":
@@ -1119,6 +1193,119 @@ def decode(tokens: list[int], extend: bool = False) -> list[tuple[int, int, int]
     through the last parsed group (for model-generated continuations past the header count).
     """
     return _Decoder(tokens).run(extend=extend)
+
+
+_BODY_HEAD_SCAN = 48
+
+
+def _leads_with_keyframe(tokens: list[int]) -> bool:
+    return bool(tokens) and tokens[0] == KEYFRAME
+
+
+def _split_keyframe(tokens: list[int]) -> tuple[list[int], list[int]]:
+    """Split a keyframe-led stream into ``(keyframe_segment, body)``; raises on a missing closing marker."""
+    try:
+        end = tokens.index(KEYFRAME, 1)
+    except ValueError as exc:
+        raise ValueError("unterminated KEYFRAME segment") from exc
+    return tokens[: end + 1], tokens[end + 1 :]
+
+
+def _seeded_writes(kf: list[int], body: list[int]) -> list[tuple[int, int, int]]:
+    d = _Decoder(kf + body)
+    d.seed_keyframe()
+    last = d._parse_body_groups()  # pylint: disable=protected-access
+    return d.replay(last + 1)
+
+
+def _body_frames_reached(kf: list[int], body: list[int]) -> int:
+    """Frames a TOLERANT seeded parse of ``body`` reaches (independent of a truncated tail), or -1 if the
+    seed/first group is malformed. Used to score a candidate head-skip without the tail-truncation noise.
+    """
+    d = _Decoder(kf + body)
+    try:
+        d.seed_keyframe()
+    except (ValueError, IndexError):
+        return -1
+    return d._parse_body_groups(tolerant=True)  # pylint: disable=protected-access
+
+
+def _body_head_skip(kf: list[int], body: list[int]) -> int | None:
+    """The front-skip ``s`` (a DT-digit body start) at which the body's first whole frame group begins. A
+    BPE chunk boundary strands the orphaned tail of the snapshot's own frame group before that group (the
+    head analogue of mid-event tail truncation); those leading atoms are mid-event payload that mis-parse.
+    Scans for the smallest start reaching a real frame (tolerant of a truncated tail), else the snapshot-
+    only start (empty body). ``None`` only when even the seed is malformed."""
+    if not body:
+        return 0 if _body_frames_reached(kf, body) >= 0 else None
+    fallback = None
+    for s in range(min(len(body), _BODY_HEAD_SCAN) + 1):
+        if s < len(body) and not _is_digit(body[s]):
+            continue
+        reached = _body_frames_reached(kf, body[s:])
+        if reached > 0:
+            return s
+        if reached == 0 and fallback is None:
+            fallback = s
+    if fallback is not None:
+        return fallback
+    return len(body) if _body_frames_reached(kf, []) >= 0 else None
+
+
+def _decode_keyframe_body(kf: list[int], body: list[int]) -> list[tuple[int, int, int]]:
+    """Seed from ``kf`` and decode ``body`` (front-skipping orphaned head atoms, tolerant of a truncated
+    tail so a whole block decodes); raises only if the seed itself is unparseable."""
+    s = _body_head_skip(kf, body)
+    if s is None:
+        raise ValueError("no decodable body group after keyframe")
+    tail = body[s:]
+    d = _Decoder(kf + tail)
+    d.seed_keyframe()
+    last = d._parse_body_groups(tolerant=True)  # pylint: disable=protected-access
+    return d.replay(last + 1)
+
+
+def decode_windowed(
+    tokens: list[int], extend: bool = False
+) -> list[tuple[int, int, int]]:
+    """Decode a windowed/keyframe-led atom stream to canonical ``(frame, reg, value)`` writes WITH prior
+    state. A leading ``[KEYFRAME ... KEYFRAME]`` segment seeds the decoder (the inverse of
+    :func:`chunk_keyframe`) so the body's relative deltas/derived gate-offs decode against the real SID
+    state; frame 0 carries the seeded snapshot as absolute writes (orphaned head atoms before the first
+    whole frame group are skipped). Falls back to :func:`decode` for a keyframe-free continuous stream.
+    """
+    if not _leads_with_keyframe(tokens):
+        return decode(tokens, extend=extend)
+    kf, body = _split_keyframe(tokens)
+    return _decode_keyframe_body(kf, body)
+
+
+def trim_to_decodable(tokens: list[int], min_keep: int = 0):
+    """Largest whole-frame prefix of a windowed stream that decodes to non-empty writes (problem #1: a
+    fixed-length rollout ends mid-event). Keyframe-led streams decode tail-tolerantly via
+    :func:`decode_windowed` (head-skip + last-whole-frame replay), returning the head-trimmed tokens;
+    keyframe-free streams trim the tail against :func:`decode`. ``(None, None)`` when nothing decodes.
+    """
+    if _leads_with_keyframe(tokens):
+        kf, body = _split_keyframe(tokens)
+        s = _body_head_skip(kf, body)
+        if s is None:
+            return None, None
+        head = kf + body[s:]
+        try:
+            writes = decode_windowed(head)
+        except (ValueError, IndexError):
+            return None, None
+        return (head, writes) if writes else (None, None)
+    for cut in range(len(tokens), max(min_keep, 0) - 1, -1):
+        head = tokens[:cut]
+        try:
+            writes = decode(head)
+        except (ValueError, IndexError):
+            continue
+        if writes:
+            return head, writes
+    return None, None
 
 
 def chunk_keyframe(tokens: list[int], upto: int) -> list[int]:
@@ -1226,10 +1413,12 @@ __all__ = [
     "canonical_writes",
     "chunk_keyframe",
     "decode",
+    "decode_windowed",
     "encode",
     "is_content_atom",
     "roundtrip_ok",
     "single_speed",
     "strip_keyframes",
+    "trim_to_decodable",
     "unit_starts",
 ]

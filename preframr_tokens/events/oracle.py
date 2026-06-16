@@ -84,6 +84,33 @@ def ordered_writes(df: pd.DataFrame) -> OrderedWrites:
     )
 
 
+def writes_to_ordered(writes: list[tuple[int, int, int]]) -> OrderedWrites:
+    """Build an :class:`OrderedWrites` directly from ordered ``(frame, reg, val)`` writes, keeping the
+    frame indices AS GIVEN (``n_frames = max_frame + 1``). Unlike going through ``ordered_writes`` on a
+    dump df -- which re-densifies via ``unique(irq)`` and so collapses empty/rest frames -- this preserves
+    intermediate empty frames, the leading-rest off-by-one a re-canonicalised window must keep.
+    """
+    if not writes:
+        return OrderedWrites(
+            frame=np.empty(0, dtype=np.int64),
+            reg=np.empty(0, dtype=np.int64),
+            val=np.empty(0, dtype=np.int64),
+            n_frames=0,
+            irq=np.empty(0, dtype=np.int64),
+        )
+    frame = np.array([f for f, _, _ in writes], dtype=np.int64)
+    reg = np.array([r for _, r, _ in writes], dtype=np.int64)
+    val = np.array([v for _, _, v in writes], dtype=np.int64) & 0xFF
+    n = int(frame.max()) + 1
+    return OrderedWrites(
+        frame=frame,
+        reg=reg,
+        val=val,
+        n_frames=n,
+        irq=np.arange(n, dtype=np.int64),
+    )
+
+
 def settled_grid(ow: OrderedWrites) -> np.ndarray:
     """Per-frame settled register state ``(n_frames, 25)`` (last write wins within a frame, forward-filled
     across frames from an all-zero start). This is the *secondary* musical view the gesture/note parse

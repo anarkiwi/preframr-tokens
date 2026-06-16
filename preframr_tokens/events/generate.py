@@ -11,19 +11,24 @@ import pandas as pd
 
 from . import stream
 from .dataset import ids_to_writes
-from .oracle import ordered_writes
+from .oracle import writes_to_ordered
 
 
-def recanon(n_ids) -> list[int]:
-    """Project a grammatically-valid n-space atom stream onto its canonical form: drop PAD, strip
-    KEYFRAME conditioning, decode to writes, rebuild the ordered-write oracle, re-encode. Identity on a
-    canonical keyframe-free stream, idempotent, write-preserving. The Tier-4 DAgger oracle (rollout ->
-    nearest valid SID state); input must be whole-frame and continuous -- a windowed leading KEYFRAME
-    carries prior state strip_keyframes cannot restore (see WORK_ORDER_prior_state_recanon.md).
+def recanon(n_ids, trim: bool = False) -> list[int]:
+    """Project a grammatically-valid n-space atom stream onto its canonical form: drop PAD, decode to
+    absolute writes (a leading ``[KEYFRAME ...]`` seeds prior SID state for windowed/keyframe-led
+    rollouts; keyframe-free streams decode plainly), rebuild the ordered-write oracle, re-encode.
+    ``trim=True`` trims a mid-event tail first. Identity on a canonical keyframe-free window, idempotent,
+    write-preserving -- the Tier-4 DAgger oracle (rollout -> nearest valid SID state).
     """
     atoms = [int(t) - 1 for t in n_ids if int(t) > 0]
-    writes = stream.decode(stream.strip_keyframes(atoms))
-    canon = stream.encode(ordered_writes(writes_to_dump_df(writes)), verify=False)
+    if trim:
+        head, writes = stream.trim_to_decodable(atoms)
+        if head is None:
+            raise ValueError("no decodable whole-frame prefix")
+    else:
+        writes = stream.decode_windowed(atoms)
+    canon = stream.encode(writes_to_ordered(writes), verify=False)
     return [a + 1 for a in canon]
 
 
