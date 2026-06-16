@@ -9,7 +9,24 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from . import stream
 from .dataset import ids_to_writes
+from .oracle import ordered_writes
+
+
+def recanon(n_ids) -> list[int]:
+    """Project a grammatically-valid n-space atom stream onto its canonical form: drop PAD, strip
+    conditioning KEYFRAME segments, decode to register writes, rebuild the ordered-write oracle, and
+    re-encode (n-space). Identity on a canonical keyframe-free stream, idempotent, and write-preserving
+    (``ids_to_writes(recanon(g)) == ids_to_writes(g)``). Maps a model rollout onto the nearest valid SID
+    state -- the Tier-4 DAgger oracle. Input must be whole-frame (trim a mid-event rollout first) and
+    continuous; a lone window's leading KEYFRAME carries prior state that ``strip_keyframes`` cannot
+    restore, so feed the prompt+continuation as one continuous stream, not an isolated window body.
+    """
+    atoms = [int(t) - 1 for t in n_ids if int(t) > 0]
+    writes = stream.decode(stream.strip_keyframes(atoms))
+    canon = stream.encode(ordered_writes(writes_to_dump_df(writes)), verify=False)
+    return [a + 1 for a in canon]
 
 
 def tokens_to_writes(tokenizer, bpe_ids, extend=False) -> list[tuple[int, int, int]]:
