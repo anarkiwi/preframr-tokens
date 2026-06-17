@@ -78,9 +78,10 @@ fidelity bug.
 ## The token alphabet (v3 event model)
 
 The current tokenizer is the event codec in `preframr_tokens.events`
-(`stream.py`). It is a fixed 127-atom alphabet (`stream.VOCAB_SIZE`);
-BPE over these atoms is the only "dictionary" — there are no DEF/REF
-ids, no literals, and no escape path in the grammar.
+(`stream.py`). It is a fixed 129-atom alphabet (`stream.VOCAB_SIZE`);
+BPE over these atoms is the dictionary. The only DEF/REF in the grammar
+is the front-loaded instrument bank (`INSTR_DEF` / `INSTR_REF`, below);
+otherwise there are no ids, no literals, and no escape path.
 
 | Range | Tokens | Meaning |
 |---|---|---|
@@ -98,14 +99,34 @@ ids, no literals, and no escape path in the grammar.
 | `NIB_WAVE` 78–93, `NIB_ART` 94–109 | 32 | CTRL value nibbles (waveform high nibble, articulation low nibble) |
 | `NIB_ENV` 110–125 | 16 | envelope nibbles (AD/SR hi+lo; PW duty class) |
 | `KEYFRAME` 126 | 1 | chunk-conditioning segment bracket (structural; `strip_keyframes` removes before decode) |
+| `INSTR_DEF` 127 | 1 | preamble instrument-bank opener (followed by a count, then the bank entries) |
+| `INSTR_REF` 128 | 1 | body reference to a banked onset program by positional id |
 
 **Stream grammar.** A stream is a preamble of per-voice headers
-(`[VOICE_v TUNING q]`, `[VOICE_v NOTE_TABLE …]`, `[VOICE_v TICK …]`)
-followed by frame groups:
+(`[VOICE_v TUNING q]`, `[VOICE_v NOTE_TABLE …]`, `[VOICE_v TICK …]`),
+then an optional instrument bank, then frame groups:
 
 ```
-<n_frames> ( <DT> ( <VOICE_v> <kind-led event body>* )* )*
+<n_frames> <headers>* [INSTR_DEF <K> <instr-part>{K}] ( <DT> ( <VOICE_v> <kind-led event body>* )* )*
 ```
+
+**Instrument bank (front-loaded DEF→REF).** The recurring onset *instrument
+program* — the `FLD_NOTE_ON` fold up to but not including the note's duration
+(onset CTRL byte, envelope flags, onset AD/SR, hard-restart prep AD/SR) — is
+re-used at nearly every note onset (a tune has a few distinct programs but
+hundreds–thousands of onsets; median distinct-K ≈ 15, top-10 ≈ 99% of onsets).
+`INSTR_DEF <K>` opens a preamble bank of the `K` distinct instrument-parts used
+≥ 2× across all voices (positional ids `0..K-1`, ranked by descending use,
+provenance-invariant — the same program shares one id across voices). In the
+body, an onset whose instrument-part byte-matches bank entry `id` emits
+`[INSTR_REF <id> <note tail>]` instead of the inline `[FLD_NOTE_ON <instr-part>
+<note tail>]`; the note's pitch (`NI_*`) and mixed-radix **duration** stay in the
+body either way (the `<note tail>` = gate-off mode + duration + optional gate-off
+CTRL is identical for both forms). `INSTR_REF` expands to its bank entry's exact
+writes, so the scheme is byte-exact by construction (reference is an exact
+substitution; the ≤ 1% singleton tail stays inline). Constrained decode forbids
+an `INSTR_REF` id ≥ the defined bank size — the model cannot reference an
+undefined instrument.
 
 `DT` is the frame-index delta (unsigned varint). Voices appear in
 ascending order; within a voice, events rank freq (NI/FD) before PW

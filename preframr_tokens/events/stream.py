@@ -42,11 +42,13 @@ NIB_WAVE = SHAPE_PERIOD + 1
 NIB_ART = NIB_WAVE + 16
 NIB_ENV = NIB_ART + 16
 KEYFRAME = NIB_ENV + 16
-VOCAB_SIZE = KEYFRAME + 1
-EVENT_FORMAT_VERSION = 2
+INSTR_DEF = KEYFRAME + 1
+INSTR_REF = INSTR_DEF + 1
+VOCAB_SIZE = INSTR_REF + 1
+EVENT_FORMAT_VERSION = 3
 
 _HEADER_KINDS = (TUNING, NOTE_TABLE, TICK)
-_EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1))
+_EVENT_KINDS = frozenset(range(NI_STEP, G_RAMP + 1)) | {INSTR_REF}
 _DEFAULT_TUNING_Q = pitch_grid.tuning_to_q(0.0)
 
 _GO_NONE, _GO_DERIVE, _GO_VALUE = 0, 1, 2
@@ -481,10 +483,64 @@ def _fold_envelope(raw, durinfo, remove):
     return folds, claimed
 
 
-def _note_layer(seq, v: int):
+def _instr_part(val, fold) -> list[int]:
+    """The instrument-part atoms of a NOTE_ON: the onset CTRL byte then the envelope fold (flags + the
+    onset AD/SR + hard-restart prep AD/SR) -- everything that is timbre, not the note's pitch/duration.
+    Starts at the CTRL nibbles (the leading ``FLD_NOTE_ON`` / ``INSTR_REF`` opener is added by the caller).
+    This is the exact bank-dedup key: two onsets share an instrument iff this list is identical.
+    """
+    flags, oad, osr, hr_off, hr_ad, hr_sr = fold
+    part: list[int] = []
+    _emit_ctrl_val(part, val)
+    _emit_u(part, flags)
+    if flags & _FLAG_OAD:
+        _emit_env_val(part, oad)
+    if flags & _FLAG_OSR:
+        _emit_env_val(part, osr)
+    if flags & (_FLAG_HRAD | _FLAG_HRSR):
+        _emit_u(part, hr_off)
+        if flags & _FLAG_HRAD:
+            _emit_env_val(part, hr_ad)
+        if flags & _FLAG_HRSR:
+            _emit_env_val(part, hr_sr)
+    return part
+
+
+def _note_tail(out: list[int], d, mode, c_off, tick, offset) -> None:
+    """Append a NOTE_ON's note-specific tail (gate-off mode, mixed-radix duration, optional gate-off
+    CTRL byte) -- the part the bank never owns, identical for inline and referenced onsets.
+    """
+    _emit_u(out, mode)
+    if mode == _GO_NONE:
+        return
+    if tick > 1:
+        q = _iround(d / tick)
+        _emit_u(out, q)
+        _emit_s(out, d - q * tick - offset)
+    else:
+        _emit_u(out, d)
+    if mode == _GO_VALUE:
+        _emit_ctrl_val(out, c_off)
+
+
+def _voice_instr_parts(seq):
+    """Per-voice ordered instrument-part keys (one per kept NOTE_ON), for bank extraction."""
+    raw, durinfo, remove = _typed_cas(seq)
+    folds, claimed = _fold_envelope(raw, durinfo, remove)
+    parts = []
+    for i, (_f, tok, val) in enumerate(raw):
+        if tok != FLD_NOTE_ON or i in remove or i in claimed:
+            continue
+        parts.append(tuple(_instr_part(val, folds[i])))
+    return parts
+
+
+def _note_layer(seq, v: int, bank=None):
     """One voice's cas change sequence -> (header token-lists, [(frame, sort_key, tokens)] events).
     Gate-offs are removed and derived from NOTE_ON durations -- always (no NOTE OFF, no fallback);
     each off's DERIVE/VALUE mode is decided at its canonical slot (:func:`_assign_gate_off_modes`).
+    When ``bank`` maps an instrument-part key to an id, a matching onset emits ``INSTR_REF id`` + tail
+    instead of the inline ``FLD_NOTE_ON`` fold; the note pitch/duration stay in the body either way.
     """
     raw, durinfo, remove = _typed_cas(seq)
     modes = _assign_gate_off_modes(raw, durinfo, remove)
@@ -503,36 +559,23 @@ def _note_layer(seq, v: int):
     for i, (f, tok, val) in enumerate(raw):
         if i in remove or i in claimed:
             continue
-        body = [tok]
-        if tok in (FLD_NOTE_ON, FLD_CTRL):
-            _emit_ctrl_val(body, val)
-        else:
-            _emit_env_val(body, val)
         if tok == FLD_NOTE_ON:
-            flags, oad, osr, hr_off, hr_ad, hr_sr = folds[i]
-            _emit_u(body, flags)
-            if flags & _FLAG_OAD:
-                _emit_env_val(body, oad)
-            if flags & _FLAG_OSR:
-                _emit_env_val(body, osr)
-            if flags & (_FLAG_HRAD | _FLAG_HRSR):
-                _emit_u(body, hr_off)
-                if flags & _FLAG_HRAD:
-                    _emit_env_val(body, hr_ad)
-                if flags & _FLAG_HRSR:
-                    _emit_env_val(body, hr_sr)
+            part = _instr_part(val, folds[i])
+            ref = None if bank is None else bank.get(tuple(part))
+            if ref is None:
+                body = [FLD_NOTE_ON, *part]
+            else:
+                body = [INSTR_REF]
+                _emit_u(body, ref)
             d = durinfo[i][1]
             mode, c_off = modes.get(i, (_GO_NONE, 0))
-            _emit_u(body, mode)
-            if mode != _GO_NONE:
-                if tick > 1:
-                    q = _iround(d / tick)
-                    _emit_u(body, q)
-                    _emit_s(body, d - q * tick - offset)
-                else:
-                    _emit_u(body, d)
-                if mode == _GO_VALUE:
-                    _emit_ctrl_val(body, c_off)
+            _note_tail(body, d, mode, c_off, tick, offset)
+        else:
+            body = [tok]
+            if tok == FLD_CTRL:
+                _emit_ctrl_val(body, val)
+            else:
+                _emit_env_val(body, val)
         evs.append((f, (v, _RANK_CAS, sub), body))
         sub += 1
     return headers, evs
@@ -702,6 +745,24 @@ def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     return out
 
 
+def _build_bank(seqs):
+    """The tune's instrument bank: every distinct onset instrument-part used >=2x across all voices,
+    ranked by descending use (ties by the key itself for determinism), assigned positional ids 0..K-1.
+    Returns ``(bank, defs)`` where ``bank`` maps a part-key tuple -> id and ``defs`` is the ordered list
+    of part-key tuples (id == index). Provenance-invariant: the same program shares an id across voices.
+    """
+    counts: collections.Counter = collections.Counter()
+    for v in range(3):
+        if seqs[v]:
+            counts.update(_voice_instr_parts(seqs[v]))
+    ranked = sorted(
+        (k for k, c in counts.items() if c >= 2),
+        key=lambda k: (-counts[k], k),
+    )
+    bank = {k: i for i, k in enumerate(ranked)}
+    return bank, ranked
+
+
 def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
     """Ordered write stream -> v3 canonical token stream. Verifies
     ``decode(out) == canonical_writes(ow)`` by default (fail loudly)."""
@@ -714,6 +775,7 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
     settled = settled_grid(ow)
     written = set(int(r) for r in ow.reg.tolist())
     seqs = _cas_changes(ow)
+    bank, bank_defs = _build_bank(seqs)
 
     headers: list[list[int]] = []
     events: list[tuple[int, tuple, list[int]]] = []
@@ -731,7 +793,7 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
             events += _series_events(delta, v, _RANK_FD, FD_STEP, FD_RAMP, signed=True)
     for v in range(3):
         if seqs[v]:
-            hs, evs = _note_layer(seqs[v], v)
+            hs, evs = _note_layer(seqs[v], v, bank)
             headers += hs
             events += evs
     for v in range(3):
@@ -752,6 +814,11 @@ def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
             )
     for h in headers:
         out.extend(h)
+    if bank_defs:
+        out.append(INSTR_DEF)
+        _emit_u(out, len(bank_defs))
+        for part in bank_defs:
+            out.extend(part)
 
     by_f: dict[int, list] = collections.defaultdict(list)
     for f, key, toks in events:
@@ -854,6 +921,7 @@ class _Decoder:
         self.offs = collections.defaultdict(list)
         self.hr = collections.defaultdict(list)
         self.unit_starts: list[int] = []
+        self.bank: list[tuple[int, ...]] = []
         self._seed_cas = ([0, 0, 0], [0, 0, 0], [0, 0, 0])
 
     def _u(self):
@@ -916,53 +984,89 @@ class _Decoder:
             self.pos += 1
             self.g_active[reg] = True
             self._parse_ramp(self.g[reg], f, False, False)
+        elif kind == INSTR_REF:
+            ref = self._u()
+            if not 0 <= ref < len(self.bank):
+                raise ValueError(f"INSTR_REF {ref} out of bank range at {self.pos}")
+            self._note_on(f, voice, *self.bank[ref])
         elif kind in (FLD_NOTE_ON, FLD_CTRL, FLD_AD, FLD_SR):
             if kind in (FLD_NOTE_ON, FLD_CTRL):
                 val, self.pos = _read_ctrl_val(self.t, self.pos)
             else:
                 val, self.pos = _read_env_val(self.t, self.pos)
-            self.cas_active[voice] = True
-            post = []
             if kind == FLD_NOTE_ON:
-                flags = self._u()
-                if flags & _FLAG_OAD:
-                    oad, self.pos = _read_env_val(self.t, self.pos)
-                    if flags & _FLAG_OAD_PRE:
-                        self.cas[(voice, f)].append(("OAD", oad))
-                    else:
-                        post.append(("OAD", oad))
-                if flags & _FLAG_OSR:
-                    osr, self.pos = _read_env_val(self.t, self.pos)
-                    if flags & _FLAG_OSR_PRE:
-                        self.cas[(voice, f)].append(("OSR", osr))
-                    else:
-                        post.append(("OSR", osr))
-                if flags & (_FLAG_HRAD | _FLAG_HRSR):
-                    hr_off = self._u()
-                    if flags & _FLAG_HRAD:
-                        hr_ad, self.pos = _read_env_val(self.t, self.pos)
-                        self.hr[(voice, f - hr_off)].append(("HRAD", hr_ad))
-                    if flags & _FLAG_HRSR:
-                        hr_sr, self.pos = _read_env_val(self.t, self.pos)
-                        self.hr[(voice, f - hr_off)].append(("HRSR", hr_sr))
-            self.cas[(voice, f)].append((kind, val))
-            if kind == FLD_NOTE_ON:
-                self.cas[(voice, f)].extend(post)
-                mode = self._u()
-                if mode != _GO_NONE:
-                    tick, offset = self.tick[voice]
-                    if tick > 1:
-                        q = self._u()
-                        r = self._s()
-                        d = q * tick + r + offset
-                    else:
-                        d = self._u()
-                    go_val = None
-                    if mode == _GO_VALUE:
-                        go_val, self.pos = _read_ctrl_val(self.t, self.pos)
-                    self.offs[(voice, f + d)].append((d > 0, mode, go_val, f))
+                self._note_on(f, voice, val, *self._read_instr_fold())
+            else:
+                self.cas_active[voice] = True
+                self.cas[(voice, f)].append((kind, val))
         else:
             raise ValueError(f"unknown event kind {kind} at {self.pos - 1}")
+
+    def _read_instr_fold(self):
+        """Read a NOTE_ON instrument fold (flags + onset AD/SR + hard-restart prep AD/SR) from the token
+        stream, returning ``(flags, oad, osr, hr_off, hr_ad, hr_sr)``. The leading CTRL byte is read by the
+        caller; this is also the body of an ``INSTR_DEF`` bank entry."""
+        flags = self._u()
+        oad = osr = hr_off = hr_ad = hr_sr = 0
+        if flags & _FLAG_OAD:
+            oad, self.pos = _read_env_val(self.t, self.pos)
+        if flags & _FLAG_OSR:
+            osr, self.pos = _read_env_val(self.t, self.pos)
+        if flags & (_FLAG_HRAD | _FLAG_HRSR):
+            hr_off = self._u()
+            if flags & _FLAG_HRAD:
+                hr_ad, self.pos = _read_env_val(self.t, self.pos)
+            if flags & _FLAG_HRSR:
+                hr_sr, self.pos = _read_env_val(self.t, self.pos)
+        return flags, oad, osr, hr_off, hr_ad, hr_sr
+
+    def _note_on(self, f, voice, val, flags, oad, osr, hr_off, hr_ad, hr_sr):
+        """Apply one note onset (inline fold or expanded ``INSTR_REF`` -- identical post-fold): place the
+        onset CTRL/AD/SR on the recorded gate-edge side, queue hard-restart prep, then read the note tail
+        (mode + mixed-radix duration + optional gate-off CTRL) and schedule the derived gate-off.
+        """
+        self.cas_active[voice] = True
+        post = []
+        if flags & _FLAG_OAD:
+            if flags & _FLAG_OAD_PRE:
+                self.cas[(voice, f)].append(("OAD", oad))
+            else:
+                post.append(("OAD", oad))
+        if flags & _FLAG_OSR:
+            if flags & _FLAG_OSR_PRE:
+                self.cas[(voice, f)].append(("OSR", osr))
+            else:
+                post.append(("OSR", osr))
+        if flags & _FLAG_HRAD:
+            self.hr[(voice, f - hr_off)].append(("HRAD", hr_ad))
+        if flags & _FLAG_HRSR:
+            self.hr[(voice, f - hr_off)].append(("HRSR", hr_sr))
+        self.cas[(voice, f)].append((FLD_NOTE_ON, val))
+        self.cas[(voice, f)].extend(post)
+        mode = self._u()
+        if mode != _GO_NONE:
+            tick, offset = self.tick[voice]
+            if tick > 1:
+                q = self._u()
+                r = self._s()
+                d = q * tick + r + offset
+            else:
+                d = self._u()
+            go_val = None
+            if mode == _GO_VALUE:
+                go_val, self.pos = _read_ctrl_val(self.t, self.pos)
+            self.offs[(voice, f + d)].append((d > 0, mode, go_val, f))
+
+    def _parse_instr_def(self) -> None:
+        """Consume the preamble ``INSTR_DEF <count> <instrument-part>*`` bank block: each entry is a
+        NOTE_ON instrument fold (CTRL byte + flags + onset/HR AD/SR) defined positionally as id 0..K-1.
+        Stores ``self.bank[id] = (ctrl_val, flags, oad, osr, hr_off, hr_ad, hr_sr)`` for ``INSTR_REF``.
+        """
+        self.pos += 1
+        count = self._u()
+        for _ in range(count):
+            val, self.pos = _read_ctrl_val(self.t, self.pos)
+            self.bank.append((val, *self._read_instr_fold()))
 
     def _parse_header(self) -> None:
         voice = self.t[self.pos] - VOICE_BASE
@@ -1071,6 +1175,9 @@ class _Decoder:
             ):
                 self.unit_starts.append(self.pos)
                 self._parse_header()
+            if self.pos < len(t) and t[self.pos] == INSTR_DEF:
+                self.unit_starts.append(self.pos)
+                self._parse_instr_def()
         except (ValueError, IndexError):
             if not tolerant:
                 raise
