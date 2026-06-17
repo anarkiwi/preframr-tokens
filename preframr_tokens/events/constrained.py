@@ -1,4 +1,4 @@
-"""Per-step grammar-validity mask over the 127-atom event alphabet for generation-time logit guarding:
+"""Per-step grammar-validity mask over the event alphabet for generation-time logit guarding:
 :class:`EventStreamState` is :func:`stream._Decoder.parse` re-expressed as an incremental token-at-a-time
 machine -- ``valid_mask`` returns the booleans of structurally-legal next atoms, ``push`` advances the
 state (raising on an invalid atom), and ``at_group_boundary`` flags a completed frame group. Pure numpy,
@@ -19,6 +19,8 @@ from .stream import (  # pylint: disable=unused-import
     G_RAMP,
     G_STEP,
     GLOBAL_REGS,
+    INSTR_DEF,
+    INSTR_REF,
     KEYFRAME,
     NI_RAMP,
     NI_STEP,
@@ -46,8 +48,8 @@ from .stream import (  # pylint: disable=unused-import
 
 _CONT = varint.CONT
 _NDIGITS = 32
-_EVENT_KINDS = tuple(range(NI_STEP, G_RAMP + 1))
-_VOICE_EVENT_KINDS = tuple(range(NI_STEP, FLD_SR + 1))
+_EVENT_KINDS = tuple(range(NI_STEP, G_RAMP + 1)) + (INSTR_REF,)
+_VOICE_EVENT_KINDS = tuple(range(NI_STEP, FLD_SR + 1)) + (INSTR_REF,)
 _GLOBAL_EVENT_KINDS = (G_STEP, G_RAMP)
 _GLOBAL_VOICE = 3
 _GREG_TOKS = tuple(REG_BASE + r for r in GLOBAL_REGS)
@@ -55,6 +57,21 @@ _GREG_TOKS = tuple(REG_BASE + r for r in GLOBAL_REGS)
 
 def _kinds_for(voice):
     return _GLOBAL_EVENT_KINDS if voice == _GLOBAL_VOICE else _VOICE_EVENT_KINDS
+
+
+def _bounded_digits(acc, bound):
+    """Valid next base-16 varint digit tokens (0..31) given the accumulated prefix ``acc`` so the final
+    unsigned value stays in ``[0, bound)``. A digit's low nibble is 0..15; bit 4 is the continue flag.
+    Stopping yields ``acc*16+lo``; continuing only grows the value, so it must leave room for >=1 more
+    digit (``(acc*16+lo)*16 < bound``)."""
+    out = []
+    for lo in range(16):
+        nxt = acc * 16 + lo
+        if nxt < bound:
+            out.append(lo)
+        if nxt * 16 < bound:
+            out.append(16 + lo)
+    return out
 
 
 def _ctrl_fields():
@@ -79,6 +96,10 @@ class EventStreamState:
         self.tick_by_voice = {}
         self._ptick = 1
         self._gb = False
+        self.bank_size = 0
+        self._defs_left = 0
+        self._bank_done = False
+        self._in_def_entry = False
 
     @property
     def at_group_boundary(self) -> bool:
@@ -94,6 +115,9 @@ class EventStreamState:
                     m[VAR_BASE] = m[VAR_BASE + 1] = m[VAR_BASE + 2] = True
                 else:
                     m[VAR_BASE : VAR_BASE + _NDIGITS] = True
+            elif kind == "VB":
+                for d in _bounded_digits(top[1], top[2]):
+                    m[VAR_BASE + d] = True
             elif kind == "N":
                 m[top[1] : top[1] + 16] = True
             elif kind == "SH":
@@ -107,6 +131,8 @@ class EventStreamState:
         if self.phase == "PRE":
             for w in range(3):
                 m[VOICE_BASE + w] = True
+            if not self._bank_done:
+                m[INSTR_DEF] = True
             m[VAR_BASE : VAR_BASE + _NDIGITS] = True
         elif self.sub == "AWAIT_VOICE":
             for w in range(self.last_voice + 1, 4):
@@ -120,6 +146,8 @@ class EventStreamState:
             for w in range(self.cur_voice + 1, 4):
                 m[VOICE_BASE + w] = True
             m[VAR_BASE : VAR_BASE + _NDIGITS] = True
+        if self.bank_size == 0:
+            m[INSTR_REF] = False
         return m
 
     def push(self, tok: int) -> None:
@@ -129,6 +157,8 @@ class EventStreamState:
             top = self.stack[-1]
             if top[0] == "V":
                 self._feed_var(tok)
+            elif top[0] == "VB":
+                self._feed_bounded(tok)
             else:
                 node = self.stack.pop()
                 if node[0] == "HK":
@@ -153,6 +183,15 @@ class EventStreamState:
         self._do_action(action, value)
         self._after_pop()
 
+    def _feed_bounded(self, tok):
+        top = self.stack[-1]
+        d = tok - VAR_BASE
+        top[1] = top[1] * 16 + (d & 0xF)
+        if d & _CONT:
+            return
+        self.stack.pop()
+        self._after_pop()
+
     def _do_action(self, action, value):
         if action in (None, "framecount"):
             return
@@ -171,12 +210,22 @@ class EventStreamState:
             for _ in range(value):
                 self.stack.insert(0, ["V", "s", None, 0])
         elif action == "flags":
-            self._push(self._note_on_flag_fields(value))
+            self._push(self._instr_fold_fields(value) + [["V", "m", "mode", 0]])
         elif action == "mode":
             if value != _GO_NONE:
                 self._push(self._note_on_dur_fields(value))
+        elif action == "defcount":
+            self.bank_size = value
+            self._defs_left = value
+            if value > 0:
+                self._open_def_entry()
+            else:
+                self._bank_done = True
+        elif action == "def_flags":
+            self._in_def_entry = True
+            self._push(self._instr_fold_fields(value))
 
-    def _note_on_flag_fields(self, flags):
+    def _instr_fold_fields(self, flags):
         fields = []
         if flags & _FLAG_OAD:
             fields += _env_fields()
@@ -188,8 +237,17 @@ class EventStreamState:
                 fields += _env_fields()
             if flags & _FLAG_HRSR:
                 fields += _env_fields()
-        fields += [["V", "m", "mode", 0]]
         return fields
+
+    def _open_def_entry(self):
+        self._push(_ctrl_fields() + [["V", "u", "def_flags", 0]])
+
+    def _def_entry_done(self):
+        self._defs_left -= 1
+        if self._defs_left > 0:
+            self._open_def_entry()
+        else:
+            self._bank_done = True
 
     def _note_on_dur_fields(self, mode):
         tick = self.tick_by_voice.get(self.cur_voice, (1, 0))[0]
@@ -243,6 +301,8 @@ class EventStreamState:
             return _ctrl_fields()
         if kind in (FLD_AD, FLD_SR):
             return _env_fields()
+        if kind == INSTR_REF:
+            return [["VB", 0, self.bank_size, "refid"], ["V", "m", "mode", 0]]
         return _ctrl_fields() + [["V", "u", "flags", 0]]
 
     def _group_push(self, tok):
@@ -250,6 +310,8 @@ class EventStreamState:
             if VOICE_BASE <= tok < VOICE_BASE + 4:
                 self.cur_voice = tok - VOICE_BASE
                 self.stack.append(["HK"])
+            elif tok == INSTR_DEF:
+                self.stack.append(["V", "u", "defcount", 0])
             else:
                 self.stack.append(["V", "u", "dt", 0])
                 self._feed_var(tok)
@@ -272,6 +334,10 @@ class EventStreamState:
             self._feed_var(tok)
 
     def _after_pop(self):
+        if not self.stack and self._in_def_entry:
+            self._in_def_entry = False
+            self._def_entry_done()
+            return
         if not self.stack and self.phase == "BODY" and self.sub == "CONSUMING":
             self.sub = "IN_FRAME"
             self._gb = True

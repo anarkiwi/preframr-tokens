@@ -196,7 +196,7 @@ def test_no_note_off_events_ever():
         f += 12
     ow = _ow(sorted(writes, key=lambda t: t[0]), f + 4)
     toks = _roundtrip(ow)
-    assert toks.count(stream.FLD_NOTE_ON) == 8
+    assert toks.count(stream.FLD_NOTE_ON) + toks.count(stream.INSTR_REF) == 8
     assert toks.count(stream.FLD_CTRL) == 0
     assert stream.TICK in toks
     offs = [w for w in stream.decode(stream.encode(ow)) if w[2] == 0x40]
@@ -352,6 +352,7 @@ def _is_unit_head(tok):
         stream._is_digit(tok)  # pylint: disable=protected-access
         or stream._is_voice(tok)  # pylint: disable=protected-access
         or tok in stream._EVENT_KINDS  # pylint: disable=protected-access
+        or tok == stream.INSTR_DEF
     )
 
 
