@@ -33,7 +33,7 @@ from .pipeline import VOCAB_SIZE, iter_windows
 PAD_ID = 0
 
 BOUNDARY_ISOLATION_NS = tuple(
-    [stream.VOICE_BASE + 1 + v for v in range(4)] + [stream.KEYFRAME + 1]
+    stream.inline.LANE_BASE + 1 + lane for lane in range(stream.inline.NUM_LANES)
 )
 
 ATOM_CACHE_VERSION = stream.EVENT_FORMAT_VERSION

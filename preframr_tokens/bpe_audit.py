@@ -1,17 +1,17 @@
-"""Merge-table boundary audit for a trained unigram over the event alphabet: per vocab piece, how many
-atoms it welds, whether it crosses a VOICE/KEYFRAME boundary, how many event kinds it spans, and whether
-it is all varint digits. DT digits share the varint range with value digits, so cross-FRAME welds through
-a DT cannot be isolated without killing value merges -- this audit measures them instead. Run it after any
-unigram train to spot re-multiplexing merges the alphabet meant to keep apart."""
+"""Merge-table boundary audit for a trained unigram over the inline-event alphabet:
+per vocab piece, how many atoms it welds, whether it crosses a lane boundary, how
+many op kinds it spans, and whether it is all varint digits. DT digits share the
+varint range with value digits, so this audit measures cross-event welds instead of
+forbidding them. Run after any unigram train to spot re-multiplexing merges."""
 
 from __future__ import annotations
 
 import pandas as pd
 
-from preframr_tokens.events import stream
+from preframr_tokens.events import inline
 
 _AUDIT_COLUMNS = ["piece_id", "n_atoms", "crosses_voice", "n_kinds", "all_digits"]
-_VOICE_KF = set(range(stream.VOICE_BASE, stream.VOICE_BASE + 4)) | {stream.KEYFRAME}
+_VOICE_KF = set(range(inline.LANE_BASE, inline.LANE_BASE + inline.NUM_LANES))
 
 
 def _piece_atoms(tokenizer, piece):
@@ -34,10 +34,10 @@ def audit_vocab(tokenizer) -> pd.DataFrame:
                 "piece_id": int(piece_id),
                 "n_atoms": n_atoms,
                 "crosses_voice": n_atoms > 1 and any(a in _VOICE_KF for a in atoms),
-                "n_kinds": sum(1 for a in atoms if stream.TUNING <= a <= stream.G_RAMP),
-                "all_digits": all(
-                    stream.VAR_BASE <= a < stream.REG_BASE for a in atoms
+                "n_kinds": sum(
+                    1 for a in atoms if inline.OP_BASE <= a < inline.DIGIT_BASE
                 ),
+                "all_digits": all(inline.is_digit_atom(a) for a in atoms),
             }
         )
     return pd.DataFrame(rows, columns=_AUDIT_COLUMNS)
