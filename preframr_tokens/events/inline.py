@@ -1,8 +1,8 @@
-"""Inline decompiler codec over a fixed small atom alphabet (no ids/escape/frozen
-table). SETTLED non-env lanes (freq/pw/fc/res/vol) become NOTE/MOD pitch + LOAD/RUN
-delta-run gestures (settling is audio-safe); ctrl/AD/SR (env regs) become the ORDERED
-WRITE stream (de-duped same-reg-same-val no-ops) preserving envelope/hard-restart
-order. Any prefix is a continuable song; BPE over the atoms is the dictionary."""
+"""The shared atom alphabet and the settled non-env lane primitives. SETTLED lanes
+(freq/pw/fc/res/vol) become NOTE/MOD pitch + LOAD/RUN delta-run gestures; the alphabet
+also carries the env-half instrument markers (VOICE/DEF/REF/RAW/LEAD, see
+:mod:`preframr_tokens.events.instrument`) and the backward span-copy SEQREF marker (see
+:mod:`preframr_tokens.events.seqref`). Backward-only, no preamble/codebook/escape."""
 
 from __future__ import annotations
 
@@ -24,12 +24,25 @@ for _reg in (21, 22, 23, 24):
 
 NUM_NONENV = len(NONENV_LANES)
 NUM_ENV = len(ENV_REGS)
-NUM_LANES = NUM_NONENV + NUM_ENV
+NUM_VOICES = 3
+NUM_ITEMS = 4
 
 LANE_BASE = 0
-OP_BASE = NUM_LANES
-DIGIT_BASE = OP_BASE + 4
+VOICE_BASE = LANE_BASE + NUM_NONENV
+ITEM_BASE = VOICE_BASE + NUM_VOICES
+OP_BASE = ITEM_BASE + NUM_ITEMS
+SEQREF_OP = OP_BASE + 4
+DIGIT_BASE = SEQREF_OP + 1
 VOCAB_SIZE = DIGIT_BASE + 32
+
+NUM_LANES = NUM_NONENV + NUM_VOICES + NUM_ITEMS
+
+ITEMS = {"DEF": 0, "REF": 1, "RAW": 2, "LEAD": 3}
+ITEMS_INV = {v: k for k, v in ITEMS.items()}
+DEF_ITEM = ITEM_BASE + ITEMS["DEF"]
+REF_ITEM = ITEM_BASE + ITEMS["REF"]
+RAW_ITEM = ITEM_BASE + ITEMS["RAW"]
+LEAD_ITEM = ITEM_BASE + ITEMS["LEAD"]
 
 OPS = {"NOTE": 0, "LOAD": 1, "MOD": 2, "RUN": 3}
 OPS_INV = {v: k for k, v in OPS.items()}
@@ -38,8 +51,6 @@ NOTE_OP = OP_BASE + OPS["NOTE"]
 LOAD_OP = OP_BASE + OPS["LOAD"]
 MOD_OP = OP_BASE + OPS["MOD"]
 RUN_OP = OP_BASE + OPS["RUN"]
-
-ENV_SUB = 1 << 20
 
 
 def lane_seq(grid: np.ndarray, kind: str, regs: tuple[int, ...]) -> np.ndarray:
@@ -115,20 +126,28 @@ def _is_hold(op) -> bool:
     return all(d == 0 for d in op[1])
 
 
-def encode_events(grid: np.ndarray, env_writes) -> list[tuple[int, int, tuple]]:
-    """Merge the settled non-env lanes (NOTE/MOD/LOAD/RUN gestures, implicit holds
-    dropped) with the ORDERED ``(frame, reg, val)`` env writes into one ``[(frame, sub,
-    payload)]`` stream sorted by ``(frame, sub)``; a lane payload is ``("L", lane, op)``,
-    an env payload is ``("W", reg, val)``, and env events sort after lane events in a
-    frame (``ENV_SUB`` offset) keeping their write order."""
+def lane_op_length(op) -> int:
+    """The number of frames a lane op advances: 1 for NOTE/LOAD, the run count for
+    MOD/RUN."""
+    return 1 if op[0] in ("NOTE", "LOAD") else op[2]
+
+
+def nonenv_lane_events(grid: np.ndarray, skip_lanes=()) -> list[tuple[int, int, tuple]]:
+    """The settled non-env lanes as ``(frame, lane, ("L", lane, op))`` gesture events
+    (NOTE/MOD pitch, LOAD/RUN delta-runs; implicit holds dropped), sorted by
+    ``(frame, lane)``. ``skip_lanes`` omits lanes whose values are carried elsewhere
+    (e.g. a synced-PW voice's pw lane folded into its instrument)."""
     events: list[tuple[int, int, tuple]] = []
+    skip = frozenset(skip_lanes)
     for lid, (kind, regs) in enumerate(NONENV_LANES):
+        if lid in skip:
+            continue
         seq = lane_seq(grid, kind, regs).astype(np.int64)
         toks = encode_freq(seq) if kind == "freq" else encode_lane(seq)
         f = 0
         cur = 0
         for op in toks:
-            length = 1 if op[0] in ("NOTE", "LOAD") else op[2]
+            length = lane_op_length(op)
             hold = (op[0] == "LOAD" and op[1] == cur) or _is_hold(op)
             if not hold:
                 events.append((f, lid, ("L", lid, op)))
@@ -141,29 +160,26 @@ def encode_events(grid: np.ndarray, env_writes) -> list[tuple[int, int, tuple]]:
                 for k in range(length):
                     cur += op[1][k % p]
             f += length
-    frame_n: dict[int, int] = {}
-    for fr, reg, val in env_writes:
-        i = frame_n.get(fr, 0)
-        frame_n[fr] = i + 1
-        events.append((fr, ENV_SUB + i, ("W", reg, val)))
     events.sort(key=lambda e: (e[0], e[1]))
     return events
 
 
-def decode_events(events, n_frames: int):
-    """Replay an event stream into ``(settled (n_frames, 25) grid, ordered env
-    writes)``. Env regs in the grid are forward-filled from the replayed writes so
-    the grid is a faithful settled view; the ordered env writes are the fidelity
-    target."""
+def lane_events_to_grid(
+    events, n_frames: int, env_writes=(), skip_lanes=()
+) -> np.ndarray:
+    """Replay non-env lane gesture events back into a settled ``(n_frames, 25)`` grid;
+    ``skip_lanes`` are left at 0 (their values are carried in the env writes). Env regs
+    are forward-filled from ``env_writes`` so the grid is a faithful settled view (the
+    ordered env writes are the actual fidelity target)."""
+    skip = frozenset(skip_lanes)
     lane_ops: list[list[tuple[int, tuple]]] = [[] for _ in NONENV_LANES]
-    env_writes: list[tuple[int, int, int]] = []
     for fr, _sub, payload in events:
         if payload[0] == "L":
             lane_ops[payload[1]].append((fr, payload[2]))
-        else:
-            env_writes.append((fr, payload[1], payload[2]))
     grid = np.zeros((n_frames, NUM_REGS), dtype=np.int64)
     for lid, (kind, regs) in enumerate(NONENV_LANES):
+        if lid in skip:
+            continue
         out = np.zeros(n_frames, dtype=np.int64)
         cur = 0
         fr = 0
@@ -200,7 +216,7 @@ def decode_events(events, n_frames: int):
             envcols[reg] = val
         for reg in ENV_REGS:
             grid[f, reg] = envcols[reg]
-    return grid, env_writes
+    return grid
 
 
 def _emit_u(out: list[int], n: int) -> None:
@@ -236,85 +252,61 @@ def _read_s(ids, i: int) -> tuple[int, int]:
     return (z >> 1) ^ -(z & 1), i
 
 
-def events_to_ids(events) -> list[int]:
-    """Flatten the event stream to atom ids: ``[DT][SELECTOR][...]`` per event, DT as
-    an unsigned inter-event frame delta. A lane selector (``<NUM_NONENV``) is followed
-    by ``[OP][params]``; an env selector (``>=NUM_NONENV``) is followed by the written
-    value."""
-    out: list[int] = []
-    prev = 0
-    for sf, _sub, payload in events:
-        _emit_u(out, sf - prev)
-        prev = sf
-        if payload[0] == "L":
-            out.append(LANE_BASE + payload[1])
-            op = payload[2]
-            out.append(OP_BASE + OPS[op[0]])
-            if op[0] == "NOTE":
-                _emit_s(out, op[1])
-            elif op[0] == "LOAD":
-                _emit_u(out, op[1])
-            else:
-                _emit_u(out, len(op[1]))
-                _emit_u(out, op[2])
-                for d in op[1]:
-                    _emit_s(out, d)
-        else:
-            out.append(LANE_BASE + NUM_NONENV + ENV_IDX[payload[1]])
-            _emit_u(out, payload[2])
-    return out
+def emit_u(out: list[int], n: int) -> None:
+    """Append an unsigned base-16 LEB varint over the DIGIT range."""
+    _emit_u(out, n)
 
 
-def ids_to_events(ids) -> list[tuple[int, int, tuple]]:
-    """Inverse of :func:`events_to_ids`. Env events get an ascending intra-stream
-    ``ENV_SUB`` sub-order so they keep their write order on re-sort."""
-    events: list[tuple[int, int, tuple]] = []
-    i = 0
-    prev = 0
-    n = len(ids)
-    frame_n: dict[int, int] = {}
-    while i < n:
-        dt, i = _read_u(ids, i)
-        prev += dt
-        sel = ids[i] - LANE_BASE
-        i += 1
-        if sel < NUM_NONENV:
-            kind = OPS_INV[ids[i] - OP_BASE]
-            i += 1
-            if kind == "NOTE":
-                val, i = _read_s(ids, i)
-                op: tuple = ("NOTE", val)
-            elif kind == "LOAD":
-                val, i = _read_u(ids, i)
-                op = ("LOAD", val)
-            else:
-                p, i = _read_u(ids, i)
-                cnt, i = _read_u(ids, i)
-                deltas = []
-                for _ in range(p):
-                    d, i = _read_s(ids, i)
-                    deltas.append(d)
-                op = (kind, tuple(deltas), cnt)
-            events.append((prev, sel, ("L", sel, op)))
-        else:
-            val, i = _read_u(ids, i)
-            reg = ENV_REGS[sel - NUM_NONENV]
-            sub = frame_n.get(prev, 0)
-            frame_n[prev] = sub + 1
-            events.append((prev, ENV_SUB + sub, ("W", reg, val)))
-    return events
+def emit_s(out: list[int], n: int) -> None:
+    """Append a zigzag-signed base-16 LEB varint over the DIGIT range."""
+    _emit_s(out, n)
+
+
+def read_u(ids, i: int) -> tuple[int, int]:
+    """Read an unsigned varint at ``i``; returns ``(value, next_index)``."""
+    return _read_u(ids, i)
+
+
+def read_s(ids, i: int) -> tuple[int, int]:
+    """Read a zigzag-signed varint at ``i``; returns ``(value, next_index)``."""
+    return _read_s(ids, i)
+
+
+def emit_lane_op(out: list[int], lane: int, op) -> None:
+    """Serialize one non-env lane gesture ``("L", lane, op)`` -> ``[LANE][OP][params]``
+    (DT is emitted by the caller, which owns the inter-event delta)."""
+    out.append(LANE_BASE + lane)
+    out.append(OP_BASE + OPS[op[0]])
+    if op[0] == "NOTE":
+        _emit_s(out, op[1])
+    elif op[0] == "LOAD":
+        _emit_u(out, op[1])
+    else:
+        _emit_u(out, len(op[1]))
+        _emit_u(out, op[2])
+        for d in op[1]:
+            _emit_s(out, d)
+
+
+def read_lane_op(ids, i: int):
+    """Inverse of :func:`emit_lane_op` from just past the LANE selector; returns
+    ``(op, next_index)``."""
+    kind = OPS_INV[ids[i] - OP_BASE]
+    i += 1
+    if kind == "NOTE":
+        val, i = _read_s(ids, i)
+        return ("NOTE", val), i
+    if kind == "LOAD":
+        val, i = _read_u(ids, i)
+        return ("LOAD", val), i
+    p, i = _read_u(ids, i)
+    cnt, i = _read_u(ids, i)
+    deltas = []
+    for _ in range(p):
+        d, i = _read_s(ids, i)
+        deltas.append(d)
+    return (kind, tuple(deltas), cnt), i
 
 
 def is_digit_atom(tok: int) -> bool:
     return DIGIT_BASE <= tok < VOCAB_SIZE
-
-
-def encode_target(grid: np.ndarray, env_writes) -> list[int]:
-    """Settled non-env grid + ordered env writes -> flat atom ids."""
-    return events_to_ids(encode_events(grid, env_writes))
-
-
-def decode_target(ids, n_frames: int):
-    """Flat atom ids + frame count -> ``(settled (n_frames, 25) grid, ordered env
-    writes)``."""
-    return decode_events(ids_to_events(ids), n_frames)

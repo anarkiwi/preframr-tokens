@@ -95,10 +95,13 @@ def _rand_grid(seed, n_frames=200):
 
 
 def test_vocab_has_no_set_op_and_no_escape():
-    """The alphabet is SELECTOR + {NOTE, LOAD, MOD, RUN} + digits -- no SET op, no
-    escape token, no id range. Selectors split into non-env lanes + env regs."""
-    assert inline.VOCAB_SIZE == inline.NUM_LANES + 4 + 32
-    assert inline.NUM_LANES == inline.NUM_NONENV + inline.NUM_ENV
+    """The alphabet is non-env LANE selectors + VOICE selectors + instrument ITEM
+    markers + {NOTE, LOAD, MOD, RUN} + a SEQREF marker + digits -- no SET op, no escape
+    token, no id range."""
+    assert inline.VOCAB_SIZE == inline.NUM_NONENV + inline.NUM_VOICES + (
+        inline.NUM_ITEMS + 4 + 1 + 32
+    )
+    assert inline.NUM_LANES == inline.NUM_NONENV + inline.NUM_VOICES + inline.NUM_ITEMS
     op_names = {inline.OPS_INV[i] for i in range(4)}
     assert op_names == {"NOTE", "LOAD", "MOD", "RUN"}
     assert "SET" not in op_names
@@ -194,11 +197,13 @@ def test_each_op_kind_present():
         g[f, 24] = 0x0F if f % 2 else 0x00
     g[5:, 4] = 0x41
     ow = _ow_from_grid(g)
-    events = inline.encode_events(g[:, :], env_writes(ow))
-    lane_ops = {op[2][0] for _f, _s, op in events if op[0] == "L"}
+    lane_events = inline.nonenv_lane_events(g)
+    lane_ops = {payload[2][0] for _f, _s, payload in lane_events}
     assert lane_ops & {"NOTE", "MOD"}
     assert "RUN" in lane_ops or "LOAD" in lane_ops
-    assert any(op[0] == "W" for _f, _s, op in events)
+    from preframr_tokens.events import instrument
+
+    assert any(it[0] == "DEF" for it in instrument.env_events(env_writes(ow)))
 
 
 def test_any_prefix_is_decodable():
@@ -216,12 +221,15 @@ def test_any_prefix_is_decodable():
 
 
 def test_serialization_is_self_delimiting():
-    """events_to_ids / ids_to_events invert exactly with no separator atom."""
+    """seqref serialize / deserialize invert the event stream exactly with no separator
+    atom."""
+    from preframr_tokens.events import seqref
+
     g = _rand_grid(2, n_frames=80)
     ow = _ow_from_grid(g)
-    events = inline.encode_events(g, env_writes(ow))
-    ids = inline.events_to_ids(events)
-    assert inline.ids_to_events(ids) == events
+    events = seqref.tune_events(g, env_writes(ow))
+    ids = seqref.serialize_events(events)
+    assert seqref.deserialize(ids) == events
 
 
 def test_single_speed_false_on_repeated_reg():
@@ -246,9 +254,12 @@ def test_trim_to_decodable_drops_partial_tail():
 
 
 def test_empty_inputs():
+    from preframr_tokens.events import seqref
+
     assert stream.decode([]) == []
+    assert seqref.encode(np.zeros((0, inline.NUM_REGS), dtype=np.int64), []) == []
     assert (
-        inline.encode_target(np.zeros((0, inline.NUM_REGS), dtype=np.int64), []) == []
+        stream.decode(seqref.encode(np.zeros((0, inline.NUM_REGS), np.int64), [])) == []
     )
     assert stream.strip_keyframes([1, 2]) == [1, 2]
     assert stream.chunk_keyframe([1], 1) == []
@@ -275,15 +286,11 @@ def test_single_speed_empty_is_true():
 
 
 def test_encode_verify_raises_on_corrupt_codec(monkeypatch):
-    from preframr_tokens.events import inline as inline_mod
+    from preframr_tokens.events import stream as stream_mod
 
     g = _rand_grid(0, n_frames=20)
     ow = _ow_from_grid(g)
-    monkeypatch.setattr(
-        inline_mod,
-        "decode_events",
-        lambda events, n: (np.zeros((n, 25), dtype=np.int64), []),
-    )
+    monkeypatch.setattr(stream_mod, "decode", lambda ids, extend=False: [])
     with pytest.raises(ValueError):
         stream.encode(ow, verify=True)
 

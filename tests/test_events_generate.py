@@ -91,14 +91,14 @@ def test_decode_reflects_inline_continuation():
     """The inline grammar is continuable: any valid event appended to a stream
     extends the song without a separate frame-count or an extend flag. Appending a
     later-frame NOTE event to a freq lane adds writes at the new frame."""
-    from preframr_tokens.events import inline
+    from preframr_tokens.events import inline, seqref
 
     ow = _ow_4frame()
     toks = stream.encode(ow)
     base_writes = stream.decode(toks)
     base_span = max(f for f, _, _ in base_writes)
     lane = inline.NONENV_LANES.index(("freq", (0, 1)))
-    extra = inline.events_to_ids([(4, lane, ("L", lane, ("NOTE", 64)))])
+    extra = seqref.serialize_events([("NE", 4, lane, ("NOTE", 64))])
     ext = toks + extra
     ext_writes = stream.decode(ext)
     assert (
