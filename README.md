@@ -82,34 +82,41 @@ The current tokenizer is the inline-event codec in `preframr_tokens.events`
 (55 atoms); BPE over these atoms is the dictionary. There are no ids, no
 literals table, no frozen-table DEF/REF, and no escape op.
 
-A SID dump's settled per-frame `(n_frames, 25)` register grid is split into
-**17 register lanes** (freq16 × 3, pw12 × 3, ctrl × 3, AD × 3, SR × 3, plus
-filter cutoff / resonance / mode-volume), and each lane is encoded with exactly
-two ops over its running value:
+Two fidelity classes merge into ONE stream. The **10 settled non-env lanes**
+(freq16 × 3, pw12 × 3, filter cutoff-lo, cutoff-hi, resonance, mode-volume) are
+taken from the settled per-frame `(n_frames, 25)` register grid and each encoded
+with two ops over its running value; **ctrl / AD / SR** (the 9 env regs
+4,5,6,11,12,13,18,19,20) are NOT settled — they are kept as the ORDERED write
+stream so the audibly-significant envelope / hard-restart / gate order survives.
 
 - **freq lanes** use `NOTE(interval)` (an inline relative pitch step, signed) and
   `MOD(deltas, n)` (an `n`-frame periodic delta run — vibrato / glide), both
   relative to the running freq so the lane is transposition-invariant.
-- **every other lane** uses `LOAD(value)` (a jump to a value — a note / wavetable
-  / table entry) and `RUN(deltas, n)` (an `n`-frame periodic delta run — sweep /
-  sustain / PWM).
+- **every other non-env lane** uses `LOAD(value)` (a jump to a value — a note /
+  wavetable / table entry) and `RUN(deltas, n)` (an `n`-frame periodic delta run —
+  sweep / sustain / PWM).
+- **env regs** emit a `WRITE(value)` event per source write (consecutive
+  same-reg-same-val no-ops de-duped), preserving intra-frame write order.
 
-The 17 lanes merge into ONE time-ordered event stream `(start_frame, lane, op)`
-with implicit holds dropped (a lane holds its value between events) and sorted by
-`(start_frame, lane)`. The stream is then a flat atom-id list, one event encoded
-as `[DT][LANE][OP][params]`:
+All selectors merge into ONE time-ordered event stream `(start_frame, sub, payload)`
+with implicit non-env holds dropped, sorted by `(start_frame, sub)`; within a frame
+the non-env lane events come first (by lane) then the env writes in source order.
+The stream is then a flat atom-id list. A non-env event is `[DT][LANE][OP][params]`;
+an env event is `[DT][SELECTOR][value]` (no OP byte):
 
 | Range | Tokens | Meaning |
 |---|---|---|
-| `LANE_BASE` 0–18 | 19 | lane ids (freq/pw/ctrl/ad/sr × 3 voices + cutoff/res/vol) |
+| `LANE_BASE` 0–9 | 10 | non-env lane ids (freq × 3, pw × 3, cutoff-lo, cutoff-hi, res, vol) |
+| `LANE_BASE` 10–18 | 9 | env reg selectors (ctrl/ad/sr × 3 voices); selector ≥ 10 is a `WRITE` |
 | `OP_BASE` 19–22 | 4 | op: `NOTE`, `LOAD`, `MOD`, `RUN` |
 | `DIGIT_BASE` 23–54 | 32 | self-delimiting base-16 LEB digits: low 16 = continue, high 16 = terminal; signed values are zig-zagged |
 
-`DT` is the unsigned inter-event frame delta (a digit run); `LANE` and `OP`
-are one atom each; the op's params follow as digit runs (`NOTE` = one signed
+`DT` is the unsigned inter-event frame delta (a digit run). A non-env event carries
+a `LANE` atom, an `OP` atom, then the op's params as digit runs (`NOTE` = one signed
 value, `LOAD` = one unsigned value, `MOD`/`RUN` = unsigned period `p`, unsigned
-length `n`, then `p` signed deltas). Every field family owns a disjoint position
-in the event, so the stream is self-delimiting with no separator or escape token.
+length `n`, then `p` signed deltas). An env event carries an env selector then one
+unsigned value. Every field family owns a disjoint position, so the stream is
+self-delimiting with no separator or escape token.
 
 **Inline streaming.** There is no SET op, no preamble, no forward declaration,
 and no frozen table. Any prefix of the token stream (cut at an event boundary,
@@ -133,23 +140,25 @@ is a no-op there.
 
 ### Fidelity contract
 
-The oracle is `events.oracle.settled_grid(ow)`: the per-frame settled
-`(n_frames, 25)` register state. The codec target is
-`stream.canonical_writes(ow)`: per frame, every register whose settled value
-changed from the previous frame, in ascending register order. Intra-frame write
-order and same-value rewrites canonicalize away (licensed by the reSID noise
-floor). "Lossless" means `decode(encode(ow))` re-settles to
-`canonical_writes(ow)`, byte for byte, on every tune.
+The codec target is the **audio-faithful** `stream.canonical_writes(ow)` =
+`oracle.corrected_writes(ow)`: per frame the settled NON-env register changes (in
+ascending register order) interleaved with the ORDERED ctrl/AD/SR writes in their
+source order. Only intra-frame non-env intermediates and env same-value rewrites
+drop (both inaudible) — the env write ORDER is preserved, so a within-frame gate
+toggle or hard-restart sequence round-trips write-for-write. This is NOT
+byte-exact-to-settled-state (that would erase the load-bearing env order).
+"Lossless" means `decode(encode(ow))` reproduces `corrected_writes(ow)`, exactly,
+on every tune (100% of the HVSC music corpus).
 
-`encode(ow, verify=True)` self-verifies the inline codec against the settled
-grid on every call and raises loudly on a miss; `roundtrip_ok(df)` is the
-one-call smoke test. The entry points:
+`encode(ow, verify=True)` self-verifies the round trip against the corrected target
+on every call and raises loudly on a miss; `roundtrip_ok(df)` is the one-call smoke
+test. The entry points:
 
 ```python
 from preframr_tokens.events import oracle, stream
 
 ow = oracle.ordered_writes(dump_df)   # byte-exact ordered writes (clock-sorted, chipno 0)
-tokens = stream.encode(ow)            # verified against canonical_writes via the settled grid
+tokens = stream.encode(ow)            # verified against corrected_writes (settled non-env + ordered env)
 writes = stream.decode(tokens)        # [(frame, reg, val), ...]
 ```
 
@@ -190,11 +199,11 @@ consumes.
 
 - `preframr_tokens.events` -- the inline-event codec (see
   [The token alphabet](#the-token-alphabet-inline-event-model)):
-  `inline` (lane split, freq NOTE/MOD + generic LOAD/RUN encode/decode,
-  event merge, flat-atom serialization), `stream` (alphabet, `encode`/`decode`,
-  `canonical_writes`, `unit_starts`, `roundtrip_ok`, `single_speed`,
-  `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
-  `settled_grid`), `pipeline` / `dataset` (frame-window blocking + training
+  `inline` (lane split, freq NOTE/MOD + generic LOAD/RUN + ordered env WRITE
+  encode/decode, event merge, flat-atom serialization), `stream` (alphabet,
+  `encode`/`decode`, `canonical_writes`, `unit_starts`, `roundtrip_ok`,
+  `single_speed`, `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
+  `settled_grid`, `env_writes`, `corrected_writes`), `pipeline` / `dataset` (frame-window blocking + training
   arrays), `generate` (token ids → ordered writes), `constrained` (per-step
   grammar-validity mask for sampling over the inline-event alphabet).
 - `preframr_tokens.reglogparser` -- SID dump → parsed dataframe

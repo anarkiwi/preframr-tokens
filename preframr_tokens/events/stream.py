@@ -1,19 +1,27 @@
-"""Canonical inline-event stream codec (the white-box decompiler representation).
-``encode(ow)`` settles the ordered writes to the per-frame ``(n_frames, 25)`` grid
-then emits the inline event stream; ``decode`` rebuilds the grid and emits ordered
-``(frame, reg, val)`` writes. Lossless: ``decode(encode(ow))`` re-settles to
-``canonical_writes(ow)`` (intra-frame order and same-value rewrites canonicalize away).
-"""
+"""Canonical inline-event stream codec. ``encode(ow)`` settles the non-env lanes and
+captures ctrl/AD/SR as the ORDERED write stream, emitting the inline event stream;
+``decode`` rebuilds both as ordered ``(frame, reg, val)`` writes. Lossless against the
+audio-faithful ``corrected_writes(ow)`` (settled non-env grid + ordered env writes);
+only inaudible intra-frame non-env intermediates and env same-value rewrites drop."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from . import inline
-from .oracle import NUM_REGS, OrderedWrites, settled_grid
+from .oracle import (
+    ENV_REGS,
+    NUM_REGS,
+    OrderedWrites,
+    corrected_writes,
+    env_writes,
+    settled_grid,
+)
 
-EVENT_FORMAT_VERSION = 4
+EVENT_FORMAT_VERSION = 5
 VOCAB_SIZE = inline.VOCAB_SIZE
+
+_ENV_SET = frozenset(ENV_REGS)
 
 
 def is_content_atom(tok: int) -> bool:
@@ -36,60 +44,79 @@ def single_speed(ow: OrderedWrites) -> bool:
     return True
 
 
-def _grid_to_writes(grid: np.ndarray) -> list[tuple[int, int, int]]:
-    out: list[tuple[int, int, int]] = []
-    prev = np.zeros(NUM_REGS, dtype=np.int64)
-    n = grid.shape[0]
-    for f in range(n):
-        row = grid[f]
-        for r in range(NUM_REGS):
-            if row[r] != prev[r]:
-                out.append((f, r, int(row[r])))
-        prev = row
-    return out
-
-
 def canonical_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
-    """The byte-exact target the codec reproduces: per frame, every register whose
-    settled value changed from the previous frame, ascending register. Intra-frame
-    write order and same-value rewrites are canonicalized away."""
-    return _grid_to_writes(settled_grid(ow))
+    """The audio-faithful byte-exact target the codec reproduces: per frame the
+    settled non-env register changes (ascending register) interleaved with the
+    ORDERED ctrl/AD/SR writes in source order. Only intra-frame non-env intermediates
+    and env same-value rewrites are canonicalized away (both inaudible)."""
+    return corrected_writes(ow)
 
 
 def encode(ow: OrderedWrites, verify: bool = True) -> list[int]:
     """Ordered writes -> flat inline-event atom ids. ``verify`` self-checks the
-    byte-exact round trip against the settled grid and raises on a miss."""
+    byte-exact round trip against the corrected target (settled non-env grid + ordered
+    env writes) and raises on a miss."""
     grid = settled_grid(ow)
-    ids = inline.encode_grid(grid)
+    ew = env_writes(ow)
+    ids = inline.encode_target(grid, ew)
     if verify:
-        rec = inline.decode_grid(ids, grid.shape[0])
-        if not np.array_equal(rec, grid):
-            raise ValueError("inline codec not byte-exact against settled grid")
+        if decode(ids) != corrected_writes(ow):
+            raise ValueError("inline codec not byte-exact against corrected target")
     return ids
 
 
 def _span(events) -> int:
     span = 1
-    for sf, _lane, op in events:
-        length = op[2] if op[0] in ("MOD", "RUN") else 1
+    for sf, _sub, payload in events:
+        if payload[0] == "L":
+            op = payload[2]
+            length = op[2] if op[0] in ("MOD", "RUN") else 1
+        else:
+            length = 1
         span = max(span, sf + length)
     return span
 
 
+def _interleave(grid: np.ndarray, ew) -> list[tuple[int, int, int]]:
+    """The corrected-target ordering of decoded ``(grid, env_writes)``: per frame the
+    settled non-env changes (ascending register) then the ordered env writes."""
+    nonenv_changes: dict[int, list[tuple[int, int]]] = {}
+    prev = np.zeros(NUM_REGS, dtype=np.int64)
+    for f in range(grid.shape[0]):
+        row = grid[f]
+        for r in range(NUM_REGS):
+            if r not in _ENV_SET and row[r] != prev[r]:
+                nonenv_changes.setdefault(f, []).append((r, int(row[r])))
+        prev = row
+    env_by_frame: dict[int, list[tuple[int, int]]] = {}
+    for f, r, v in ew:
+        env_by_frame.setdefault(f, []).append((r, v))
+    out: list[tuple[int, int, int]] = []
+    frames = set(nonenv_changes) | set(env_by_frame)
+    nf = grid.shape[0]
+    for f in range(max(frames) + 1 if frames else nf):
+        for r, v in nonenv_changes.get(f, []):
+            out.append((f, r, v))
+        for r, v in env_by_frame.get(f, []):
+            out.append((f, r, v))
+    return out
+
+
 def decode(tokens, extend: bool = False) -> list[tuple[int, int, int]]:
-    """Flat inline-event atom ids -> ordered ``(frame, reg, val)`` writes. The
-    declared frame span is the last event's reach; ``extend`` is accepted for
-    interface parity (the stream already carries its full span)."""
+    """Flat inline-event atom ids -> ordered ``(frame, reg, val)`` writes (settled
+    non-env changes per frame interleaved with the ordered env writes). The declared
+    frame span is the last event's reach; ``extend`` is accepted for interface parity
+    (the stream already carries its full span)."""
     del extend
     events = inline.ids_to_events(list(tokens))
     if not events:
         return []
-    grid = inline.decode_events(events, _span(events))
-    return _grid_to_writes(grid)
+    grid, ew = inline.decode_events(events, _span(events))
+    return _interleave(grid, ew)
 
 
 def roundtrip_ok(df) -> bool:
-    """One-call smoke test: ``decode(encode(ow))`` re-settles to ``canonical_writes``."""
+    """One-call smoke test: ``decode(encode(ow))`` reproduces ``canonical_writes``."""
     from .oracle import ordered_writes
 
     ow = ordered_writes(df)
@@ -97,22 +124,25 @@ def roundtrip_ok(df) -> bool:
 
 
 def _skip_dt(tokens, i: int) -> int:
+    """Index past a DT varint, or ``len + 1`` (a truncation sentinel) if the stream
+    ends mid-varint."""
     n = len(tokens)
     lo = inline.DIGIT_BASE
     hi = inline.DIGIT_BASE + 16
     while i < n and lo <= tokens[i] < hi:
         i += 1
-    return i + 1 if i < n else i
+    return i + 1 if i < n else n + 1
 
 
 def _skip_u(tokens, i: int) -> int:
+    """Index past an unsigned varint, or ``len + 1`` if the stream ends mid-varint."""
     n = len(tokens)
     while i < n:
         terminal = tokens[i] >= inline.DIGIT_BASE + 16
         i += 1
         if terminal:
-            break
-    return i
+            return i
+    return n + 1
 
 
 def _decode_u(tokens, i: int) -> int:
@@ -131,8 +161,9 @@ def _decode_u(tokens, i: int) -> int:
 
 
 def _skip_params(tokens, i: int) -> int:
-    if not 0 <= i - 1 < len(tokens):
-        return i
+    n = len(tokens)
+    if not 0 <= i - 1 < n:
+        return n + 1
     op = tokens[i - 1]
     if op in (inline.NOTE_OP, inline.LOAD_OP):
         return _skip_u(tokens, i)
@@ -140,27 +171,41 @@ def _skip_params(tokens, i: int) -> int:
     i = _skip_u(tokens, i)
     i = _skip_u(tokens, i)
     for _ in range(p):
+        if i > n:
+            return n + 1
         i = _skip_u(tokens, i)
     return i
 
 
 def _event_end(tokens, start: int) -> int:
+    n = len(tokens)
     i = _skip_dt(tokens, start)
-    i += 2
-    return _skip_params(tokens, i)
+    if i > n:
+        return i
+    if i >= n:
+        return n + 1
+    sel = tokens[i] - inline.LANE_BASE
+    i += 1
+    if 0 <= sel < inline.NUM_NONENV:
+        if i >= n:
+            return n + 1
+        i += 1
+        return _skip_params(tokens, i)
+    return _skip_u(tokens, i)
 
 
 def unit_starts(tokens) -> list[int]:
-    """Grammar-unit start indices: each event ``[DT][LANE][OP][params]`` is one
-    unit, so a start is every event head."""
+    """Grammar-unit start indices: each complete event ``[DT][SELECTOR][...]`` is one
+    unit, so a start is every event head; a truncated trailing event is not a unit."""
     starts: list[int] = []
     i = 0
     n = len(tokens)
     while i < n:
-        starts.append(i)
-        i = _event_end(tokens, i)
-        if i <= starts[-1]:
+        end = _event_end(tokens, i)
+        if end > n or end <= i:
             break
+        starts.append(i)
+        i = end
     return starts
 
 

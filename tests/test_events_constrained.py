@@ -21,7 +21,8 @@ def _stream():
     for f in range(30, 40):
         g[f, 24] = 0x0F if f % 2 else 0x00
     g[5:, 4] = 0x41
-    return inline.encode_grid(g)
+    env = [(5, 4, 0x41)]
+    return inline.events_to_ids(inline.encode_events(g, env))
 
 
 def test_fresh_state_expects_dt_digits_only():
@@ -67,7 +68,7 @@ def test_lane_then_op_phase_sequence():
 @pytest.mark.parametrize("op", ["NOTE", "LOAD"])
 def test_single_value_ops_complete_after_one_varint(op):
     st = EventStreamState()
-    ids = inline.events_to_ids([(3, 1, (op, 7))])
+    ids = inline.events_to_ids([(3, 1, ("L", 1, (op, 7)))])
     for tok in ids:
         assert st.valid_mask()[tok]
         st.push(tok)
@@ -77,7 +78,20 @@ def test_single_value_ops_complete_after_one_varint(op):
 @pytest.mark.parametrize("op", ["MOD", "RUN"])
 def test_run_ops_complete_after_all_deltas(op):
     st = EventStreamState()
-    ids = inline.events_to_ids([(0, 0 if op == "MOD" else 5, (op, (1, -2, 3), 9))])
+    lane = 0 if op == "MOD" else 5
+    ids = inline.events_to_ids([(0, lane, ("L", lane, (op, (1, -2, 3), 9)))])
+    for tok in ids[:-1]:
+        st.push(tok)
+        assert not st.at_group_boundary
+    st.push(ids[-1])
+    assert st.at_group_boundary
+
+
+def test_env_write_event_completes_after_value():
+    """An env-reg WRITE event is ``[DT][SELECTOR][value]`` -- no OP byte -- and
+    completes after its value varint."""
+    st = EventStreamState()
+    ids = inline.events_to_ids([(2, inline.ENV_SUB, ("W", 4, 0x41))])
     for tok in ids[:-1]:
         st.push(tok)
         assert not st.at_group_boundary

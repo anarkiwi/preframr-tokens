@@ -16,6 +16,7 @@ _HI = inline.DIGIT_BASE + 16
 _ANY_DIGIT = list(range(inline.DIGIT_BASE, inline.DIGIT_BASE + 32))
 _LANES = list(range(inline.LANE_BASE, inline.LANE_BASE + inline.NUM_LANES))
 _OPS = [inline.NOTE_OP, inline.LOAD_OP, inline.MOD_OP, inline.RUN_OP]
+_FIRST_ENV = inline.LANE_BASE + inline.NUM_NONENV
 
 
 class EventStreamState:
@@ -26,6 +27,7 @@ class EventStreamState:
     def __init__(self):
         self.phase = "DT"
         self.op = None
+        self._sel = -1
         self._p = 0
         self._shift = 0
         self._deltas_left = 0
@@ -61,7 +63,13 @@ class EventStreamState:
             if tok >= _HI:
                 self.phase = "LANE"
         elif phase == "LANE":
-            self.phase = "OP"
+            self._sel = tok - inline.LANE_BASE
+            if self._sel < inline.NUM_NONENV:
+                self.phase = "OP"
+            else:
+                self._p = 0
+                self._shift = 0
+                self.phase = "VAL"
         elif phase == "OP":
             self.op = tok
             self._begin_params(tok)

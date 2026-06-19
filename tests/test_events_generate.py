@@ -97,9 +97,8 @@ def test_decode_reflects_inline_continuation():
     toks = stream.encode(ow)
     base_writes = stream.decode(toks)
     base_span = max(f for f, _, _ in base_writes)
-    extra = inline.events_to_ids(
-        [(4, inline.LANES.index(("freq", (0, 1))), ("NOTE", 64))]
-    )
+    lane = inline.NONENV_LANES.index(("freq", (0, 1)))
+    extra = inline.events_to_ids([(4, lane, ("L", lane, ("NOTE", 64)))])
     ext = toks + extra
     ext_writes = stream.decode(ext)
     assert (
@@ -112,10 +111,7 @@ def test_decode_reflects_inline_continuation():
 
 
 def test_recanon_idempotent_and_write_preserving():
-    from preframr_tokens.events import dataset, inline
-
-    g = _synth_grid()
-    ids = [a + 1 for a in inline.encode_grid(g)]
+    ids = [a + 1 for a in stream.encode(_synth_ow())]
     rc1 = generate.recanon(ids)
     rc2 = generate.recanon(rc1)
     assert rc1 == rc2
@@ -123,34 +119,33 @@ def test_recanon_idempotent_and_write_preserving():
 
 
 def test_recanon_trim_handles_partial_tail():
-    from preframr_tokens.events import dataset, inline
+    from preframr_tokens.events import inline
 
-    g = _synth_grid()
-    ids = [a + 1 for a in inline.encode_grid(g)] + [inline.DIGIT_BASE + 1]
+    ids = [a + 1 for a in stream.encode(_synth_ow())] + [inline.DIGIT_BASE + 1]
     rc = generate.recanon(ids, trim=True)
     assert dataset.ids_to_writes(rc)
 
 
 def test_tokens_to_dump_df_render_ready():
-    from preframr_tokens.events import inline
-
-    g = _synth_grid()
-    ids = [a + 1 for a in inline.encode_grid(g)]
+    ids = [a + 1 for a in stream.encode(_synth_ow())]
     tk = dataset.make_tokenizer(_args())
     df = generate.tokens_to_dump_df(tk, ids)
     assert list(df.columns) == ["clock", "irq", "chipno", "reg", "val"]
     assert (df["chipno"] == 0).all()
 
 
-def _synth_grid():
-    import numpy as np
-
-    g = np.zeros((40, 25), dtype=np.int64)
-    g[2:, 0] = 0x40
-    g[2:, 4] = 0x11
-    for f in range(10, 30):
-        v = (0x1000 + (f - 10) * 4) & 0xFFFF
-        g[f, 0] = v & 0xFF
-        g[f, 1] = v >> 8
-    g[20:, 21] = 7
-    return g
+def _synth_ow():
+    writes = []
+    for f in range(40):
+        if f >= 2:
+            writes.append((f, 0, 0x40))
+        if f >= 2:
+            writes.append((f, 4, 0x11))
+        if 10 <= f < 30:
+            v = (0x1000 + (f - 10) * 4) & 0xFFFF
+            writes.append((f, 0, v & 0xFF))
+            writes.append((f, 1, v >> 8))
+        if f >= 20:
+            writes.append((f, 21, 7))
+    writes.sort(key=lambda t: t[0])
+    return oracle.writes_to_ordered(writes)
