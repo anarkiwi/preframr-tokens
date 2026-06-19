@@ -149,12 +149,31 @@ def env_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
     return out
 
 
+_ENV_VOICE = {4: 0, 5: 0, 6: 0, 11: 1, 12: 1, 13: 1, 18: 2, 19: 2, 20: 2}
+
+
+def env_writes_by_voice(env) -> dict[int, list[tuple[int, int]]]:
+    """Group ordered env writes by frame, each frame's writes ordered stably by
+    ``(voice, source_index)``: within-voice source order (the load-bearing axis --
+    hard-restart, gate/ADSR sequences) is preserved verbatim, and independent voices'
+    same-frame writes (an audio-neutral tie) are canonicalised voice-ascending -- the
+    per-voice fidelity axis the codec's instrument program reproduces."""
+    per_frame: dict[int, list[tuple[int, int, int]]] = {}
+    for idx, (f, r, v) in enumerate(env):
+        per_frame.setdefault(f, []).append((_ENV_VOICE[r], idx, (r, v)))
+    out: dict[int, list[tuple[int, int]]] = {}
+    for f, items in per_frame.items():
+        items.sort(key=lambda e: (e[0], e[1]))
+        out[f] = [rv for _voice, _idx, rv in items]
+    return out
+
+
 def corrected_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
-    """The audio-faithful fidelity target = the settled non-env grid writes (one
-    ascending-register write per frame where a non-env reg's settled value changed)
-    interleaved with the ORDERED env writes (kept in source order). This is exactly
-    what the codec reproduces; only intra-frame non-env intermediates and env
-    same-value rewrites (both inaudible) are dropped."""
+    """The audio-faithful fidelity target = the settled non-env grid changes per frame
+    (ascending register) interleaved with the ORDERED env writes, the env writes ordered
+    per voice within a frame (:func:`env_writes_by_voice`). Exactly what the codec
+    reproduces; only intra-frame non-env intermediates and env same-value rewrites (both
+    inaudible) drop."""
     grid = settled_grid(ow)
     nonenv_changes: dict[int, list[tuple[int, int]]] = {}
     prev = np.zeros(NUM_REGS, dtype=np.int64)
@@ -164,10 +183,7 @@ def corrected_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
             if r not in _ENV_SET and row[r] != prev[r]:
                 nonenv_changes.setdefault(f, []).append((r, int(row[r])))
         prev = row
-    env = env_writes(ow)
-    env_by_frame: dict[int, list[tuple[int, int]]] = {}
-    for f, r, v in env:
-        env_by_frame.setdefault(f, []).append((r, v))
+    env_by_frame = env_writes_by_voice(env_writes(ow))
     out: list[tuple[int, int, int]] = []
     nf = grid.shape[0]
     frames = set(nonenv_changes) | set(env_by_frame)
