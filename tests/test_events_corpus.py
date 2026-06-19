@@ -99,10 +99,10 @@ def test_preload_writes_events_blocks_and_decodes_byte_exact():
 
 def test_preload_trains_bpe_over_events_and_round_trips():
     with tempfile.TemporaryDirectory() as d:
-        for i in range(3):
+        for i in range(6):
             _synth_dump(os.path.join(d, f"song{i}.dump.parquet"), i)
         c = Corpus(
-            _args(d, seq_len=128, tkvocab=stream.VOCAB_SIZE + 8, dataset_csv=None),
+            _args(d, seq_len=128, tkvocab=stream.VOCAB_SIZE + 4, dataset_csv=None),
             logging.getLogger("t"),
         )
         c.preload()

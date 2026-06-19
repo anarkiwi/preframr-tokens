@@ -15,6 +15,9 @@ import pandas as pd
 MAX_REG = 24
 NUM_REGS = 25
 
+ENV_REGS: tuple[int, ...] = (4, 5, 6, 11, 12, 13, 18, 19, 20)
+_ENV_SET = frozenset(ENV_REGS)
+
 
 @dataclass(frozen=True)
 class OrderedWrites:
@@ -130,3 +133,47 @@ def settled_grid(ow: OrderedWrites) -> np.ndarray:
             k += 1
         grid[f] = cur
     return grid
+
+
+def env_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
+    """The ORDERED ctrl/AD/SR write stream (regs in :data:`ENV_REGS`) in source clock
+    order, de-duped consecutive same-reg-same-val no-ops only. This preserves the
+    audibly load-bearing envelope/hard-restart write order that settling would erase.
+    """
+    out: list[tuple[int, int, int]] = []
+    last: dict[int, int] = {}
+    for f, r, v in zip(ow.frame.tolist(), ow.reg.tolist(), ow.val.tolist()):
+        if r in _ENV_SET and last.get(r) != v:
+            out.append((int(f), int(r), int(v)))
+            last[r] = v
+    return out
+
+
+def corrected_writes(ow: OrderedWrites) -> list[tuple[int, int, int]]:
+    """The audio-faithful fidelity target = the settled non-env grid writes (one
+    ascending-register write per frame where a non-env reg's settled value changed)
+    interleaved with the ORDERED env writes (kept in source order). This is exactly
+    what the codec reproduces; only intra-frame non-env intermediates and env
+    same-value rewrites (both inaudible) are dropped."""
+    grid = settled_grid(ow)
+    nonenv_changes: dict[int, list[tuple[int, int]]] = {}
+    prev = np.zeros(NUM_REGS, dtype=np.int64)
+    for f in range(grid.shape[0]):
+        row = grid[f]
+        for r in range(NUM_REGS):
+            if r not in _ENV_SET and row[r] != prev[r]:
+                nonenv_changes.setdefault(f, []).append((r, int(row[r])))
+        prev = row
+    env = env_writes(ow)
+    env_by_frame: dict[int, list[tuple[int, int]]] = {}
+    for f, r, v in env:
+        env_by_frame.setdefault(f, []).append((r, v))
+    out: list[tuple[int, int, int]] = []
+    nf = grid.shape[0]
+    frames = set(nonenv_changes) | set(env_by_frame)
+    for f in range(max(frames) + 1 if frames else nf):
+        for r, v in nonenv_changes.get(f, []):
+            out.append((f, r, v))
+        for r, v in env_by_frame.get(f, []):
+            out.append((f, r, v))
+    return out

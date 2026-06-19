@@ -10,7 +10,7 @@ the token alphabet that downstream training consumes.
 
 This README is the API reference for the package, including the
 [input dump format](#the-input-dump-format), the
-[v3 event token alphabet](#the-token-alphabet-v3-event-model) and its
+[inline-event token alphabet](#the-token-alphabet-inline-event-model) and its
 [fidelity contract](#fidelity-contract), and the
 [parse-domain output schema](#parse-domain-reglogparser). The
 SID-chip behavior facts these encodings rest on are documented (and
@@ -43,9 +43,9 @@ from preframr_tokens import RegLogParser, RegTokenizer, Corpus, reg_class
 are also public, stable namespaces you import directly:
 `preframr_tokens.stfconstants` (reg ids, op codes, dtypes, PAL clock),
 `preframr_tokens.engine_fingerprint` (feature-vector layout, `ClusterTable`,
-`compute_fingerprint`), and `preframr_tokens.events` (the v3 event codec:
-`events.stream`, `events.oracle`, `events.pipeline`, `events.dataset`,
-`events.generate`, `events.varint`). Every other `preframr_tokens.*`
+`compute_fingerprint`), and `preframr_tokens.events` (the inline-event codec:
+`events.inline`, `events.stream`, `events.oracle`, `events.pipeline`,
+`events.dataset`, `events.generate`). Every other `preframr_tokens.*`
 submodule path is **internal and may move between releases** — depend on
 the root re-exports instead. The module list below documents that
 internal structure.
@@ -75,122 +75,97 @@ non-digi (`dump_meta.is_digi`). Multi-speed (~5%) and digi (~3%) tunes
 are rejected up front; an out-of-scope failure is a scope bug, not a
 fidelity bug.
 
-## The token alphabet (v3 event model)
+## The token alphabet (inline-event model)
 
-The current tokenizer is the event codec in `preframr_tokens.events`
-(`stream.py`). It is a fixed 129-atom alphabet (`stream.VOCAB_SIZE`);
-BPE over these atoms is the dictionary. The only DEF/REF in the grammar
-is the front-loaded instrument bank (`INSTR_DEF` / `INSTR_REF`, below);
-otherwise there are no ids, no literals, and no escape path.
+The current tokenizer is the inline-event codec in `preframr_tokens.events`
+(`inline.py` + `stream.py`). It is a fixed `stream.VOCAB_SIZE`-atom alphabet
+(55 atoms); BPE over these atoms is the dictionary. There are no ids, no
+literals table, no frozen-table DEF/REF, and no escape op.
+
+Two fidelity classes merge into ONE stream. The **10 settled non-env lanes**
+(freq16 × 3, pw12 × 3, filter cutoff-lo, cutoff-hi, resonance, mode-volume) are
+taken from the settled per-frame `(n_frames, 25)` register grid and each encoded
+with two ops over its running value; **ctrl / AD / SR** (the 9 env regs
+4,5,6,11,12,13,18,19,20) are NOT settled — they are kept as the ORDERED write
+stream so the audibly-significant envelope / hard-restart / gate order survives.
+
+- **freq lanes** use `NOTE(interval)` (an inline relative pitch step, signed) and
+  `MOD(deltas, n)` (an `n`-frame periodic delta run — vibrato / glide), both
+  relative to the running freq so the lane is transposition-invariant.
+- **every other non-env lane** uses `LOAD(value)` (a jump to a value — a note /
+  wavetable / table entry) and `RUN(deltas, n)` (an `n`-frame periodic delta run —
+  sweep / sustain / PWM).
+- **env regs** emit a `WRITE(value)` event per source write (consecutive
+  same-reg-same-val no-ops de-duped), preserving intra-frame write order.
+
+All selectors merge into ONE time-ordered event stream `(start_frame, sub, payload)`
+with implicit non-env holds dropped, sorted by `(start_frame, sub)`; within a frame
+the non-env lane events come first (by lane) then the env writes in source order.
+The stream is then a flat atom-id list. A non-env event is `[DT][LANE][OP][params]`;
+an env event is `[DT][SELECTOR][value]` (no OP byte):
 
 | Range | Tokens | Meaning |
 |---|---|---|
-| `VAR_BASE` 0–31 | 32 | varint digits: low 4 bits = base-16 digit, bit 4 = continue flag. Values are big-endian (coarse digit first); signed values are zig-zagged (`events.varint`) |
-| `REG_BASE` 32–56 | 25 | register ids 0..24 (global-lane addressing) |
-| `VOICE_BASE` 57–60 | 4 | voice tags: voice 0/1/2 + GLOBAL |
-| `TUNING` 61, `NOTE_TABLE` 62, `TICK` 63 | 3 | per-voice stream headers: tuning quantization, note-frequency deviation table, gate-duration tick grid |
-| `NI_STEP`/`NI_RAMP` 64/65 | 2 | note-index step / ramp (the melody lane) |
-| `FD_STEP`/`FD_RAMP` 66/67 | 2 | freq-residual step / ramp |
-| `PW_STEP`/`PW_RAMP` 68/69 | 2 | pulse-width step / ramp (combined 12-bit lane) |
-| `FLD_NOTE_ON` 70 | 1 | gate 0→1 CTRL write; owns the envelope lifecycle (onset AD/SR fold, recorded gate-edge side, hard-restart prep, mixed-radix duration) |
-| `FLD_CTRL` 71, `FLD_AD` 72, `FLD_SR` 73 | 3 | non-gate-on CTRL / AD / SR writes |
-| `G_STEP`/`G_RAMP` 74/75 | 2 | global-register step / ramp (followed by a `REG_BASE` token) |
-| `SHAPE_POLY` 76, `SHAPE_PERIOD` 77 | 2 | ramp shapes: polynomial finite-difference params / periodic cell |
-| `NIB_WAVE` 78–93, `NIB_ART` 94–109 | 32 | CTRL value nibbles (waveform high nibble, articulation low nibble) |
-| `NIB_ENV` 110–125 | 16 | envelope nibbles (AD/SR hi+lo; PW duty class) |
-| `KEYFRAME` 126 | 1 | chunk-conditioning segment bracket (structural; `strip_keyframes` removes before decode) |
-| `INSTR_DEF` 127 | 1 | preamble instrument-bank opener (followed by a count, then the bank entries) |
-| `INSTR_REF` 128 | 1 | body reference to a banked onset program by positional id |
+| `LANE_BASE` 0–9 | 10 | non-env lane ids (freq × 3, pw × 3, cutoff-lo, cutoff-hi, res, vol) |
+| `LANE_BASE` 10–18 | 9 | env reg selectors (ctrl/ad/sr × 3 voices); selector ≥ 10 is a `WRITE` |
+| `OP_BASE` 19–22 | 4 | op: `NOTE`, `LOAD`, `MOD`, `RUN` |
+| `DIGIT_BASE` 23–54 | 32 | self-delimiting base-16 LEB digits: low 16 = continue, high 16 = terminal; signed values are zig-zagged |
 
-**Stream grammar.** A stream is a preamble of per-voice headers
-(`[VOICE_v TUNING q]`, `[VOICE_v NOTE_TABLE …]`, `[VOICE_v TICK …]`),
-then an optional instrument bank, then frame groups:
+`DT` is the unsigned inter-event frame delta (a digit run). A non-env event carries
+a `LANE` atom, an `OP` atom, then the op's params as digit runs (`NOTE` = one signed
+value, `LOAD` = one unsigned value, `MOD`/`RUN` = unsigned period `p`, unsigned
+length `n`, then `p` signed deltas). An env event carries an env selector then one
+unsigned value. Every field family owns a disjoint position, so the stream is
+self-delimiting with no separator or escape token.
 
-```
-<n_frames> <headers>* [INSTR_DEF <K> <instr-part>{K}] ( <DT> ( <VOICE_v> <kind-led event body>* )* )*
-```
+**Inline streaming.** There is no SET op, no preamble, no forward declaration,
+and no frozen table. Any prefix of the token stream (cut at an event boundary,
+`stream.unit_starts`) is itself a valid, decodable, continuable song. Reuse is
+backward-looking only (BPE over the atoms); the model emits new
+pitches / ornaments / instruments inline at any time.
 
-**Instrument bank (front-loaded DEF→REF).** The recurring onset *instrument
-program* — the `FLD_NOTE_ON` fold up to but not including the note's duration
-(onset CTRL byte, envelope flags, onset AD/SR, hard-restart prep AD/SR) — is
-re-used at nearly every note onset (a tune has a few distinct programs but
-hundreds–thousands of onsets; median distinct-K ≈ 15, top-10 ≈ 99% of onsets).
-`INSTR_DEF <K>` opens a preamble bank of the `K` distinct instrument-parts used
-≥ 2× across all voices (positional ids `0..K-1`, ranked by descending use,
-provenance-invariant — the same program shares one id across voices). In the
-body, an onset whose instrument-part byte-matches bank entry `id` emits
-`[INSTR_REF <id> <note tail>]` instead of the inline `[FLD_NOTE_ON <instr-part>
-<note tail>]`; the note's pitch (`NI_*`) and mixed-radix **duration** stay in the
-body either way (the `<note tail>` = gate-off mode + duration + optional gate-off
-CTRL is identical for both forms). `INSTR_REF` expands to its bank entry's exact
-writes, so the scheme is byte-exact by construction (reference is an exact
-substitution; the ≤ 1% singleton tail stays inline). Constrained decode forbids
-an `INSTR_REF` id ≥ the defined bank size — the model cannot reference an
-undefined instrument.
-
-`DT` is the frame-index delta (unsigned varint). Voices appear in
-ascending order; within a voice, events rank freq (NI/FD) before PW
-before CTRL/envelope. Freq and PW are encoded from the **settled**
-end-of-frame register state; transient pre-writes survive as
-delta-coded events in the residual lanes. The stream is
-self-delimiting: every field family owns a disjoint token range, so
-no separator or escape token exists.
-
-`is_content_atom(tok)` splits the alphabet into loss tiers: content =
-varint digits + typed value nibbles (the payload the model must
-predict — intervals, durations, timbre); structural = everything else
-(reg ids, voice tags, kind/shape markers, KEYFRAME).
+`is_content_atom(tok)` splits the alphabet into loss tiers: content = the varint
+digits (the payload the model must predict — intervals, deltas, durations,
+values); structural = the lane and op atoms.
 
 ### Dictionary segmentation
 
-The unigram BPE that sits on top of the atom alphabet is a
-*dictionary*, and it trains over **grammar-unit words**. The `.uni`
-training text is segmented at every unit start the parser itself emits
-(`stream.unit_starts` / `events.dataset.unit_starts` — the frame-count
-varint, per-voice headers, DT runs, voice markers, and events), one
-whitespace-delimited word per unit. The unigram pre-tokenizer splits
-on that whitespace first, so **no learned piece can span a unit
-boundary** — the constraint is vocabulary purity, not a runtime check.
-Runtime `encode` is therefore unchanged: real streams carry no spaces
-and the `WhitespaceSplit` is a no-op there. Merges stay inside a
-single grammar unit, compressing repetition without welding content
-across event boundaries.
+The unigram BPE that sits on top of the atom alphabet is a *dictionary*, and it
+trains over **grammar-unit words**. The `.uni` training text is segmented at
+every event start the codec emits (`stream.unit_starts` / `dataset.unit_starts`),
+one whitespace-delimited word per event. The unigram pre-tokenizer splits on that
+whitespace first, so **no learned piece can span an event boundary**. Runtime
+`encode` is unchanged: real streams carry no spaces and the `WhitespaceSplit`
+is a no-op there.
 
 ### Fidelity contract
 
-The oracle is `events.stream.canonical_writes(ow)`:
-byte-exact CTRL/AD/SR change activity in driver order, plus freq/PW/globals
-from the settled end-of-frame state (intra-frame transients and same-value
-rewrites canonicalize away — licensed by reSID noise-floor renders). Per
-frame: per voice 0→2, changed settled freq then PW; then the voice's
-CTRL/AD/SR sequence in driver order — gate-ons become `FLD_NOTE_ON`,
-gate-offs are **derived** (no NOTE OFF token), onset envelope nibbles
-keep their recorded side of the gate edge, hard-restart prep stays on
-the gate=0 side; then changed globals ascending. "Lossless" means
-`decode(encode(ow)) == canonical_writes(ow)` — same-value rewrites
-(chip latch no-ops) are canonicalized away. Why each of those rules is
-chip-correct (and no stronger normalization is) is pinned by the
-pyresidfp test suites in
-[preframr-audio](https://github.com/anarkiwi/preframr-audio).
+The codec target is the **audio-faithful** `stream.canonical_writes(ow)` =
+`oracle.corrected_writes(ow)`: per frame the settled NON-env register changes (in
+ascending register order) interleaved with the ORDERED ctrl/AD/SR writes in their
+source order. Only intra-frame non-env intermediates and env same-value rewrites
+drop (both inaudible) — the env write ORDER is preserved, so a within-frame gate
+toggle or hard-restart sequence round-trips write-for-write. This is NOT
+byte-exact-to-settled-state (that would erase the load-bearing env order).
+"Lossless" means `decode(encode(ow))` reproduces `corrected_writes(ow)`, exactly,
+on every tune (100% of the HVSC music corpus).
 
-`encode(ow, verify=True)` self-verifies that contract on every call
-and raises loudly on miss; `roundtrip_ok(df)` is the one-call smoke
+`encode(ow, verify=True)` self-verifies the round trip against the corrected target
+on every call and raises loudly on a miss; `roundtrip_ok(df)` is the one-call smoke
 test. The entry points:
 
 ```python
 from preframr_tokens.events import oracle, stream
 
-ow = oracle.ordered_writes(dump_df)   # byte-exact ground truth (clock-sorted, chipno 0)
-tokens = stream.encode(ow)            # verified against canonical_writes
+ow = oracle.ordered_writes(dump_df)   # byte-exact ordered writes (clock-sorted, chipno 0)
+tokens = stream.encode(ow)            # verified against corrected_writes (settled non-env + ordered env)
 writes = stream.decode(tokens)        # [(frame, reg, val), ...]
 ```
 
-`oracle.settled_grid(ow)` is the per-frame settled `(n_frames, 25)`
-register view — the *musical* read used by the gesture/note parse,
-never the fidelity target. `events.pipeline` / `events.dataset` build
-self-contained event-token blocks for training
-(`Corpus.preload` drives them); `events.generate` decodes generated
-token ids back to ordered writes.
+`events.pipeline` / `events.dataset` build self-contained event-token blocks for
+training (`Corpus.preload` drives them); `events.generate` decodes generated
+token ids back to ordered writes and a render-ready dump DataFrame.
+
 
 ## Parse-domain (RegLogParser)
 
@@ -222,22 +197,22 @@ consumes.
 
 ## Modules
 
-- `preframr_tokens.events` -- the v3 event codec (see
-  [The token alphabet](#the-token-alphabet-v3-event-model)):
-  `stream` (alphabet, `encode`/`decode`, `canonical_writes`,
-  `chunk_keyframe`/`strip_keyframes`, `roundtrip_ok`, `single_speed`,
-  `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
-  `settled_grid`), `varint` (BE base-16 zig-zag codec), `pipeline` /
-  `dataset` (frame-window blocking + training arrays), `generate`
-  (token ids → ordered writes), `constrained` (per-step
-  grammar-validity mask for sampling over the event alphabet).
+- `preframr_tokens.events` -- the inline-event codec (see
+  [The token alphabet](#the-token-alphabet-inline-event-model)):
+  `inline` (lane split, freq NOTE/MOD + generic LOAD/RUN + ordered env WRITE
+  encode/decode, event merge, flat-atom serialization), `stream` (alphabet,
+  `encode`/`decode`, `canonical_writes`, `unit_starts`, `roundtrip_ok`,
+  `single_speed`, `is_content_atom`), `oracle` (`OrderedWrites`, `ordered_writes`,
+  `settled_grid`, `env_writes`, `corrected_writes`), `pipeline` / `dataset` (frame-window blocking + training
+  arrays), `generate` (token ids → ordered writes), `constrained` (per-step
+  grammar-validity mask for sampling over the inline-event alphabet).
 - `preframr_tokens.reglogparser` -- SID dump → parsed dataframe
   pipeline. `RegLogParser`, plus `read_initial_irq` (first-frame IRQ
   read off a parser-output df, with PAL default).
 - `preframr_tokens.regtokenizer` -- alphabet build + unigram tokenizer
   fit. `RegTokenizer`.
 - `preframr_tokens.bpe_audit` -- merge-table boundary audit
-  (voice/KEYFRAME-crossing + multi-kind merges; run after any unigram train).
+  (lane-crossing + multi-op-kind merges; run after any unigram train).
 - `preframr_tokens.macros.*` -- declarative `Transform` registry plus
   the macro / pre-norm passes (slope, preset, hard_restart,
   legato_per_cluster, voice_block_order, ctrl_bigram, loop, etc.).

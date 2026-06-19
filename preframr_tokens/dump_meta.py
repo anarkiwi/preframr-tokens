@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from preframr_tokens.stfconstants import (
+    DEFAULT_IRQ_CYCLES,
     DUMP_SUFFIX,
     MODE_VOL_REG,
     VOICES,
@@ -32,6 +33,8 @@ LOGGER = logging.getLogger(__name__)
 
 META_SUFFIX = ".meta.parquet"
 
+DIGI_DENSITY_THRESHOLD = 12.0
+
 _FIELDS = (
     "meta_code_hash",
     "is_digi",
@@ -41,11 +44,29 @@ _FIELDS = (
     "ctrl_changes_per_frame_max",
     "freq_writes_per_frame_max",
     "pw_changes_per_frame_max",
+    "reg_write_density_max",
 )
 
 
 def meta_path_for(dump_path: str | Path) -> Path:
     return Path(str(dump_path).replace(DUMP_SUFFIX, META_SUFFIX))
+
+
+def _span_frames(raw_df: pd.DataFrame, n_frames: int) -> float:
+    """Player-frame span over the dump's wall-clock window (the digi density
+    denominator): the settled per-frame view erases a digi (a sample is rewritten
+    dozens of times per frame, last write wins), so density is measured against the
+    raw clock span, not the irq-unique frame count. Falls back to ``n_frames`` when
+    no usable clock column is present (synthetic single-clock-per-frame inputs)."""
+    if "clock" not in raw_df.columns:
+        return float(max(1, n_frames))
+    clk = raw_df["clock"].to_numpy(np.int64)
+    if clk.size == 0:
+        return float(max(1, n_frames))
+    span_cycles = float(clk.max() - clk.min())
+    if span_cycles < DEFAULT_IRQ_CYCLES:
+        return float(max(1, n_frames))
+    return max(1.0, span_cycles / DEFAULT_IRQ_CYCLES)
 
 
 def _build_meta_from_raw(dump_path: Path, raw_df: pd.DataFrame) -> dict[str, Any]:
@@ -90,7 +111,17 @@ def _build_meta_from_raw(dump_path: Path, raw_df: pd.DataFrame) -> dict[str, Any
         else pd.Series(dtype=int)
     )
     pw_max = int(pw_counts.max()) if len(pw_counts) else 0
-    is_digi = bool(vol_max >= 40 or ctrl_max >= 20 or pw_max >= 40)
+    reg_write_density_max = 0.0
+    span_frames = _span_frames(raw_df, n_frames)
+    if span_frames and len(regs):
+        reg_counts = pd.Series(regs).value_counts()
+        reg_write_density_max = float(reg_counts.max()) / span_frames
+    is_digi = bool(
+        vol_max >= 40
+        or ctrl_max >= 20
+        or pw_max >= 40
+        or reg_write_density_max > DIGI_DENSITY_THRESHOLD
+    )
     return {
         "meta_code_hash": meta_code_hash(),
         "is_digi": is_digi,
@@ -100,6 +131,7 @@ def _build_meta_from_raw(dump_path: Path, raw_df: pd.DataFrame) -> dict[str, Any
         "ctrl_changes_per_frame_max": ctrl_max,
         "freq_writes_per_frame_max": freq_max,
         "pw_changes_per_frame_max": pw_max,
+        "reg_write_density_max": round(reg_write_density_max, 3),
     }
 
 
@@ -170,6 +202,10 @@ class DumpMeta:
     @property
     def pw_changes_per_frame_max(self) -> int:
         return int(self.fields.get("pw_changes_per_frame_max", 0))
+
+    @property
+    def reg_write_density_max(self) -> float:
+        return float(self.fields.get("reg_write_density_max", 0.0))
 
 
 def filter_dump_paths(

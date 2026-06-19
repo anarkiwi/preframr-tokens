@@ -7,7 +7,7 @@ import types
 import numpy as np
 import pandas as pd
 
-from preframr_tokens.events import dataset, generate, oracle, stream, varint
+from preframr_tokens.events import dataset, generate, oracle, stream
 from preframr_tokens.macros import pitch_grid
 
 
@@ -87,27 +87,65 @@ def test_render_df_carries_frame_timing():
     assert out["clock"].is_monotonic_increasing
 
 
-def test_decode_extend_replays_past_declared_frame_count():
-    """decode/generate default truncate at the declared frame count; extend=True replays a
-    hand-appended continuation group (DT=1, voice-0 NI step +2), adding writes at the new frame.
-    """
+def test_decode_reflects_inline_continuation():
+    """The inline grammar is continuable: any valid event appended to a stream
+    extends the song without a separate frame-count or an extend flag. Appending a
+    later-frame NOTE event to a freq lane adds writes at the new frame."""
+    from preframr_tokens.events import inline
+
     ow = _ow_4frame()
     toks = stream.encode(ow)
-    extra = (
-        [stream.VAR_BASE + d for d in varint.encode_unsigned(1)]
-        + [stream.VOICE_BASE + 0, stream.NI_STEP]
-        + [stream.VAR_BASE + d for d in varint.encode_signed(2)]
-    )
+    base_writes = stream.decode(toks)
+    base_span = max(f for f, _, _ in base_writes)
+    lane = inline.NONENV_LANES.index(("freq", (0, 1)))
+    extra = inline.events_to_ids([(4, lane, ("L", lane, ("NOTE", 64)))])
     ext = toks + extra
-    assert stream.decode(ext) == stream.decode(
-        toks
-    ), "default truncates the extra group"
-    assert any(
-        f == 4 for f, _, _ in stream.decode(ext, extend=True)
-    ), "extend replays the appended frame-4 group"
+    ext_writes = stream.decode(ext)
+    assert (
+        max(f for f, _, _ in ext_writes) > base_span
+    ), "appended event extends the song"
     tk = dataset.make_tokenizer(_args())
     nspace = [a + 1 for a in ext]
-    assert generate.tokens_to_writes(tk, nspace) == stream.decode(toks)
-    assert any(
-        f == 4 for f, _, _ in generate.tokens_to_writes(tk, nspace, extend=True)
-    ), "generate extend pass-through reaches frame 4"
+    gen = generate.tokens_to_writes(tk, nspace)
+    assert max(f for f, _, _ in gen) > base_span
+
+
+def test_recanon_idempotent_and_write_preserving():
+    ids = [a + 1 for a in stream.encode(_synth_ow())]
+    rc1 = generate.recanon(ids)
+    rc2 = generate.recanon(rc1)
+    assert rc1 == rc2
+    assert dataset.ids_to_writes(rc1) == dataset.ids_to_writes(ids)
+
+
+def test_recanon_trim_handles_partial_tail():
+    from preframr_tokens.events import inline
+
+    ids = [a + 1 for a in stream.encode(_synth_ow())] + [inline.DIGIT_BASE + 1]
+    rc = generate.recanon(ids, trim=True)
+    assert dataset.ids_to_writes(rc)
+
+
+def test_tokens_to_dump_df_render_ready():
+    ids = [a + 1 for a in stream.encode(_synth_ow())]
+    tk = dataset.make_tokenizer(_args())
+    df = generate.tokens_to_dump_df(tk, ids)
+    assert list(df.columns) == ["clock", "irq", "chipno", "reg", "val"]
+    assert (df["chipno"] == 0).all()
+
+
+def _synth_ow():
+    writes = []
+    for f in range(40):
+        if f >= 2:
+            writes.append((f, 0, 0x40))
+        if f >= 2:
+            writes.append((f, 4, 0x11))
+        if 10 <= f < 30:
+            v = (0x1000 + (f - 10) * 4) & 0xFFFF
+            writes.append((f, 0, v & 0xFF))
+            writes.append((f, 1, v >> 8))
+        if f >= 20:
+            writes.append((f, 21, 7))
+    writes.sort(key=lambda t: t[0])
+    return oracle.writes_to_ordered(writes)

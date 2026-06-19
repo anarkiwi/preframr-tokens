@@ -181,10 +181,10 @@ def test_alen_cache_shared_across_calls_matches():
     assert np.array_equal(a, b) and shared, "shared cache populated + result unchanged"
 
 
-def test_keyframe_prefixes_make_chunks_self_interpreting():
-    """With a roomy block size, every chunk after the first is led by a KEYFRAME conditioning
-    segment carrying the tune's tick/tuning headers + per-voice state; segments strip away for
-    decode (the canonical stream stays redundancy-free)."""
+def test_block_array_chunks_reassemble_to_full_stream():
+    """The inline grammar is redundancy-free and continuable, so chunks are plain
+    prefix-free slices (no keyframe conditioning segment). Reassembling every chunk
+    reproduces the whole-tune n-space stream byte for byte."""
     frames = []
     for rep in range(12):
         d = _synth_df()
@@ -195,16 +195,13 @@ def test_keyframe_prefixes_make_chunks_self_interpreting():
 
     df = pd.concat(frames, ignore_index=True)
     tk = dataset.make_tokenizer(_args())
-    arr = dataset.encode_block_array(tk, df, 256)
-    kf_n = stream.KEYFRAME + 1
+    full = list(dataset.dump_token_ids(df))
+    block_size = max(8, len(full) // 3)
+    arr = dataset.encode_block_array(tk, df, block_size)
     assert arr.shape[0] >= 2, "synth tune must span multiple chunks"
-    for row in arr[1:]:
-        ids = [int(x) for x in row if x]
-        assert ids and ids[0] == kf_n, "chunk must open with a KEYFRAME bracket"
-        seg = ids[1 : ids.index(kf_n, 1)]
-        atoms = [n - 1 for n in seg]
-        assert stream.TUNING in atoms or stream.TICK in atoms or stream.NI_STEP in atoms
-    assert stream.strip_keyframes([int(x) - 1 for row in arr for x in row if x]) == [
+    flat = [int(x) for row in arr for x in row if x]
+    assert flat == list(dataset.dump_token_ids(df))
+    assert stream.strip_keyframes([n - 1 for n in flat]) == [
         n - 1 for n in dataset.dump_token_ids(df)
     ]
 

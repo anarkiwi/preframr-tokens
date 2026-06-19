@@ -130,11 +130,12 @@ class TestDigiDetection(unittest.TestCase):
     def test_low_pw_density_not_digi(self):
         with tempfile.TemporaryDirectory() as td:
             dump_path = Path(td) / f"pwclean{DUMP_SUFFIX}"
-            df = _pw_raw_df(pw_changes_per_frame=12)
+            df = _pw_raw_df(pw_changes_per_frame=6)
             df.to_parquet(dump_path, index=False)
             write_meta(dump_path, df)
             meta = read_meta(dump_path)
             self.assertFalse(meta.is_digi)
+            self.assertLessEqual(meta.reg_write_density_max, 12.0)
 
 
 class TestFilterDumpPaths(unittest.TestCase):
