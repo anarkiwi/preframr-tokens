@@ -71,6 +71,45 @@ def test_same_concert_pitch_same_grid_index_across_drivers():
     assert fn_to_grid(_HUBBARD_ONSET_FN[48]) == -9
 
 
+def _clean_et_static_img():
+    """A synthetic Hubbard note table: a clean ascending 12-TET run from index 0
+    so the grid<->index bijection resolves every playable note. Index n renders
+    the canonical A440 Fn for grid (n - 57) -- i.e. note 57 == A-4 == grid 0,
+    matching the real Monty table's anchor."""
+    img = [0] * 256
+    for note in range(96):
+        fn = int(round(grid_to_fn(note - 57)))
+        img[note * 2] = fn & 0xFF
+        img[note * 2 + 1] = (fn >> 8) & 0xFF
+    return img
+
+
+def test_serialized_note_token_identical_across_drivers():
+    """The executable proof: for the SAME concert pitch, the Hubbard serializer
+    and the GoatTracker serializer emit the IDENTICAL note token (the actual
+    LEB-digit bytes, not merely the grid integer)."""
+    from preframr_tokens.bacc import gt_serialize, serialize
+
+    img = _clean_et_static_img()
+    _, index_to_grid = serialize.hubbard_grid_bijection(img)
+    for hub_note, name in _GT_NAME.items():
+        # Hubbard emitted note token for its note-table index.
+        hub_tok = []
+        serialize._note_field(hub_tok, hub_note, img, index_to_grid)
+        # GoatTracker emitted note token for the SAME concert pitch.
+        gt_kind, gt_grid = gt_serialize._note_token(C.note_value(name))
+        gt_tok = []
+        serialize._wu(gt_tok, serialize._zz(gt_grid) << 1)
+        assert gt_kind == gt_serialize._KIND_PITCH
+        assert hub_tok == gt_tok, (
+            f"{name}: Hubbard note token {hub_tok} != GoatTracker {gt_tok} "
+            "(drivers must emit ONE identical token per concert pitch)"
+        )
+        # And the token decodes back to the canonical grid index both share.
+        z, _ = serialize._ru(hub_tok, 0)
+        assert serialize._unzz(z >> 1) == fn_to_grid(_gt_note_fn(C.note_value(name)))
+
+
 def test_micro_deviation_is_subcent_for_a4():
     # A-4 in both tables is within a couple cents of the canonical anchor; the
     # residual is tuning (Part C), never the note token.
