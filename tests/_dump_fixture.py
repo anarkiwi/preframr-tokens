@@ -1,0 +1,119 @@
+"""Acquire (.sid, .dump.parquet) test fixtures without committing binaries.
+
+The .sid is taken from a local HVSC mirror or downloaded on demand; the register
+dump is produced from it by the ``anarkiwi/headlessvice`` VICE container -- the
+same ``vsiddump.py`` that built the training corpus -- and cached under
+``tests/test_fixtures``. No dumps are committed: the fixture is reproducible from
+the .sid alone, byte-for-byte, by anyone with Docker.
+
+Resolution order (sid, then dump): local HVSC path -> cached fixture -> build it
+(download the .sid; render the dump in the container). The dump is bounded to the
+one subtune under test, using the HVSC Songlengths for the cycle limit.
+"""
+
+import hashlib
+import os
+import shutil
+import subprocess
+import tempfile
+import urllib.request
+
+HVSC = os.environ.get("HVSC_ROOT", "/scratch/preframr/hvsc/C64Music")
+SONGLENGTHS = os.environ.get(
+    "HVSC_SONGLENGTHS", os.path.join(HVSC, "DOCUMENTS", "Songlengths.md5")
+)
+IMAGE = os.environ.get("HEADLESSVICE_IMAGE", "anarkiwi/headlessvice")
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "test_fixtures")
+PAL_PHI = 985248
+
+
+def _base(sid_path):
+    return os.path.basename(sid_path).split(".")[0]
+
+
+def _songlength_cycles(sid_path, subtune):
+    """Cycle budget for ``subtune`` (1-based) from the HVSC Songlengths.md5."""
+    with open(sid_path, "rb") as handle:
+        md5 = hashlib.md5(handle.read()).hexdigest().lower()
+    line = None
+    with open(SONGLENGTHS, encoding="utf-8") as handle:
+        for entry in handle:
+            if entry.lower().startswith(md5):
+                line = entry
+                break
+    if line is None:
+        raise RuntimeError(f"no Songlengths entry for {os.path.basename(sid_path)}")
+    fields = line.strip().split("=")[1].split(" ")
+    field = fields[subtune - 1]
+    seconds = 0.0
+    if "." in field:
+        field, millis = field.split(".")
+        seconds += float(millis) / 1e3
+    parts = [int(part) for part in field.split(":")]
+    seconds += parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0]
+    return int(PAL_PHI * seconds)
+
+
+def _render_dump(sid_path, subtune, out_path):
+    """Render ``subtune`` of ``sid_path`` to ``out_path`` via the container."""
+    limit = _songlength_cycles(sid_path, subtune)
+    with tempfile.TemporaryDirectory() as work:
+        sid_name = os.path.basename(sid_path)
+        shutil.copy(sid_path, os.path.join(work, sid_name))
+        cli = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{work}:/work",
+            IMAGE,
+            "/usr/local/bin/vsiddump.py",
+            "--dumpdir",
+            "/work",
+            "--sid",
+            f"/work/{sid_name}",
+            "-tune",
+            str(subtune),
+            "-limitcycles",
+            str(limit),
+        ]
+        subprocess.run(cli, check=True, capture_output=True)
+        produced = os.path.join(work, f"{_base(sid_path)}.None.dump.parquet")
+        if not os.path.exists(produced):
+            raise RuntimeError(f"headlessvice produced no dump for {sid_name}")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        shutil.move(produced, out_path)
+
+
+def _resolve_sid(hvsc_rel, sid_url):
+    local = os.path.join(HVSC, hvsc_rel)
+    if os.path.exists(local):
+        return local
+    cache = os.path.join(FIXTURE_DIR, os.path.basename(hvsc_rel))
+    if not os.path.exists(cache):
+        os.makedirs(FIXTURE_DIR, exist_ok=True)
+        urllib.request.urlretrieve(sid_url, cache)
+    return cache
+
+
+def _resolve_dump(sid_path, hvsc_rel, subtune):
+    base = _base(hvsc_rel)
+    name = f"{base}.{subtune}.dump.parquet"
+    local = os.path.join(HVSC, os.path.dirname(hvsc_rel), name)
+    if os.path.exists(local):
+        return local
+    cache = os.path.join(FIXTURE_DIR, name)
+    if not os.path.exists(cache):
+        _render_dump(sid_path, subtune, cache)
+    return cache
+
+
+def acquire(hvsc_rel, sid_url, subtune):
+    """Return (sid_path, dump_path) for one HVSC tune+subtune, building if absent.
+
+    ``hvsc_rel`` is the path under the HVSC ``C64Music`` root (which also names the
+    cache files); ``sid_url`` is the download fallback; ``subtune`` is 1-based.
+    """
+    sid = _resolve_sid(hvsc_rel, sid_url)
+    dump = _resolve_dump(sid, hvsc_rel, subtune)
+    return sid, dump

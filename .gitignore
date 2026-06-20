@@ -229,3 +229,6 @@ tests/.sid-cache/
 **/*.meta.parquet
 .claude/
 tests/test_residual_zero_corpus.py
+
+# downloaded/rendered test fixtures (sid + dumps); never committed
+tests/test_fixtures/
