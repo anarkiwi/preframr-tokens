@@ -22,6 +22,18 @@ Supersedes unified_codec.py (22,732). Key moves vs the bundled row codec:
   3. FREQ via freq_instrument shape codebook (45 instruments), micro stored
      literally (the base-snap residual; see Lever-2 note in RESULTS).
 
+  4. GLOBAL FILTER LANES FACTORED (was the single biggest un-factored block).
+     The $D415..$D418 filter-automation lanes (fc-lo/fc-hi/res+routing/mode+vol)
+     are STRUCTURALLY the body lanes: cutoff sweeps are WALK/RUN ramps (same
+     (rate_pattern, dwell) factoring), and res/mode/vol are tiny-alphabet LOAD
+     step-functions. They now ride the SAME shared rate-pattern codebook + dwell
+     side-stream + per-lane (dt, body_ref) LZ as pw/ctrl/ad/sr, instead of a
+     literal per-op run (2 header + full body, every op). On the heavy-filter
+     Hubbard tunes the global block drops 4-7x (Arcade_Classics 61k->12k). Each
+     filter register is its own "kind" so its sweeps share within the register;
+     residual-zero is unchanged (the codebook/LZ is a lossless regrouping of the
+     same event set, and (rate,dwell) reconstructs each delta-seq by construction).
+
 Gate: decode of the regrouped event set == event-codec decode, byte-for-byte.
 """
 
@@ -38,6 +50,12 @@ uc = SC.u_cost
 ic = SC.i_cost
 LANEMAP = {"pw": [3, 4, 5], "ctrl": [6, 7, 8], "ad": [9, 10, 11], "sr": [12, 13, 14]}
 GLOBAL = (15, 16, 17, 18)
+# the global filter lanes are factored with the SAME body machinery as the voice
+# lanes: each filter register ($D415 fc-lo / $D416 fc-hi / $D417 res+routing /
+# $D418 mode+vol) is its own "kind" so its sweep bodies share a per-register
+# rate-pattern codebook + the global dwell side-stream, and its (dt, body_ref)
+# token stream is LZ'd (recurring cutoff sweeps / volume step-functions dedup).
+GLOBAL_KIND = {15: "fclo", 16: "fchi", 17: "res", 18: "modvol"}
 
 
 def _deltas(op):
@@ -158,11 +176,17 @@ def measure(s):
     }
     brk["dur"] = sum(_lz(dseq[v], lambda x: uc(x[0]) + uc(x[1])) for v in range(3))
 
-    # ---- NON-FREQ bodies: rate-pattern codebook + global LZ dwell stream ----
+    # ---- NON-FREQ + GLOBAL bodies: shared rate-pattern codebook + dwell stream ----
+    # The global filter lanes ride the SAME machinery as the voice body lanes: a
+    # filter cutoff sweep is a WALK/RUN whose delta-seq RLE-factors into a shared
+    # (rate_pattern, dwell) just like a pw/ad/sr sweep, and a held resonance/mode/
+    # volume value is a LOAD body deduped in the codebook + LZ'd in the token
+    # stream (recurring filter automation -> one ref, not a literal per-op run).
+    lane_kinds = list(LANEMAP.items()) + [(GLOBAL_KIND[g], [g]) for g in GLOBAL]
     body_cb = {}
     ratepat_cb = {}
     dwellstream = []
-    for kind, lids in LANEMAP.items():
+    for kind, lids in lane_kinds:
         for lid in lids:
             for sf, op in sorted(bylane[lid]):
                 full = (kind, TR._body_key(op))
@@ -184,8 +208,9 @@ def measure(s):
                 else:
                     defcost += 1 + 1 + SC._op_body_cost(op, False)
     defcost += _lz(dwellstream, lambda x: uc(x))
-    body = 0
-    for kind, lids in LANEMAP.items():
+
+    def _lane_stream_cost(lids, kind):
+        out = 0
         for lid in lids:
             seq, lits, prev = [], {}, 0
             for sf, op in sorted(bylane[lid]):
@@ -195,16 +220,17 @@ def measure(s):
                 tok = (dt, bref)
                 lits[tok] = ic(dt) + uc(bref)
                 seq.append(tok)
-            body += _lz(seq, lambda x, lits=lits: lits[x])
+            out += _lz(seq, lambda x, lits=lits: lits[x])
+        return out
+
+    body = 0
+    for kind, lids in LANEMAP.items():
+        body += _lane_stream_cost(lids, kind)
     brk["body"] = body
 
-    # ---- global filter automation (literal) ----
     glob = 0
     for lid in GLOBAL:
-        prev = 0
-        for sf, op in sorted(bylane[lid]):
-            glob += ic(sf - prev) + 2 + SC._op_body_cost(op, False)
-            prev = sf
+        glob += _lane_stream_cost([lid], GLOBAL_KIND[lid])
     brk["global"] = glob
     brk["defcost"] = defcost
     brk["freq_instr"] = len(freq_cb)
