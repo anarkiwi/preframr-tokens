@@ -141,6 +141,10 @@ GATE_FIXTURES = (
     ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
     ("MUSICIANS/J/Jammer/Grid_Runner.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
+    # multispeed (~3x): Galway's play routine fires several times per raster
+    # frame -- single-CPF framing drops >50% of register changes; used to prove
+    # the cadence detector + sub-frame framing are lossless.
+    ("MUSICIANS/G/Galway_Martin/Times_of_Lore.sid", 1),
 )
 
 
