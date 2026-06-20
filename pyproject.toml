@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preframr-tokens"
-description = "SID reglog parsing, tokenization, and macro transforms extracted from the preframr research codebase."
+description = "White-box SID decompiler codec: register dump -> inline op-program tokens, residual-zero at < 1 token/frame."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "Anarkiwi"}]
-keywords = ["sid", "c64", "preframr", "tokenizer", "reglog"]
+keywords = ["sid", "c64", "preframr", "tokenizer", "codec"]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
@@ -23,10 +23,6 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2",
     "pyarrow>=14",
-    "tokenizers>=0.20",
-    "tqdm>=4.65",
-    "zstandard>=0.22",
-    "numba>=0.59",
 ]
 
 [project.optional-dependencies]
@@ -38,10 +34,6 @@ dev = [
     "pytest>=7",
     "pytest-cov>=4",
     "pytest-xdist>=3.5",
-    "preframr-audio>=0.5.0",
-]
-audio = [
-    "preframr-audio>=0.5.0",
 ]
 
 [project.urls]
@@ -50,13 +42,13 @@ Source = "https://github.com/anarkiwi/preframr-tokens"
 Issues = "https://github.com/anarkiwi/preframr-tokens/issues"
 
 [tool.setuptools]
-packages = ["preframr_tokens", "preframr_tokens.macros", "preframr_tokens.events"]
+packages = ["preframr_tokens", "preframr_tokens.codec"]
 
 [tool.setuptools.package-data]
 preframr_tokens = ["py.typed"]
 
 [tool.setuptools_scm]
-fallback_version = "0.52.0"
+fallback_version = "0.53.0"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -68,11 +60,7 @@ branch = true
 source = ["preframr_tokens"]
 omit = [
     "preframr_tokens/__init__.py",
-    "preframr_tokens/macros/__init__.py",
-    "preframr_tokens/blocks.py",
-    "preframr_tokens/corpus.py",
-    "preframr_tokens/parse_runner.py",
-    "preframr_tokens/melody_audit.py",
+    "preframr_tokens/codec/__init__.py",
 ]
 
 [tool.coverage.report]
