@@ -25,7 +25,11 @@ from preframr_tokens.codec import serialize_tokens as ST
 from preframr_tokens.codec import step_codec as SC
 from preframr_tokens.codec import step_tracker as TR
 
-_DUMP = "/scratch/preframr/hvsc/C64Music/MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.1.dump.parquet"
+_BUNDLED = os.path.join(
+    os.path.dirname(__file__), "test_fixtures", "Monty_on_the_Run.1.dump.parquet"
+)
+_SCRATCH = "/scratch/preframr/hvsc/C64Music/MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.1.dump.parquet"
+_DUMP = _BUNDLED if os.path.exists(_BUNDLED) else _SCRATCH
 
 
 def _state(nframes=4000):
