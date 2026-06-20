@@ -1,12 +1,16 @@
 """Serialize a BaccProgram to an inline backward-LZ token-id stream.
 
 The model-facing form: a startup seed (boot frame + per-voice initial state),
-then per-voice score blocks. Each note-on is a literal (dt, note-interval,
+then per-voice score blocks. Each note-on is a literal (dt, note-token,
 instrument, length, porta); a repeated phrase is an inline backward REPEAT
-(offset, length) over prior note-ons of that voice. Instruments are defined
-inline on first use (no forward table). Round-trips byte-exact to the program.
+(offset, length) over prior note-ons of that voice. The note-token is the
+ABSOLUTE canonical A440 12-TET grid index (Part B) -- IDENTICAL to the
+GoatTracker token for the same concert pitch -- not a driver-table delta.
+Instruments are defined inline on first use (no forward table). Round-trips
+byte-exact to the program.
 """
 
+from preframr_tokens.bacc.pitch import hubbard_grid_bijection, hubbard_table_fn
 from preframr_tokens.bacc.primitive import BaccProgram, NoteOn
 
 # vocab: base-16 LEB digits 0..31 (0-15 continue, 16-31 terminal) + REPEAT marker
@@ -60,31 +64,62 @@ def _ri(ids, i):
     return (z >> 1) ^ -(z & 1), i
 
 
+# --- canonical note token (Part B, absolute A440 12-TET grid) -------------
+# The Hubbard note field is the ABSOLUTE canonical grid index -- IDENTICAL to
+# the GoatTracker token for the same concert pitch -- not a driver-table delta.
+# It packs a 1-bit escape into the LEB LSB: bit0=0 -> a zig-zag canonical grid
+# index in the upper bits; bit0=1 -> a literal note-table INDEX (for rare
+# aliased tail notes outside the clean ET run, so the re-coordinate stays
+# byte-exact and lossless). Position-independent, so the row LZ/REPEAT is sound.
+def _zz(n):
+    n = int(n)
+    return (n << 1) ^ (n >> 63)
+
+
+def _unzz(z):
+    return (z >> 1) ^ -(z & 1)
+
+
+def _note_field(out, note, static_img, grid_of):
+    """Emit the canonical note token for a Hubbard note-table index."""
+    g = grid_of.get(note)
+    if g is not None and hubbard_table_fn(static_img, note) > 0:
+        _wu(out, _zz(g) << 1)  # bit0=0: canonical absolute grid index
+    else:
+        _wu(out, (note << 1) | 1)  # bit0=1: literal index escape (aliased tail)
+
+
+def _read_note_field(ids, i, index_of):
+    """Inverse of _note_field -> the exact Hubbard note-table index."""
+    z, i = _ru(ids, i)
+    if z & 1:
+        return z >> 1, i  # literal index escape
+    return index_of[_unzz(z >> 1)], i  # canonical grid index -> note index
+
+
 def _voice_rows(program):
+    static_img = program.tables["static_img"]
+    _, index_to_grid = hubbard_grid_bijection(static_img)
     rows = {0: [], 1: [], 2: []}
     prevf = [0, 0, 0]
-    prevn = [0, 0, 0]
     for ev in program.score:
         v = ev.voice
-        rows[v].append(
-            (ev.frame - prevf[v], ev.note - prevn[v], ev.instr, ev.lnth, ev.porta)
-        )
+        rows[v].append((ev.frame - prevf[v], ev.note, ev.instr, ev.lnth, ev.porta))
         prevf[v] = ev.frame
-        prevn[v] = ev.note
-    return rows
+    return rows, static_img, index_to_grid
 
 
-def _lit_cost(row):
+def _lit_cost(row, static_img, grid_of):
     out = []
     _wu(out, row[0])
-    _wi(out, row[1])
+    _note_field(out, row[1], static_img, grid_of)
     _wu(out, row[2])
     _wu(out, row[3])
     _wu(out, row[4])
     return len(out)
 
 
-def _emit_rows(out, rows, seen, instruments):
+def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
     i = 0
     while i < len(rows):
         best_len, best_off = 0, 0
@@ -96,7 +131,7 @@ def _emit_rows(out, rows, seen, instruments):
                 best_len, best_off = n, off
         cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
         if best_len >= _MIN_COPY and cost_copy < sum(
-            _lit_cost(rows[i + j]) for j in range(best_len)
+            _lit_cost(rows[i + j], static_img, grid_of) for j in range(best_len)
         ):
             out.append(REPEAT)
             _wu(out, best_off)
@@ -105,7 +140,7 @@ def _emit_rows(out, rows, seen, instruments):
         else:
             r = rows[i]
             _wu(out, r[0])
-            _wi(out, r[1])
+            _note_field(out, r[1], static_img, grid_of)
             _wu(out, r[2])
             if r[2] not in seen:
                 seen.add(r[2])
@@ -139,11 +174,11 @@ def program_to_ids(program):
             _wu(out, x)
     _wu(out, program.seed["init_speed"])
     _wu(out, program.seed["resetspd"])
-    rows = _voice_rows(program)
+    rows, static_img, grid_to_index = _voice_rows(program)
     seen = set()
     for v in range(3):
         _wu(out, len(rows[v]))
-        _emit_rows(out, rows[v], seen, program.instruments)
+        _emit_rows(out, rows[v], seen, program.instruments, static_img, grid_to_index)
     return out
 
 
@@ -172,6 +207,7 @@ def ids_to_program(ids, driver="hubbard_monty"):
         seed[k] = vals
     seed["init_speed"], i = _ru(ids, i)
     seed["resetspd"], i = _ru(ids, i)
+    index_of, _ = hubbard_grid_bijection(static_img)
     instruments = [[0] * 8 for _ in range(64)]
     seen = set()
     score = []
@@ -188,7 +224,7 @@ def ids_to_program(ids, driver="hubbard_monty"):
                     rows.append(rows[base - off + j])
             else:
                 dt, i = _ru(ids, i)
-                inter, i = _ri(ids, i)
+                note, i = _read_note_field(ids, i, index_of)
                 instr, i = _ru(ids, i)
                 if instr not in seen:
                     seen.add(instr)
@@ -199,12 +235,11 @@ def ids_to_program(ids, driver="hubbard_monty"):
                     instruments[instr] = row
                 lnth, i = _ru(ids, i)
                 porta, i = _ru(ids, i)
-                rows.append((dt, inter, instr, lnth, porta))
-        prevf = prevn = 0
-        for dt, inter, instr, lnth, porta in rows:
+                rows.append((dt, note, instr, lnth, porta))
+        prevf = 0
+        for dt, note, instr, lnth, porta in rows:
             prevf += dt
-            prevn += inter
-            score.append(NoteOn(prevf, v, prevn, instr, lnth, porta))
+            score.append(NoteOn(prevf, v, note, instr, lnth, porta))
     score.sort(key=lambda e: (e.frame, e.voice))
     return BaccProgram(
         driver, nframes, boot, instruments, score, seed, {"static_img": static_img}
