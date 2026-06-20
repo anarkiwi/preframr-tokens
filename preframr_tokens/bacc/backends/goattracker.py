@@ -3,10 +3,11 @@
 The per-tune PROGRAM is the GoatTracker song (orderlists + patterns + instruments
 + the four tables); the VM is pygoattracker's playroutine. recover() reconstructs
 the song from a packed GoatTracker SID (inverting the gt2reloc packer, layout
-auto-derived -- no per-tune hand disassembly) and carries it as canonical .SNG
-bytes plus the per-SID render parameters baked into the packed player (adparam,
-the pulse/realtime skip optimizations). render() runs the song back through
-pygoattracker, aligned to the dump's frame grid.
+auto-derived -- no per-tune hand disassembly) and carries it as the abstract
+``Song`` object (the common rows + instrument-generators + orderlist structure,
+NOT raw .SNG bytes) plus the per-SID render parameters baked into the packed
+player (adparam, the pulse/realtime skip optimizations). render() runs the song
+back through pygoattracker, aligned to the dump's frame grid.
 
 The pulse-high (3, 10, 17) and filter (21, 23) registers are masked to the bits
 the dump keeps (vsiddump.reduce_res), so the render compares byte-exact to the
@@ -36,14 +37,18 @@ def _mask_row(reg):
     return reg
 
 
-def render_song(sng_bytes, seed, nframes):
-    """Render a GoatTracker song (.SNG bytes + per-SID params) to (nframes, 25),
-    aligned 1:1 with the dump via the boot frames (set by recover_program)."""
+def render_song(song_or_bytes, seed, nframes):
+    """Render a GoatTracker song to (nframes, 25), aligned 1:1 with the dump via
+    the boot frames (set by recover_program). Accepts a pygoattracker ``Song``
+    (the abstract recovered program) or, for back-compat, raw .SNG bytes."""
     from pygoattracker import read_sng
 
     from preframr_tokens.bacc.backends import gt_unpack
 
-    song = read_sng(bytes(sng_bytes))
+    if isinstance(song_or_bytes, (bytes, bytearray, list)):
+        song = read_sng(bytes(song_or_bytes))
+    else:
+        song = song_or_bytes
     rendered = gt_unpack.render_state(
         song,
         nframes + _ALIGN_SLACK,
@@ -71,8 +76,10 @@ def _align_offset(rendered, boot, boot1):
     return 0
 
 
-def make_program(sng_bytes, seed, nframes):
-    """Wrap a reconstructed GoatTracker song as a BaccProgram."""
+def make_program_from_song(song, seed, nframes):
+    """Wrap a reconstructed GoatTracker ``Song`` (the abstract program -- rows +
+    instrument-generators + orderlist) as a BaccProgram. No .SNG bytes are stored;
+    the song object IS the recovered structure, rendered back via pygoattracker."""
     return BaccProgram(
         driver=NAME,
         nframes=nframes,
@@ -80,8 +87,16 @@ def make_program(sng_bytes, seed, nframes):
         instruments=[],
         score=[],
         seed=dict(seed),
-        tables={"sng": list(sng_bytes)},
+        tables={"song": song},
     )
+
+
+def make_program(sng_bytes, seed, nframes):
+    """Back-compat helper: wrap reconstructed .SNG bytes as a BaccProgram by
+    parsing them into the abstract ``Song`` (no bytes are retained)."""
+    from pygoattracker import read_sng
+
+    return make_program_from_song(read_sng(bytes(sng_bytes)), seed, nframes)
 
 
 class GoatTrackerBackend(DriverBackend):
@@ -100,17 +115,15 @@ class GoatTrackerBackend(DriverBackend):
         )
 
     def recover(self, psid, nframes, subtune):
-        from pygoattracker import build_sng
-
         from preframr_tokens.bacc.backends import gt_unpack
 
         song = gt_unpack.reconstruct_song(psid.path)
         params = gt_unpack.render_params()
         seed = {"subtune": int(subtune), **params}
-        return make_program(build_sng(song), seed, nframes)
+        return make_program_from_song(song, seed, nframes)
 
     def render(self, program):
         seed = dict(program.seed)
         seed["boot"] = program.boot or None
         seed["boot1"] = program.tables.get("boot1")
-        return render_song(program.tables["sng"], seed, program.nframes)
+        return render_song(program.tables["song"], seed, program.nframes)

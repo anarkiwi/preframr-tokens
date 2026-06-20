@@ -77,7 +77,9 @@ def test_token_roundtrip_renders_byte_exact():
     ids = program_to_ids(program)
     assert ids and all(0 <= t < VOCAB for t in ids)
     program2 = ids_to_program(ids, driver="goattracker")
-    assert program2.tables["sng"] == program.tables["sng"]
+    # The program is the abstract Song (rows + instrument-generators + orderlist),
+    # NOT raw .SNG bytes; the gate is render-equality, not byte-equality.
+    assert "sng" not in program2.tables and "song" in program2.tables
     assert program2.seed["adparam"] == program.seed["adparam"]
     assert np.array_equal(render_program(program2), render_program(program))
 
@@ -86,7 +88,7 @@ def test_measure_breaks_down_program():
     program = make_program(_demo_sng(), _DEMO_SEED, 128)
     brk, frames = measure(program)
     assert frames == 128
-    assert 0 < brk["sng"] <= brk["total"]
+    assert 0 < brk["header"] <= brk["total"]
 
 
 class _GtPsid:
@@ -127,4 +129,23 @@ def test_grid_runner_token_roundtrip(grid_runner_paths):
     sid, dump = grid_runner_paths
     program = recover_program(sid, dump, CPF, subtune=0)
     program2 = ids_to_program(program_to_ids(program), driver="goattracker")
+    assert np.array_equal(render_program(program2), render_program(program))
+
+
+def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
+    """Part A: the recovered GoatTracker program is the COMMON abstraction --
+    per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --
+    NOT raw .SNG bytes. There is no byte path: tables['sng'] never exists, the
+    decoded program carries the abstract Song, and it renders byte-exact."""
+    sid, dump = grid_runner_paths
+    program = recover_program(sid, dump, CPF, subtune=0)
+    assert "sng" not in program.tables, "raw-.SNG-bytes escape hatch must be gone"
+    program2 = ids_to_program(program_to_ids(program), driver="goattracker")
+    song = program2.tables["song"]
+    # rows + instrument-generators + orderlist all present as structure
+    assert song.patterns and song.patterns[0].rows
+    assert song.instruments and song.instruments[0].wave_ptr is not None
+    assert song.subtunes[0].channels[0].entries
+    # the generator tables are abstract parameter columns, not opaque bytes
+    assert len(song.wavetable) and len(song.pulsetable)
     assert np.array_equal(render_program(program2), render_program(program))

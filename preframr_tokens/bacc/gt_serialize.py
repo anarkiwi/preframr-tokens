@@ -1,52 +1,367 @@
-"""Serialize a GoatTracker BaccProgram to/from the token-id stream.
+"""Serialize a GoatTracker BaccProgram to/from the COMMON learnable abstraction.
 
-The GoatTracker program is the song itself (canonical .SNG bytes) -- the composer's
-tracker module, the sparse per-tune content, not a per-frame trace. It serializes
-through the same base-16 LEB digit alphabet as the Hubbard codec (no new tokens):
-a small header (nframes, subtune, the packed player's render params, length) then
-the song bytes. The render params (adparam + the pulse/realtime skip optimization
-flags) are baked into the packed player, not the .SNG, so they ride the header.
+GoatTracker recovers into the SAME shape as the Hubbard codec: per-voice tracker
+ROWS + pitch-invariant instrument GENERATOR definitions + a backward ORDERLIST --
+NOT raw .SNG bytes. The reconstructed pygoattracker ``Song`` is decomposed into
+semantic fields (orderlist entries, pattern rows, instrument params, the four
+generator-parameter tables) and rebuilt into a render-equivalent ``Song`` at
+decode; the residual-zero gate is render-equality vs the dump, never .SNG-byte
+equality, so the tables/commands become abstract generators + effects.
+
+Token shape (all through the shared base-16 LEB digit alphabet, no new ids):
+
+  header   : nframes, subtune, adparam, optimize_pulse, optimize_realtime,
+             boot[25], boot1[25]
+  tables   : the four generator-parameter columns (wave/pulse/filter/speed),
+             each: length, left[], right[]  -- the PWM/arp/filter-sweep params
+  instrs   : count, then per instrument-generator the 9 abstract fields
+  patterns : count, then per pattern a backward-LZ row stream; each literal row
+             is (note_token, instr_ref, effect, data) where note_token is the
+             canonical 12-TET interval (Part B) for a pitched note, or a small
+             marker for REST/KEYOFF/KEYON, and effect is the shared effect vocab
+  orderlist: per subtune x channel a backward-LZ entry stream (PlayPattern /
+             Repeat / Transpose ops) + restart -- backward-only, no forward decl
 """
 
-from preframr_tokens.bacc.backends.goattracker import make_program
-from preframr_tokens.bacc.serialize import _ru, _wu
-
-
-def _seed(program):
-    return {
-        "subtune": int(program.seed["subtune"]),
-        "adparam": int(program.seed["adparam"]),
-        "optimize_pulse": int(bool(program.seed["optimize_pulse"])),
-        "optimize_realtime": int(bool(program.seed["optimize_realtime"])),
-    }
-
+from preframr_tokens.bacc.backends.goattracker import make_program_from_song
+from preframr_tokens.bacc.pitch import fn_to_grid
+from preframr_tokens.bacc.serialize import _ri, _ru, _wi, _wu, REPEAT
 
 NREG = 25
 
+# --- canonical note token alphabet ---------------------------------------
+# Pitched notes carry the 12-TET grid INTERVAL (signed). Non-pitched markers
+# (REST/KEYOFF/KEYON) ride a small reserved namespace so the note field stays
+# a single token; rows distinguish them by a 1-byte "kind" prefix.
+_KIND_PITCH = 0
+_KIND_REST = 1
+_KIND_KEYOFF = 2
+_KIND_KEYON = 3
 
-def gt_program_to_ids(program):
+
+# --- helpers shared with serialize ----------------------------------------
+def _u(n):
     out = []
-    seed = _seed(program)
-    _wu(out, program.nframes)
-    _wu(out, seed["subtune"])
-    _wu(out, seed["adparam"])
-    _wu(out, seed["optimize_pulse"])
-    _wu(out, seed["optimize_realtime"])
-    # boot frames (the dump's startup seed) anchor render to the dump frame grid.
-    boot = list(program.boot) or [0] * NREG
-    boot1 = program.tables.get("boot1") or [0] * NREG
-    for byte in boot:
-        _wu(out, byte)
-    for byte in boot1:
-        _wu(out, byte)
-    sng = program.tables["sng"]
-    _wu(out, len(sng))
-    for byte in sng:
-        _wu(out, byte)
+    _wu(out, n)
     return out
 
 
+def _u_len(n):
+    return len(_u(n))
+
+
+def _lz_emit(out, items, lit):
+    """Inline backward-LZ over a list, emitting literals via ``lit(out, item)``.
+    A copy is REPEAT(offset, length) over prior items. Mirrors serialize._emit_rows
+    but generic over any equality-comparable item list."""
+    i = 0
+    while i < len(items):
+        best_len, best_off = 0, 0
+        for off in range(1, i + 1):
+            n = 0
+            while i + n < len(items) and items[i - off + n] == items[i + n]:
+                n += 1
+            if n > best_len:
+                best_len, best_off = n, off
+        cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
+        lit_cost = sum(len(_lit_bytes(lit, items[i + j])) for j in range(best_len))
+        if best_len >= 2 and cost_copy < lit_cost:
+            out.append(REPEAT)
+            _wu(out, best_off)
+            _wu(out, best_len)
+            i += best_len
+        else:
+            lit(out, items[i])
+            i += 1
+
+
+def _lit_bytes(lit, item):
+    tmp = []
+    lit(tmp, item)
+    return tmp
+
+
+def _lz_read(ids, i, count, rd):
+    """Inverse of _lz_emit: rebuild ``count`` items, literals via ``rd(ids, i)``.
+    Returns (items, new_index)."""
+    items = []
+    while len(items) < count:
+        if ids[i] == REPEAT:
+            i += 1
+            off, i = _ru(ids, i)
+            length, i = _ru(ids, i)
+            base = len(items)
+            for j in range(length):
+                items.append(items[base - off + j])
+        else:
+            item, i = rd(ids, i)
+            items.append(item)
+    return items, i
+
+
+# --- note tokenization (Part B canonical grid) ----------------------------
+def _note_token(note_byte):
+    """(kind, grid_interval) for a pattern note byte.
+
+    A pitched note resolves through GoatTracker's freq table to a SID Fn, snaps to
+    the canonical A440 12-TET grid (Part B), and carries that grid index as a
+    signed interval from the grid origin (n=0=A440) -- driver-invariant, and
+    position-independent so the row LZ stays sound. REST/KEYOFF/KEYON are
+    non-pitched markers (interval unused)."""
+    from pygoattracker import constants as c
+
+    if note_byte == c.REST:
+        return _KIND_REST, 0
+    if note_byte == c.KEYOFF:
+        return _KIND_KEYOFF, 0
+    if note_byte == c.KEYON:
+        return _KIND_KEYON, 0
+    fn = c.FREQ_TABLE[note_byte - c.FIRSTNOTE]
+    return _KIND_PITCH, fn_to_grid(fn)
+
+
+def _grid_to_note_byte(grid):
+    """Inverse: canonical grid index -> the GoatTracker note byte whose freq-table
+    entry snaps to that grid index. The freq table is clean 12-TET so this is a
+    bijection on the playable range; built once and cached."""
+    return _GRID_NOTE[grid]
+
+
+def _build_grid_note():
+    from pygoattracker import constants as c
+
+    table = {}
+    for note in range(c.FIRSTNOTE, c.LASTNOTE + 1):
+        fn = c.FREQ_TABLE[note - c.FIRSTNOTE]
+        if fn > 0:
+            table[fn_to_grid(fn)] = note
+    return table
+
+
+_GRID_NOTE = _build_grid_note()
+
+
+# --- pattern rows ----------------------------------------------------------
+def _row_lit(out, row):
+    """One abstract row literal: (note_token, instr_ref, effect, data).
+
+    Pitched notes carry the canonical A440 12-TET grid INTERVAL (signed, relative
+    to the grid origin n=0=A440 -- Part B), so the same concert pitch is the same
+    token across drivers and the literal is position-independent (the LZ over rows
+    stays sound). REST/KEYOFF/KEYON are non-pitched markers. instr/command/data
+    are the instr_ref + the shared effect vocabulary (GoatTracker command/data)."""
+    note, instr, command, data = row
+    kind, interval = _note_token(note)
+    _wu(out, kind)
+    if kind == _KIND_PITCH:
+        _wi(out, interval)
+    _wu(out, instr)
+    _wu(out, command)
+    _wu(out, data)
+
+
+def _row_read(ids, i):
+    kind, i = _ru(ids, i)
+    if kind == _KIND_PITCH:
+        interval, i = _ri(ids, i)
+        note = _grid_to_note_byte(interval)
+    else:
+        from pygoattracker import constants as c
+
+        note = {_KIND_REST: c.REST, _KIND_KEYOFF: c.KEYOFF, _KIND_KEYON: c.KEYON}[kind]
+    instr, i = _ru(ids, i)
+    command, i = _ru(ids, i)
+    data, i = _ru(ids, i)
+    return (note, instr, command, data), i
+
+
+def _emit_pattern(out, rows):
+    """One pattern as a backward-LZ stream of abstract rows."""
+    _wu(out, len(rows))
+    _lz_emit(out, rows, _row_lit)
+
+
+def _read_pattern(ids, i):
+    nrows, i = _ru(ids, i)
+    return _lz_read(ids, i, nrows, _row_read)
+
+
+# --- orderlist (backward) --------------------------------------------------
+# Orderlist entries serialize as (op, value): op 0 PlayPattern(num),
+# 1 Repeat(count), 2 Transpose(semitones, zig-zag signed).
+def _emit_orderlist(out, entries, restart):
+    _wu(out, len(entries))
+    _wu(out, restart)
+
+    def lit(o, ent):
+        op, val = ent
+        _wu(o, op)
+        if op == 2:
+            _wi(o, val)
+        else:
+            _wu(o, val)
+
+    _lz_emit(out, entries, lit)
+
+
+def _read_orderlist(ids, i):
+    n, i = _ru(ids, i)
+    restart, i = _ru(ids, i)
+
+    def rd(idl, j):
+        op, j = _ru(idl, j)
+        if op == 2:
+            val, j = _ri(idl, j)
+        else:
+            val, j = _ru(idl, j)
+        return (op, val), j
+
+    entries, i = _lz_read(ids, i, n, rd)
+    return entries, restart, i
+
+
+def _orderlist_entries(ol):
+    from pygoattracker.model import PlayPattern, Repeat, Transpose
+
+    out = []
+    for e in ol.entries:
+        if isinstance(e, PlayPattern):
+            out.append((0, e.num))
+        elif isinstance(e, Repeat):
+            out.append((1, e.count))
+        elif isinstance(e, Transpose):
+            out.append((2, e.semitones))
+        else:  # pragma: no cover - model is a closed union
+            raise ValueError(f"unknown orderlist entry {e!r}")
+    return out
+
+
+# --- tables (generator parameter columns) ----------------------------------
+def _emit_table(out, table):
+    _wu(out, len(table.left))
+    for b in table.left:
+        _wu(out, b)
+    for b in table.right:
+        _wu(out, b)
+
+
+def _read_table(ids, i):
+    from pygoattracker.model import Table
+
+    n, i = _ru(ids, i)
+    left = []
+    for _ in range(n):
+        b, i = _ru(ids, i)
+        left.append(b)
+    right = []
+    for _ in range(n):
+        b, i = _ru(ids, i)
+        right.append(b)
+    return Table(left=left, right=right), i
+
+
+# --- instruments (generators) ----------------------------------------------
+_INSTR_FIELDS = (
+    "attack_decay",
+    "sustain_release",
+    "wave_ptr",
+    "pulse_ptr",
+    "filter_ptr",
+    "vibrato_param",
+    "vibrato_delay",
+    "gateoff_timer",
+    "first_wave",
+)
+
+
+def _emit_instrument(out, instr):
+    for f in _INSTR_FIELDS:
+        _wu(out, getattr(instr, f))
+
+
+def _read_instrument(ids, i, num):
+    from pygoattracker.model import Instrument
+
+    vals = []
+    for _ in _INSTR_FIELDS:
+        v, i = _ru(ids, i)
+        vals.append(v)
+    return Instrument(*vals, name=f"i{num:02d}"), i
+
+
+# --- top-level codec -------------------------------------------------------
+def _seed_header(out, program):
+    _wu(out, program.nframes)
+    _wu(out, int(program.seed["subtune"]))
+    _wu(out, int(program.seed["adparam"]))
+    _wu(out, int(bool(program.seed["optimize_pulse"])))
+    _wu(out, int(bool(program.seed["optimize_realtime"])))
+    boot = list(program.boot) or [0] * NREG
+    boot1 = program.tables.get("boot1") or [0] * NREG
+    for b in boot:
+        _wu(out, b)
+    for b in boot1:
+        _wu(out, b)
+
+
+def _song_of(program):
+    """The recovered abstract ``Song``. The serializer only ever sees the
+    abstraction -- there is no raw-.SNG-bytes path to fall back to."""
+    return program.tables["song"]
+
+
+def gt_program_to_ids(program):
+    song = _song_of(program)
+    out = []
+    _seed_header(out, program)
+    # tables (generator parameter columns), in on-disk order
+    for table in (
+        song.wavetable,
+        song.pulsetable,
+        song.filtertable,
+        song.speedtable,
+    ):
+        _emit_table(out, table)
+    # instrument-generators
+    _wu(out, len(song.instruments))
+    for instr in song.instruments:
+        _emit_instrument(out, instr)
+    # patterns (abstract rows)
+    _wu(out, len(song.patterns))
+    for pat in song.patterns:
+        rows = [(r.note, r.instrument, r.command, r.data) for r in pat.rows]
+        _emit_pattern(out, rows)
+    # orderlists (backward), per subtune x channel
+    _wu(out, len(song.subtunes))
+    for sub in song.subtunes:
+        for ol in sub.channels:
+            _emit_orderlist(out, _orderlist_entries(ol), ol.restart)
+    return out
+
+
+def _rows_to_pattern(rows):
+    from pygoattracker.model import Pattern, Row
+
+    return Pattern(rows=[Row(n, ins, cmd, dat) for (n, ins, cmd, dat) in rows])
+
+
+def _entries_to_orderlist(entries, restart):
+    from pygoattracker.model import Orderlist, PlayPattern, Repeat, Transpose
+
+    out = []
+    for op, val in entries:
+        if op == 0:
+            out.append(PlayPattern(val))
+        elif op == 1:
+            out.append(Repeat(val))
+        else:
+            out.append(Transpose(val))
+    return Orderlist(entries=out, restart=restart)
+
+
 def gt_ids_to_program(ids):
+    from pygoattracker.model import Song, Subtune
+
     i = 0
     nframes, i = _ru(ids, i)
     subtune, i = _ru(ids, i)
@@ -55,24 +370,51 @@ def gt_ids_to_program(ids):
     optimize_realtime, i = _ru(ids, i)
     boot = []
     for _ in range(NREG):
-        byte, i = _ru(ids, i)
-        boot.append(byte)
+        b, i = _ru(ids, i)
+        boot.append(b)
     boot1 = []
     for _ in range(NREG):
-        byte, i = _ru(ids, i)
-        boot1.append(byte)
-    length, i = _ru(ids, i)
-    sng = []
-    for _ in range(length):
-        byte, i = _ru(ids, i)
-        sng.append(byte)
+        b, i = _ru(ids, i)
+        boot1.append(b)
+    wavetable, i = _read_table(ids, i)
+    pulsetable, i = _read_table(ids, i)
+    filtertable, i = _read_table(ids, i)
+    speedtable, i = _read_table(ids, i)
+    n_instr, i = _ru(ids, i)
+    instruments = []
+    for k in range(n_instr):
+        instr, i = _read_instrument(ids, i, k + 1)
+        instruments.append(instr)
+    n_pat, i = _ru(ids, i)
+    patterns = []
+    for _ in range(n_pat):
+        rows, i = _read_pattern(ids, i)
+        patterns.append(_rows_to_pattern(rows))
+    n_sub, i = _ru(ids, i)
+    subtunes = []
+    for _ in range(n_sub):
+        channels = []
+        for _ in range(3):
+            entries, restart, i = _read_orderlist(ids, i)
+            channels.append(_entries_to_orderlist(entries, restart))
+        subtunes.append(Subtune(channels=channels))
+    song = Song(
+        name="",
+        subtunes=subtunes,
+        instruments=instruments,
+        patterns=patterns,
+        wavetable=wavetable,
+        pulsetable=pulsetable,
+        filtertable=filtertable,
+        speedtable=speedtable,
+    )
     seed = {
         "subtune": subtune,
         "adparam": adparam,
         "optimize_pulse": optimize_pulse,
         "optimize_realtime": optimize_realtime,
     }
-    program = make_program(sng, seed, nframes)
+    program = make_program_from_song(song, seed, nframes)
     program.boot = boot
     program.tables["boot1"] = boot1
     return program
@@ -80,11 +422,7 @@ def gt_ids_to_program(ids):
 
 def gt_measure(program):
     ids = gt_program_to_ids(program)
-    sng_tokens = sum(len(_u(b)) for b in program.tables["sng"])
-    return {"sng": sng_tokens, "total": len(ids)}, program.nframes
-
-
-def _u(n):
     out = []
-    _wu(out, n)
-    return out
+    _seed_header(out, program)
+    header = len(out)
+    return {"header": header, "total": len(ids)}, program.nframes
