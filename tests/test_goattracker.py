@@ -114,14 +114,19 @@ def test_grid_runner_byte_exact(grid_runner_paths):
     ), "GoatTracker backend is NOT residual-zero on Grid_Runner"
 
 
-def test_grid_runner_under_one_token_per_frame(grid_runner_paths):
+def test_grid_runner_context_budget(grid_runner_paths):
     sid, dump = grid_runner_paths
     program = recover_program(sid, dump, CPF, subtune=0)
     assert program.driver == "goattracker"
     brk, frames = measure(program)
+    # < 1 token/frame AND the whole song fits the 8192-token context window.
     assert brk["total"] / frames < 1.0, (
         f"Grid_Runner: {brk['total']} tokens / {frames} frames = "
         f"{brk['total'] / frames:.3f} tok/frame (must be < 1)"
+    )
+    assert brk["total"] < 8192, (
+        f"Grid_Runner: {brk['total']} tokens for the whole song >= 8192 "
+        f"(must fit the 8192-token context window)"
     )
 
 
