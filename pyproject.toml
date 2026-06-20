@@ -23,6 +23,7 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2",
     "pyarrow>=14",
+    "py65>=1.2",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +43,12 @@ Source = "https://github.com/anarkiwi/preframr-tokens"
 Issues = "https://github.com/anarkiwi/preframr-tokens/issues"
 
 [tool.setuptools]
-packages = ["preframr_tokens", "preframr_tokens.codec"]
+packages = [
+    "preframr_tokens",
+    "preframr_tokens.codec",
+    "preframr_tokens.bacc",
+    "preframr_tokens.bacc.backends",
+]
 
 [tool.setuptools.package-data]
 preframr_tokens = ["py.typed"]
@@ -61,6 +67,8 @@ source = ["preframr_tokens"]
 omit = [
     "preframr_tokens/__init__.py",
     "preframr_tokens/codec/__init__.py",
+    "preframr_tokens/bacc/__init__.py",
+    "preframr_tokens/bacc/backends/__init__.py",
 ]
 
 [tool.coverage.report]
