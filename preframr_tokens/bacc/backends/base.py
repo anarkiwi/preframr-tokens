@@ -27,16 +27,26 @@ class DriverBackend(ABC):
 def select_backend(psid):
     """Pick the backend whose playroutine matches, or raise (no silent fallback).
 
-    The Hubbard backends key on exact load/play addresses; GoatTracker is the
-    broader gt2reloc single-speed shape (play = init + 3), tried last.
+    The Hubbard backends key on exact load/play addresses; the lft white-box
+    backend keys on its $0801-image relocate-into-zero-page signature (play=0,
+    IRQ-driven); GoatTracker is the broader gt2reloc single-speed shape
+    (play = init + 3), tried last. lft never overlaps GoatTracker (lft is
+    play=0, GoatTracker requires play = init + 3) but its specific byte
+    signature is checked ahead of the broad GoatTracker shape regardless.
     """
     from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
     from preframr_tokens.bacc.backends.hubbard import (
         Hubbard5TTBackend,
         HubbardMontyBackend,
     )
+    from preframr_tokens.bacc.backends.lft import LftBackend
 
-    for backend in (HubbardMontyBackend(), Hubbard5TTBackend(), GoatTrackerBackend()):
+    for backend in (
+        HubbardMontyBackend(),
+        Hubbard5TTBackend(),
+        LftBackend(),
+        GoatTrackerBackend(),
+    ):
         if backend.matches(psid):
             return backend
     raise ValueError(

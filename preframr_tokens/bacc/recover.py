@@ -14,12 +14,19 @@ from preframr_tokens.codec.lsp_validate import CPF
 
 
 def recover_program(sid_path, dump_path, cpf=CPF, subtune=0, maxframes=10**9):
-    """Recover a BaccProgram from the .sid, framed to the dump's grid."""
+    """Recover a BaccProgram from the .sid, framed to the dump's grid.
+
+    Most drivers are framed at the PAL/NTSC raster (the default ``cpf``); a
+    backend may declare a native IRQ period (``native_cpf``) when the dump must
+    be binned at the tune's own IRQ rate instead -- e.g. lft's CIA-timer tunes
+    are framed at ~16422 cycles, not the 19656-cycle raster frame.
+    """
+    psid = load_psid(sid_path)
+    backend = select_backend(psid)
+    cpf = getattr(backend, "native_cpf", None) or cpf
     state = per_frame_state(dump_path, cpf, maxframes)
     if state is None or len(state) < 2:
         raise ValueError(f"dump did not parse to frames: {dump_path}")
-    psid = load_psid(sid_path)
-    backend = select_backend(psid)
     program = backend.recover(psid, len(state), subtune)
     program.boot = list(state[0])
     program.tables["boot1"] = list(
@@ -35,10 +42,20 @@ def render_program(program):
 
 
 def verify_residual(sid_path, dump_path, cpf=CPF, subtune=0):
-    """True iff render(recover(sid)) == per_frame_state(dump) byte-exact."""
+    """True iff render(recover(sid)) == per_frame_state(dump) byte-exact.
+
+    Residual equality is taken modulo the backend's declared don't-care mask
+    (``mask_state``, identity by default) -- the same documented logging masks
+    the dump validator applies (PW-high unused bits; the lft filter-external
+    bit). Drivers without a mask compare raw, exactly as before.
+    """
+    psid = load_psid(sid_path)
+    backend = select_backend(psid)
+    cpf = getattr(backend, "native_cpf", None) or cpf
     state = per_frame_state(dump_path, cpf, 10**9)
     program = recover_program(sid_path, dump_path, cpf, subtune)
-    return bool(np.array_equal(render_program(program), state))
+    mask = getattr(backend, "mask_state", None) or (lambda s: s)
+    return bool(np.array_equal(mask(render_program(program)), mask(state)))
 
 
 def _backend_for(driver):
@@ -47,8 +64,14 @@ def _backend_for(driver):
         Hubbard5TTBackend,
         HubbardMontyBackend,
     )
+    from preframr_tokens.bacc.backends.lft import LftBackend
 
-    for backend in (HubbardMontyBackend(), Hubbard5TTBackend(), GoatTrackerBackend()):
+    for backend in (
+        HubbardMontyBackend(),
+        Hubbard5TTBackend(),
+        LftBackend(),
+        GoatTrackerBackend(),
+    ):
         if backend.name == driver:
             return backend
     raise ValueError(f"no backend named {driver}")
