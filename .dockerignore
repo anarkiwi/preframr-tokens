@@ -6,3 +6,5 @@ __pycache__/
 build/
 dist/
 RESID_ZERO_IMPLEMENTATION.md
+# rendered on the runner and mounted into the container, never baked into the image
+tests/test_fixtures/

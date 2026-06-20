@@ -22,6 +22,10 @@ HVSC = os.environ.get("HVSC_ROOT", "/scratch/preframr/hvsc/C64Music")
 SONGLENGTHS = os.environ.get(
     "HVSC_SONGLENGTHS", os.path.join(HVSC, "DOCUMENTS", "Songlengths.md5")
 )
+SONGLENGTHS_URL = os.environ.get(
+    "HVSC_SONGLENGTHS_URL",
+    "https://hvsc.brona.dk/HVSC/C64Music/DOCUMENTS/Songlengths.md5",
+)
 IMAGE = os.environ.get("HEADLESSVICE_IMAGE", "anarkiwi/headlessvice")
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "test_fixtures")
 PAL_PHI = 985248
@@ -31,12 +35,23 @@ def _base(sid_path):
     return os.path.basename(sid_path).split(".")[0]
 
 
+def _songlengths_path():
+    """Local HVSC Songlengths.md5, else a cached download (for CI/no-HVSC hosts)."""
+    if os.path.exists(SONGLENGTHS):
+        return SONGLENGTHS
+    cache = os.path.join(FIXTURE_DIR, "Songlengths.md5")
+    if not os.path.exists(cache):
+        os.makedirs(FIXTURE_DIR, exist_ok=True)
+        urllib.request.urlretrieve(SONGLENGTHS_URL, cache)
+    return cache
+
+
 def _songlength_cycles(sid_path, subtune):
     """Cycle budget for ``subtune`` (1-based) from the HVSC Songlengths.md5."""
     with open(sid_path, "rb") as handle:
         md5 = hashlib.md5(handle.read()).hexdigest().lower()
     line = None
-    with open(SONGLENGTHS, encoding="utf-8") as handle:
+    with open(_songlengths_path(), encoding="utf-8") as handle:
         for entry in handle:
             if entry.lower().startswith(md5):
                 line = entry
@@ -117,3 +132,28 @@ def acquire(hvsc_rel, sid_url, subtune):
     sid = _resolve_sid(hvsc_rel, sid_url)
     dump = _resolve_dump(sid, hvsc_rel, subtune)
     return sid, dump
+
+
+_HVSC_BASE = "https://hvsc.brona.dk/HVSC/C64Music"
+# The tunes the gate tests need; rendered into FIXTURE_DIR by render_fixtures().
+GATE_FIXTURES = (
+    ("MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 1),
+    ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
+)
+
+
+def render_fixtures():
+    """Ensure every gate (.sid, .dump) is present in FIXTURE_DIR, building it (download
+    + headlessvice render) if absent. Used by CI/build.sh to populate the directory
+    that is then MOUNTED into the test container (the container cannot run Docker)."""
+    os.makedirs(FIXTURE_DIR, exist_ok=True)
+    for hvsc_rel, subtune in GATE_FIXTURES:
+        sid, dump = acquire(hvsc_rel, f"{_HVSC_BASE}/{hvsc_rel}", subtune)
+        for src in (sid, dump):
+            dst = os.path.join(FIXTURE_DIR, os.path.basename(src))
+            if os.path.abspath(src) != os.path.abspath(dst):
+                shutil.copy(src, dst)
+
+
+if __name__ == "__main__":
+    render_fixtures()
