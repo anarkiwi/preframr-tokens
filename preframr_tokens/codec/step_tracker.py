@@ -34,8 +34,16 @@ def _body_key(op):
     return (op[0], op[1] if op[0] in simple else op[1:])
 
 
-def build_rows(s):
-    """Gate-rise rows per voice + the raw event set (for residual proof)."""
+def build_rows(s, step=None):
+    """Gate-rise rows per voice + the raw event set (for residual proof).
+
+    `step` is the per-tune tracker grid; detected from s when None. It only
+    affects how `dur` is later quantized into (steps, frac); the rows
+    themselves are grid-independent (segmented on gate rise), so residual-zero
+    is unaffected by the grid choice.
+    """
+    if step is None:
+        step = SC.detect_step_grid(s)
     ev = SE.encode_tune_events(s[:, :25])
     bylane = collections.defaultdict(list)
     for sf, lid, op in ev:
@@ -69,7 +77,8 @@ def build_rows(s):
 
 
 def measure(s):
-    voices, ev = build_rows(s)
+    step = SC.detect_step_grid(s)
+    voices, ev = build_rows(s, step)
     brk = collections.Counter()
     for rows in voices:
         cbp = {}
@@ -85,7 +94,7 @@ def measure(s):
                 brk["pitch_def"] += uc(len(r["pitch"]))
                 for rel, op in r["pitch"]:
                     brk["pitch_def"] += uc(rel) + 1 + SC._op_body_cost(op, True)
-            ds, fr = r["dur"] // STEP, r["dur"] % STEP
+            ds, fr = r["dur"] // step, r["dur"] % step
             brk["dur"] += uc(ds) + uc(fr)
             bidx = []
             for k, rel, op in r["bodies"]:

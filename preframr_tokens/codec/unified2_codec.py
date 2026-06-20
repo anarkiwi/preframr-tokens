@@ -85,6 +85,7 @@ def _lz(seq, litfn):
 
 def measure(s):
     t = len(s)
+    step = SC.detect_step_grid(s)
     ev = SE.encode_tune_events(s[:, :25])
     bylane = collections.defaultdict(list)
     for sf, lid, op in ev:
@@ -151,10 +152,9 @@ def measure(s):
     brk["micro"] = sum(_lz(mseq[v], lambda m: ic(m)) for v in range(3))
 
     # ---- DUR stream (gate-rise rows) ----
-    voices, _ = TR.build_rows(s)
+    voices, _ = TR.build_rows(s, step)
     dseq = {
-        v: [(r["dur"] // SC.STEP, r["dur"] % SC.STEP) for r in voices[v]]
-        for v in range(3)
+        v: [(r["dur"] // step, r["dur"] % step) for r in voices[v]] for v in range(3)
     }
     brk["dur"] = sum(_lz(dseq[v], lambda x: uc(x[0]) + uc(x[1])) for v in range(3))
 
