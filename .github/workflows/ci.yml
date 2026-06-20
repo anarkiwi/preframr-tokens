@@ -15,5 +15,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Build docker image (runs run_tests.sh gate inside build)
+      # Render the register-dump fixtures in the headlessvice VICE container on the
+      # runner (which has Docker) -- they cannot be produced inside a `docker build`.
+      # Pure stdlib + the container; no Python deps needed on the runner.
+      - name: Render register-dump fixtures
+        run: python3 tests/_dump_fixture.py
+      - name: Build test image
         run: docker build --build-arg PYTHON_VERSION=${{ matrix.python-version }} -t preframr-tokens-test:${{ matrix.python-version }} .
+      # Run the full run_tests.sh gate with the rendered dumps mounted into the cache
+      # the fixtures resolve to (no dumps are baked into the image; see .dockerignore).
+      - name: Run gate (dumps mounted)
+        run: docker run --rm -v "$PWD/tests/test_fixtures:/tok/tests/test_fixtures" preframr-tokens-test:${{ matrix.python-version }}
