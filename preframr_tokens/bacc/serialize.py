@@ -14,8 +14,13 @@ from preframr_tokens.bacc.pitch import hubbard_grid_bijection, hubbard_table_fn
 from preframr_tokens.bacc.primitive import BaccProgram, NoteOn
 
 # vocab: base-16 LEB digits 0..31 (0-15 continue, 16-31 terminal) + REPEAT marker
+# + TRANSPOSE marker (a backward REPEAT whose copied notes are re-coordinated by a
+# constant grid-interval Delta -- factors a phrase repeated at a different pitch,
+# exactly what a tracker orderlist's Transpose(semitones) does, while the note
+# token stays the ABSOLUTE canonical A440 grid index).
 REPEAT = 32
-VOCAB = 33
+TRANSPOSE = 33
+VOCAB = 34
 PAD_ID = VOCAB  # reserved padding id above the codec alphabet
 
 _SEED_KEYS = (
@@ -119,6 +124,46 @@ def _lit_cost(row, static_img, grid_of):
     return len(out)
 
 
+def _grid_delta(a, b, grid_of):
+    """Grid-interval Delta(b) - Delta(a) if both rows match up to a constant
+    pitch shift (every non-note field identical, both notes grid-resolvable),
+    else None. The note token is the absolute canonical grid index, so a phrase
+    repeated transposed is a constant-Delta shift of the prior run's notes."""
+    if a[0] != b[0] or a[2] != b[2] or a[3] != b[3] or a[4] != b[4]:
+        return None
+    ga, gb = grid_of.get(a[1]), grid_of.get(b[1])
+    if ga is None or gb is None:
+        return None  # aliased-tail (literal-escape) note: not grid-transposable
+    return gb - ga
+
+
+def _transposed_run(rows, i, off, delta, grid_of):
+    """Length of the backward run at ``i`` (source ``i-off``) whose notes are all
+    the prior run's notes shifted by exactly ``delta`` (non-note fields identical).
+    The source rows must themselves be grid-resolvable so decode can add delta."""
+    n = 0
+    while i + n < len(rows):
+        src, dst = rows[i - off + n], rows[i + n]
+        if _grid_delta(src, dst, grid_of) != delta:
+            break
+        n += 1
+    return n
+
+
+def _best_transpose(rows, i, grid_of):
+    """Best (length, offset, delta) backward run that matches a prior run up to a
+    single constant non-zero grid-interval (a transposed phrase repeat)."""
+    best_len, best_off, best_delta = 0, 0, 0
+    for off in range(1, i + 1):
+        delta = _grid_delta(rows[i - off], rows[i], grid_of)
+        if delta in (None, 0):
+            continue  # delta==0 is the exact REPEAT case, handled separately
+        n = _transposed_run(rows, i, off, delta, grid_of)
+        if n > best_len:
+            best_len, best_off, best_delta = n, off, delta
+    return best_len, best_off, best_delta
+
+
 def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
     i = 0
     while i < len(rows):
@@ -130,9 +175,28 @@ def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
             if n > best_len:
                 best_len, best_off = n, off
         cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
-        if best_len >= _MIN_COPY and cost_copy < sum(
+        tlen, toff, tdelta = _best_transpose(rows, i, grid_of)
+        cost_trans = 1 + _u_len(toff) + _u_len(tlen) + _wi_len(tdelta)
+        lit_copy = sum(
             _lit_cost(rows[i + j], static_img, grid_of) for j in range(best_len)
-        ):
+        )
+        lit_trans = sum(
+            _lit_cost(rows[i + j], static_img, grid_of) for j in range(tlen)
+        )
+        use_copy = best_len >= _MIN_COPY and cost_copy < lit_copy
+        use_trans = tlen >= _MIN_COPY and cost_trans < lit_trans
+        # Cheapest of {exact REPEAT, transposed REPEAT+Delta, literal}, weighing
+        # each candidate by tokens-saved-per-row so a longer plain REPEAT is not
+        # beaten by a shorter transposed one (and vice versa).
+        copy_gain = (lit_copy - cost_copy) if use_copy else 0
+        trans_gain = (lit_trans - cost_trans) if use_trans else 0
+        if use_trans and trans_gain >= copy_gain:
+            out.append(TRANSPOSE)
+            _wu(out, toff)
+            _wu(out, tlen)
+            _wi(out, tdelta)
+            i += tlen
+        elif use_copy:
             out.append(REPEAT)
             _wu(out, best_off)
             _wu(out, best_len)
@@ -154,6 +218,12 @@ def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
 def _u_len(n):
     out = []
     _wu(out, n)
+    return len(out)
+
+
+def _wi_len(n):
+    out = []
+    _wi(out, n)
     return len(out)
 
 
@@ -215,7 +285,7 @@ def ids_to_program(ids, driver="hubbard_monty"):
         seed[k] = vals
     seed["init_speed"], i = _ru(ids, i)
     seed["resetspd"], i = _ru(ids, i)
-    index_of, _ = hubbard_grid_bijection(static_img)
+    index_of, grid_of = hubbard_grid_bijection(static_img)
     instruments = [[0] * 8 for _ in range(64)]
     seen = set()
     score = []
@@ -230,6 +300,19 @@ def ids_to_program(ids, driver="hubbard_monty"):
                 base = len(rows)
                 for j in range(length):
                     rows.append(rows[base - off + j])
+            elif ids[i] == TRANSPOSE:
+                # Backward REPEAT re-coordinated by a constant grid-interval: copy
+                # the prior run, then shift each copied note by delta on the grid
+                # (lossless re-coordinate; non-note fields carry through unchanged).
+                i += 1
+                off, i = _ru(ids, i)
+                length, i = _ru(ids, i)
+                delta, i = _ri(ids, i)
+                base = len(rows)
+                for j in range(length):
+                    dt, note, instr, lnth, porta = rows[base - off + j]
+                    note = index_of[grid_of[note] + delta]
+                    rows.append((dt, note, instr, lnth, porta))
             else:
                 dt, i = _ru(ids, i)
                 note, i = _read_note_field(ids, i, index_of)

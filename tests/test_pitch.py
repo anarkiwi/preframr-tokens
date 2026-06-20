@@ -118,6 +118,109 @@ def test_micro_deviation_is_subcent_for_a4():
         assert abs(cents) < 5.0
 
 
+def _decode_rows(out, img):
+    """Decode a single voice's serialized row stream back to rows (mirrors the
+    TRANSPOSE/REPEAT handling in ids_to_program, in isolation)."""
+    from preframr_tokens.bacc import serialize as s
+
+    index_of, grid_of = s.hubbard_grid_bijection(img)
+    rows, i, seen = [], 0, set()
+    while i < len(out):
+        if out[i] == s.REPEAT:
+            i += 1
+            off, i = s._ru(out, i)
+            length, i = s._ru(out, i)
+            base = len(rows)
+            for j in range(length):
+                rows.append(rows[base - off + j])
+        elif out[i] == s.TRANSPOSE:
+            i += 1
+            off, i = s._ru(out, i)
+            length, i = s._ru(out, i)
+            delta, i = s._ri(out, i)
+            base = len(rows)
+            for j in range(length):
+                dt, note, instr, lnth, porta = rows[base - off + j]
+                rows.append((dt, index_of[grid_of[note] + delta], instr, lnth, porta))
+        else:
+            dt, i = s._ru(out, i)
+            note, i = s._read_note_field(out, i, index_of)
+            instr, i = s._ru(out, i)
+            if instr not in seen:
+                seen.add(instr)
+                for _ in range(8):
+                    _, i = s._ru(out, i)
+            lnth, i = s._ru(out, i)
+            porta, i = s._ru(out, i)
+            rows.append((dt, note, instr, lnth, porta))
+    return rows
+
+
+def test_transpose_op_factors_a_transposed_phrase_lossless():
+    """A phrase repeated TRANSPOSED (every note shifted by the same Delta, non-note
+    fields identical) is factored by the backward Transpose op as REPEAT+Delta,
+    and decodes byte-exact -- a lossless re-coordinate, never stored/averaged."""
+    from preframr_tokens.bacc import serialize as s
+
+    img = _clean_et_static_img()
+    grid_to_index, index_to_grid = s.hubbard_grid_bijection(img)
+    # A 4-note phrase (grid 0,2,4,5 -> note indices), then the SAME phrase up +7.
+    phrase = [grid_to_index[g] for g in (0, 2, 4, 5)]
+    up7 = [grid_to_index[g + 7] for g in (0, 2, 4, 5)]
+    rows = [(8, n, 1, 16, 0) for n in phrase] + [(8, n, 1, 16, 0) for n in up7]
+
+    out, seen, instruments = [], set(), [[0] * 8 for _ in range(64)]
+    s._emit_rows(out, rows, seen, instruments, img, index_to_grid)
+
+    assert s.TRANSPOSE in out, "transposed phrase repeat was not factored"
+    # The transposed copy is cheaper than re-emitting 4 literal rows.
+    assert len(out) < sum(s._lit_cost(r, img, index_to_grid) for r in rows)
+    # Lossless: the decoded rows are byte-identical to the originals.
+    assert _decode_rows(out, img) == rows
+
+
+def test_transpose_op_delta_is_signed_and_roundtrips_down():
+    """A downward transposition (negative Delta) round-trips too (signed LEB)."""
+    from preframr_tokens.bacc import serialize as s
+
+    img = _clean_et_static_img()
+    grid_to_index, index_to_grid = s.hubbard_grid_bijection(img)
+    base = [grid_to_index[g] for g in (12, 14, 16, 17, 19)]
+    down5 = [grid_to_index[g - 5] for g in (12, 14, 16, 17, 19)]
+    rows = [(4, n, 2, 8, 0) for n in base] + [(4, n, 2, 8, 0) for n in down5]
+    out, seen = [], set()
+    s._emit_rows(out, rows, seen, [[0] * 8 for _ in range(64)], img, index_to_grid)
+    assert s.TRANSPOSE in out
+    assert _decode_rows(out, img) == rows
+
+
+def test_exact_repeat_uses_plain_repeat_not_zero_delta_transpose():
+    """An identical (non-transposed) phrase repeat is factored by a plain REPEAT --
+    Delta=0 is the exact-REPEAT case, never emitted as a TRANSPOSE(Delta=0). The
+    decoded rows round-trip byte-exact either way."""
+    from preframr_tokens.bacc import serialize as s
+
+    img = _clean_et_static_img()
+    grid_to_index, index_to_grid = s.hubbard_grid_bijection(img)
+    # A jagged 6-note phrase (no internal constant-interval run to mis-factor),
+    # then the SAME phrase verbatim: the long backward match is an exact REPEAT.
+    phrase = [grid_to_index[g] for g in (0, 7, 3, 10, 5, 1)]
+    rows = [(8, n, 1, 16, 0) for n in phrase] * 2
+    out, seen = [], set()
+    s._emit_rows(out, rows, seen, [[0] * 8 for _ in range(64)], img, index_to_grid)
+    assert s.REPEAT in out  # the verbatim repeat is a plain REPEAT
+    # No TRANSPOSE marker is emitted with a zero delta (delta==0 is skipped).
+    i = 0
+    while i < len(out):
+        if out[i] == s.TRANSPOSE:
+            _, j = s._ru(out, i + 1)
+            _, j = s._ru(out, j)
+            delta, _ = s._ri(out, j)
+            assert delta != 0, "TRANSPOSE emitted with delta==0 (should be REPEAT)"
+        i += 1
+    assert _decode_rows(out, img) == rows
+
+
 def test_static_tuning_delta_table_is_small_and_lossless():
     """Part C (static Δ): the GoatTracker freq table's deviation from the
     canonical A440 grid is a small per-note-class ET-rounding residual (<=~4c),
