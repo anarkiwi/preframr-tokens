@@ -1,33 +1,48 @@
-"""Public API for preframr-tokens: the step/tracker SID codec.
+"""Public API for preframr-tokens: the two-file BACC SID codec.
 
-preframr-tokens IS the white-box decompiler codec — dump (.parquet) -> inline
-op-program tokens, residual-zero (decode == dump byte-exact) at < 1 token/frame
-on Monty-on-the-Run. The public surface lives in the ``preframr_tokens.codec``
-subpackage and is re-exported here:
+preframr-tokens recovers a per-voice bounded-accumulator (BACC) program from a
+.sid by running its playroutine white-box (py65) and tapping driver RAM, verifies
+the program regenerates the .dump byte-exact, and emits an inline BACC token log:
 
-  per_frame_state(dump, cpf, maxframes) -- dump (.parquet) -> per-frame 25-reg state
-  CPF / NTSC_CPF / cpf_from_meta        -- the frame clock for the state grid
-  measure(state)                        -- token breakdown + frame count
-  verify_residual(state)                -- True iff decode == dump byte-exact
+  recover_program(sid, dump, cpf, subtune) -- (.sid, .dump) -> BaccProgram
+  render_program(program)                  -- BaccProgram -> (nframes, 25) state
+  verify_residual(sid, dump, cpf, subtune) -- True iff render == dump byte-exact
+  program_to_ids(program) / ids_to_program -- model-facing token id stream
+  measure(program)                         -- ({block: tokens}, nframes)
+  VOCAB / PAD_ID                           -- token alphabet size + padding id
 
-Every other ``preframr_tokens.codec.*`` submodule path is internal and may move
-between releases.
+The dump reader (per_frame_state / CPF / cpf_from_meta) is re-exported for framing.
+The invariant (tests/test_monty_context_budget.py): on the full Monty dump,
+verify_residual is True and measure(program)['total'] / frames < 1.0.
 """
 
-from preframr_tokens.codec import (
-    CPF,
-    NTSC_CPF,
-    cpf_from_meta,
+from preframr_tokens.bacc import (
+    BaccProgram,
+    NoteOn,
+    PAD_ID,
+    VOCAB,
+    ids_to_program,
     measure,
-    per_frame_state,
+    program_to_ids,
+    recover_program,
+    render_program,
     verify_residual,
 )
+from preframr_tokens.codec import CPF, NTSC_CPF, cpf_from_meta, per_frame_state
 
 __all__ = [
+    "recover_program",
+    "render_program",
+    "verify_residual",
+    "program_to_ids",
+    "ids_to_program",
+    "measure",
+    "BaccProgram",
+    "NoteOn",
+    "VOCAB",
+    "PAD_ID",
     "per_frame_state",
     "CPF",
     "NTSC_CPF",
     "cpf_from_meta",
-    "measure",
-    "verify_residual",
 ]

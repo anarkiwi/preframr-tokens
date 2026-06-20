@@ -1,21 +1,17 @@
-"""Fidelity gate: libsidplayfp SID-write trace vs corpus register dump.
+"""Frame-clock helpers for the register dump.
 
-Reconstructs the full 25-register SID state per absolute PAL frame for both the
-instrumented-libsidplayfp trace and the corpus (VICE) register dump, auto-aligns
-the two by the startup-frame lag, and reports byte-exact frame match.
+Reconstructs the full 25-register SID state per absolute PAL frame from a corpus
+register dump and locates the tune's first play cycle. The frame clock (CPF /
+NTSC_CPF, auto-detected from the .meta.txt) is shared with the BACC renderer so
+both sides bin writes onto the same grid.
 
 PW-high registers (3, 10, 17) are masked to their 4 SID-significant bits: the
 pulse width is 12-bit so bits 4-7 of the PW-high byte are don't-care and ignored
-by the chip. libsidplayfp logs the raw CPU-written byte; the VICE corpus dump
-logs the SID-significant value. Masking removes this pure logging-convention
-difference; it is not an emulation discrepancy. Use --raw to see it.
+by the chip; masking removes that pure logging-convention difference.
 """
 
-import sys
 import numpy as np
-import pandas as pd
 
-SIDWR_DT = np.dtype([("cycle", "<i8"), ("addr", "<u2"), ("reg", "u1"), ("val", "u1")])
 NREG = 25
 CPF = 19656.0  # PAL cycles/frame (985248 Hz / ~50.12)
 NTSC_CPF = 17095.0  # NTSC cycles/frame (1022727 Hz / ~59.83)
@@ -36,22 +32,6 @@ def cpf_from_meta(prefix):
     except OSError:
         pass
     return CPF
-
-
-def emu_writes(prefix, base=0xD400):
-    a = np.fromfile(prefix + ".sidwr.bin", dtype=SIDWR_DT)
-    a = a[(a["addr"] >= base) & (a["addr"] < base + 0x20)]
-    return a["cycle"].astype(np.int64), a["reg"].astype(int), a["val"].astype(int)
-
-
-def dump_writes(dump_path):
-    df = pd.read_parquet(dump_path)
-    df = df[df["chipno"] == 0].sort_values("clock")
-    return (
-        df["clock"].to_numpy(np.int64),
-        df["reg"].to_numpy(int),
-        df["val"].to_numpy(int),
-    )
 
 
 def first_play_cycle(cyc, cpf=CPF):
@@ -117,47 +97,3 @@ def best_lag(e_seq, d_seq, ecf=None, dcf=None, span=40):
         if n > 20 and ok > best[0]:
             best = (ok, lag)
     return best[1]
-
-
-def compare(prefix, dump_path, mask=True, verbose=True):
-    cpf = cpf_from_meta(prefix)
-    ec, er, ev = emu_writes(prefix)
-    dc, dr, dv = dump_writes(dump_path)
-    et0, dt0 = first_play_cycle(ec, cpf), first_play_cycle(dc, cpf)
-    e = state_seq(ec, er, ev, et0, mask, cpf)
-    d = state_seq(dc, dr, dv, dt0, mask, cpf)
-    lag = best_lag(e, d)
-    n = ok = 0
-    mm = []
-    for i in range(max(0, lag), min(len(e), len(d) + lag)):
-        j = i - lag
-        if 0 <= j < len(d):
-            n += 1
-            if e[i] == d[j]:
-                ok += 1
-            elif len(mm) < 6:
-                mm.append(
-                    (
-                        i,
-                        j,
-                        [
-                            (r, d[j][r], e[i][r])
-                            for r in range(NREG)
-                            if e[i][r] != d[j][r]
-                        ],
-                    )
-                )
-    pct = 100 * ok / max(1, n)
-    if verbose:
-        print(
-            f"{prefix}: {ok}/{n} ({pct:.1f}%) frames byte-exact  [lag={lag} mask_pwhi={mask}]"
-        )
-        for x in mm[:4]:
-            print(f"   mismatch emu_f{x[0]} dump_f{x[1]}: {x[2]}")
-    return ok, n, pct, lag
-
-
-if __name__ == "__main__":
-    mask = "--raw" not in sys.argv
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    compare(args[0], args[1], mask=mask)
