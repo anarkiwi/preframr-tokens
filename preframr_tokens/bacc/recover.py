@@ -42,12 +42,13 @@ def verify_residual(sid_path, dump_path, cpf=CPF, subtune=0):
 
 
 def _backend_for(driver):
+    from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
     from preframr_tokens.bacc.backends.hubbard import (
         Hubbard5TTBackend,
         HubbardMontyBackend,
     )
 
-    for backend in (HubbardMontyBackend(), Hubbard5TTBackend()):
+    for backend in (HubbardMontyBackend(), Hubbard5TTBackend(), GoatTrackerBackend()):
         if backend.name == driver:
             return backend
     raise ValueError(f"no backend named {driver}")

@@ -25,13 +25,18 @@ class DriverBackend(ABC):
 
 
 def select_backend(psid):
-    """Pick the backend whose playroutine matches, or raise (no silent fallback)."""
+    """Pick the backend whose playroutine matches, or raise (no silent fallback).
+
+    The Hubbard backends key on exact load/play addresses; GoatTracker is the
+    broader gt2reloc single-speed shape (play = init + 3), tried last.
+    """
+    from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
     from preframr_tokens.bacc.backends.hubbard import (
         Hubbard5TTBackend,
         HubbardMontyBackend,
     )
 
-    for backend in (HubbardMontyBackend(), Hubbard5TTBackend()):
+    for backend in (HubbardMontyBackend(), Hubbard5TTBackend(), GoatTrackerBackend()):
         if backend.matches(psid):
             return backend
     raise ValueError(

@@ -124,6 +124,10 @@ def _u_len(n):
 
 def program_to_ids(program):
     """Serialize a BaccProgram to a flat list of token ids (round-trippable)."""
+    if program.driver == "goattracker":
+        from preframr_tokens.bacc.gt_serialize import gt_program_to_ids
+
+        return gt_program_to_ids(program)
     out = []
     _wu(out, program.nframes)
     for b in program.boot:
@@ -145,6 +149,10 @@ def program_to_ids(program):
 
 def ids_to_program(ids, driver="hubbard_monty"):
     """Inverse of program_to_ids -> BaccProgram (instruments tables reconstructed)."""
+    if driver == "goattracker":
+        from preframr_tokens.bacc.gt_serialize import gt_ids_to_program
+
+        return gt_ids_to_program(ids)
     i = 0
     nframes, i = _ru(ids, i)
     boot = []
@@ -205,6 +213,10 @@ def ids_to_program(ids, driver="hubbard_monty"):
 
 def measure(program):
     """Return ({block: tokens}, nframes) for the serialized program."""
+    if program.driver == "goattracker":
+        from preframr_tokens.bacc.gt_serialize import gt_measure
+
+        return gt_measure(program)
     ids = program_to_ids(program)
     used = sorted({ev.instr for ev in program.score})
     instr_def = sum(_u_len(b) for i in used for b in program.instruments[i])
