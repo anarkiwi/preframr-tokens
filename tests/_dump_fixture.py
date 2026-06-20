@@ -140,6 +140,7 @@ GATE_FIXTURES = (
     ("MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 1),
     ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
     ("MUSICIANS/J/Jammer/Grid_Runner.sid", 1),
+    ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
 )
 
 

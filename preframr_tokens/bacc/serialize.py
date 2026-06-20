@@ -128,6 +128,10 @@ def program_to_ids(program):
         from preframr_tokens.bacc.gt_serialize import gt_program_to_ids
 
         return gt_program_to_ids(program)
+    if program.driver == "lft":
+        from preframr_tokens.bacc.lft_serialize import lft_program_to_ids
+
+        return lft_program_to_ids(program)
     out = []
     _wu(out, program.nframes)
     for b in program.boot:
@@ -153,6 +157,10 @@ def ids_to_program(ids, driver="hubbard_monty"):
         from preframr_tokens.bacc.gt_serialize import gt_ids_to_program
 
         return gt_ids_to_program(ids)
+    if driver == "lft":
+        from preframr_tokens.bacc.lft_serialize import lft_ids_to_program
+
+        return lft_ids_to_program(ids)
     i = 0
     nframes, i = _ru(ids, i)
     boot = []
@@ -217,6 +225,10 @@ def measure(program):
         from preframr_tokens.bacc.gt_serialize import gt_measure
 
         return gt_measure(program)
+    if program.driver == "lft":
+        from preframr_tokens.bacc.lft_serialize import lft_measure
+
+        return lft_measure(program)
     ids = program_to_ids(program)
     used = sorted({ev.instr for ev in program.score})
     instr_def = sum(_u_len(b) for i in used for b in program.instruments[i])
