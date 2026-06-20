@@ -34,6 +34,47 @@ def cpf_from_meta(prefix):
     return CPF
 
 
+BURST_GAP = 2000  # cycles; a write-gap above this starts a new play-call burst
+
+
+def _burst_starts(cyc, gap=BURST_GAP):
+    """Cycle of the first write in each play-call burst.
+
+    A burst boundary is an inter-write gap above ``gap`` cycles. One play-call
+    = one burst, so the burst-start cadence is the tune's play period.
+    """
+    if len(cyc) == 0:
+        return np.empty(0, dtype=np.int64)
+    bnd = np.nonzero(np.diff(cyc) > gap)[0]
+    return np.concatenate(([cyc[0]], cyc[bnd + 1])).astype(np.int64)
+
+
+def detect_play_period(cyc, cpf_ref=CPF, gap=BURST_GAP):
+    """Detect the tune's true play period (cycles between play-calls).
+
+    Driver-agnostic. The play routine fires at a fixed IRQ; each firing emits a
+    burst of register writes, so the dominant inter-burst interval *is* the play
+    period. Single-speed tunes call play once per raster frame (period == CPF);
+    a multispeed tune calls it N times per frame, so its period is a fraction of
+    CPF (Galway ~8547 ≈ CPF/2.3; Sanxion ~5900 ≈ CPF/3.3 -- note the ratio need
+    not be integer: Galway's IRQ period does not divide the PAL frame evenly).
+
+    Returns ``cpf_ref`` unchanged for single-speed tunes (dominant interval
+    within 10% of the raster frame, or too few bursts to tell), so existing
+    byte-exact framing is never perturbed. Otherwise returns the detected
+    sub-frame period, at which every play-call boundary lands on its own frame
+    and no register-value change is dropped.
+    """
+    starts = _burst_starts(cyc, gap)
+    if len(starts) < 4:
+        return cpf_ref
+    period = float(np.median(np.diff(starts)))
+    if period <= 0 or period >= 0.9 * cpf_ref:
+        # within ~10% of one raster frame (or longer): single-speed.
+        return cpf_ref
+    return period
+
+
 def first_play_cycle(cyc, cpf=CPF):
     if len(cyc) == 0:
         return 0
@@ -77,6 +118,60 @@ def changed_frames(cyc, reg, val, t0):
         if fi >= 0:
             s.add(fi)
     return s
+
+
+def _raw_change_count(reg, val):
+    """Register-value changes on the true bus (reg < NREG), in write order."""
+    cur = [None] * 32
+    n = 0
+    for r, v in zip(reg, val):
+        r = int(r)
+        if r < NREG and cur[r] != int(v):
+            n += 1
+            cur[r] = int(v)
+    return n
+
+
+def _framed_change_count(cyc, reg, val, cpf):
+    """Register-value changes surviving in the per-frame-sampled state."""
+    t0 = first_play_cycle(cyc, cpf)
+    cur = [0] * 32
+    out = {}
+    for c, r, v in zip(cyc, reg, val):
+        r = int(r)
+        if r < 32:
+            cur[r] = int(v)
+        fi = int(round((c - t0) / cpf))
+        if fi >= 0:
+            out[fi] = tuple(cur[:NREG])
+    if not out:
+        return 0
+    nf = max(out) + 1
+    prev = tuple([0] * NREG)
+    last = prev
+    n = 0
+    for f in range(nf):
+        if f in out:
+            last = out[f]
+        n += sum(1 for a, b in zip(last, prev) if a != b)
+        prev = last
+    return n
+
+
+def framing_change_loss(cyc, reg, val, cpf):
+    """Fraction of true-bus register-value changes dropped by framing at ``cpf``.
+
+    The losslessness metric for the framing substrate: 0.0 means every register
+    change on the raw bus survives the per-frame sampling (lossless); a positive
+    value is the fraction silently dropped because >1 play-call collapsed into a
+    single frame. Single-CPF framing of a multispeed tune drops a large fraction;
+    framing at the detected play period drops ~0.
+    """
+    raw = _raw_change_count(reg, val)
+    if raw == 0:
+        return 0.0
+    framed = _framed_change_count(cyc, reg, val, cpf)
+    return max(0.0, 1.0 - framed / raw)
 
 
 def best_lag(e_seq, d_seq, ecf=None, dcf=None, span=40):

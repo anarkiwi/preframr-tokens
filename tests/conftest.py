@@ -17,6 +17,10 @@ _TT_REL = "MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid"
 _TT_URL = (
     "https://hvsc.brona.dk/HVSC/C64Music/MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid"
 )
+_GALWAY_REL = "MUSICIANS/G/Galway_Martin/Times_of_Lore.sid"
+_GALWAY_URL = (
+    "https://hvsc.brona.dk/HVSC/C64Music/MUSICIANS/G/Galway_Martin/Times_of_Lore.sid"
+)
 
 
 @pytest.fixture(scope="session")
@@ -47,3 +51,9 @@ def tt_state(tt_paths):
 @pytest.fixture(scope="session")
 def tt_program(tt_paths):
     return recover_program(tt_paths[0], tt_paths[1], CPF, subtune=1)
+
+
+@pytest.fixture(scope="session")
+def galway_paths():
+    """A clearly-multispeed Galway tune (~3x play-calls per raster frame)."""
+    return acquire(_GALWAY_REL, _GALWAY_URL, subtune=1)

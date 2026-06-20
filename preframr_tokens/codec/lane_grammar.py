@@ -32,7 +32,19 @@ LANE_CLASS = {
 }
 
 
-def per_frame_state(dump, cpf, maxframes=1000):
+def per_frame_state(dump, cpf=None, maxframes=1000):
+    """Reconstruct the per-frame 25-register state from a register dump.
+
+    Framing period selection:
+      * ``cpf=None``  -> auto-detect the tune's true play period from the dump's
+        write cadence (``detect_play_period``). Single-speed tunes resolve to the
+        PAL raster frame unchanged; multispeed tunes (Galway, Sanxion, ...) frame
+        at their sub-frame play period so EVERY play-call boundary lands on its
+        own frame and no register-value change is dropped (lossless).
+      * explicit ``cpf`` -> honored as an override; the cadence detector is
+        skipped. Backends/tests that already know their rate keep passing it
+        (e.g. lft passes its CIA-IRQ period 16422, the raster CPF otherwise).
+    """
     df = pd.read_parquet(dump, columns=["clock", "reg", "val", "chipno"])
     df = df[df["chipno"] == 0].sort_values("clock")
     cyc = df["clock"].to_numpy(np.int64)
@@ -40,6 +52,8 @@ def per_frame_state(dump, cpf, maxframes=1000):
     val = df["val"].to_numpy(int)
     if len(cyc) == 0:
         return None
+    if cpf is None:
+        cpf = V.detect_play_period(cyc)
     t0 = V.first_play_cycle(cyc, cpf)
     cur = [0] * 32
     out = {}

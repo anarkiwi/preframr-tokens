@@ -62,3 +62,58 @@ def test_lsp_validate_state_and_alignment_helpers():
 def test_cpf_constants():
     assert LV.CPF == 19656.0
     assert LV.NTSC_CPF == 17095.0
+
+
+def _burst_clocks(period, nframes, writes_per_burst=4):
+    """Synthetic write clocks: one tight burst of writes every ``period`` cycles."""
+    clocks = []
+    for f in range(nframes):
+        base = f * period
+        clocks += [base + 50 * w for w in range(writes_per_burst)]
+    return np.asarray(clocks, dtype=np.int64)
+
+
+def test_detect_play_period_single_speed_returns_cpf():
+    # A clean single-speed cadence (one burst per raster frame) must resolve to
+    # exactly CPF -- the detector must never perturb single-speed framing.
+    cyc = _burst_clocks(int(LV.CPF), 200)
+    assert LV.detect_play_period(cyc) == LV.CPF
+    # Mild jitter (real dumps wobble a few cycles) still resolves to CPF.
+    rng = np.random.default_rng(0)
+    jit = cyc + rng.integers(-30, 30, size=len(cyc))
+    assert LV.detect_play_period(np.sort(jit)) == LV.CPF
+
+
+def test_detect_play_period_multispeed_finds_subframe():
+    # 2x multispeed: two bursts per raster frame -> period == CPF/2, classified
+    # multispeed (below the single-speed threshold).
+    cyc = _burst_clocks(int(LV.CPF // 2), 400)
+    period = LV.detect_play_period(cyc)
+    assert abs(period - LV.CPF / 2) < 60
+    assert period < 0.9 * LV.CPF  # multispeed
+    # 3x multispeed.
+    cyc3 = _burst_clocks(int(LV.CPF // 3), 600)
+    assert abs(LV.detect_play_period(cyc3) - LV.CPF / 3) < 60
+
+
+def test_detect_play_period_too_few_bursts_is_single_speed():
+    # Not enough bursts to infer a cadence -> default to the raster frame.
+    assert LV.detect_play_period(np.array([0, 50, 100], dtype=np.int64)) == LV.CPF
+    assert LV.detect_play_period(np.empty(0, dtype=np.int64)) == LV.CPF
+
+
+def test_framing_change_loss_lossless_vs_lossy():
+    # 2x multispeed where the two sub-frame play-calls write DIFFERENT values to
+    # the same register: single-CPF framing keeps only the 2nd (drops ~half the
+    # changes); framing at CPF/2 keeps both (lossless).
+    half = int(LV.CPF // 2)
+    cyc, reg, val = [], [], []
+    for f in range(200):
+        cyc += [f * int(LV.CPF), f * int(LV.CPF) + half]
+        reg += [0, 0]
+        val += [f % 251, (f * 7 + 3) % 251]  # two distinct writes per frame
+    cyc = np.asarray(cyc, dtype=np.int64)
+    loss_cpf = LV.framing_change_loss(cyc, reg, val, LV.CPF)
+    loss_half = LV.framing_change_loss(cyc, reg, val, half)
+    assert loss_cpf > 0.4  # single-CPF drops ~half the bus changes
+    assert loss_half < 0.005  # sub-frame framing is lossless (modulo 1 edge frame)
