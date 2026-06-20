@@ -33,10 +33,51 @@ terminal; zigzag for signed) so the token counts are directly comparable.
 """
 
 import collections
+import math
 
 from preframr_tokens.codec import serialize_events as SE
 
-STEP = 4  # frames per tracker step (validated for Monty)
+STEP = 4  # DEFAULT frames per tracker step (Monty); per-tune grid detected below
+
+
+def detect_step_grid(s, default=STEP, lo=1, hi=32):
+    """Detect the tracker STEP grid (frames per row) for ONE tune from s.
+
+    The grid is the tune's tempo (frames-per-row) and varies per tune (Monty=4,
+    5_Title_Tunes=8, Action_Biker=12). It is recovered from the GATE-RISE
+    (note-on) frames across the 3 voices: take the inter-trigger GAPS, keep only
+    the FREQUENT gaps (count >= max(3, 5% of gaps)), and take their GCD.
+
+    Keeping only frequent gaps is essential: a naive GCD over ALL gaps collapses
+    to 1 on a single off-grid outlier. The GCD of the frequent gaps recovers the
+    true grid and handles funktempo/swing (e.g. {4,8} -> 4). Falls back to
+    `default` when there are too few triggers or the result is out of [lo, hi].
+    """
+    gaps = []
+    for v in range(3):
+        b = 7 * v
+        gate = s[:, b + 4] & 1
+        if len(gate) == 0:
+            continue
+        rises = [i for i in range(1, len(gate)) if gate[i] == 1 and gate[i - 1] == 0]
+        if gate[0] == 1:
+            rises = [0] + rises
+        gaps.extend(rises[k + 1] - rises[k] for k in range(len(rises) - 1))
+    gaps = [g for g in gaps if g > 0]
+    if len(gaps) < 4:
+        return default
+    cnt = collections.Counter(gaps)
+    thr = max(3, int(0.05 * len(gaps)))
+    frequent = [g for g, c in cnt.items() if c >= thr]
+    if not frequent:
+        return default
+    g = 0
+    for x in frequent:
+        g = math.gcd(g, x)
+    if g < lo or g > hi:
+        return default
+    return g
+
 
 # voice lanes: freq lane id == v, plus the non-freq lanes that share the voice.
 # lane ids: 0..2 freq, 3..5 pw, 6..8 ctrl, 9..11 ad, 12..14 sr, 15..18 global.
@@ -136,7 +177,7 @@ def _op_body_cost(op, is_freq):
 
 
 # ---------- build the step structure ----------
-def build_steps(s):
+def build_steps(s, step=None):
     """Return the tracker structure for the 25-register state s.
 
     rows[v]  = list of row dicts (per voice 0..2): {
@@ -148,6 +189,8 @@ def build_steps(s):
     }
     global_events = list of (frame, lane_id, op) for the filter lanes (kept as-is).
     """
+    if step is None:
+        step = detect_step_grid(s)
     ev = SE.encode_tune_events(s[:, :25])
     bylane = collections.defaultdict(list)
     for sf, lid, op in ev:
@@ -184,8 +227,8 @@ def build_steps(s):
             instr_key = tuple(bundle)
             vrows.append(
                 {
-                    "step": sf // STEP,
-                    "frame_off": sf % STEP,
+                    "step": sf // step,
+                    "frame_off": sf % step,
                     "pitch": fop,
                     "dur_frames": (seg_end - sf),
                     "instr": instr_key,
@@ -202,7 +245,7 @@ def build_steps(s):
 
 
 # ---------- residual-zero decode: reconstruct the identical event set ----------
-def steps_to_events(rows, global_events, T):
+def steps_to_events(rows, global_events, T, step=STEP):
     """Expand the tracker structure back to the flat (frame, lane, op) event set.
     Must reproduce encode_tune_events(s) exactly so decode_events renders identically.
     """
@@ -210,7 +253,7 @@ def steps_to_events(rows, global_events, T):
     for v in range(3):
         L = VOICE_LANES[v]
         for row in rows[v]:
-            sf = row["step"] * STEP + row["frame_off"]
+            sf = row["step"] * step + row["frame_off"]
             ev.append((sf, L["freq"], row["pitch"]))
             for rel, kind, op in row["instr"]:
                 ev.append((sf + rel, L[kind], op))
@@ -220,7 +263,7 @@ def steps_to_events(rows, global_events, T):
 
 
 # ---------- instrument / row / pattern dedup + token accounting ----------
-def serialize_cost(rows, global_events):
+def serialize_cost(rows, global_events, step=STEP):
     """Token-count the tracker serialization. Components:
       INSTRUMENTS: distinct non-freq bundles, each emitted ONCE (inline on first
                    use) as [n_ops] then per op [rel_frame][lane_kind][op-body].
@@ -263,8 +306,8 @@ def serialize_cost(rows, global_events):
         # row token list, then LZ over rows (backward block refs = the orderlist).
         row_tokens = []
         for row in vrows:
-            dur_steps = row["dur_frames"] // STEP
-            frac = row["dur_frames"] % STEP
+            dur_steps = row["dur_frames"] // step
+            frac = row["dur_frames"] % step
             row_tokens.append(
                 (
                     row["pitch"],
