@@ -139,6 +139,7 @@ _HVSC_BASE = "https://hvsc.brona.dk/HVSC/C64Music"
 GATE_FIXTURES = (
     ("MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 1),
     ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
+    ("MUSICIANS/J/Jammer/Grid_Runner.sid", 1),
 )
 
 
