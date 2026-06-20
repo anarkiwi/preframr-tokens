@@ -52,7 +52,17 @@ def test_under_one_token_per_frame(monty_program):
     brk, frames = measure(monty_program)
     block_sum = sum(brk[k] for k in ("score", "instr_def", "seed", "boot", "table"))
     assert block_sum < brk["total"]  # remainder = the leading nframes uint
+    # < 1 token/frame AND the whole song fits the 8192-token context window.
     assert brk["total"] / frames < 1.0
+    assert brk["total"] < 8192
+
+
+def test_5tt_context_budget(tt_program):
+    # The 2nd driver's whole song also fits both budgets: < 1 token/frame and
+    # < 8192 tokens total (the context window).
+    brk, frames = measure(tt_program)
+    assert brk["total"] / frames < 1.0
+    assert brk["total"] < 8192
 
 
 def test_select_backend_rejects_unknown_driver():
