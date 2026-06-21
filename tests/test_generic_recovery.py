@@ -432,6 +432,102 @@ def test_gate_noteons_detects_rises():
     assert noteons[2] == []
 
 
+def test_note_boundaries_detects_retriggers_without_gate_rise():
+    # A legato / hard-restart phrase: the gate bit stays HIGH after frame 2, so
+    # gate_noteons sees a single note-on, but the player re-triggers each new note
+    # by rewriting the control byte (a waveform change / 1-frame hard restart) or
+    # the ADSR registers.  note_boundaries must surface every retrigger.
+    state = np.zeros((12, 25), dtype=np.int64)
+    state[2:, 4] = 0x41  # voice-0 gate on (bit0) from frame 2, stays high
+    state[4:, 4] = 0x21  # frame 4: waveform-bit change, gate bit0 STILL set
+    state[8:, 5] = 0x0A  # voice-0 AD rewrite at frame 8 (new note attack/decay)
+    assert A.gate_noteons(state)[0] == [2]  # gate-only misses the retriggers
+    bounds = A.note_boundaries(state)[0]
+    assert 2 in bounds and 4 in bounds and 8 in bounds
+    # voices 1 and 2 never sound -> no boundaries.
+    assert A.note_boundaries(state)[1] == []
+    assert A.note_boundaries(state)[2] == []
+
+
+def test_pw_sweep_resets_detect_note_reseeds_not_smooth_sweep():
+    # A smooth ramping PW sweep (no reset) trips nothing; a sweep that re-seeds
+    # (drops sharply back to its start each note) surfaces the drop frames.
+    smooth = np.zeros((40, 25), dtype=np.int64)
+    for i in range(40):
+        smooth[i, 2] = (0x40 + 4 * i) & 0xFF
+        smooth[i, 3] = ((0x40 + 4 * i) >> 8) & 0x0F
+    assert A.pw_sweep_resets(smooth, 0) == []
+    reseed = np.zeros((40, 25), dtype=np.int64)
+    for i in range(40):
+        val = 0x100 + 0x40 * (i % 8)  # ramps then drops back every 8 frames
+        reseed[i, 2] = val & 0xFF
+        reseed[i, 3] = (val >> 8) & 0x0F
+    resets = A.pw_sweep_resets(reseed, 0)
+    assert resets == [8, 16, 24, 32]
+
+
+def test_legato_vibrato_freq_recovered_via_pw_reset_boundary():
+    # A pure-legato phrase: gate stays high, control/ADSR never change, so
+    # note_boundaries finds nothing -- but each new note re-seeds the PW sweep.
+    # The freq lane (a per-note hold that jumps between notes) is recovered only
+    # because the freq lane is also sliced at the PW-sweep resets.
+    note_bases = [0x0900, 0x0C00, 0x0700, 0x0A00]
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 64
+    for frame in range(nframes):
+        note = note_bases[(frame // 8) % len(note_bases)] if frame >= 2 else 0
+        reg[0], reg[1] = note & 0xFF, (note >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 2 else 0x40  # gate rises once at frame 2, then HELD
+        pw = 0x100 + 0x40 * (frame % 8)  # PW sweep re-seeds every 8 frames (note len)
+        reg[2], reg[3] = pw & 0xFF, (pw >> 8) & 0x0F
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    # control byte never changes after frame 2, so the retrigger-only boundary
+    # detector sees a single note-on -- the freq lane would otherwise be unfit.
+    state, _, _ = per_frame_state_from_bus(bus)
+    assert A.note_boundaries(state)[0] == [2]
+    program = recover_generic("legato_vib.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_note_boundaries_legato_phrase_renders_residual_zero():
+    # Build a synthetic tune whose voice-0 freq is a multi-note phrase with the
+    # gate held HIGH throughout: each note holds a distinct freq and re-triggers
+    # via a control-byte change.  Gate-only slicing collapses the whole phrase into
+    # one over-long segment (unfit, all zeros); note_boundaries slices it per note
+    # so it renders byte-exact.
+    notes = [0x0800, 0x0A00, 0x0C00, 0x0900]
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 80
+    for frame in range(nframes):
+        note = notes[(frame // 8) % len(notes)] if frame >= 2 else 0
+        reg[0], reg[1] = note & 0xFF, (note >> 8) & 0xFF
+        # gate stays high from frame 2; a fresh note every 8 frames re-triggers the
+        # control byte (waveform bit toggles) without dropping the gate bit.
+        if frame >= 2:
+            reg[4] = 0x41 if (frame // 8) % 2 == 0 else 0x21  # gate bit0 stays set
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    program = recover_generic("legato.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq lane byte-exact
+    assert sum(resid.values()) == 0
+
+
 def test_load_bus_rejects_rbt1(tmp_path):
     path = tmp_path / "wrong.bus.bin"
     path.write_bytes(b"RBT1" + b"\x00" * 32)

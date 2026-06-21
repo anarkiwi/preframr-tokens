@@ -20,7 +20,21 @@ Pipeline (every recovered structure is traced to the bus):
      periodic / wavetable generators + the advance-clocked wavetable_ptr).
   4. :mod:`fitter` covers the 25 registers: the freq/pw generator lanes with the
      BACC library, the ctrl/AD/SR/filter/volume lanes as a compact piecewise
-     program, and the note table from bus value-provenance.
+     program, and the note table from bus value-provenance.  The generator lanes
+     are sliced at :func:`archetypes.note_boundaries` -- every bus-visible note-on
+     retrigger (gate rise, control-byte change, or ADSR change), not just a gate
+     rise -- so a LEGATO / HARD-RESTART player that advances the melody on an
+     internal tempo counter while holding the gate bit high (e.g. Music_Assembler)
+     is segmented per note instead of collapsing a whole phrase into one
+     over-long, unfittable segment.  The FREQ lane additionally slices at
+     :func:`archetypes.pw_sweep_resets` (a per-note pulse-sweep re-seed) so a
+     PURE-LEGATO melody with no control/ADSR retrigger at all is still segmented
+     per note; the PW lane is deliberately not sliced there, so an irreducible
+     reflecting-triangle PW (e.g. one not covered by ``wavetable_ptr``) would stay
+     one segment and surface rather than be fragmented into raw-byte pieces.  Every
+     signal is per voice, so a genuinely single sustained note (no retrigger) is
+     left as one segment and an irreducible lane is still surfaced, never sliced
+     into raw-byte pieces (HARD RULE #0).
   5. :mod:`recover` exposes ``recover_generic`` -> :class:`BaccProgram` plus the
      SELF-CONTAINED ``render_generic`` / ``residual``: the program renders the
      bus-state byte-exact (residual=0) on the proven tunes, independent of any

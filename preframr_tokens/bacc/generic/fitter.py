@@ -46,14 +46,25 @@ def _noteon_points(noteons, voice):
 def fit_generator_lanes(state, note_table):
     """Fit the freq + pw (16-bit) lanes via the BACC archetype library.  Returns
     ``(fits, noteons)`` where fits maps ``(voice, 'freq'|'pw')`` to
-    ``(segments, carry)``."""
-    noteons = A.gate_noteons(state)
+    ``(segments, carry)``.
+
+    The generator lanes are sliced at :func:`archetypes.note_boundaries` -- every
+    bus-visible note-on retrigger (gate rise, control-byte change, or ADSR change),
+    not just a gate rise -- so a legato / hard-restart phrase that keeps the gate
+    high across notes is segmented per note instead of collapsing into one
+    over-long, unfittable segment.  The FREQ lane additionally slices at
+    :func:`archetypes.pw_sweep_resets` (a per-note pulse-sweep re-seed) so a
+    pure-legato melody with NO control/ADSR retrigger is still segmented per note;
+    the PW lane is NOT sliced there, so an irreducible reflecting-triangle PW would
+    stay one segment and surface rather than fragment into raw-byte pieces."""
+    noteons = A.note_boundaries(state)
     nframes = len(state)
     out = {}
     for voice in range(3):
         ons = _noteon_points(noteons, voice)
+        freq_ons = sorted(set(ons) | set(A.pw_sweep_resets(state, voice)))
         flane = A.lane_freq(state, voice)
-        fres = A.fit_lane(flane, ons, nframes, note_table, None, 0xFFFF)
+        fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, 0xFFFF)
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
         pres = A.fit_lane(plane, ons, nframes, note_table, carry, 0xFFFF)
