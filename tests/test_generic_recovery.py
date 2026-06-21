@@ -233,6 +233,44 @@ def test_prefix_ratewalk_recovers_rate_table():
     assert match[2]["rate_table"][:5] == table
 
 
+def test_prefix_maskaccum_stall_recovers_period_and_rate():
+    # a single-rate accumulator that HOLDS on a periodic tick-0 stall mask (the
+    # GoatTracker tempo-paced continuous-effect skip): step +0x10 on the period-6
+    # mask [1,1,1,1,1,0], over many cycles.  The longest-prefix stall matcher must
+    # recover the rate and the period-6 advance mask, not a coincidental short fit.
+    mask = [1, 1, 1, 1, 1, 0]
+    lane = A.render_maskaccum(120, 0x0200, 0x10, mask)
+    match = A._prefix_maskaccum_stall(lane)
+    assert match is not None
+    assert match[1] == "maskaccum"
+    assert match[2]["rate"] == 0x10
+    assert match[2]["mask"][:6] == mask
+    rendered = A.render_fit((match[1], match[2]), len(lane))
+    assert np.array_equal(rendered, lane)
+
+
+def test_maskaccum_stall_not_promoted_over_short_coincidental_arp():
+    # a clean period-4 arp must NOT be re-described as a stall accumulator: the
+    # stall matcher only wins when it covers SUBSTANTIALLY more than the proven
+    # library's run, so a genuine short generator is never shadowed.
+    lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
+    name, _, _ = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
+    assert name == "arp"
+
+
+def test_maskaccum_stall_requires_multiple_cycles():
+    # a one-shot dwell (a single stall in an otherwise linear ramp) is NOT a
+    # periodic tick-0 stall: the stall matcher requires >= mincycles full mask
+    # cycles, so a coincidental lone hold is not promoted to a periodic generator.
+    lane = np.array(
+        [0x200 + 0x10 * i for i in range(5)]
+        + [0x200 + 0x10 * 4] * 1
+        + [0x200 + 0x10 * (i + 4) for i in range(1, 6)],
+        dtype=np.int64,
+    )
+    assert A._prefix_maskaccum_stall(lane, 0xFFFF, mincycles=3) is None
+
+
 def test_fit_tablewalk_lead_round_trip():
     # a delayed period-6 modulation (the Hammurabi-style long hold then LFO table):
     # 20 constant frames, then a period-6 offset table -- one rule, not two pieces.
