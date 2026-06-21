@@ -52,6 +52,46 @@ def _frame_starts(cyc, gap=_BLIT_GAP):
     return np.concatenate(([0], big + 1))
 
 
+def _running_state(bin_idx, reg, val, nbins):
+    """Per-bin running 25-register file from writes labelled with their bin index.
+
+    Scatters each write into its ``(bin, reg)`` cell keeping the LAST write per
+    cell (the bin's register value), then forward-fills the running register file
+    down the bin axis where a bin wrote nothing.  Vectorised: O(nwrites +
+    nbins*NREG), so a multispeed trace (tens of millions of writes) reconstructs
+    in milliseconds rather than the minutes a Python per-write loop costs.  Shared
+    by the gap-grouped and cadence-binned framings so both produce byte-identical
+    running state from the same labelling.
+    """
+    grid = np.zeros((nbins, NREG), dtype=np.int64)
+    seen = np.zeros((nbins, NREG), dtype=bool)
+    valid = (reg < NREG) & (bin_idx >= 0) & (bin_idx < nbins)
+    b_v, r_v, v_v = bin_idx[valid], reg[valid], val[valid]
+    grid[b_v, r_v] = v_v  # later writes overwrite earlier -> last write per cell
+    seen[b_v, r_v] = True
+    idx = np.where(seen, np.arange(nbins)[:, None], 0)
+    idx = np.maximum.accumulate(idx, axis=0)
+    return np.take_along_axis(grid, idx, axis=0)
+
+
+def _cadence_state(cyc, reg, val, t0, cpf):
+    """Per-frame state binned on the IRQ/play CADENCE rather than on write gaps.
+
+    Frame ``f``'s state is the running register file after every write whose cycle
+    rounds to frame ``f`` (``round((cyc - t0) / cpf)``), exactly the binning the
+    register-dump side uses (:func:`codec.lsp_validate.state_seq`).  This is the
+    fallback for a player that writes the SID CONTINUOUSLY across the whole frame
+    (no quiet inter-play gap), where the gap-based blit grouping collapses every
+    play-call into one group and the gap framing degenerates to a single frame.
+    Pure cadence arithmetic -- no driver layout knowledge.
+    """
+    bin_idx = np.round((cyc - t0) / cpf).astype(np.int64)
+    nbins = int(bin_idx.max()) + 1 if len(bin_idx) else 0
+    if nbins <= 0:
+        return np.zeros((0, NREG), dtype=np.int64)
+    return _running_state(bin_idx, reg, val, nbins)
+
+
 def per_frame_state_from_bus(records, cpf=None, t0=None):
     """Reconstruct the per-frame ``(nframes, 25)`` state aligned to the dump's
     frame grid.
@@ -77,25 +117,30 @@ def per_frame_state_from_bus(records, cpf=None, t0=None):
     boot_off = int(np.searchsorted(gstart_cyc, t0 - cpf / 2))
     ngroups = len(starts)
     nframes = ngroups - boot_off
+    # A player that writes the SID continuously across the whole frame leaves no
+    # quiet inter-play gap, so the gap-based grouping collapses every play-call
+    # into ONE blit group and the gap framing degenerates to a single frame even
+    # though the trace spans hundreds of cadence frames.  Detect that degeneracy
+    # -- gap grouping yields essentially no frames while the trace clearly spans
+    # many -- and fall back to cadence binning, which is robust to dense writes.
+    # The proven gap framing (byte-exact on the fixtures) is unchanged for any
+    # tune that does expose per-play gaps; only the degenerate single-group case
+    # switches to the cadence path.
+    span_frames = (int(cyc[-1]) - t0) / cpf if cpf else 0
+    if nframes < 2 and span_frames >= 2:
+        # ``t0`` is frame 0, so ``round((cyc - t0)/cpf)`` puts the first play-call
+        # at bin 0 and any boot-prolog write (cycle < t0) at a negative bin that
+        # the running-state binner drops -- no separate boot offset needed.
+        return _cadence_state(cyc, reg, val, t0, cpf), t0, cpf
     if nframes <= 0:
         return np.zeros((0, NREG), dtype=np.int64), t0, cpf
     # Vectorised per-frame state: scatter each write into its (group, reg) cell
-    # keeping the LAST write per cell (the frame's register value), then forward
-    # -fill the running register file across groups.  Equivalent byte-for-byte to
-    # the running-file loop but O(nwrites + ngroups*NREG) in numpy, so multispeed
-    # traces (tens of millions of writes) reconstruct in milliseconds, not the
-    # minutes a Python per-write loop costs.
+    # keeping the LAST write per cell, then forward-fill the running register file
+    # across groups (see :func:`_running_state`).  Equivalent byte-for-byte to the
+    # running-file loop but O(nwrites + ngroups*NREG), so multispeed traces (tens
+    # of millions of writes) reconstruct in milliseconds.
     group = np.repeat(np.arange(ngroups), np.diff(np.append(starts, len(cyc))))
-    valid = reg < NREG
-    grid = np.zeros((ngroups, NREG), dtype=np.int64)
-    seen = np.zeros((ngroups, NREG), dtype=bool)
-    g_v, r_v, v_v = group[valid], reg[valid], val[valid]
-    grid[g_v, r_v] = v_v  # later writes overwrite earlier -> last write per cell
-    seen[g_v, r_v] = True
-    # forward-fill held values down the group axis where a group wrote nothing.
-    idx = np.where(seen, np.arange(ngroups)[:, None], 0)
-    idx = np.maximum.accumulate(idx, axis=0)
-    full = np.take_along_axis(grid, idx, axis=0)
+    full = _running_state(group, reg, val, ngroups)
     seq = full[boot_off:].copy()
     return seq, t0, cpf
 
