@@ -9,12 +9,15 @@ Every archetype reads only SID-chip / arithmetic semantics; there is NO
 per-driver constant here.  This is the driver-agnostic form of the recovery the
 hand backends do by disassembly: hold / accum / dwellaccum / wrapaccum / arp /
 glide / vibrato / pingpong / decay (+ the composites) cover the proven library,
-and four generic periodic / wavetable generators close the generator-lane gaps:
+and five generic periodic / wavetable generators close the generator-lane gaps:
 :func:`render_maskaccum` (a fixed-period-paced accumulator), :func:`render_ratewalk`
 (a period-P signed-rate wavetable accumulator -- the fractional-rate /
 wider-internal-width sweep), :func:`render_tablewalk` (a period-P value table
-beyond the arp cap), and :func:`render_tablewalk_lead` (a lead hold then a
-period-P value table -- a delayed long-period modulation).
+beyond the arp cap), :func:`render_tablewalk_lead` (a lead hold then a period-P
+value table -- a delayed long-period modulation), and
+:func:`render_wavetable_ptr` (a pointer over a period-P value table stepped by an
+EXTERNAL per-voice advance clock -- a wavetable-paced walk whose drifting,
+non-periodic dwell is the separable groove tick, not stored output).
 """
 
 from collections import defaultdict
@@ -324,6 +327,32 @@ def render_tablewalk_lead(seg_len, lead, value0, table, ctr0=0):
     out = np.empty(seg_len, dtype=np.int64)
     for i in range(seg_len):
         out[i] = value0 if i < lead else table[(ctr0 + i - lead) % period]
+    return out
+
+
+def render_wavetable_ptr(seg_len, table, phase, advance):
+    """Advance-clocked wavetable-pointer walk: a pointer over a period-P value
+    ``table`` that advances +1 (mod P) on each frame where the EXTERNAL advance
+    clock ``advance`` is set, and HOLDS the prior table entry otherwise.
+
+    This is the wavetable-pointer engine common to tracker players: a per-tune
+    value table read through a pointer the player steps on a wavetable TICK, where
+    the tick stream is a separate per-voice groove/tempo divider -- so the pointer
+    advances APERIODICALLY across frames (some frames step, some hold).  It
+    generalises :func:`render_maskaccum` (a single rate gated by a periodic mask)
+    to a full value-table walk gated by the voice's advance clock: ``maskaccum``
+    answers "how much to add and when", ``wavetable_ptr`` answers "which table
+    entry, and when to step".  ``advance`` is the bus-recovered tick stream (the
+    frames at which the lane steps); it is SHARED across the voice's animated lanes
+    (the same groove paces them all), so it is a separable driver clock, never the
+    lane's stored output -- the closed-form value content is the period-P table."""
+    period = len(table)
+    out = np.empty(seg_len, dtype=np.int64)
+    ptr = phase % period
+    for i in range(seg_len):
+        if i > 0 and advance[(i - 1) % len(advance)]:
+            ptr = (ptr + 1) % period
+        out[i] = table[ptr]
     return out
 
 
@@ -890,6 +919,83 @@ def _prefix_tablewalk_lead(seg, maxp=24, minrun=8):
     return best
 
 
+def _walked_table(seg):
+    """The pointer-walk decomposition of a value lane: the distinct-value sequence
+    visited (one entry per value change) and the per-frame advance clock
+    (``seg[i] != seg[i-1]``).  Returns ``(walked, advance)`` where walking
+    ``walked`` one step per set ``advance`` bit replays ``seg`` exactly -- this is
+    tautological, so the recovery's honesty lives entirely in whether ``walked``
+    folds into a SMALL looping table (a genuine generator) vs. arbitrary data."""
+    seg = np.asarray(seg, dtype=np.int64)
+    advance = (np.diff(seg) != 0).astype(int)
+    walked = [int(seg[0])]
+    for i in range(1, len(seg)):
+        if seg[i] != seg[i - 1]:
+            walked.append(int(seg[i]))
+    return walked, advance
+
+
+def _fold_loop(walked, maxp, mincycles):
+    """Fold a walked-value sequence into the smallest period-P loop ``table``
+    (P in 4..maxp, >=3 distinct values) the sequence steps through cyclically from
+    its first entry, requiring at least ``mincycles`` full table cycles of coverage
+    (so a coincidental short repeat cannot pass as a reused generator).  The
+    pointer phase is 0 by construction (``table[0] == walked[0]``); any leading
+    note-onset transient that is NOT on this loop is peeled by the greedy cover as
+    a cheaper ``hold`` before this rule fires.  Returns ``table`` or None."""
+    length = len(walked)
+    for period in range(4, min(maxp, length) + 1):
+        if length < period * mincycles:
+            continue
+        table = walked[:period]
+        if len(set(table)) < 3:
+            continue
+        if all(walked[k] == table[k % period] for k in range(length)):
+            return table
+    return None
+
+
+def _prefix_wavetable_ptr(seg, maxp=32, minrun=12, mincycles=2):
+    """Longest byte-exact advance-clocked wavetable-pointer prefix.
+
+    The lane is decomposed into a pointer walk (:func:`_walked_table`): a sequence
+    of distinct values stepped by the per-frame advance clock.  The value content
+    is admitted ONLY when it folds into a small looping table (:func:`_fold_loop`:
+    period 4..maxp, >=3 distinct values, >=``mincycles`` full cycles), so the
+    closed-form part is a genuine reused generator -- the period-P table -- and the
+    only per-frame stream is the advance clock, the separable per-voice groove tick
+    the player runs to pace the walk.  Requires the advance clock to contain HOLDS
+    (some frames do not step); a step-every-frame walk is a plain ``tablewalk`` and
+    is left to that cheaper rule.  This closes the wavetable-paced reflecting
+    triangle whose drifting (non-periodic) dwell defeats ``tablewalk`` /
+    ``ratewalk`` -- those would store one stride per step (raw data); here the
+    table is the generator and the dwell is the shared advance clock."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    # Fast pre-filter (the wavetable_ptr signature is a SMALL value table looped):
+    # a lane whose distinct-value count exceeds the period cap cannot fold into a
+    # period<=maxp loop, so skip the O(P*N) fold for sweep/arp lanes outright.
+    if len(np.unique(seg)) > maxp:
+        return None
+    walked, advance = _walked_table(seg)
+    if not advance.any() or advance.all():
+        return None  # a constant hold, or a step-every-frame plain tablewalk
+    table = _fold_loop(walked, maxp, mincycles)
+    if table is None:
+        return None
+    rend = render_wavetable_ptr(length, table, 0, advance)
+    match = _match_prefix(rend, seg)
+    if match >= minrun:
+        return (
+            match,
+            "wavetable_ptr",
+            {"table": table, "phase": 0, "advance": advance.tolist()},
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Greedy cover.
 # ---------------------------------------------------------------------------
@@ -982,6 +1088,10 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     short rate wavetable).  ``tablewalk_lead`` (a lead hold then a period-P value
     table) is allowed to win on length so a DELAYED long-period modulation is
     covered in one piece rather than shadowed by a short coincidental arp prefix.
+    ``wavetable_ptr`` (an advance-clocked pointer walk over a looping value table)
+    is likewise allowed to win on length: the wavetable-paced reflecting triangle
+    whose drifting dwell defeats the periodic generators is a single long piece
+    here, where a coincidental pingpong/arp prefix would otherwise shadow it.
     ``tablewalk`` (an undelayed period-P value table beyond the arp cap) stays a
     LAST RESORT -- it fires only where the proven library returns None, so a
     coincidental short period never shadows a genuine accumulator/arp."""
@@ -997,6 +1107,9 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     lead_walk = _prefix_tablewalk_lead(seg)
     if lead_walk is not None and (base is None or lead_walk[0] > base[2]):
         base = (lead_walk[1], lead_walk[2], lead_walk[0])
+    wptr = _prefix_wavetable_ptr(seg)
+    if wptr is not None and (base is None or wptr[0] > base[2]):
+        base = (wptr[1], wptr[2], wptr[0])
     if base is None:
         tablewalk = _prefix_tablewalk(seg)
         if tablewalk is not None:
@@ -1175,6 +1288,8 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
         )
     if name == "tablewalk_lead":
         return render_tablewalk_lead(plen, prm["lead"], prm["value0"], prm["table"])
+    if name == "wavetable_ptr":
+        return render_wavetable_ptr(plen, prm["table"], prm["phase"], prm["advance"])
     if name == "additive_pw":
         table = prm.get("carry_table")
         if table:

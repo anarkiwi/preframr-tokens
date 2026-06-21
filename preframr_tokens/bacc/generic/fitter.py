@@ -8,7 +8,8 @@ and NO per-driver constants:
     (:mod:`archetypes`), sliced at gate-rise note-ons, plus a pre-roll segment
     covering ``[0, first note-on)`` (the player sets an initial note/sweep before
     the first gate-rise) and the generic maskaccum / ratewalk / tablewalk /
-    tablewalk_lead periodic / wavetable generators.
+    tablewalk_lead periodic generators and the advance-clocked wavetable_ptr
+    (a per-voice groove-paced pointer walk over a value table).
   - non-generator lanes (ctrl / AD / SR / filter cutoff+res / volume): a compact
     piecewise program whose switch points are the note/pattern boundaries the bus
     exposes -- this is also the orderlist / song-structure reconstruction.

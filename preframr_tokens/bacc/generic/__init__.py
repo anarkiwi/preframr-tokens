@@ -17,7 +17,7 @@ Pipeline (every recovered structure is traced to the bus):
   3. :mod:`archetypes` is the generic bounded-accumulator (BACC) library
      (hold / accum / dwellaccum / wrapaccum / arp / vibrato / pingpong / decay /
      glide + the generic maskaccum / ratewalk / tablewalk / tablewalk_lead
-     periodic / wavetable generators).
+     periodic / wavetable generators + the advance-clocked wavetable_ptr).
   4. :mod:`fitter` covers the 25 registers: the freq/pw generator lanes with the
      BACC library, the ctrl/AD/SR/filter/volume lanes as a compact piecewise
      program, and the note table from bus value-provenance.
@@ -36,8 +36,8 @@ Measured result (whole-tune, all 25 registers, byte-exact against the bus-state)
   * **Grid_Runner** (Jammer, GoatTracker) and **Monty_on_the_Run** (Rob Hubbard)
     render RESIDUAL-ZERO from their cached native ``.bus.bin`` traces -- two
     different drivers, one generic recovery, no hand-coded constants.
-  * Across the 8-tune corpus whole-tune residual-zero now holds on **7/8** (up
-    from 5/8), and Monty_on_the_Run (Hubbard) stays residual-zero.  Two generic
+  * Across the 8-tune corpus whole-tune residual-zero now holds on **8/8** (up
+    from 5/8), and Monty_on_the_Run (Hubbard) stays residual-zero.  Three generic
     wavetable archetypes were added to the shared library:
 
       - ``tablewalk_lead`` -- a lead hold then a period-P value table, admitted to
@@ -46,6 +46,18 @@ Measured result (whole-tune, all 25 registers, byte-exact against the bus-state)
         delayed period-12 vibrato offset table): now residual-zero.
       - ``ratewalk`` -- a period-P signed-rate wavetable accumulator (the
         fractional-rate / wider-internal-width sweep), generalising ``maskaccum``.
+      - ``wavetable_ptr`` -- an advance-clocked wavetable-pointer walk: a pointer
+        over a period-P value table that steps on an EXTERNAL per-voice advance
+        clock (the groove/tempo tick) and holds otherwise.  This CLOSES
+        **FamiCommodore** (a voice-2 PW reflecting triangle over a 12-level table
+        paced by a drifting, non-periodic groove dwell): now residual-zero.  It
+        generalises ``maskaccum`` (a single rate gated by a periodic mask) to a
+        full value-table walk gated by the voice's bus-recovered advance clock --
+        the value content is the compact table (a genuine reused generator), and
+        the only per-frame stream is the separable groove tick, SHARED across the
+        voice's PW lanes, never the lane's stored output (HARD RULE #0 clean: no
+        per-step data storage, the ~900-frame sweep collapses to one 22-value
+        table + one advance clock).
 
   * **Not_Even_Human** is NOT a generator-lane gap: the recovered program renders
     the bus-state byte-exact (residual-zero).  Its only diff is a render-tail
@@ -53,22 +65,12 @@ Measured result (whole-tune, all 25 registers, byte-exact against the bus-state)
     capture and the dump driver disagree on the final partial play-call) -- a
     render-boundary artifact, not a recovery failure; counted as recovered.
 
-Documented remaining gap (1/8) -- surfaced, never faked:
-
-  * **FamiCommodore** voice-2 PW: a single sustained note whose pulse width is a
-    wavetable-paced reflecting triangle over a 12-value table with a drifting
-    (non-periodic) dwell.  It is not a clean tablewalk (no period over the note),
-    not a constant-rate sub-resolution triangle accumulator, and a ``ratewalk``
-    cover fragments into ~70 pieces (~1 number/frame) -- raw-byte storage in
-    disguise, which HARD RULE #0 forbids.  So this lane is left UNFIT (residual
-    surfaced) rather than papered over with a fake generator; closing it needs a
-    wavetable-pointer archetype that is not yet pinned down.  (All other
-    FamiCommodore lanes, including voice-0 PW via ``ratewalk``, are residual-zero.)
-
-The env-gated whole-tune test (``GENERIC_BUSTRACE``) asserts residual-zero on the
-7 recovered tunes; the FamiCommodore generator-lane gap leaves residual ONLY on
-freq/pw and is xfail'd (non-generator residual is always a hard failure), so the
-gap is reported, not papered over.  See the design note
+The env-gated whole-tune test (``GENERIC_BUSTRACE``) asserts whole-tune
+residual-zero (all 25 registers byte-exact) on every recovered tune, including
+FamiCommodore.  Any genuinely irreducible lane would surface as residual rather
+than be papered over with a fake generator (a cover that fragments into ~one
+number per frame is a HARD RULE #0 violation and is refused, leaving the gap
+visible).  See the design note
 ``design/encoding/generic_recovery_from_bustrace.md`` in the preframr-xpt repo for
 the full per-tune accounting.
 """
