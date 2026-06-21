@@ -547,6 +547,54 @@ def render_pingfold(seg_len, step, frac, lo, hi, acc0, dir0):
     return out
 
 
+def render_vibreflect(seg_len, center, speed, cmpvalue, delay, vibtime0=0):
+    """GoatTracker instrument vibrato: a depth-bounded REFLECTING TRIANGLE on the
+    voice frequency, rendered byte-exact to the GoatTracker2 player.
+
+    This is the GoatTracker vibrato CONSTRUCT the composer programs in an
+    instrument -- a packed ``vibrato_param`` (the speed-table index whose left byte
+    is the depth bound ``cmpvalue`` and right byte the per-frame ``speed``) plus a
+    ``vibrato_delay`` -- executed by pygoattracker's ``Player._vibrato`` /
+    ``_tickn_command`` (player.s ``mt_effect_0``).  The per-frame rule, traced to
+    that source and confirmed byte-identical against it, is:
+
+      * for the first ``delay`` frames the frequency is HELD at ``center`` (the
+        ``vibdelay`` countdown -- ``if vibdelay > 1: vibdelay -= 1`` -- runs before
+        any freq change);
+      * thereafter a ``vibtime`` counter (seeded ``vibtime0``, normally 0 at
+        note-init) advances every frame, REFLECTING at the depth bound via
+        ``vibtime ^= 0xFF`` when ``vibtime < 0x80 and vibtime > cmpvalue``, then
+        ``vibtime = (vibtime + 2) & 0xFF``; the frequency steps ``-speed`` when the
+        new ``vibtime`` is ODD and ``+speed`` when it is EVEN.
+
+    The ``^= 0xFF`` reflect is what bounds the triangle: ``vibtime`` ramps up by +2
+    until it exceeds ``cmpvalue``, the reflect flips it into the high (odd-parity)
+    half so the ``& 1`` direction bit inverts, and the frequency ramps back down by
+    ``speed`` per frame -- a symmetric triangle of apex ``(cmpvalue//2 + 1)*speed``
+    centred on the note, period ``2*cmpvalue + 4``.  ``freq`` is a running 16-bit
+    accumulator (``& 0xFFFF`` each step), so this REPLAYS the chip's add/sub exactly
+    rather than indexing a phase table; only the five scalar params are stored, never
+    the per-frame sequence (HARD RULE #0)."""
+    out = np.empty(seg_len, dtype=np.int64)
+    freq = center & 0xFFFF
+    vibtime = vibtime0 & 0xFF
+    vibdelay = delay
+    for i in range(seg_len):
+        if vibdelay > 1:
+            vibdelay -= 1
+            out[i] = freq
+            continue
+        if vibtime < 0x80 and vibtime > cmpvalue:
+            vibtime ^= 0xFF
+        vibtime = (vibtime + 2) & 0xFF
+        if vibtime & 1:
+            freq = (freq - speed) & 0xFFFF
+        else:
+            freq = (freq + speed) & 0xFFFF
+        out[i] = freq
+    return out
+
+
 def render_decay(seg_len, v0, rate, every, ctr0):
     """Drum / skydive: value decrements by ``rate`` every ``every`` frames,
     emitting the pre-decrement value."""
@@ -778,6 +826,20 @@ def render_citg(params, seg_len):
     accumulator wraps (modulo the lane width) -- a closed-form program, never
     stored output (HARD RULE #0)."""
     mode = params["mode"]
+    if mode == "vibreflect":
+        # The GoatTracker reflecting-triangle vibrato as a CITG MODE: a depth-bounded
+        # triangle accumulator that reflects via vibtime ^= 0xFF at the bound (so it
+        # composes with the unified op rather than living only in the zoo).  Rendered
+        # by the shared :func:`render_vibreflect` so it is byte-identical to the zoo
+        # form and to the GoatTracker player.
+        return render_vibreflect(
+            seg_len,
+            params["center"],
+            params["speed"],
+            params["cmpvalue"],
+            params["delay"],
+            params.get("vibtime0", 0),
+        )
     table = params["table"]
     period = len(table)
     lead = params.get("lead", 0)
@@ -939,6 +1001,17 @@ def citg_preset(name, prm):
             "clock": {"kind": "dwell_ptr", "dwell": prm["dwell"]},
             "seed": prm["v0"],
             "width": prm.get("width", 0xFFFF),
+        }
+    if name == "vibreflect":
+        # GoatTracker's reflecting-triangle vibrato as a CITG mode (center + depth
+        # bound + per-frame speed + delay), so the unified op subsumes it too.
+        return {
+            "mode": "vibreflect",
+            "center": prm["center"],
+            "speed": prm["speed"],
+            "cmpvalue": prm["cmpvalue"],
+            "delay": prm["delay"],
+            "vibtime0": prm.get("vibtime0", 0),
         }
     return None
 
@@ -1390,6 +1463,105 @@ def _prefix_pingfold(seg, minrun=24):
                             )
                             if match == length:
                                 return best
+    return best
+
+
+def _prefix_vibreflect(seg, minrun=12):
+    """Longest byte-exact GoatTracker reflecting-triangle vibrato prefix, or None.
+
+    Recovers the GoatTracker instrument-vibrato CONSTRUCT (:func:`render_vibreflect`)
+    -- ``(center, speed, cmpvalue, delay, vibtime0)`` -- straight from the freq lane,
+    every parameter a chip/arithmetic read of the segment's own shape (no per-driver
+    constant):
+
+      * ``delay`` is the leading run of frames held at ``center`` (the vibdelay
+        countdown), and ``center`` is that held value (``seg[0]``);
+      * ``speed`` is the magnitude of the lane's per-frame step once the wiggle
+        starts -- the modal nonzero abs-delta -- and a genuine GoatTracker triangle
+        steps by exactly that magnitude EVERY active frame, so a lane whose active
+        deltas are not all +/-speed is rejected here;
+      * ``cmpvalue`` (the depth bound) follows from the observed apex: the triangle's
+        max deviation from centre is ``(cmpvalue//2 + 1)*speed``, so the candidate
+        bound is ``2*(apex//speed - 1)`` (plus its neighbours, to absorb a clipped
+        apex), and ``vibtime0`` (the start phase, 0 at a fresh note-init) is searched
+        over the few even seeds;
+
+    each candidate is re-rendered through :func:`render_vibreflect` and accepted only
+    on the LONGEST byte-exact prefix (>= ``minrun``), so the matcher is
+    byte-exact-or-None like every other archetype: it stores only the five scalars of
+    a genuine reused generator, never the per-frame ramp (HARD RULE #0).  A short
+    coincidental wiggle (< minrun) is left to the cheaper rules, and a non-triangle /
+    non-vibrato lane -- whose deltas are not a constant +/-speed reflecting at one
+    bound -- never renders a matching prefix and is declined, so an irreducible lane
+    is surfaced rather than faked."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    # delay = leading frames held at seg[0] (the vibdelay countdown holds freq).  A
+    # held lead means seg[0] is the true centre; with no lead (delay<=1) the centre
+    # is the triangle's midpoint, recovered below as a candidate.
+    held = 1
+    while held < length and int(seg[held]) == int(seg[0]):
+        held += 1
+    if held >= length - 2:  # no actual wiggle after the hold
+        return None
+    diffs = np.diff(seg)
+    nonzero = np.abs(diffs[diffs != 0])
+    if nonzero.size < 3:
+        return None
+    vals, cnts = np.unique(nonzero, return_counts=True)
+    speed = int(vals[np.argmax(cnts)])
+    if speed <= 0 or speed >= 0x4000:
+        return None
+    # The triangle steps by exactly +/-speed every active frame; a lane with any
+    # other active step magnitude is not this construct.
+    if not np.all(nonzero == speed):
+        return None
+    # A vibrato REFLECTS: it must change direction at least once (an up phase AND a
+    # down phase).  A monotonic ramp -- all steps the same sign -- is an accumulator,
+    # not a vibrato, and is left to the cheaper ``accum`` rule rather than mislabelled
+    # here as a vibrato whose bound is never reached within the window.
+    signs = np.sign(diffs[diffs != 0])
+    if len(np.unique(signs)) < 2:
+        return None
+    vis_lo, vis_hi = int(seg.min()), int(seg.max())
+    # Centre + delay candidates.  ``held`` is the count of leading frames equal to
+    # seg[0].  With a held lead (held >= 2) seg[0] IS the centre and the player's
+    # vibdelay param is ``held + 1`` (render holds while vibdelay > 1, i.e. for
+    # ``delay - 1`` frames).  With no lead (held == 1) the wiggle starts on frame 0,
+    # so seg[0] is already off-centre and the centre is the symmetric midpoint with
+    # delay 1.  Try both so a clipped/zero-phase lead is also recovered.
+    cand = {(int(seg[0]), held + 1), ((vis_lo + vis_hi) // 2, 1)}
+    best = None
+    for center, delay in cand:
+        apex = max(vis_hi - center, center - vis_lo)
+        if apex < speed:
+            continue
+        k = apex // speed  # apex deviation in speed-steps == cmpvalue//2 + 1
+        cmp_cands = sorted(
+            {2 * (k - 1) + d for d in (-2, 0, 2) if 0 <= 2 * (k - 1) + d < 0x80}
+        )
+        for cmpvalue in cmp_cands:
+            for vibtime0 in range(0, min(cmpvalue + 4, 0x80), 2):
+                rend = render_vibreflect(
+                    length, center, speed, cmpvalue, delay, vibtime0
+                )
+                match = _match_prefix(rend, seg)
+                if match >= minrun and (best is None or match > best[0]):
+                    best = (
+                        match,
+                        "vibreflect",
+                        {
+                            "center": center,
+                            "speed": speed,
+                            "cmpvalue": cmpvalue,
+                            "delay": delay,
+                            "vibtime0": vibtime0,
+                        },
+                    )
+                    if match == length:
+                        return best
     return best
 
 
@@ -1993,6 +2165,22 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
     if wptr is not None:
         _consider(wptr[1], wptr[2])
 
+    # REFLECTING TRIANGLE -- GoatTracker instrument vibrato ----------------
+    # A depth-bounded reflecting triangle on the voice frequency (the composer's
+    # vibparam/vibdelay construct), recovered byte-exact and admitted as a CITG mode
+    # so the unified op subsumes it rather than leaving it zoo-only.  Preferred on a
+    # TIE over an equally-long generic ratewalk cover of the SAME triangle: both are
+    # byte-exact, but the five-scalar vibreflect is the actual construct the composer
+    # programmed, where the ratewalk would store the whole period-P delta table -- so
+    # the more compact, truer generator wins the tie (still HARD RULE #0 either way).
+    vibrefl = _prefix_vibreflect(seg)
+    if vibrefl is not None:
+        params = citg_preset(vibrefl[1], vibrefl[2])
+        rend = render_citg(params, length)
+        match = _match_prefix(rend, seg)
+        if match >= _MINRUN and (best is None or match >= best[0]):
+            best = (match, params)
+
     if best is None:
         return None
     return (best[0], "citg", best[1])
@@ -2184,6 +2372,16 @@ def _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask):
     pingfold = _prefix_pingfold(seg)
     if pingfold is not None and (base is None or pingfold[0] > base[2]):
         base = (pingfold[1], pingfold[2], pingfold[0])
+    # GoatTracker's instrument vibrato is a depth-bounded reflecting triangle on the
+    # voice frequency (vibtime ^= 0xFF at the bound), a genuine reused generator the
+    # composer programs in the instrument (vibparam/vibdelay).  The cheap library
+    # grabs only one short accum ramp per half-cycle, so the whole vibrato would
+    # fragment into a chain of stubs past the cover cap; let it win on length so the
+    # whole construct collapses to one closed-form (center, speed, depth, delay)
+    # rule, byte-exact to the GoatTracker player, never the stored per-frame ramp.
+    vibrefl = _prefix_vibreflect(seg)
+    if vibrefl is not None and (base is None or vibrefl[0] > base[2]):
+        base = (vibrefl[1], vibrefl[2], vibrefl[0])
     # A periodic-stall accumulator may legitimately run far longer than a short
     # coincidental arp/accum prefix the proven library grabs first; let it win
     # only when it covers SUBSTANTIALLY more (>= twice the base run, and an
@@ -2505,6 +2703,15 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
             prm["hi"],
             prm["acc0"],
             prm["dir0"],
+        )
+    if name == "vibreflect":
+        return render_vibreflect(
+            plen,
+            prm["center"],
+            prm["speed"],
+            prm["cmpvalue"],
+            prm["delay"],
+            prm.get("vibtime0", 0),
         )
     if name == "maskaccum":
         return render_maskaccum(
