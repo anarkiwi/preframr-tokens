@@ -60,6 +60,7 @@ def render_song(song_or_bytes, seed, nframes):
             optimize_realtime=bool(seed["optimize_realtime"]),
             subtune=int(seed["subtune"]),
             freq_table=seed.get("freq_table"),
+            simplepulse=seed.get("simplepulse"),
         )
     except IndexError as exc:
         # A recovered wave/pulse/filter table pointer walked off the end of its

@@ -164,6 +164,12 @@ GATE_FIXTURES = (
     # envelope through those gate-off frames. Recovering ADPARAM straight from
     # the player image's hard-restart store makes it byte-exact.
     ("DEMOS/UNKNOWN/VIC64Demo_tune_5.sid", 1),
+    # Jetta -- SIMPLEPULSE packed build: greloc folds the pulse-hi nibble into
+    # one packed pulse byte and the packed player stores it to BOTH pulse-lo and
+    # pulse-hi (player.s mt_setpulse/mt_pulsemod, .IF SIMPLEPULSE != 0). The
+    # editor player gives pulse-hi 0, so the render diverged on every pulse-hi
+    # frame; byte-exact only with the detected simplepulse flag + packed table.
+    ("DEMOS/G-L/Jetta.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove
