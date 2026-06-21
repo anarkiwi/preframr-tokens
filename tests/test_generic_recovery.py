@@ -416,6 +416,51 @@ def test_per_frame_state_forward_fills_sparse_writes():
     assert list(state[:, 24]) == [0x0F, 0x0F, 0x07]  # held then changed
 
 
+def _continuous_write_bus(nframes=120, cpf=19656):
+    """A trace whose play-call writes are spread EVENLY across the whole frame so
+    there is no quiet inter-play gap -- the gap-based blit grouping collapses every
+    play-call into one group.  Voice-0 freq-hi ramps one step per frame so a
+    correctly-framed reconstruction is unambiguous."""
+    recs = []
+    t0 = 1000
+    # 50 writes per frame, spread across the frame's first half -> the largest
+    # inter-write gap (~393 cycles) is well under the 2000-cycle blit-gap, so NO
+    # group boundary ever forms and the gap framing degenerates to a single group;
+    # keeping them in the first half means every write rounds to its own frame.
+    per_frame = 50
+    step = (cpf // 2) // per_frame
+    for frame in range(nframes):
+        base = t0 + frame * cpf
+        fhi = (0x10 + frame) & 0xFF  # voice-0 freq-hi ramps one step / frame
+        for k in range(per_frame):
+            reg = 1 if k == 0 else 24  # reg1 = freq-hi (the ramp); reg24 padding
+            val = fhi if k == 0 else 0x0F
+            recs.append((base + k * step, 0xD400 + reg, val, 1))
+    return np.array(recs, dtype=BUS_DT), t0, cpf, nframes
+
+
+def test_per_frame_state_cadence_fallback_on_continuous_writes():
+    """A player that writes the SID continuously (no per-play gap) collapses the
+    gap-based grouping to a single frame; the cadence-binning fallback must instead
+    recover one frame per play-call with byte-exact running state."""
+    records, t0, _cpf, nframes = _continuous_write_bus()
+    state, got_t0, _ = per_frame_state_from_bus(records, t0=t0)
+    assert state.shape == (nframes, 25)
+    assert got_t0 == t0
+    # voice-0 freq-hi (reg 1) is the per-frame ramp 0x10, 0x11, ... one per frame.
+    assert list(state[:, 1]) == [(0x10 + f) & 0xFF for f in range(nframes)]
+
+
+def test_continuous_write_tune_recovers_residual_zero():
+    """End to end: the continuous-write tune (which the gap framing could not
+    parse) recovers a residual-zero generic program via the cadence fallback."""
+    records, _t0, _cpf, _ = _continuous_write_bus()
+    program = recover_generic("continuous.sid", None, records)
+    assert program.nframes > 100
+    resid, _, _ = residual(program, records)
+    assert sum(resid.values()) == 0
+
+
 def test_recover_rejects_too_short_trace():
     records = np.array([(1000, 0xD400, 0x10, 1)], dtype=BUS_DT)
     with pytest.raises(ValueError, match="did not parse to frames"):
