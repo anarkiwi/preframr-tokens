@@ -132,15 +132,21 @@ def freq_note_onsets(state, voice):
     :func:`note_boundaries` and :func:`pw_sweep_resets` both find nothing.
 
     Such a tune (e.g. RoMuzak's per-note glide-vibrato, Digitalizer's per-note
-    arp/vibrato cell) signals each new note only as a freq step far larger than the
-    intra-note modulation step (the vibrato wiggle / glide ramp).  That big step is
-    a bus-visible note-on for the freq lane, so it is a useful EXTRA slice point: a
-    per-note vibrato or glide cell then becomes one short, fittable segment instead
-    of one over-long segment no single archetype can cover.
+    arp/vibrato cell, or an Electrosound-style fixed-period vibrato riding on a centre
+    that JUMPS by a note-table interval each note) signals each new note only as a
+    freq step far larger than the intra-note modulation step (the vibrato wiggle /
+    glide ramp).  Such a phrase is otherwise ONE over-long segment no single archetype
+    can cover (a fixed-period vibrato around a *changing* centre is neither a single
+    ``vibrato`` nor a periodic ``tablewalk``); that big step is a bus-visible note-on
+    for the freq lane, so it is a useful EXTRA slice point and each per-note vibrato /
+    glide / arp cell then becomes one short, fittable fixed-centre segment (a per-note
+    ``vibrato`` / ``tablewalk`` / ``glide`` / ``hold``).
 
     The threshold is derived from the lane's OWN median nonzero step (no per-driver
     constant), so a genuinely smooth single sweep -- whose steps are all near the
-    median -- never trips it and is left as one segment to surface if irreducible.
+    median -- and a fine vibrato around one centre never trip it and are left as one
+    segment to surface if irreducible.  Both up and down jumps are returned (a melody
+    moves in either direction).
 
     NB: used ONLY to slice the FREQ lane (like :func:`pw_sweep_resets`).  It is NOT
     applied to the PW lane, where a reflecting-triangle PWM's own large reflection

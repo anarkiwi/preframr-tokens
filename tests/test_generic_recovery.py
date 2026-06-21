@@ -1026,6 +1026,95 @@ def test_note_boundaries_legato_phrase_renders_residual_zero():
     assert sum(resid.values()) == 0
 
 
+def test_freq_note_onsets_detect_note_jumps_not_fine_vibrato():
+    # A fine vibrato around ONE centre (small per-frame steps) trips nothing; a
+    # melody whose centre JUMPS by a note interval each note surfaces the jump
+    # frames -- the data-driven note-onset slice point for a legato freq lane.
+    fine = np.zeros((40, 25), dtype=np.int64)
+    for i in range(40):
+        val = 0x1000 + (i % 4) * 4  # +/-a few units around a fixed centre
+        fine[i, 0], fine[i, 1] = val & 0xFF, (val >> 8) & 0xFF
+    assert A.freq_note_onsets(fine, 0) == []
+    jumpy = np.zeros((40, 25), dtype=np.int64)
+    centres = [0x0800, 0x0C00, 0x0700, 0x0A00]
+    for i in range(40):
+        val = (
+            centres[(i // 8) % len(centres)] + (i % 4) * 4
+        )  # vibrato on a jumping centre
+        jumpy[i, 0], jumpy[i, 1] = val & 0xFF, (val >> 8) & 0xFF
+    onsets = A.freq_note_onsets(jumpy, 0)
+    assert onsets == [8, 16, 24, 32]
+
+
+def test_legato_vibrato_jumping_centre_freq_recovered_via_freq_note_onset_boundary():
+    # A pure-legato VIBRATO phrase: gate stays high, control/ADSR never change, the
+    # pulse width never re-seeds -- so note_boundaries AND pw_sweep_resets both find
+    # nothing.  The freq lane is a fixed-period vibrato whose CENTRE jumps to a new
+    # note each phrase row; that is neither one vibrato nor one periodic table, so the
+    # whole phrase is an un-fit over-long block until the freq lane is sliced at the
+    # bus-visible note jumps (freq_note_onsets), after which each note is a short
+    # fixed-centre vibrato the proven library covers byte-exact.
+    centres = [0x0900, 0x0C00, 0x0700, 0x0A00]
+    vib = [0, 0x10, 0x20, 0x10, 0, -0x10, -0x20, -0x10]  # period-8 triangle vibrato
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 64
+    for frame in range(nframes):
+        if frame >= 2:
+            base = centres[((frame - 2) // 8) % len(centres)]
+            val = (base + vib[(frame - 2) % len(vib)]) & 0xFFFF
+        else:
+            val = 0
+        reg[0], reg[1] = val & 0xFF, (val >> 8) & 0xFF
+        reg[4] = 0x11 if frame >= 2 else 0x10  # gate rises once at frame 2, then HELD
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(bus)
+    # neither retrigger nor PW re-seed surfaces the note onsets: only the freq jump.
+    assert A.note_boundaries(state)[0] == [2]
+    assert A.pw_sweep_resets(state, 0) == []
+    assert A.freq_note_onsets(state, 0)  # the per-note centre jumps are surfaced
+    program = recover_generic("legato_vib_jump.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq lane byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_freq_note_onsets_inert_on_smooth_single_note_sweep():
+    # A single sustained note that is one smooth portamento sweep (no centre jumps)
+    # trips no freq_note_onsets, so the freq lane is sliced only at the (sole)
+    # note-on and the whole-segment sweep is covered as one accumulator -- the
+    # protection that keeps a genuine sweep from being fragmented at incidental large
+    # steps.
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 80
+    note = 0x1000
+    for frame in range(nframes):
+        reg[0], reg[1] = note & 0xFF, (note >> 8) & 0xFF
+        reg[4] = 0x11 if frame >= 2 else 0x10  # gate rises once, held
+        if frame >= 2:
+            note = (note + 7) & 0xFFFF  # a clean linear portamento accumulator
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(bus)
+    assert A.freq_note_onsets(state, 0) == []  # no large jumps -> no extra slices
+    program = recover_generic("smooth_freq.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # the whole-segment sweep is recovered
+    assert sum(resid.values()) == 0
+
+
 def test_load_bus_rejects_rbt1(tmp_path):
     path = tmp_path / "wrong.bus.bin"
     path.write_bytes(b"RBT1" + b"\x00" * 32)
