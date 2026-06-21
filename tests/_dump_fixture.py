@@ -151,6 +151,12 @@ GATE_FIXTURES = (
     # FamiCommodore -- a recovered table pointer overruns at render; must fail
     # cleanly with a descriptive RuntimeError, not a bare pygoattracker IndexError.
     ("DEMOS/A-F/FamiCommodore.sid", 1),
+    # Twilight -- packed freq-table overrun: the packed player's UNPADDED freq
+    # table (freqtbllo[fn..ln] | freqtblhi[fn..ln] | songtbl, L=80, firstnote=16)
+    # is indexed past its end by a wavetable relative-note step, so out-of-range
+    # notes read adjacent image bytes. Byte-exact only with the packed-image
+    # freq table (vs the editor's zero-padded table that returns freq 0).
+    ("MUSICIANS/N/No-XS/Twilight.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove

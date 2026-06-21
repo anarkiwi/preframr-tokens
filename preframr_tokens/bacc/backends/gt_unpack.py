@@ -776,6 +776,43 @@ def _detect_optimizations(img):
     return bool(pulseopt), bool(realtimeopt)
 
 
+# =========================== packed freq table =============================
+def _packed_freq_table(img, lay):
+    """The 128-entry note->frequency table the PACKED player actually reads.
+
+    The editor playroutine (gplay.c, mirrored by pygoattracker's
+    ``constants.FREQ_TABLE``) reads a fixed table zero-padded to 128 entries.
+    The packed player (gt2reloc/player.s) instead indexes
+    ``mt_freqtbllo-FIRSTNOTE,y`` / ``mt_freqtblhi-FIRSTNOTE,y`` where the image
+    lays the table out UNPADDED as ``freqtbllo[firstnote..lastnote]`` followed
+    immediately by ``freqtblhi[...]`` then ``mt_songtbllo``.  A note pushed out
+    of range by a wavetable relative step (``note &= $7f`` reaching 96..127, or
+    a low ``firstnote`` letting a high note exceed ``lastnote``) therefore
+    overruns the unpadded table into the adjacent relocated bytes and produces
+    an image-specific frequency, whereas the editor table returns 0.
+
+    Reconstruct the exact bytes the packed player reads, straight from the
+    image: for absolute note ``n`` (0..127),
+        lo = img[freqtbllo - firstnote + n]
+        hi = img[freqtbllo + L - firstnote + n]
+    For in-range notes this reproduces the standard table; out-of-range it
+    reads the real overrun bytes.  Addresses outside the image read 0 (the
+    note never reaches them in a valid song)."""
+    fl = lay["freqtbllo"]
+    L = lay["L"]
+    fn = lay["firstnote"]
+    lo_base = fl - fn  # address of mt_freqtbllo - FIRSTNOTE
+    hi_base = fl + L - fn  # address of mt_freqtblhi - FIRSTNOTE
+    end = img.end()
+    table = []
+    for n in range(128):
+        lo_a, hi_a = lo_base + n, hi_base + n
+        lo = img[lo_a] if img.load <= lo_a < end else 0
+        hi = img[hi_a] if img.load <= hi_a < end else 0
+        table.append((hi << 8) | lo)
+    return tuple(table)
+
+
 # =========================== public API ====================================
 def _build_song(img, lay, flags, name):
     wave, pulse, filt, speed = _build_tables(img, lay)
@@ -796,6 +833,7 @@ ADPARAM = 0xFF00
 FLAGS = {}
 OPTIMIZE_PULSE = False
 OPTIMIZE_REALTIME = False
+FREQ_TABLE = None  # packed-image note->freq table (None -> editor's table)
 
 
 def reconstruct_song(sid_path=SID_PATH):
@@ -804,13 +842,16 @@ def reconstruct_song(sid_path=SID_PATH):
     When the instrument-flag disambiguation is uncertain it reconstructs under
     each candidate and keeps the one whose render matches the real player.
     """
-    global ADPARAM, FLAGS, OPTIMIZE_PULSE, OPTIMIZE_REALTIME
+    global ADPARAM, FLAGS, OPTIMIZE_PULSE, OPTIMIZE_REALTIME, FREQ_TABLE
     img = _Image(sid_path)
     lay = _derive_layout(img)
     ADPARAM = _adparam_from_py65(sid_path) or _find_adparam_static(img)
     # The pulse/realtime skip optimizations are baked into the player image at
     # pack time; derive them per-SID so the render matches this build exactly.
     OPTIMIZE_PULSE, OPTIMIZE_REALTIME = _detect_optimizations(img)
+    # The packed player reads an UNPADDED freq table; recover the exact 128-entry
+    # table (overrun bytes included) so out-of-range notes render byte-exactly.
+    FREQ_TABLE = _packed_freq_table(img, lay)
 
     flags = _instrument_flags(img, lay)
     name = sid_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
@@ -851,6 +892,7 @@ def render_params():
         "adparam": ADPARAM,
         "optimize_pulse": OPTIMIZE_PULSE,
         "optimize_realtime": OPTIMIZE_REALTIME,
+        "freq_table": FREQ_TABLE,
     }
 
 
@@ -887,29 +929,44 @@ def _mask(reg):
     return r
 
 
+_UNSET = object()
+
+
 def render_state(
-    song, nframes, adparam=None, optimize_pulse=None, optimize_realtime=None, subtune=0
+    song,
+    nframes,
+    adparam=None,
+    optimize_pulse=None,
+    optimize_realtime=None,
+    subtune=0,
+    freq_table=_UNSET,
 ):
     """Per-frame 25-register SID state (forward-held), aligned 1:1 with the
     real player.  pygoattracker folds song-init into the first play_frame call
     (which emits no register writes); we render nframes+1 and drop that leading
     INIT frame so frame 0 is the first audible frame, matching py65/VICE.
 
-    The per-SID render parameters (adparam, optimize_pulse/realtime) default to
-    the module globals set by the last reconstruct_song; pass them explicitly to
-    render a recovered program without that global state."""
+    The per-SID render parameters (adparam, optimize_pulse/realtime, freq_table)
+    default to the module globals set by the last reconstruct_song; pass them
+    explicitly to render a recovered program without that global state.
+    ``freq_table`` is the packed-image note->frequency table (so out-of-range
+    notes reproduce the packed player's overrun frequencies); ``None`` falls
+    back to pygoattracker's editor table."""
     if adparam is None:
         adparam = ADPARAM
     if optimize_pulse is None:
         optimize_pulse = OPTIMIZE_PULSE
     if optimize_realtime is None:
         optimize_realtime = OPTIMIZE_REALTIME
+    if freq_table is _UNSET:
+        freq_table = FREQ_TABLE
     p = Player(
         song,
         subtune=subtune,
         adparam=adparam,
         optimize_pulse=optimize_pulse,
         optimize_realtime=optimize_realtime,
+        freq_table=freq_table,
     )
     regs = [0] * NREG
     out = np.zeros((nframes, NREG), dtype=np.int64)
