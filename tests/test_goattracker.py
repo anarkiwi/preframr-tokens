@@ -513,6 +513,42 @@ def test_toneporta_lastnote_vibrato_byte_exact():
     ), "toneporta-lastnote vibrato is NOT residual-zero on Truck-On"
 
 
+_DUMDEEDUM_REL = "MUSICIANS/J/Jakim/Dum-dee-dum.sid"
+_DUMDEEDUM_URL = f"{_HVSC_BASE}/{_DUMDEEDUM_REL}"
+
+
+def test_fixedparams_gatetimer_counter_byte_exact():
+    """Dum-dee-dum: the FIXEDPARAMS=1 GATETIMERPARAM recovery class. The packed
+    player (PULSEOPTIMIZATION=0) bakes the gate-off timer as an immediate
+    (cmp #GATETIMERPARAM=$02). The old recovery picked the largest-forward-branch
+    ``BD..;C9..;F0`` site, but here the real gate-off check sits just before
+    mt_getnewnote (branch +3) while the two toneporta-skip checks (lda
+    mt_chnnewfx ; cmp #TONEPORTA=$03) branch far (+61/+15) -- so it mis-recovered
+    gatetimer 3 instead of the true 2 and fired the ADSR hard-restart one frame
+    early. Keying GATETIMERPARAM on the site that loads mt_chncounter (the operand
+    of the unique ``dec <abs>,x ; beq`` in mt_execchn) selects the real gate-off
+    site (cmp #$02), making the song byte-exact. FIXEDPARAMS=0 builds
+    (VIC64Demo_tune_5) read gatetimer from per-instrument columns and are
+    unaffected."""
+    sid, dump = acquire(_DUMDEEDUM_REL, _DUMDEEDUM_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "FIXEDPARAMS gatetimer recovery is NOT residual-zero on Dum-dee-dum"
+
+
+def test_fixedparams_gatetimer_recovers_counter_site():
+    """The GATETIMERPARAM recovery keys on mt_chncounter: on Dum-dee-dum
+    (FIXEDPARAMS=1, PULSEOPTIMIZATION=0) it recovers the true 2 from the
+    counter-loading gate-off site, not the far-branch toneporta ``cmp #$03``."""
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    sid, _ = acquire(_DUMDEEDUM_REL, _DUMDEEDUM_URL, subtune=1)
+    img = gt_unpack._Image(sid)
+    lay = gt_unpack._derive_layout(img)
+    gatetimer, _firstwave = gt_unpack._recover_fixed_params(img, lay["wave_L"])
+    assert gatetimer == 2, f"expected GATETIMERPARAM 2, recovered {gatetimer}"
+
+
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
     """Part A: the recovered GoatTracker program is the COMMON abstraction --
     per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --

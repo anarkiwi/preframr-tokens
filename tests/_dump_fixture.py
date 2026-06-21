@@ -164,6 +164,16 @@ GATE_FIXTURES = (
     # envelope through those gate-off frames. Recovering ADPARAM straight from
     # the player image's hard-restart store makes it byte-exact.
     ("DEMOS/UNKNOWN/VIC64Demo_tune_5.sid", 1),
+    # Dum-dee-dum -- FIXEDPARAMS=1 GATETIMERPARAM recovery class. The packed
+    # player bakes the gate-off timer as an immediate (cmp #GATETIMERPARAM).
+    # The old recovery picked the largest-forward-branch ``cmp #imm`` site, but
+    # on PULSEOPTIMIZATION=0 builds the real gate-off check sits just before
+    # mt_getnewnote (a SHORT branch) while the toneporta-skip checks (cmp
+    # #TONEPORTA=$03) branch far -- so it recovered gatetimer 3 instead of the
+    # true 2 and fired the ADSR hard-restart one frame early. Keying on
+    # mt_chncounter (the operand of the unique dec <abs>,x ; beq in mt_execchn)
+    # selects the real gate-off site and recovers 2, making it byte-exact.
+    ("MUSICIANS/J/Jakim/Dum-dee-dum.sid", 1),
     # Jetta -- SIMPLEPULSE packed build: greloc folds the pulse-hi nibble into
     # one packed pulse byte and the packed player stores it to BOTH pulse-lo and
     # pulse-hi (player.s mt_setpulse/mt_pulsemod, .IF SIMPLEPULSE != 0). The
