@@ -48,6 +48,46 @@ def test_token_roundtrip_renders_byte_exact(monty_program, monty_state):
     assert np.array_equal(render_program(program2), monty_state)
 
 
+def test_porta_fold_roundtrips_byte_exact(monty_program):
+    # The porta-present flag is folded into the note token (bit1) and the porta
+    # field is emitted only when non-zero -- the full per-voice (dt, note, instr,
+    # lnth, porta) tuple stream must still decode identically, including every
+    # rare non-zero porta. This proves the fold is byte-exact lossless.
+    ids = program_to_ids(monty_program)
+    program2 = ids_to_program(ids)
+    src = sorted(
+        (e.frame, e.voice, e.note, e.instr, e.lnth, e.porta)
+        for e in monty_program.score
+    )
+    dst = sorted(
+        (e.frame, e.voice, e.note, e.instr, e.lnth, e.porta) for e in program2.score
+    )
+    assert src == dst
+    assert any(e.porta for e in monty_program.score)  # the non-zero path is exercised
+
+
+def test_note_field_porta_flag_is_an_inverse_pair():
+    # _note_field packs (escape, porta-present, value); _read_note_field inverts
+    # it for both the grid-index and the literal-escape branch, carrying porta.
+    from preframr_tokens.bacc.serialize import _note_field, _read_note_field
+
+    grid_of = {7: 3}  # note 7 resolves to grid index 3 (canonical branch)
+    index_of = {3: 7}
+    cases = ((7, 0, True), (7, 5, True), (40, 0, False), (40, 9, False))
+    for note, porta, in_grid in cases:
+        gof = grid_of if in_grid else {}
+        # a static_img whose onset Fn is positive only for the in-grid note
+        img = [0] * 256
+        if in_grid:
+            img[note * 2] = 1  # hubbard_table_fn(img, note) > 0
+        out = []
+        _note_field(out, note, porta, img, gof)
+        got_note, got_porta, j = _read_note_field(out, 0, index_of)
+        assert j == len(out)
+        assert got_note == note
+        assert got_porta == bool(porta)
+
+
 def test_under_one_token_per_frame(monty_program):
     brk, frames = measure(monty_program)
     block_sum = sum(brk[k] for k in ("score", "instr_def", "seed", "boot", "table"))
