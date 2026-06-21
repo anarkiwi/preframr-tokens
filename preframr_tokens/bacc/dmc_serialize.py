@@ -22,7 +22,14 @@ is exact and ``render`` reproduces the dump byte-exact (modulo the +1 boot frame
 
 from preframr_tokens.bacc.pitch import fn_to_grid
 from preframr_tokens.bacc.primitive import BaccProgram
-from preframr_tokens.bacc.serialize import _ri, _ru, _wi, _wu
+from preframr_tokens.bacc.serialize import (
+    _lz_emit_t,
+    _lz_read_t,
+    _ri,
+    _ru,
+    _wi,
+    _wu,
+)
 
 NREG = 25
 
@@ -56,65 +63,101 @@ def _read_note(ids, i):
     return z >> 1, i  # the (anchor + n) bijection makes index == grid - anchor
 
 
+def _tok_lit(out, tok, freq, anchor):
+    """Emit ONE pattern token literal (no count prefix), for the shared row LZ."""
+    kind = tok[0]
+    if kind == "note":
+        _wu(out, _K_NOTE)
+        _emit_note(out, tok[1], freq, anchor)
+    elif kind == "ins":
+        _wu(out, _K_INS)
+        _wu(out, tok[1])
+    elif kind == "dur":
+        _wu(out, _K_DUR)
+        _wu(out, tok[1])
+    elif kind == "fx":
+        _wu(out, _K_FX)
+        _wu(out, tok[1])
+        _wu(out, len(tok[2]))
+        for b in tok[2]:
+            _wu(out, b)
+    elif kind == "tie":
+        _wu(out, _K_TIE)
+    elif kind == "rest":
+        _wu(out, _K_REST)
+    elif kind == "end":
+        _wu(out, _K_END)
+    else:
+        raise ValueError(f"unknown DMC pattern token {tok!r}")
+
+
+def _tok_read(ids, i):
+    """Read ONE pattern token literal (inverse of ``_tok_lit``)."""
+    kind, i = _ru(ids, i)
+    if kind == _K_NOTE:
+        note, i = _read_note(ids, i)
+        return ("note", note), i
+    if kind == _K_INS:
+        v, i = _ru(ids, i)
+        return ("ins", v), i
+    if kind == _K_DUR:
+        v, i = _ru(ids, i)
+        return ("dur", v), i
+    if kind == _K_FX:
+        cmd, i = _ru(ids, i)
+        nparam, i = _ru(ids, i)
+        params = []
+        for _ in range(nparam):
+            b, i = _ru(ids, i)
+            params.append(b)
+        return ("fx", cmd, tuple(params)), i
+    if kind == _K_TIE:
+        return ("tie",), i
+    if kind == _K_REST:
+        return ("rest",), i
+    if kind == _K_END:
+        return ("end",), i
+    raise ValueError(f"unknown DMC pattern kind {kind}")
+
+
+def _tok_lit_len(tok, freq, anchor):
+    out = []
+    _tok_lit(out, tok, freq, anchor)
+    return len(out)
+
+
+def _tok_delta(a, b):
+    """Grid-interval making note ``b`` a transposed copy of ``a`` (both clean
+    'note' tokens), else None. The note table is a clean (anchor + n) bijection so
+    the grid interval equals the note-index difference; non-note tokens and
+    escaped/aliased notes have no transposable pitch (the run breaks at them)."""
+    if a[0] != "note" or b[0] != "note":
+        return None
+    return b[1] - a[1]
+
+
+def _tok_shift(tok, delta):
+    """Re-coordinate a 'note' token by ``delta`` grid steps (lossless; the table
+    index == grid - anchor, so the shift is a plain index add)."""
+    return ("note", tok[1] + delta)
+
+
 def _emit_pattern_toks(out, toks, freq, anchor):
+    """One pattern's tokens, count-prefixed and uncompressed (the per-token codec,
+    no inter-token LZ). The top-level pattern block runs the shared LZ over the
+    flat concatenation instead; this stays as the single-pattern token primitive."""
     _wu(out, len(toks))
     for tok in toks:
-        kind = tok[0]
-        if kind == "note":
-            _wu(out, _K_NOTE)
-            _emit_note(out, tok[1], freq, anchor)
-        elif kind == "ins":
-            _wu(out, _K_INS)
-            _wu(out, tok[1])
-        elif kind == "dur":
-            _wu(out, _K_DUR)
-            _wu(out, tok[1])
-        elif kind == "fx":
-            _wu(out, _K_FX)
-            _wu(out, tok[1])
-            _wu(out, len(tok[2]))
-            for b in tok[2]:
-                _wu(out, b)
-        elif kind == "tie":
-            _wu(out, _K_TIE)
-        elif kind == "rest":
-            _wu(out, _K_REST)
-        elif kind == "end":
-            _wu(out, _K_END)
-        else:
-            raise ValueError(f"unknown DMC pattern token {tok!r}")
+        _tok_lit(out, tok, freq, anchor)
 
 
 def _read_pattern_toks(ids, i):
+    """Inverse of ``_emit_pattern_toks`` (count-prefixed, uncompressed)."""
     n, i = _ru(ids, i)
     toks = []
     for _ in range(n):
-        kind, i = _ru(ids, i)
-        if kind == _K_NOTE:
-            note, i = _read_note(ids, i)
-            toks.append(("note", note))
-        elif kind == _K_INS:
-            v, i = _ru(ids, i)
-            toks.append(("ins", v))
-        elif kind == _K_DUR:
-            v, i = _ru(ids, i)
-            toks.append(("dur", v))
-        elif kind == _K_FX:
-            cmd, i = _ru(ids, i)
-            nparam, i = _ru(ids, i)
-            params = []
-            for _ in range(nparam):
-                b, i = _ru(ids, i)
-                params.append(b)
-            toks.append(("fx", cmd, tuple(params)))
-        elif kind == _K_TIE:
-            toks.append(("tie",))
-        elif kind == _K_REST:
-            toks.append(("rest",))
-        elif kind == _K_END:
-            toks.append(("end",))
-        else:
-            raise ValueError(f"unknown DMC pattern kind {kind}")
+        tok, i = _tok_read(ids, i)
+        toks.append(tok)
     return toks, i
 
 
@@ -163,14 +206,27 @@ def dmc_program_to_ids(program):
             _wu(out, pat)
             _wu(out, has_prefix)
 
-    # patterns: count, then (number, addr, token rows) each
+    # patterns: count, then per-pattern (number, addr, tok-count) headers, then ONE
+    # global TRANSPOSE-aware LZ token stream over ALL patterns concatenated (the
+    # shared post-BACC score path). The single window spans pattern boundaries (a
+    # phrase repeated -- at the same OR a transposed pitch -- in a later pattern
+    # copies from an earlier one); decode re-slices the flat stream by the counts.
     pats = song["patterns"]
     _wu(out, len(pats))
+    flat = []
     for num in sorted(pats):
         pat = pats[num]
         _wu(out, num)
         _wu(out, pat["addr"])
-        _emit_pattern_toks(out, pat["toks"], freq, anchor)
+        _wu(out, len(pat["toks"]))
+        flat.extend(pat["toks"])
+    _lz_emit_t(
+        out,
+        flat,
+        lambda t: _tok_lit_len(t, freq, anchor),
+        lambda o, t: _tok_lit(o, t, freq, anchor),
+        _tok_delta,
+    )
 
     # pattern-pointer table (lo/hi)
     _wu(out, len(song["pat_ptr"]))
@@ -238,12 +294,18 @@ def dmc_ids_to_program(ids):
         )
 
     npats, i = _ru(ids, i)
-    patterns = {}
+    headers = []
     for _ in range(npats):
         num, i = _ru(ids, i)
         addr, i = _ru(ids, i)
-        toks, i = _read_pattern_toks(ids, i)
-        patterns[num] = {"addr": addr, "toks": toks}
+        cnt, i = _ru(ids, i)
+        headers.append((num, addr, cnt))
+    flat, i = _lz_read_t(ids, i, sum(h[2] for h in headers), _tok_read, _tok_shift)
+    patterns = {}
+    off = 0
+    for num, addr, cnt in headers:
+        patterns[num] = {"addr": addr, "toks": flat[off : off + cnt]}
+        off += cnt
 
     nptr, i = _ru(ids, i)
     pat_ptr = []

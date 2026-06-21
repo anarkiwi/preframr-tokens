@@ -29,7 +29,14 @@ Token shape (all through the shared base-16 LEB digit alphabet, no new ids):
 
 from preframr_tokens.bacc.backends.goattracker import make_program_from_song
 from preframr_tokens.bacc.pitch import fn_to_grid
-from preframr_tokens.bacc.serialize import _ri, _ru, _wi, _wu, REPEAT
+from preframr_tokens.bacc.serialize import (
+    _lz_emit_t,
+    _lz_read_t,
+    _ri,
+    _ru,
+    _wi,
+    _wu,
+)
 
 NREG = 25
 
@@ -50,63 +57,27 @@ _KIND_RAWNOTE = 4
 
 
 # --- helpers shared with serialize ----------------------------------------
-def _u(n):
-    out = []
-    _wu(out, n)
-    return out
-
-
-def _u_len(n):
-    return len(_u(n))
-
-
-def _lz_emit(out, items, lit):
-    """Inline backward-LZ over a list, emitting literals via ``lit(out, item)``.
-    A copy is REPEAT(offset, length) over prior items. Mirrors serialize._emit_rows
-    but generic over any equality-comparable item list."""
-    i = 0
-    while i < len(items):
-        best_len, best_off = 0, 0
-        for off in range(1, i + 1):
-            n = 0
-            while i + n < len(items) and items[i - off + n] == items[i + n]:
-                n += 1
-            if n > best_len:
-                best_len, best_off = n, off
-        cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
-        lit_cost = sum(len(_lit_bytes(lit, items[i + j])) for j in range(best_len))
-        if best_len >= 2 and cost_copy < lit_cost:
-            out.append(REPEAT)
-            _wu(out, best_off)
-            _wu(out, best_len)
-            i += best_len
-        else:
-            lit(out, items[i])
-            i += 1
-
-
 def _lit_bytes(lit, item):
     tmp = []
     lit(tmp, item)
     return tmp
 
 
-def _lz_read(ids, i, count, rd):
-    """Inverse of _lz_emit: rebuild ``count`` items, literals via ``rd(ids, i)``.
-    Returns (items, new_index)."""
-    items = []
-    while len(items) < count:
-        if ids[i] == REPEAT:
-            i += 1
-            off, i = _ru(ids, i)
-            length, i = _ru(ids, i)
-            base = len(items)
-            for j in range(length):
-                items.append(items[base - off + j])
-        else:
-            item, i = rd(ids, i)
-            items.append(item)
-    return items, i
+def _lz_emit(out, items, lit, delta_of=None, shift=None):
+    """Inline backward-LZ over a list (the shared post-BACC ``_lz_emit_t``),
+    emitting literals via ``lit(out, item)``. A copy is REPEAT(offset, length) over
+    prior items; passing ``delta_of`` adds TRANSPOSE(offset, length, Delta) for a
+    prior run re-coordinated by a constant grid-interval (a transposed phrase
+    repeat). ``shift`` is unused on encode (kept symmetric with ``_lz_read``)."""
+    del shift  # encode side does not re-coordinate; only decode (_lz_read) does
+    _lz_emit_t(out, items, lambda it: len(_lit_bytes(lit, it)), lit, delta_of)
+
+
+def _lz_read(ids, i, count, rd, shift=None):
+    """Inverse of _lz_emit (the shared ``_lz_read_t``): rebuild ``count`` items,
+    literals via ``rd(ids, i)``; a TRANSPOSE copy re-coordinates each item via
+    ``shift(item, delta)``. Returns (items, new_index)."""
+    return _lz_read_t(ids, i, count, rd, shift)
 
 
 # --- note tokenization (Part B canonical grid) ----------------------------
@@ -192,6 +163,28 @@ def _row_read(ids, i):
     command, i = _ru(ids, i)
     data, i = _ru(ids, i)
     return (note, instr, command, data), i
+
+
+def _row_delta(a, b):
+    """Grid-interval making row ``b`` a transposed copy of ``a`` (same instr /
+    command / data, both pitched on the clean freq-table grid), else None. Only
+    _KIND_PITCH notes are grid-transposable; REST/KEYOFF/KEYON and raw-note
+    escapes have no clean interval (a phrase touching them is not transposed)."""
+    if a[1] != b[1] or a[2] != b[2] or a[3] != b[3]:
+        return None
+    ka, ia = _note_token(a[0])
+    kb, ib = _note_token(b[0])
+    if ka != _KIND_PITCH or kb != _KIND_PITCH:
+        return None
+    return ib - ia
+
+
+def _row_shift(row, delta):
+    """Re-coordinate a pitched row by ``delta`` grid steps (lossless; the note's
+    freq-table-grid interval shifts, the other fields carry through unchanged)."""
+    note, instr, command, data = row
+    _, interval = _note_token(note)
+    return (_grid_to_note_byte(interval + delta), instr, command, data)
 
 
 # --- orderlist (backward) --------------------------------------------------
@@ -344,7 +337,10 @@ def gt_program_to_ids(program):
         rows = [(r.note, r.instrument, r.command, r.data) for r in pat.rows]
         _wu(out, len(rows))
         flat.extend(rows)
-    _lz_emit(out, flat, _row_lit)
+    # TRANSPOSE-aware row LZ (shared post-BACC path): a phrase repeated at a
+    # different pitch (same instr/command/data) factors as one TRANSPOSE+Delta
+    # over the canonical grid, not a fresh literal run.
+    _lz_emit(out, flat, _row_lit, _row_delta)
     # orderlists (backward), per subtune x channel
     _wu(out, len(song.subtunes))
     for sub in song.subtunes:
@@ -404,7 +400,7 @@ def gt_ids_to_program(ids):
     for _ in range(n_pat):
         c, i = _ru(ids, i)
         counts.append(c)
-    flat, i = _lz_read(ids, i, sum(counts), _row_read)
+    flat, i = _lz_read(ids, i, sum(counts), _row_read, _row_shift)
     patterns = []
     off = 0
     for c in counts:
@@ -441,8 +437,41 @@ def gt_ids_to_program(ids):
 
 
 def gt_measure(program):
-    ids = gt_program_to_ids(program)
+    song = _song_of(program)
     out = []
     _seed_header(out, program)
     header = len(out)
-    return {"header": header, "total": len(ids)}, program.nframes
+    out = []
+    for table in (song.wavetable, song.pulsetable, song.filtertable, song.speedtable):
+        _emit_table(out, table)
+    tables = len(out)
+    out = []
+    _wu(out, len(song.instruments))
+    for instr in song.instruments:
+        _emit_instrument(out, instr)
+    instr_def = len(out)
+    out = []
+    _wu(out, len(song.patterns))
+    flat = []
+    for pat in song.patterns:
+        rows = [(r.note, r.instrument, r.command, r.data) for r in pat.rows]
+        _wu(out, len(rows))
+        flat.extend(rows)
+    _lz_emit(out, flat, _row_lit, _row_delta)
+    score = len(out)  # the dominant block: TRANSPOSE-aware pattern-row LZ
+    out = []
+    _wu(out, len(song.subtunes))
+    for sub in song.subtunes:
+        for ol in sub.channels:
+            _emit_orderlist(out, _orderlist_entries(ol), ol.restart)
+    orders = len(out)
+    total = len(gt_program_to_ids(program))
+    brk = {
+        "header": header,
+        "tables": tables,
+        "instr_def": instr_def,
+        "score": score,
+        "orders": orders,
+        "total": total,
+    }
+    return brk, program.nframes

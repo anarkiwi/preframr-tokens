@@ -145,83 +145,148 @@ def _grid_delta(a, b, grid_of):
     return gb - ga
 
 
-def _transposed_run(rows, i, off, delta, grid_of):
-    """Length of the backward run at ``i`` (source ``i-off``) whose notes are all
-    the prior run's notes shifted by exactly ``delta`` (non-note fields identical).
-    The source rows must themselves be grid-resolvable so decode can add delta."""
+# --- shared backward-LZ with TRANSPOSE factoring (post-BACC, driver-agnostic) ---
+# The dominant score block of EVERY driver is a list of comparable items (Hubbard
+# per-voice note-on rows, GoatTracker pattern rows, DMC pattern tokens). The good
+# compression -- inline backward REPEAT for an exact phrase repeat plus TRANSPOSE
+# (a backward REPEAT re-coordinated by a constant pitch Delta on the canonical
+# A440 grid, exactly what a tracker orderlist's Transpose(semitones) does) -- is
+# the SAME machinery for all three; only the per-item literal and the
+# transpose-delta test are driver-specific. Factoring it here (keyed off the
+# common score-item list) is what lets GoatTracker and DMC scores, not just
+# Hubbard's, get REPEAT/TRANSPOSE phrase factoring + the canonical note grid.
+#
+# ``delta_of(a, b)`` returns the constant grid-interval that makes ``b`` a
+# transposed copy of ``a`` (every non-pitch field identical, both notes
+# grid-resolvable), or ``None`` if ``b`` is not a constant-pitch shift of ``a``.
+# A driver that has no transposable pitch axis passes ``delta_of=None`` and gets
+# plain REPEAT-only LZ (byte-identical to the old per-driver ``_lz_emit``).
+def _transposed_run(items, i, off, delta, delta_of):
+    """Length of the backward run at ``i`` (source ``i-off``) every item of which
+    is the prior run's item shifted by exactly ``delta`` (non-pitch fields
+    identical). The source items must themselves be grid-resolvable so decode can
+    re-add ``delta``."""
     n = 0
-    while i + n < len(rows):
-        src, dst = rows[i - off + n], rows[i + n]
-        if _grid_delta(src, dst, grid_of) != delta:
+    while i + n < len(items):
+        if delta_of(items[i - off + n], items[i + n]) != delta:
             break
         n += 1
     return n
 
 
-def _best_transpose(rows, i, grid_of):
-    """Best (length, offset, delta) backward run that matches a prior run up to a
+def _best_transpose(items, i, delta_of):
+    """Best (length, offset, delta) backward run matching a prior run up to a
     single constant non-zero grid-interval (a transposed phrase repeat)."""
     best_len, best_off, best_delta = 0, 0, 0
     for off in range(1, i + 1):
-        delta = _grid_delta(rows[i - off], rows[i], grid_of)
+        delta = delta_of(items[i - off], items[i])
         if delta in (None, 0):
             continue  # delta==0 is the exact REPEAT case, handled separately
-        n = _transposed_run(rows, i, off, delta, grid_of)
+        n = _transposed_run(items, i, off, delta, delta_of)
         if n > best_len:
             best_len, best_off, best_delta = n, off, delta
     return best_len, best_off, best_delta
 
 
-def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
+def _lz_emit_t(out, items, lit_cost, lit_emit, delta_of=None):
+    """Inline backward-LZ over ``items`` with optional TRANSPOSE factoring.
+
+    Literals are emitted via ``lit_emit(out, item)`` and costed via
+    ``lit_cost(item)`` (byte length). A copy is REPEAT(offset, length) over prior
+    items; when ``delta_of`` is given, a TRANSPOSE(offset, length, Delta) copies a
+    prior run re-coordinated by a constant grid-interval. The cheapest of {exact
+    REPEAT, transposed REPEAT+Delta, literal} is chosen per position, weighing each
+    candidate by tokens-saved so a longer plain REPEAT is not beaten by a shorter
+    transposed one (and vice versa) -- so enabling TRANSPOSE never costs more than
+    REPEAT-only would have."""
     i = 0
-    while i < len(rows):
+    while i < len(items):
         best_len, best_off = 0, 0
         for off in range(1, i + 1):
             n = 0
-            while i + n < len(rows) and rows[i - off + n] == rows[i + n]:
+            while i + n < len(items) and items[i - off + n] == items[i + n]:
                 n += 1
             if n > best_len:
                 best_len, best_off = n, off
         cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
-        tlen, toff, tdelta = _best_transpose(rows, i, grid_of)
-        cost_trans = 1 + _u_len(toff) + _u_len(tlen) + _wi_len(tdelta)
-        lit_copy = sum(
-            _lit_cost(rows[i + j], static_img, grid_of) for j in range(best_len)
-        )
-        lit_trans = sum(
-            _lit_cost(rows[i + j], static_img, grid_of) for j in range(tlen)
-        )
+        lit_copy = sum(lit_cost(items[i + j]) for j in range(best_len))
         use_copy = best_len >= _MIN_COPY and cost_copy < lit_copy
-        use_trans = tlen >= _MIN_COPY and cost_trans < lit_trans
-        # Cheapest of {exact REPEAT, transposed REPEAT+Delta, literal}, weighing
-        # each candidate by tokens-saved-per-row so a longer plain REPEAT is not
-        # beaten by a shorter transposed one (and vice versa).
         copy_gain = (lit_copy - cost_copy) if use_copy else 0
-        trans_gain = (lit_trans - cost_trans) if use_trans else 0
-        if use_trans and trans_gain >= copy_gain:
-            out.append(TRANSPOSE)
-            _wu(out, toff)
-            _wu(out, tlen)
-            _wi(out, tdelta)
-            i += tlen
-        elif use_copy:
+        if delta_of is not None:
+            tlen, toff, tdelta = _best_transpose(items, i, delta_of)
+            cost_trans = 1 + _u_len(toff) + _u_len(tlen) + _wi_len(tdelta)
+            lit_trans = sum(lit_cost(items[i + j]) for j in range(tlen))
+            use_trans = tlen >= _MIN_COPY and cost_trans < lit_trans
+            trans_gain = (lit_trans - cost_trans) if use_trans else 0
+            if use_trans and trans_gain >= copy_gain:
+                out.append(TRANSPOSE)
+                _wu(out, toff)
+                _wu(out, tlen)
+                _wi(out, tdelta)
+                i += tlen
+                continue
+        if use_copy:
             out.append(REPEAT)
             _wu(out, best_off)
             _wu(out, best_len)
             i += best_len
         else:
-            r = rows[i]
-            _wu(out, r[0])
-            _note_field(out, r[1], r[4], static_img, grid_of)
-            _wu(out, r[2])
-            if r[2] not in seen:
-                seen.add(r[2])
-                for b in instruments[r[2]]:
-                    _wu(out, b)
-            _wu(out, r[3])
-            if r[4]:  # porta-present flag lives in the note token (see _note_field)
-                _wu(out, r[4])
+            lit_emit(out, items[i])
             i += 1
+
+
+def _lz_read_t(ids, i, count, lit_read, shift=None):
+    """Inverse of ``_lz_emit_t``: rebuild ``count`` items, literals via
+    ``lit_read(ids, i)``. A TRANSPOSE copies the prior run with each item
+    re-coordinated by ``shift(item, delta)`` (a lossless grid re-coordinate; the
+    non-pitch fields carry through unchanged). Returns ``(items, new_index)``."""
+    items = []
+    while len(items) < count:
+        if ids[i] == REPEAT:
+            i += 1
+            off, i = _ru(ids, i)
+            length, i = _ru(ids, i)
+            base = len(items)
+            for j in range(length):
+                items.append(items[base - off + j])
+        elif ids[i] == TRANSPOSE:
+            i += 1
+            off, i = _ru(ids, i)
+            length, i = _ru(ids, i)
+            delta, i = _ri(ids, i)
+            base = len(items)
+            for j in range(length):
+                items.append(shift(items[base - off + j], delta))
+        else:
+            item, i = lit_read(ids, i)
+            items.append(item)
+    return items, i
+
+
+def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
+    """Hubbard per-voice note-on rows through the shared transposed-LZ. The literal
+    emits (dt, canonical note token, instr [+ inline instr-def on first use],
+    length [, porta]); the delta test is the row grid-interval."""
+
+    def lit_emit(o, r):
+        _wu(o, r[0])
+        _note_field(o, r[1], r[4], static_img, grid_of)
+        _wu(o, r[2])
+        if r[2] not in seen:
+            seen.add(r[2])
+            for b in instruments[r[2]]:
+                _wu(o, b)
+        _wu(o, r[3])
+        if r[4]:  # porta-present flag lives in the note token (see _note_field)
+            _wu(o, r[4])
+
+    _lz_emit_t(
+        out,
+        rows,
+        lambda r: _lit_cost(r, static_img, grid_of),
+        lit_emit,
+        lambda a, b: _grid_delta(a, b, grid_of),
+    )
 
 
 def _u_len(n):
@@ -306,47 +371,33 @@ def ids_to_program(ids, driver="hubbard_monty"):
     instruments = [[0] * 8 for _ in range(64)]
     seen = set()
     score = []
+
+    def lit_read(idl, j):
+        dt, j = _ru(idl, j)
+        note, has_porta, j = _read_note_field(idl, j, index_of)
+        instr, j = _ru(idl, j)
+        if instr not in seen:
+            seen.add(instr)
+            row = []
+            for _ in range(8):
+                b, j = _ru(idl, j)
+                row.append(b)
+            instruments[instr] = row
+        lnth, j = _ru(idl, j)
+        if has_porta:  # porta field present only when its note-token flag set
+            porta, j = _ru(idl, j)
+        else:
+            porta = 0
+        return (dt, note, instr, lnth, porta), j
+
+    def shift(r, delta):
+        # lossless grid re-coordinate; non-note fields carry through unchanged
+        dt, note, instr, lnth, porta = r
+        return (dt, index_of[grid_of[note] + delta], instr, lnth, porta)
+
     for v in range(3):
         nrows, i = _ru(ids, i)
-        rows = []
-        while len(rows) < nrows:
-            if ids[i] == REPEAT:
-                i += 1
-                off, i = _ru(ids, i)
-                length, i = _ru(ids, i)
-                base = len(rows)
-                for j in range(length):
-                    rows.append(rows[base - off + j])
-            elif ids[i] == TRANSPOSE:
-                # Backward REPEAT re-coordinated by a constant grid-interval: copy
-                # the prior run, then shift each copied note by delta on the grid
-                # (lossless re-coordinate; non-note fields carry through unchanged).
-                i += 1
-                off, i = _ru(ids, i)
-                length, i = _ru(ids, i)
-                delta, i = _ri(ids, i)
-                base = len(rows)
-                for j in range(length):
-                    dt, note, instr, lnth, porta = rows[base - off + j]
-                    note = index_of[grid_of[note] + delta]
-                    rows.append((dt, note, instr, lnth, porta))
-            else:
-                dt, i = _ru(ids, i)
-                note, has_porta, i = _read_note_field(ids, i, index_of)
-                instr, i = _ru(ids, i)
-                if instr not in seen:
-                    seen.add(instr)
-                    row = []
-                    for _ in range(8):
-                        b, i = _ru(ids, i)
-                        row.append(b)
-                    instruments[instr] = row
-                lnth, i = _ru(ids, i)
-                if has_porta:  # porta field present only when its note-token flag set
-                    porta, i = _ru(ids, i)
-                else:
-                    porta = 0
-                rows.append((dt, note, instr, lnth, porta))
+        rows, i = _lz_read_t(ids, i, nrows, lit_read, shift)
         prevf = 0
         for dt, note, instr, lnth, porta in rows:
             prevf += dt

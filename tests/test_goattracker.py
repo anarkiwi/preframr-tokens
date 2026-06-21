@@ -144,11 +144,39 @@ def test_global_pattern_lz_reslices_patterns():
     assert np.array_equal(render_program(program2), render_program(program))
 
 
+def test_pattern_rows_transpose_factor_roundtrip():
+    """A phrase repeated at a transposed pitch (same instr/command/data) factors as
+    one TRANSPOSE+Delta over the shared post-BACC row LZ, not a fresh literal run --
+    byte-exact round-trip and fewer tokens than REPEAT-only would emit."""
+    from pygoattracker.constants import note_value
+
+    from preframr_tokens.bacc.gt_serialize import (
+        _lz_emit,
+        _lz_read,
+        _row_delta,
+        _row_lit,
+        _row_read,
+        _row_shift,
+    )
+    from preframr_tokens.bacc.serialize import TRANSPOSE
+
+    phrase = [(note_value("C-4"), 1, 0, 0), (note_value("E-4"), 1, 0, 0)]
+    up = [(note_value("G-4"), 1, 0, 0), (note_value("B-4"), 1, 0, 0)]  # +7 semis
+    rows = phrase + up  # phrase then the same shape a fifth higher
+    out = []
+    _lz_emit(out, rows, _row_lit, _row_delta)
+    assert TRANSPOSE in out  # the transposed phrase factored
+    back, consumed = _lz_read(out, 0, len(rows), _row_read, _row_shift)
+    assert consumed == len(out)
+    assert back == rows  # byte-exact inverse re-coordinates the pitch
+
+
 def test_measure_breaks_down_program():
     program = make_program(_demo_sng(), _DEMO_SEED, 128)
     brk, frames = measure(program)
     assert frames == 128
     assert 0 < brk["header"] <= brk["total"]
+    assert brk["score"] <= brk["total"]  # the dominant pattern-row LZ block
 
 
 class _GtPsid:
