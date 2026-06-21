@@ -21,9 +21,11 @@ from preframr_tokens.bacc.primitive import BaccProgram
 
 NAME = "goattracker"
 # Slack frames rendered ahead of nframes so the dump-alignment search can drop
-# the player's leading init/hard-restart frames (the dump's first_play_cycle
-# starts a few frames into playback).
-_ALIGN_SLACK = 32
+# the player's leading init/hard-restart frames. The dump's first_play_cycle can
+# start well into playback (the player spends its first frames ramping ADSR/init
+# from cold), so the render needs a window wide enough to reach the dump's frame
+# 0 -- empirically up to a couple hundred frames on some tunes, not just a few.
+_ALIGN_SLACK = 256
 
 
 def _mask_row(reg):
@@ -49,22 +51,63 @@ def render_song(song_or_bytes, seed, nframes):
         song = read_sng(bytes(song_or_bytes))
     else:
         song = song_or_bytes
-    rendered = gt_unpack.render_state(
-        song,
-        nframes + _ALIGN_SLACK,
-        adparam=seed["adparam"],
-        optimize_pulse=bool(seed["optimize_pulse"]),
-        optimize_realtime=bool(seed["optimize_realtime"]),
-        subtune=int(seed["subtune"]),
-    )
+    try:
+        rendered = gt_unpack.render_state(
+            song,
+            nframes + _ALIGN_SLACK,
+            adparam=seed["adparam"],
+            optimize_pulse=bool(seed["optimize_pulse"]),
+            optimize_realtime=bool(seed["optimize_realtime"]),
+            subtune=int(seed["subtune"]),
+        )
+    except IndexError as exc:
+        # A recovered wave/pulse/filter table pointer walked off the end of its
+        # (MAX_TABLELEN-padded) table without hitting a TABLEJUMP terminator, so
+        # the playroutine wrapped its pointer to 0 and indexed past the table.
+        # This is a structural reconstruction edge, not a rendering glitch we can
+        # paper over (HARD RULE #0: no fabricated frames); surface it precisely
+        # instead of leaking a bare IndexError out of pygoattracker.
+        raise RuntimeError(
+            "goattracker render: a recovered wave/pulse/filter table pointer "
+            "overran its table (unterminated table -- the playroutine wrapped "
+            "its pointer past the table end). The reconstructed song is not "
+            "byte-exact-renderable; reported precisely rather than rendering "
+            "fabricated frames."
+        ) from exc
     out = np.array([_mask_row(list(row)) for row in rendered], dtype=np.int64)
-    offset = _align_offset(out, seed.get("boot"), seed.get("boot1"))
-    return out[offset : offset + nframes]
+    return _align(out, seed.get("boot"), seed.get("boot1"), nframes)
+
+
+def _align(rendered, boot, boot1, nframes):
+    """Align the raw render to the dump's frame grid and return exactly ``nframes``.
+
+    Two boot framings occur in the wild (both lossless, no stored correction):
+
+    * The render contains the dump's frame-0 boot frame after some leading
+      init/hard-restart frames -- drop those: ``rendered[off:]`` where
+      ``rendered[off]==boot`` (and, when known, ``rendered[off+1]==boot1``).
+    * The dump captured a leading all-zero **silence** frame that the player's
+      render never emits (the render starts straight at ``boot1``). The render
+      then has no frame equal to ``boot``; PREPEND the dump's frame-0 silence to
+      the render aligned at ``boot1``. ``boot`` is literally ``state[0]`` from the
+      dump, so prepending it reproduces frame 0 byte-for-byte; the residual check
+      verifies the remainder.
+    """
+    off = _align_offset(rendered, boot, boot1)
+    if off is not None:
+        return rendered[off : off + nframes]
+    # Leading-silence dump: render begins at boot1; restore the dropped frame 0.
+    off1 = _boot1_offset(rendered, boot1)
+    if off1 is not None and boot is not None:
+        prefix = np.array([list(boot)], dtype=rendered.dtype)
+        return np.concatenate([prefix, rendered[off1:]])[:nframes]
+    return rendered[:nframes]
 
 
 def _align_offset(rendered, boot, boot1):
-    """Leading frames to drop so rendered[offset:] matches the dump grid: the
-    first index whose frame (and the next) equals the dump's boot frames."""
+    """First index whose frame (and the next, when ``boot1`` is known) equals the
+    dump's boot frames, else ``None`` (so a leading-silence render can be handled
+    by prepending the dump's frame 0)."""
     if boot is None:
         return 0
     boot = list(boot)
@@ -73,7 +116,19 @@ def _align_offset(rendered, boot, boot1):
             boot1 is None or list(rendered[offset + 1]) == list(boot1)
         ):
             return offset
-    return 0
+    return None
+
+
+def _boot1_offset(rendered, boot1):
+    """First index whose frame equals ``boot1`` -- the start of playback when the
+    dump's frame 0 is a leading silence frame the render does not reproduce."""
+    if boot1 is None:
+        return None
+    boot1 = list(boot1)
+    for offset in range(min(_ALIGN_SLACK, len(rendered))):
+        if list(rendered[offset]) == boot1:
+            return offset
+    return None
 
 
 def make_program_from_song(song, seed, nframes):
