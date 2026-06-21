@@ -384,6 +384,41 @@ def test_adparam_recovered_from_image_store():
     assert gt_unpack._adparam_from_image(img) == 0x0F00
 
 
+_JETTA_REL = "DEMOS/G-L/Jetta.sid"
+_JETTA_URL = f"{_HVSC_BASE}/{_JETTA_REL}"
+
+
+def test_simplepulse_byte_exact():
+    """Jetta: greloc's SIMPLEPULSE optimization packs a pulse SET step into one
+    byte ``(pulsehi & 0x0f) | (pulselo & 0xf0)`` and the packed player stores it
+    to BOTH ghost pulse registers (player.s mt_setpulse, .IF SIMPLEPULSE != 0),
+    so pulse-hi = the packed byte's low nibble -- not 0 like the editor player.
+    gt_unpack now detects the SIMPLEPULSE build flag from the packed
+    mt_pulsemod ``adc mt_pulsespdtbl-1,y ; adc #$00`` signature and runs the
+    packed pulse path on the (un-inverted) packed pulse table, so the whole song
+    recovers byte-exact (was a whole-song pulse-hi mismatch)."""
+    sid, dump = acquire(_JETTA_REL, _JETTA_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "SIMPLEPULSE pulse path is NOT residual-zero on Jetta"
+
+
+def test_simplepulse_flag_detected():
+    """The SIMPLEPULSE build flag is recovered from the packed player image
+    (present in Jetta, absent in the full-mod Grid_Runner build)."""
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    jetta, _ = acquire(_JETTA_REL, _JETTA_URL, subtune=1)
+    grid, _ = acquire(_GR_REL, _GR_URL, subtune=1)
+    jimg = gt_unpack._Image(jetta)
+    gimg = gt_unpack._Image(grid)
+    assert gt_unpack._detect_simplepulse(jimg, gt_unpack._derive_layout(jimg)) is True
+    assert gt_unpack._detect_simplepulse(gimg, gt_unpack._derive_layout(gimg)) is False
+    # the flag rides the recovered program's render params
+    gt_unpack.reconstruct_song(jetta)
+    assert gt_unpack.render_params()["simplepulse"] is True
+
+
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
     """Part A: the recovered GoatTracker program is the COMMON abstraction --
     per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --

@@ -837,6 +837,50 @@ def _detect_optimizations(img):
     return bool(pulseopt), bool(realtimeopt)
 
 
+def _detect_simplepulse(img, lay):
+    """True iff the build set SIMPLEPULSE=1 (greloc's one-byte pulse table).
+
+    greloc's SIMPLEPULSE optimization (greloc.c ~888/1302) folds a pulse-table
+    SET step into ONE packed byte ``(pulsehi & 0x0f) | (pulselo & 0xf0)`` and
+    pre-swaps the modulation speed (``swapnybbles``).  The packed player then
+    keeps a SINGLE ghost pulse byte: mt_setpulse stores it to both lo and hi
+    (no separate hi store), and mt_pulsemod (player.s ~1148-1164,
+    ``.IF SIMPLEPULSE != 0``) does an 8-bit ``lo = lo + speed + carry``
+    accumulate:
+
+        lda <ghostpulselo,x / lda mt_chnpulselo,x   ; the running lowbyte
+        clc
+        adc mt_pulsespdtbl-1,y   (79 lo hi)         ; + packed speed
+        adc #$00                 (69 00)            ; + carry-out (fold back)
+        sta ...pulselo / sta ...pulsehi
+
+    The signature is ``adc mt_pulsespdtbl-1,y`` (absolute,y add of the
+    pulse-SPEED table, operand == ``pulse_R - 1``) immediately followed by
+    ``adc #$00``.  Anchoring on the pulse-speed-table operand is essential: the
+    bare ``79 .. 69 00`` byte pattern also occurs in unrelated 16-bit pointer
+    adds elsewhere in some players (e.g. Shadow_over_Innsmouth, a full-mod
+    build), so a pattern-only match false-positives.  The full-mod player's
+    pulse modulation instead uses ``dec/inc chnpulsehi`` 16-bit arithmetic and
+    never adds the pulse-speed table with a trailing ``adc #$00``.
+
+    NOPULSEMOD-only builds (no modulation entries) without SIMPLEPULSE have no
+    such add and render identically to the editor, so they need no flag.
+    """
+    d = img.data
+    speedtbl = (lay["pulse_R"] - 1) & 0xFFFF  # mt_pulsespdtbl-1 operand
+    lo, hi = speedtbl & 0xFF, (speedtbl >> 8) & 0xFF
+    for o in range(len(d) - 5):
+        if (
+            d[o] == 0x79  # adc abs,y
+            and d[o + 1] == lo
+            and d[o + 2] == hi
+            and d[o + 3] == 0x69  # adc #imm
+            and d[o + 4] == 0x00
+        ):
+            return True
+    return False
+
+
 # =========================== packed freq table =============================
 def _packed_freq_table(img, lay):
     """The 128-entry note->frequency table the PACKED player actually reads.
@@ -899,6 +943,7 @@ FLAGS = {}
 OPTIMIZE_PULSE = False
 OPTIMIZE_REALTIME = False
 FREQ_TABLE = None  # packed-image note->freq table (None -> editor's table)
+SIMPLEPULSE = False  # packed SIMPLEPULSE one-byte pulse build flag
 
 
 def reconstruct_song(sid_path=SID_PATH):
@@ -908,6 +953,7 @@ def reconstruct_song(sid_path=SID_PATH):
     each candidate and keeps the one whose render matches the real player.
     """
     global ADPARAM, FLAGS, OPTIMIZE_PULSE, OPTIMIZE_REALTIME, FREQ_TABLE
+    global SIMPLEPULSE
     img = _Image(sid_path)
     lay = _derive_layout(img)
     # Recover the hard-restart ADPARAM/SRPARAM from the player image (the
@@ -919,6 +965,10 @@ def reconstruct_song(sid_path=SID_PATH):
     # The pulse/realtime skip optimizations are baked into the player image at
     # pack time; derive them per-SID so the render matches this build exactly.
     OPTIMIZE_PULSE, OPTIMIZE_REALTIME = _detect_optimizations(img)
+    # SIMPLEPULSE folds the pulse-hi nibble into the one packed pulse byte and
+    # the packed player computes pulse width by a different code path; detect it
+    # so the render runs that path on the (un-inverted) packed pulse table.
+    SIMPLEPULSE = _detect_simplepulse(img, lay)
     # The packed player reads an UNPADDED freq table; recover the exact 128-entry
     # table (overrun bytes included) so out-of-range notes render byte-exactly.
     FREQ_TABLE = _packed_freq_table(img, lay)
@@ -963,6 +1013,7 @@ def render_params():
         "optimize_pulse": OPTIMIZE_PULSE,
         "optimize_realtime": OPTIMIZE_REALTIME,
         "freq_table": FREQ_TABLE,
+        "simplepulse": SIMPLEPULSE,
     }
 
 
@@ -988,6 +1039,7 @@ def _flag_summary(img, lay, flags):
         ncols=lay["ncols"],
         optimize_pulse=OPTIMIZE_PULSE,
         optimize_realtime=OPTIMIZE_REALTIME,
+        simplepulse=SIMPLEPULSE,
     )
 
 
@@ -1010,6 +1062,7 @@ def render_state(
     optimize_realtime=None,
     subtune=0,
     freq_table=_UNSET,
+    simplepulse=None,
 ):
     """Per-frame 25-register SID state (forward-held), aligned 1:1 with the
     real player.  pygoattracker folds song-init into the first play_frame call
@@ -1021,7 +1074,9 @@ def render_state(
     explicitly to render a recovered program without that global state.
     ``freq_table`` is the packed-image note->frequency table (so out-of-range
     notes reproduce the packed player's overrun frequencies); ``None`` falls
-    back to pygoattracker's editor table."""
+    back to pygoattracker's editor table.  ``simplepulse`` selects the packed
+    SIMPLEPULSE pulse path (one packed byte fed to both pulse-lo and pulse-hi);
+    ``None`` uses the last-detected flag, ``False`` the editor pulse path."""
     if adparam is None:
         adparam = ADPARAM
     if optimize_pulse is None:
@@ -1030,6 +1085,8 @@ def render_state(
         optimize_realtime = OPTIMIZE_REALTIME
     if freq_table is _UNSET:
         freq_table = FREQ_TABLE
+    if simplepulse is None:
+        simplepulse = SIMPLEPULSE
     p = Player(
         song,
         subtune=subtune,
@@ -1037,6 +1094,7 @@ def render_state(
         optimize_pulse=optimize_pulse,
         optimize_realtime=optimize_realtime,
         freq_table=freq_table,
+        simplepulse=bool(simplepulse),
     )
     regs = [0] * NREG
     out = np.zeros((nframes, NREG), dtype=np.int64)
