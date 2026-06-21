@@ -29,6 +29,12 @@ SONGLENGTHS_URL = os.environ.get(
 IMAGE = os.environ.get("HEADLESSVICE_IMAGE", "anarkiwi/headlessvice")
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "test_fixtures")
 PAL_PHI = 985248
+PAL_CPF = 19656.0  # PAL cycles/frame; cycle budget -> nframes for the sidtrace path
+
+# Dump backend: "headlessvice" (default, VICE vsiddump -- unchanged behaviour) or
+# "sidtrace" (the preframr-sidtrace libsidplayfp recorder). Default CI is unchanged
+# until sidtrace parity is proven corpus-wide.
+DUMP_BACKEND = os.environ.get("PREFRAMR_DUMP_BACKEND", "headlessvice").lower()
 
 
 def _base(sid_path):
@@ -100,6 +106,21 @@ def _render_dump(sid_path, subtune, out_path):
         shutil.move(produced, out_path)
 
 
+def _render_dump_sidtrace(sid_path, subtune, out_path):
+    """Render ``subtune`` of ``sid_path`` to ``out_path`` via the sidtrace tool.
+
+    Produces the same ``.dump.parquet`` schema as the headlessvice path, so the
+    rest of the fixture machinery (and every consumer) is backend-agnostic. The
+    frame budget is the songlength cycle budget converted to PAL frames (a
+    superset is harmless: per_frame_state bounds frames itself)."""
+    from preframr_tokens.codec import sidtrace_dump
+
+    limit = _songlength_cycles(sid_path, subtune)
+    nframes = max(4, int(limit / PAL_CPF) + 2)
+    build = os.environ.get("PREFRAMR_SIDTRACE_BUILD", "0") == "1"
+    sidtrace_dump.render_dump(sid_path, subtune, nframes, out_path, build=build)
+
+
 def _resolve_sid(hvsc_rel, sid_url):
     local = os.path.join(HVSC, hvsc_rel)
     if os.path.exists(local):
@@ -119,7 +140,10 @@ def _resolve_dump(sid_path, hvsc_rel, subtune):
         return local
     cache = os.path.join(FIXTURE_DIR, name)
     if not os.path.exists(cache):
-        _render_dump(sid_path, subtune, cache)
+        if DUMP_BACKEND == "sidtrace":
+            _render_dump_sidtrace(sid_path, subtune, cache)
+        else:
+            _render_dump(sid_path, subtune, cache)
     return cache
 
 
