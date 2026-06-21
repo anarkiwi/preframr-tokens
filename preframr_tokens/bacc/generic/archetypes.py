@@ -125,6 +125,36 @@ def pw_sweep_resets(state, voice):
     return (np.nonzero(diff < -threshold)[0] + 1).tolist()
 
 
+def freq_note_onsets(state, voice):
+    """Frames where the voice's FREQUENCY lane jumps to a new note, the analogue of
+    :func:`pw_sweep_resets` for a player that advances the melody PURELY in the freq
+    lane -- gate held high, with no control / ADSR / PW retrigger at all, so
+    :func:`note_boundaries` and :func:`pw_sweep_resets` both find nothing.
+
+    Such a tune (e.g. RoMuzak's per-note glide-vibrato, Digitalizer's per-note
+    arp/vibrato cell) signals each new note only as a freq step far larger than the
+    intra-note modulation step (the vibrato wiggle / glide ramp).  That big step is
+    a bus-visible note-on for the freq lane, so it is a useful EXTRA slice point: a
+    per-note vibrato or glide cell then becomes one short, fittable segment instead
+    of one over-long segment no single archetype can cover.
+
+    The threshold is derived from the lane's OWN median nonzero step (no per-driver
+    constant), so a genuinely smooth single sweep -- whose steps are all near the
+    median -- never trips it and is left as one segment to surface if irreducible.
+
+    NB: used ONLY to slice the FREQ lane (like :func:`pw_sweep_resets`).  It is NOT
+    applied to the PW lane, where a reflecting-triangle PWM's own large reflection
+    drops would be misread as note-ons and fragment a genuine generator into raw
+    bytes, faking a residual-zero (HARD RULE #0)."""
+    fr = lane_freq(state, voice)
+    diff = np.diff(fr.astype(np.int64))
+    nonzero = np.abs(diff[diff != 0])
+    if nonzero.size == 0:
+        return []
+    threshold = max(8, 4 * int(np.median(nonzero)))
+    return (np.nonzero(np.abs(diff) > threshold)[0] + 1).tolist()
+
+
 def lane_freq(state, voice):
     """The voice's 16-bit frequency lane (freq-lo | freq-hi << 8)."""
     base = 7 * voice
@@ -1495,10 +1525,25 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
         base is None or (stall[0] > 2 * base[2] and stall[0] >= 36)
     ):
         base = (stall[1], stall[2], stall[0])
-    if base is None:
-        tablewalk = _prefix_tablewalk(seg)
-        if tablewalk is not None:
-            return (tablewalk[1], tablewalk[2], tablewalk[0])
+    # A period-P value table that replays the WHOLE remaining segment is a genuine
+    # reused generator -- a per-note freq arp whose 3-note table is itself looped
+    # to form a longer super-period (e.g. Digitalizer's period-48 = 3 notes x 16),
+    # or any undelayed wavetable beyond the arp cap.  The cheap local matchers grab
+    # only a short prefix of such a loop (one ratewalk/arp cycle) and would
+    # fragment the rest into ~one piece per cycle past the cover cap, leaving the
+    # lane un-fit.  As with ``tablewalk_lead`` / ``dwellratewalk`` / ``stall``, let
+    # ``tablewalk`` win when it covers SUBSTANTIALLY more than the base run (>= twice
+    # it, and an absolute floor) so a single looping table collapses to one piece,
+    # while a merely-as-long coincidental period can never shadow a real
+    # accumulator/arp (which keeps the LAST-RESORT base-is-None path below too).
+    tablewalk = _prefix_tablewalk(seg)
+    if tablewalk is not None and (
+        base is None or (tablewalk[0] > 2 * base[2] and tablewalk[0] >= 36)
+    ):
+        # base is None keeps tablewalk a LAST RESORT for a lane the proven library
+        # cannot start at all; the substantial-length guard lets a genuine looping
+        # table win over a short coincidental local prefix.
+        return (tablewalk[1], tablewalk[2], tablewalk[0])
     return base
 
 
