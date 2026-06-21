@@ -456,9 +456,27 @@ def _prefix_wrapaccum(seg):
     if rate == 0:
         return None
     lo_b = int(seg.min())
-    best = None
     seen_max = int(seg.max())
-    for hi_b in range(seen_max + 1, seen_max + abs(rate) + 2):
+    # The wrap boundary is DATA-DETERMINED, not brute-forced.  For rate>0 a wrap
+    # frame shows up as ``out[i+1] = out[i] + rate - span`` (span = hi_b - lo_b), so
+    # every step against the rate's sign pins exactly one candidate boundary
+    # ``hi_b = lo_b + rate - step`` (and mirror for rate<0).  Iterating only those
+    # candidates (plus the no-wrap boundary just past ``seen_max``) tests every hi_b
+    # that could EVER produce a matching wrap -- byte-exact-identical to the old
+    # scan -- in O(N) instead of O(|rate|), which had blown up to millions of renders
+    # on wide multispeed freq sweeps (rate ~ thousands).
+    steps = np.diff(seg)
+    if rate > 0:
+        # wrap: out[i+1] = out[i] + rate - span  ->  span = rate - step (step < 0)
+        wrap_steps = steps[steps < 0]
+        cand = {lo_b + rate - int(s) for s in wrap_steps}
+    else:
+        # wrap: out[i+1] = out[i] + rate + span  ->  span = step - rate (step > 0)
+        wrap_steps = steps[steps > 0]
+        cand = {lo_b + int(s) - rate for s in wrap_steps}
+    cand.add(seen_max + 1)  # the no-wrap boundary (pure accum within the window)
+    best = None
+    for hi_b in sorted(c for c in cand if c > seen_max):
         rend = render_wrapaccum(length, int(seg[0]), rate, lo_b, hi_b)
         match = _match_prefix(rend, seg)
         if match >= 6 and (best is None or match > best[0]):
