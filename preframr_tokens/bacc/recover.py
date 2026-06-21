@@ -37,6 +37,10 @@ def recover_program(sid_path, dump_path, cpf=CPF, subtune=0, maxframes=10**9):
 
 def render_program(program):
     """Render a recovered BaccProgram to an (nframes, 25) register array."""
+    if program.driver == "generic":
+        from preframr_tokens.bacc.generic.recover import render_generic
+
+        return render_generic(program)
     psid_backend = _backend_for(program.driver)
     return psid_backend.render(program)
 
