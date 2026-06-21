@@ -67,7 +67,10 @@ def fit_generator_lanes(state, note_table):
         fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, 0xFFFF)
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
-        pres = A.fit_lane(plane, ons, nframes, note_table, carry, 0xFFFF)
+        # The pulse-width register is 12-bit; fitting it with its true width lets a
+        # table-driven PW accumulator (dwellratewalk) wrap exactly as the chip does
+        # at the 0xFFF boundary rather than at 0xFFFF.
+        pres = A.fit_lane(plane, ons, nframes, note_table, carry, 0xFFF)
         out[(voice, "freq")] = (fres, None)
         out[(voice, "pw")] = (pres, carry)
     return out, noteons

@@ -9,15 +9,20 @@ Every archetype reads only SID-chip / arithmetic semantics; there is NO
 per-driver constant here.  This is the driver-agnostic form of the recovery the
 hand backends do by disassembly: hold / accum / dwellaccum / wrapaccum / arp /
 glide / vibrato / pingpong / decay (+ the composites) cover the proven library,
-and five generic periodic / wavetable generators close the generator-lane gaps:
+and six generic periodic / wavetable generators close the generator-lane gaps:
 :func:`render_maskaccum` (a fixed-period-paced accumulator), :func:`render_ratewalk`
 (a period-P signed-rate wavetable accumulator -- the fractional-rate /
-wider-internal-width sweep), :func:`render_tablewalk` (a period-P value table
-beyond the arp cap), :func:`render_tablewalk_lead` (a lead hold then a period-P
-value table -- a delayed long-period modulation), and
+wider-internal-width sweep), :func:`render_dwellratewalk` (a period-P signed-step
+table HELD a fixed dwell per entry and accumulated at the lane's true width -- the
+table-driven reflecting / ramping PWM whose effective period ``dwell*P`` exceeds the
+ratewalk cap, e.g. a HardTrack-style pulse wavetable), :func:`render_tablewalk`
+(a period-P value table beyond the arp cap), :func:`render_tablewalk_lead` (a lead
+hold then a period-P value table -- a delayed long-period modulation), and
 :func:`render_wavetable_ptr` (a pointer over a period-P value table stepped by an
 EXTERNAL per-voice advance clock -- a wavetable-paced walk whose drifting,
-non-periodic dwell is the separable groove tick, not stored output).
+non-periodic dwell is the separable groove tick, not stored output).  ``pingpong``
+also reflects at EITHER the visible extreme or one past it, so a fine triangle
+vibrato that turns on its apex is one piece, not a stub.
 """
 
 from collections import defaultdict
@@ -378,6 +383,32 @@ def render_ratewalk(seg_len, v0, rate_table, ctr0=0, width_mask=0xFFFF):
     for i in range(seg_len):
         out[i] = val & width_mask
         val = (val + rate_table[(ctr0 + i) % period]) & width_mask
+    return out
+
+
+def render_dwellratewalk(seg_len, v0, rate_table, dwell, ctr0=0, width_mask=0xFFFF):
+    """Dwelled wavetable-rate accumulator: a pointer over a period-P signed-rate
+    ``rate_table`` whose CURRENT entry is held ``dwell`` frames before the pointer
+    advances, accumulating ``value += rate_table[(ctr//dwell) % P]`` each frame,
+    width-masked.
+
+    This is the table-driven pulse / sweep accumulator a tracker player runs from a
+    pulse wavetable whose columns are (signed step, direction, dwell): each table
+    entry contributes a fixed signed step for ``dwell`` ticks, then the pointer
+    steps to the next entry, looping at the table end.  It generalises
+    :func:`render_ratewalk` (one rate per frame) by folding the dwell column out of
+    the rate table, so a reflecting / ramping PWM whose step magnitude and direction
+    are sequenced by a short wavetable (held several frames each) is ONE rule -- the
+    P-entry step table plus the scalar dwell -- not a ``dwell*P``-entry rate table.
+    The ``width_mask`` is the lane's own width (0xFFF for the 12-bit pulse-width
+    register), so a step crossing the register boundary wraps exactly as the chip's
+    accumulator does, never as stored data."""
+    out = np.empty(seg_len, dtype=np.int64)
+    period = len(rate_table)
+    val = v0
+    for i in range(seg_len):
+        out[i] = val & width_mask
+        val = (val + rate_table[((ctr0 + i) // dwell) % period]) & width_mask
     return out
 
 
@@ -762,31 +793,44 @@ def _prefix_pingpong(seg):
     if len(nonzero) == 0:
         return None
     lo_b, hi_b = int(seg.min()), int(seg.max())
+    # Two reflection conventions are observed on the bus, and a triangle PWM player
+    # may use either: it can reflect ONE PAST the visible extreme (the step lands on
+    # ``min-1``/``max+1`` internally and the next step turns back, so the extreme
+    # itself is never emitted as a turning point) OR reflect AT the visible extreme
+    # (the player clamps to ``min``/``max`` and turns there, emitting the extreme as
+    # the apex).  ``render_pingpong`` reflects when the next step crosses the bound,
+    # so the first convention needs bound ``min-1``/``max+1`` and the second needs
+    # bound ``min``/``max``.  Both are stored as ``lo``/``hi`` adjusted so that
+    # :func:`render_fit`'s ``lo-1``/``hi+1`` reproduces the chosen reflect bound, and
+    # both are tried; the exact-extreme convention is the one a fine ``+/-1`` triangle
+    # vibrato uses, which the past-extreme-only form left as a 7-frame stub.
+    bound_pairs = ((lo_b - 1, hi_b + 1), (lo_b, hi_b))
     best = None
     for rate in sorted(set(nonzero.tolist()))[:5]:
-        for dwell in range(0, 12):
-            for d0 in range(dwell + 1):
-                for dir0 in (0, 1):
-                    rend = render_pingpong(
-                        length, base, int(rate), lo_b - 1, hi_b + 1, dwell, d0, dir0
-                    )
-                    match = _match_prefix(rend, seg)
-                    if match >= _MINRUN and (best is None or match > best[0]):
-                        best = (
-                            match,
-                            "pingpong",
-                            {
-                                "v0": base,
-                                "rate": int(rate),
-                                "lo": lo_b,
-                                "hi": hi_b,
-                                "dwell": dwell,
-                                "d0": d0,
-                                "dir0": dir0,
-                            },
+        for refl_lo, refl_hi in bound_pairs:
+            for dwell in range(0, 12):
+                for d0 in range(dwell + 1):
+                    for dir0 in (0, 1):
+                        rend = render_pingpong(
+                            length, base, int(rate), refl_lo, refl_hi, dwell, d0, dir0
                         )
-                        if match == length:
-                            return best
+                        match = _match_prefix(rend, seg)
+                        if match >= _MINRUN and (best is None or match > best[0]):
+                            best = (
+                                match,
+                                "pingpong",
+                                {
+                                    "v0": base,
+                                    "rate": int(rate),
+                                    "lo": refl_lo + 1,
+                                    "hi": refl_hi - 1,
+                                    "dwell": dwell,
+                                    "d0": d0,
+                                    "dir0": dir0,
+                                },
+                            )
+                            if match == length:
+                                return best
     return best
 
 
@@ -1019,6 +1063,78 @@ def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=12, minrun=8):
             )
         if best and best[0] == length:
             break
+    return best
+
+
+def _prefix_dwellratewalk(seg, width_mask=0xFFFF, maxp=24, maxdwell=16, minrun=24):
+    """Longest byte-exact dwelled wavetable-rate accumulator prefix.
+
+    Recovers a (signed-step ``rate_table``, scalar ``dwell``) pair whose accumulator
+    replays the longest prefix: the per-frame signed delta is run-length encoded, the
+    common run length is taken as ``dwell``, and the per-run step values (capped at
+    period ``maxp``) form the table.  This is the table-driven pulse / sweep
+    accumulator (the HardTrack-style pulse wavetable: step+dir held ``dwell`` frames
+    per entry, looping) whose effective period (``dwell*P``) is far beyond the plain
+    :func:`_prefix_ratewalk` period cap.  Folding the dwell column out keeps the
+    stored form a SMALL step table plus one scalar, never a ``dwell*P``-entry rate
+    table and never per-frame output.  Requires >=2 distinct steps and a genuine
+    dwell (>1) so a plain per-frame ratewalk / accum is left to its cheaper rule, and
+    a substantial ``minrun`` so a short coincidental ramp is not promoted."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diff = np.diff(seg) % (width_mask + 1)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    nonzero = dsign[dsign != 0]
+    if len(nonzero) < 3:
+        return None
+    # The dwell is the dominant run length of the signed-delta stream; a table-driven
+    # accumulator holds each step a fixed number of frames, so the first few runs are
+    # all that length.  Recover it from the leading runs rather than trusting a single
+    # value, so a one-frame turning glitch does not mis-set the dwell.
+    runs = []
+    i = 0
+    while i < len(dsign) and len(runs) < maxp + 2:
+        j = i
+        while j < len(dsign) and dsign[j] == dsign[i]:
+            j += 1
+        runs.append((int(dsign[i]), j - i))
+        i = j
+    cand_dwells = sorted(
+        {rl for _, rl in runs if 1 < rl <= maxdwell},
+        reverse=True,
+    )
+    best = None
+    for dwell in cand_dwells:
+        # The step table is one entry per dwell-segment; read it off the segment at
+        # the dwell stride from the per-frame deltas.
+        nsteps = min(maxp, (len(dsign)) // dwell)
+        if nsteps < 2:
+            continue
+        table = [int(dsign[k * dwell]) for k in range(nsteps)]
+        # smallest period whose step table replays the longest prefix
+        for period in range(2, nsteps + 1):
+            tbl = table[:period]
+            if len(set(tbl)) < 2:
+                continue
+            rend = render_dwellratewalk(length, int(seg[0]), tbl, dwell, 0, width_mask)
+            match = _match_prefix(rend, seg)
+            if match >= max(minrun, 2 * dwell * period) and (
+                best is None or match > best[0]
+            ):
+                best = (
+                    match,
+                    "dwellratewalk",
+                    {
+                        "v0": int(seg[0]),
+                        "rate_table": tbl,
+                        "dwell": dwell,
+                        "width": width_mask,
+                    },
+                )
+            if best and best[0] == length:
+                return best
     return best
 
 
@@ -1294,6 +1410,14 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     lead_walk = _prefix_tablewalk_lead(seg)
     if lead_walk is not None and (base is None or lead_walk[0] > base[2]):
         base = (lead_walk[1], lead_walk[2], lead_walk[0])
+    # A dwelled rate-wavetable accumulator (a pulse/sweep wavetable: signed step held
+    # ``dwell`` frames per entry, looping) runs far longer than any periodic generator
+    # the proven library reaches, since its effective period (dwell*P) exceeds the
+    # ratewalk cap; let it win on length so the table-driven reflecting/ramping PWM is
+    # one piece rather than a chain of short accum/pingpong stubs.
+    dwell_walk = _prefix_dwellratewalk(seg, width_mask)
+    if dwell_walk is not None and (base is None or dwell_walk[0] > base[2]):
+        base = (dwell_walk[1], dwell_walk[2], dwell_walk[0])
     wptr = _prefix_wavetable_ptr(seg)
     if wptr is not None and (base is None or wptr[0] > base[2]):
         base = (wptr[1], wptr[2], wptr[0])
@@ -1485,6 +1609,17 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
         )
     if name == "tablewalk_lead":
         return render_tablewalk_lead(plen, prm["lead"], prm["value0"], prm["table"])
+    if name == "dwellratewalk":
+        # phase 0: the matcher anchors v0 at the piece start and the dwell phase
+        # resets there, so a piecewise chain renders each piece from its own start.
+        return render_dwellratewalk(
+            plen,
+            prm["v0"],
+            prm["rate_table"],
+            prm["dwell"],
+            0,
+            prm.get("width", 0xFFFF),
+        )
     if name == "wavetable_ptr":
         return render_wavetable_ptr(plen, prm["table"], prm["phase"], prm["advance"])
     if name == "additive_pw":
