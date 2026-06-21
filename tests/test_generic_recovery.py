@@ -228,6 +228,61 @@ def test_fit_pingpong_round_trip():
     _fit_round_trips(lane)
 
 
+def test_fit_pingfold_round_trip():
+    # A mirror-fold fixed-point triangle (an integer-step bounce between 0 and 64).
+    lane = A.render_pingfold(80, 7, 0, 0, 64, 0, 1)
+    fit = _fit_round_trips(lane)
+    assert fit[0] == "pingfold"
+
+
+def test_prefix_pingfold_recovers_fractional_triangle():
+    # MusicShop's voice freq-lo LFO is a slow triangle whose per-frame increment is
+    # FRACTIONAL: an internal accumulator stepping +5 with one fractional bit emits
+    # the alternating +2/+3 ramp 0,2,5,7,10,... and mirror-folds at the 0..63 window
+    # (apex value drifts between 63 and 64 as the fractional carry crosses the bound).
+    # The clamping pingpong cannot reproduce that drift, so the lane fragmented past
+    # the piece cap; pingfold recovers the WHOLE triangle as one closed-form rule
+    # (step, frac, bounds), not stored per-frame output (HARD RULE #0).
+    lane = A.render_pingfold(512, 5, 1, 0, 64 << 1, 0, 1)
+    assert lane.max() - lane.min() <= 64  # a sub-register window, fractional ramp
+    match = A._prefix_pingfold(lane)
+    assert match is not None
+    assert match[1] == "pingfold"
+    assert match[0] == len(lane)  # the whole multi-cycle triangle in one piece
+    rendered = A.render_pingfold(
+        len(lane),
+        match[2]["step"],
+        match[2]["frac"],
+        match[2]["lo"],
+        match[2]["hi"],
+        match[2]["acc0"],
+        match[2]["dir0"],
+    )
+    assert np.array_equal(rendered, lane)  # byte-exact over many fold cycles
+
+
+def test_pingfold_collapses_long_triangle_to_one_generator_piece():
+    # The full-tune fitter must cover a long fractional triangle in ONE pingfold
+    # piece rather than the chain of short accum/pingpong stubs the cheap library
+    # tiles a ramp/apex into -- otherwise the per-note cover blows past the piece cap
+    # and surfaces the whole lane as un-fit.
+    lane = A.render_pingfold(600, 7, 1, 0, 64 << 1, 0, 1)
+    fit = A.fit_segment(lane, 0, None, None, F.FREQ_WIDTH)
+    assert fit is not None
+    name = fit[0] if fit[0] != "piecewise" else None
+    assert name == "pingfold"  # one rule, not fragments
+    rendered = A.render_fit(fit, len(lane), None, None)
+    assert np.array_equal(rendered, lane)
+
+
+def test_pingfold_not_promoted_over_short_coincidental_ramp():
+    # A short plain ramp the cheap accum already covers must NOT be rewritten as a
+    # pingfold (which is reserved for a genuinely long, fold-bouncing triangle); the
+    # minrun floor keeps the cheaper rule in charge of a brief sweep.
+    lane = np.array([10, 12, 14, 16, 18, 20, 22], dtype=np.int64)
+    assert A._prefix_pingfold(lane) is None
+
+
 def test_fit_wrapaccum_round_trip():
     lane = A.render_wrapaccum(48, 0x100, 0x40, 0x100, 0x800)
     _fit_round_trips(lane)

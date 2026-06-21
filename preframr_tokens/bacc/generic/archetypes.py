@@ -422,6 +422,41 @@ def render_pingpong(seg_len, v0, rate, lo_b, hi_b, dwell, d0, dir0):
     return out
 
 
+def render_pingfold(seg_len, step, frac, lo, hi, acc0, dir0):
+    """Mirror-reflecting fixed-point triangle accumulator.
+
+    An INTERNAL accumulator runs at ``frac`` extra fractional bits and steps by a
+    constant ``step`` per frame (so the observable per-frame increment is the
+    fractional ``step / 2**frac`` -- e.g. the alternating +2/+3 of a step-5,
+    1-fractional-bit ramp); the emitted lane value is ``acc >> frac``.  When the
+    accumulator crosses a bound it MIRROR-folds -- ``acc = 2*bound - acc`` -- and
+    reverses direction, so the overshoot past the extreme is reflected back exactly
+    as it would by an ``abs``-style bounce rather than clamped at the extreme.
+
+    This is the freq/PW vibrato/LFO a player runs as a triangle over an 8-bit
+    register: a constant internal increment bouncing between an upper and lower
+    bound (MusicShop's voice freq-lo triangle, a slow per-frame LFO sweep over a
+    fixed window).  It generalises :func:`render_pingpong` -- whose turn-back
+    convention clamps at the visible extreme and so cannot reproduce the gradual
+    apex drift a fractional internal increment leaves -- to a true mirror-fold at
+    the bound with internal sub-register precision, recovering the WHOLE
+    long-period triangle as one closed-form rule (step, frac, bounds) rather than
+    storing the per-frame ramp.  ``lo``/``hi`` are the internal (shifted) fold
+    bounds and ``acc0``/``dir0`` the internal seed, all bus-recovered."""
+    out = np.empty(seg_len, dtype=np.int64)
+    acc, direction = acc0, dir0
+    for i in range(seg_len):
+        out[i] = acc >> frac
+        acc += step * direction
+        if acc > hi:
+            acc = 2 * hi - acc
+            direction = -direction
+        elif acc < lo:
+            acc = 2 * lo - acc
+            direction = -direction
+    return out
+
+
 def render_decay(seg_len, v0, rate, every, ctr0):
     """Drum / skydive: value decrements by ``rate`` every ``every`` frames,
     emitting the pre-decrement value."""
@@ -931,6 +966,73 @@ def _prefix_pingpong(seg):
                                     "hi": refl_hi - 1,
                                     "dwell": dwell,
                                     "d0": d0,
+                                    "dir0": dir0,
+                                },
+                            )
+                            if match == length:
+                                return best
+    return best
+
+
+def _prefix_pingfold(seg, minrun=24):
+    """Longest byte-exact mirror-fold fixed-point triangle prefix.
+
+    Recovers ``(step, frac, lo, hi, acc0, dir0)`` for :func:`render_pingfold` from
+    the segment's own shape: the internal increment ``step / 2**frac`` is the mean
+    magnitude of the lane's nonzero per-frame deltas, so ``step`` is read at each
+    candidate ``frac`` as ``round(mean_step * 2**frac)`` (a tiny candidate set, not
+    a blind scan), and the fold bounds are the visible extremes shifted into the
+    internal precision (``vis_max << frac`` and one above it -- the two reflection
+    conventions :func:`_prefix_pingpong` also tries).  A candidate is accepted only
+    when it replays a substantial prefix (>= ``minrun``), so a short coincidental
+    ramp is left to the cheaper accum / pingpong rules and only a genuine
+    long-period triangle -- which the clamping :func:`_prefix_pingpong` cannot
+    reproduce once the fractional apex drifts -- is promoted to this one closed-form
+    rule rather than fragmenting into raw-byte pieces (HARD RULE #0)."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diffs = np.diff(seg)
+    nonzero = np.abs(diffs[diffs != 0]).astype(np.float64)
+    if nonzero.size == 0:
+        return None
+    mean_step = float(np.mean(nonzero))
+    vis_lo, vis_hi = int(seg.min()), int(seg.max())
+    base = int(seg[0])
+    best = None
+    for frac in range(0, 4):
+        scale = 1 << frac
+        step = int(round(mean_step * scale))
+        if step <= 0:
+            continue
+        # Two fold-bound conventions, as in _prefix_pingpong: the player either folds
+        # one past the visible extreme or exactly at it.  lo stays 0 (the register
+        # floor) plus the at-extreme variant; hi is the visible max raised into the
+        # internal precision.
+        for hi in (vis_hi << frac, (vis_hi + 1) << frac):
+            for lo in (vis_lo << frac, 0):
+                if hi <= lo:
+                    continue
+                # acc0 sub-resolution seed: the visible value occupies the high bits;
+                # try each fractional remainder so a ramp starting mid-step matches.
+                for sub in range(scale):
+                    acc0 = (base << frac) + sub
+                    if acc0 > hi or acc0 < lo:
+                        continue
+                    for dir0 in (1, -1):
+                        rend = render_pingfold(length, step, frac, lo, hi, acc0, dir0)
+                        match = _match_prefix(rend, seg)
+                        if match >= minrun and (best is None or match > best[0]):
+                            best = (
+                                match,
+                                "pingfold",
+                                {
+                                    "step": step,
+                                    "frac": frac,
+                                    "lo": lo,
+                                    "hi": hi,
+                                    "acc0": acc0,
                                     "dir0": dir0,
                                 },
                             )
@@ -1550,6 +1652,15 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     wptr = _prefix_wavetable_ptr(seg)
     if wptr is not None and (base is None or wptr[0] > base[2]):
         base = (wptr[1], wptr[2], wptr[0])
+    # A mirror-fold fixed-point triangle (a slow per-frame LFO/vibrato bouncing
+    # between two bounds with a fractional internal increment) runs far longer than
+    # the short accum/pingpong stubs the cheap library grabs at each ramp/apex, since
+    # its fractional apex drift defeats the clamping pingpong; let it win on length so
+    # the whole triangle collapses to one closed-form (step, frac, bounds) rule
+    # rather than a chain of short pieces that would amount to storing the ramp.
+    pingfold = _prefix_pingfold(seg)
+    if pingfold is not None and (base is None or pingfold[0] > base[2]):
+        base = (pingfold[1], pingfold[2], pingfold[0])
     # A periodic-stall accumulator may legitimately run far longer than a short
     # coincidental arp/accum prefix the proven library grabs first; let it win
     # only when it covers SUBSTANTIALLY more (>= twice the base run, and an
@@ -1758,6 +1869,16 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
             prm["hi"] + 1,
             prm["dwell"],
             prm.get("d0", prm["dwell"]),
+            prm["dir0"],
+        )
+    if name == "pingfold":
+        return render_pingfold(
+            plen,
+            prm["step"],
+            prm["frac"],
+            prm["lo"],
+            prm["hi"],
+            prm["acc0"],
             prm["dir0"],
         )
     if name == "maskaccum":
