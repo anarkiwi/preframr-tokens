@@ -15,14 +15,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      # Render the register-dump fixtures in the headlessvice VICE container on the
-      # runner (which has Docker) -- they cannot be produced inside a `docker build`.
-      # Pure stdlib + the container; no Python deps needed on the runner.
-      - name: Render register-dump fixtures
-        run: python3 tests/_dump_fixture.py
+      # The gate-fixture register dumps are committed under tests/test_fixtures
+      # (deterministic VICE ground truth; see that directory's .gitignore allowlist).
+      # CI no longer renders them in the headlessvice container -- the committed
+      # dumps ARE the oracle, and the byte-exact recover/verify gate tests fail if
+      # any committed dump is wrong. No Docker-in-Docker render step is needed.
       - name: Build test image
         run: docker build --build-arg PYTHON_VERSION=${{ matrix.python-version }} -t preframr-tokens-test:${{ matrix.python-version }} .
-      # Run the full run_tests.sh gate with the rendered dumps mounted into the cache
-      # the fixtures resolve to (no dumps are baked into the image; see .dockerignore).
-      - name: Run gate (dumps mounted)
+      # Run the full run_tests.sh gate with the committed dumps mounted into the
+      # cache the fixtures resolve to (the dumps are not baked into the image; see
+      # .dockerignore -- they are mounted so the gate uses the checked-out copy).
+      - name: Run gate (committed dumps mounted)
         run: docker run --rm -v "$PWD/tests/test_fixtures:/tok/tests/test_fixtures" preframr-tokens-test:${{ matrix.python-version }}

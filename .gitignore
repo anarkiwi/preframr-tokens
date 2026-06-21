@@ -220,9 +220,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# preframr-tokens: SID register dumps are NOT committed (they derive from
-# copyrighted HVSC song data). tests/sid_fixtures.py regenerates them from HVSC
-# into a local cache outside the source tree ($PREFRAMR_SID_FIXTURE_CACHE,
+# preframr-tokens: SID register dumps are NOT committed in general (they derive
+# from copyrighted HVSC song data). tests/sid_fixtures.py regenerates them from
+# HVSC into a local cache outside the source tree ($PREFRAMR_SID_FIXTURE_CACHE,
 # default $XDG_CACHE_HOME/preframr-tokens/sid-fixtures). Ignore any in-tree
 # cache or stray dump/meta parquet so a song can never be re-committed.
 tests/.sid-cache/
@@ -231,5 +231,11 @@ tests/.sid-cache/
 .claude/
 tests/test_residual_zero_corpus.py
 
-# downloaded/rendered test fixtures (sid + dumps); never committed
-tests/test_fixtures/
+# The fixed GATE_FIXTURES set IS committed under tests/test_fixtures so CI is
+# self-contained (no headlessvice/VICE render step): the committed dumps are
+# deterministic VICE ground truth and the byte-exact recover/verify gate tests
+# fail if any committed dump is wrong. Ignore the directory by default (stray
+# downloads/renders for non-gate tunes stay out) but allow the gate fixtures.
+tests/test_fixtures/*
+!tests/test_fixtures/*.sid
+!tests/test_fixtures/*.dump.parquet
