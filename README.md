@@ -75,17 +75,36 @@ repeat is a single `TRANSPOSE` op (a backward `REPEAT` whose copied notes are
 re-coordinated by one constant grid-interval Δ), exactly what a tracker
 orderlist's transpose does.
 
-## Two-file input, migrating to `.sid`-only
+## Two-file input — and the shipped `.sid`-only path
 
-The codec is currently a **two-file** codec: it takes a `.sid` (the player +
+The hand-backend codec is a **two-file** codec: it takes a `.sid` (the player +
 song data) and a per-frame register `.dump.parquet` of the ground-truth chip
 writes. It recovers the program by emulating the `.sid`, then verifies the render
-against the dump.
+against the dump. That dump is produced offline by the `anarkiwi/headlessvice`
+VICE container.
 
-The dump is produced offline by the `anarkiwi/headlessvice` VICE container. An
-active migration replaces that external dump with **in-process emulation** (the
-`sidemu` py65 path already runs the playroutine), moving toward a **`.sid`-only**
-codec.
+The **generic** recovery now closes the migration to a **single input file**:
+
+```python
+from preframr_tokens.bacc.generic import recover_from_sid
+
+# .sid ALONE -> BaccProgram(driver="generic"); NO .dump.parquet
+program, resid, dump = recover_from_sid("Grid_Runner.sid")
+assert sum(resid.values()) == 0   # whole-tune, all 25 registers, byte-exact
+```
+
+`recover_from_sid` runs the deterministic `preframr-sidtrace` tool ONCE over the
+`.sid`, which emits BOTH the per-frame register dump (`.sidwr.bin`) and the bus
+trace (`.bus.bin`) in-process. The generic fitter recovers the program from the
+bus trace, and the render is verified residual-zero against the SAME-run dump —
+the two are internally self-consistent (same emulator, same run). Validated
+byte-exact on **Grid_Runner** (GoatTracker) and **Monty_on_the_Run** (Hubbard)
+from the `.sid` alone — two drivers, one driver-agnostic path.
+
+The binary is located via `SIDTRACE_BIN` (env), so the whole-tune residual-zero
+test is **skip-if-binary-absent**: the default CI gate runs the committed-dump
+oracle in a container with no `preframr-sidtrace` binary and stays self-contained
+(no new hard external dependency).
 
 ## Install
 

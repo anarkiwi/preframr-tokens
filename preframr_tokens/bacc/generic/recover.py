@@ -29,20 +29,24 @@ from preframr_tokens.bacc.primitive import BaccProgram
 DRIVER = "generic"
 
 
-def recover_generic(sid, dump, bustrace):
+def recover_generic(sid, dump, bustrace, t0=None):
     """Recover a generic :class:`BaccProgram` from a tune's trusted bus trace.
 
     ``sid`` is retained for provenance only (the recovery reads the bus trace,
     not the playroutine).  ``dump`` supplies the frame-0 anchor (the dump defines
     the grid the bus-state must reproduce); when ``dump`` is None the bus's own
     first-play cycle is used.  ``bustrace`` is a native preframr-sidtrace
-    ``.bus.bin`` path or a pre-loaded ``BUS_DT`` record array.
+    ``.bus.bin`` path or a pre-loaded ``BUS_DT`` record array.  ``t0`` overrides
+    the anchor with a known frame-0 cycle -- the sid-only path passes the
+    ``.sidwr.bin`` dump's first-play cycle so the bus-state is framed onto the
+    SAME grid as the in-process dump (``recover_from_sid``).
 
     The returned program's ``tables`` carry the per-register fitted programs and
     the bus-recovered note table; ``boot`` is the frame-0 register seed.
     """
     records = bustrace if isinstance(bustrace, np.ndarray) else load_bus(bustrace)
-    t0 = dump_first_play_cycle(dump) if dump is not None else None
+    if t0 is None and dump is not None:
+        t0 = dump_first_play_cycle(dump)
     state, _, cpf = per_frame_state_from_bus(records, t0=t0)
     if state is None or len(state) < 2:
         raise ValueError(f"bus trace did not parse to frames: {bustrace}")
@@ -64,6 +68,46 @@ def recover_generic(sid, dump, bustrace):
         },
     )
     return program
+
+
+def recover_from_sid(
+    sid_path, subtune=1, nframes=200, sidtrace_path=None, out_prefix=None
+):
+    """Recover a generic :class:`BaccProgram` from a ``.sid`` ALONE.
+
+    The two-file (``.sid`` + ``.dump.parquet``) input collapses to a single file:
+    one deterministic ``preframr-sidtrace`` run generates BOTH the per-frame
+    register dump and the bus trace in-process (no pre-rendered dump), the GENERIC
+    recovery fits the program from the bus trace, and the render is verified
+    residual-zero against the SAME-run dump (the two are internally
+    self-consistent -- boot-prolog/tail divergences vs VICE are irrelevant).
+
+    Returns ``(program, resid, dump_state)`` where ``program`` is the recovered
+    ``driver="generic"`` :class:`BaccProgram`, ``resid`` maps register -> residual
+    frame count against the in-process dump (``sum == 0`` is whole-tune,
+    all-25-register byte-exact), and ``dump_state`` is the generated dump.
+
+    Raises :class:`FileNotFoundError` when no ``preframr-sidtrace`` binary is
+    available (``SIDTRACE_BIN``); the default render-free CI never invokes it.
+    """
+    from preframr_tokens.bacc.generic.sidtrace import (  # local: optional binary dep
+        sid_to_dump_and_bustrace,
+    )
+
+    dump_state, bus_path, t0 = sid_to_dump_and_bustrace(
+        sid_path, subtune, nframes, sidtrace_path, out_prefix
+    )
+    if dump_state is None or len(dump_state) < 2:
+        raise ValueError(f"sidtrace produced no frames for {sid_path}")
+    records = load_bus(bus_path)
+    program = recover_generic(sid_path, None, records, t0=t0)
+    rendered = render_generic(program)
+    nf = min(len(rendered), len(dump_state))
+    resid = {
+        reg: int(np.sum(rendered[:nf, reg] != dump_state[:nf, reg]))
+        for reg in range(NREG)
+    }
+    return program, resid, dump_state[:nf]
 
 
 def render_generic(program):
@@ -95,14 +139,18 @@ def render_generic(program):
     return rendered
 
 
-def residual(program, bustrace, dump=None):
+def residual(program, bustrace, dump=None, t0=None):
     """Per-register residual frame counts of :func:`render_generic` against the
     bus-state ``program`` was recovered from.  Returns ``(resid, rendered,
     state)`` where ``resid`` maps register -> residual frame count (0 = byte-exact
     for that register).  ``sum(resid.values()) == 0`` is whole-tune residual-zero.
+
+    ``t0`` (the sid-only ``.sidwr.bin`` dump anchor) overrides the parquet
+    ``dump`` anchor so the bus-state is framed onto the dump's grid.
     """
     records = bustrace if isinstance(bustrace, np.ndarray) else load_bus(bustrace)
-    t0 = dump_first_play_cycle(dump) if dump is not None else None
+    if t0 is None and dump is not None:
+        t0 = dump_first_play_cycle(dump)
     state, _, _ = per_frame_state_from_bus(records, t0=t0)
     rendered = render_generic(program)
     nframes = min(len(rendered), len(state))

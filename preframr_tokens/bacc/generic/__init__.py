@@ -24,6 +24,11 @@ Pipeline (every recovered structure is traced to the bus):
      SELF-CONTAINED ``render_generic`` / ``residual``: the program renders the
      bus-state byte-exact (residual=0) on the proven tunes, independent of any
      hand backend.
+  6. :mod:`sidtrace` + ``recover_from_sid`` close the loop to a SINGLE input
+     file: one deterministic ``preframr-sidtrace`` run over a ``.sid`` ALONE
+     emits BOTH the per-frame register dump (``.sidwr.bin``) and the bus trace
+     (``.bus.bin``) in-process, so no pre-rendered ``.dump.parquet`` is required;
+     the render is verified residual-zero against the SAME-run dump.
 
 Measured result (whole-tune, all 25 registers, byte-exact against the bus-state):
 
@@ -50,9 +55,10 @@ repo for the full per-tune accounting.
 """
 
 from preframr_tokens.bacc.generic.recover import (
+    recover_from_sid,
     recover_generic,
     render_generic,
     residual,
 )
 
-__all__ = ["recover_generic", "render_generic", "residual"]
+__all__ = ["recover_from_sid", "recover_generic", "render_generic", "residual"]
