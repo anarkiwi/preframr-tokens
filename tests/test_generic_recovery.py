@@ -1772,3 +1772,157 @@ def test_whole_tune_residual_zero_real_trace():
     resid, _, state = residual(program, records)
     total = sum(resid.values())
     assert total == 0, f"residual on {state.shape}: {resid}"
+
+
+# --- generic-driver token (de)serialization round-trip --------------------
+# The generic program (per-register fits, no score / no static_img) round-trips
+# through the model-facing token-id stream byte-exact: the codec is a faithful
+# inverse pair, so render(ids_to_program(program_to_ids(prog), driver="generic"))
+# == render_generic(prog) byte-for-byte.
+from preframr_tokens.bacc.generic_serialize import (  # noqa: E402
+    _read_value,
+    _write_value,
+    generic_ids_to_program,
+    generic_program_to_ids,
+)
+from preframr_tokens.bacc.recover import render_program  # noqa: E402
+from preframr_tokens.bacc.serialize import (  # noqa: E402
+    ids_to_program,
+    measure,
+    program_to_ids,
+)
+
+
+def test_generic_value_codec_faithful_inverse():
+    """The generic JSON-value codec round-trips every fit value type verbatim --
+    None / bool / int (signed) / float (bit-exact) / str / nested list / dict."""
+    values = [
+        None,
+        True,
+        False,
+        0,
+        1,
+        -1,
+        123456789,
+        -987654321,
+        3.5,
+        -0.0,
+        1e-9,
+        float("inf"),
+        "read",
+        "",
+        "utf—dash",
+        [1, 2, [3, 4], {"k": "v"}],
+        {"mode": "accum", "clock": {"kind": "every"}, "table": [1, 2, 3], "lead": 0},
+    ]
+    for value in values:
+        out = []
+        _write_value(out, value)
+        got, i = _read_value(out, 0)
+        assert i == len(out)
+        assert got == value or (
+            isinstance(value, float) and repr(got) == repr(value)
+        ), f"{value!r} -> {got!r}"
+
+
+def _synth_generic_program():
+    """A small synthetic generic program with the same serialized shape the
+    recovery produces (note_table + genfits + eventfits of mixed value types),
+    so the codec round-trip is exercised without a real bus trace.  All three
+    voices' freq/pw lanes are present (render_generic reads every voice); the
+    fits are plain ``hold`` segments so the program renders cleanly."""
+    nframes = 42
+    genfits = {}
+    for voice in range(3):
+        genfits[f"{voice}:freq"] = {
+            "segments": [
+                [0, 20, ["hold", {"value": 1234 + voice}]],
+                [20, nframes, ["hold", {"value": 5678 + voice}]],
+            ],
+            "carry": None,
+        }
+        genfits[f"{voice}:pw"] = {
+            "segments": [[0, nframes, ["hold", {"value": 2048 + voice}]]],
+            "carry": [2048, 0],
+        }
+    return BaccProgram(
+        driver="generic",
+        nframes=nframes,
+        boot=list(range(25)),
+        instruments=[],
+        score=[],
+        seed={"sid": "synth.sid", "cpf": 19656},
+        tables={
+            "note_table": [i * 17 & 0xFFFF for i in range(128)],
+            "genfits": genfits,
+            "eventfits": {
+                "4": [[0, nframes, "hold", {"value": 33}]],
+                "5": [
+                    [0, 10, "hold", {"value": 240}],
+                    [10, nframes, "hold", {"value": 15}],
+                ],
+            },
+        },
+    )
+
+
+def test_generic_token_roundtrip_synthetic():
+    """A synthetic generic program round-trips through the token stream and the
+    render dispatch resolves driver="generic" end-to-end byte-exact."""
+    prog = _synth_generic_program()
+    ids = program_to_ids(prog)  # dispatches to generic_program_to_ids
+    rt = ids_to_program(ids, driver="generic")
+    assert rt.driver == "generic"
+    assert rt.nframes == prog.nframes
+    assert rt.boot == prog.boot
+    assert rt.tables["note_table"] == prog.tables["note_table"]
+    assert rt.tables["genfits"] == prog.tables["genfits"]
+    assert rt.tables["eventfits"] == prog.tables["eventfits"]
+    # direct module entrypoints agree with the dispatch
+    assert generic_program_to_ids(prog) == ids
+    assert generic_ids_to_program(ids).tables == rt.tables
+    # render dispatch resolves generic + is byte-exact across the round-trip
+    assert np.array_equal(render_program(rt), render_generic(prog))
+    brk, nframes = measure(prog)
+    assert nframes == prog.nframes
+    assert brk["total"] == len(ids)
+    assert set(brk) == {
+        "nframes",
+        "boot",
+        "note_table",
+        "genfits",
+        "eventfits",
+        "total",
+    }
+    assert brk["boot"] == 25
+
+
+def test_generic_token_roundtrip_synth_bus(synth_bus):
+    """The recovered generic program (synthetic bus trace) round-trips through the
+    token stream byte-exact: token-render == render_generic, residual still zero."""
+    prog = recover_generic("synth.sid", None, synth_bus)
+    ids = program_to_ids(prog)
+    rt = ids_to_program(ids, driver="generic")
+    assert np.array_equal(render_program(rt), render_generic(prog))
+    resid, _, _ = residual(rt, synth_bus)
+    assert sum(resid.values()) == 0  # round-tripped program still renders exact
+    brk, _ = measure(prog)
+    assert brk["total"] == len(ids)
+
+
+@pytest.mark.skipif(
+    not _BUSTRACE or not os.path.exists(_BUSTRACE),
+    reason="set GENERIC_BUSTRACE to a native preframr-sidtrace .bus.bin",
+)
+def test_generic_token_roundtrip_real_trace():
+    """The recovered generic program round-trips through the model-facing token
+    stream byte-exact on a real native trace (opt-in): the token-render equals
+    render_generic for the same program -- lossless, never approximate."""
+    records = load_bus(_BUSTRACE)
+    program = recover_generic(_BUSTRACE, None, records)
+    ids = program_to_ids(program)
+    rt = ids_to_program(ids, driver="generic")
+    assert np.array_equal(render_program(rt), render_generic(program))
+    brk, nframes = measure(program)
+    assert brk["total"] == len(ids)
+    assert nframes == program.nframes
