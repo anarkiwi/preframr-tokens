@@ -2122,6 +2122,108 @@ def fit_lane(lane, noteons, nframes, note_table=None, carry=None, width_mask=0xF
     return out
 
 
+def _interleave_period(lane, max_period=4):
+    """The period N of an INTERLEAVED freq lane -- a per-frame software arp/chord
+    that round-robins N independent note slots, writing a different slot's note
+    each frame (gate held high, no control/ADSR retrigger), so the COMBINED lane
+    swings by a note-sized step every single frame while each phase ``lane[ph::N]``
+    moves only by its own intra-note vibrato/glide step.
+
+    A genuine single sweep/vibrato has small per-frame steps; an N-slot interleave
+    has a large step almost every frame BUT, deinterleaved by the right N, each
+    phase is smooth again.  So N is the smallest divisor for which the per-phase
+    median step collapses far below the combined-lane median step: a pure
+    chip/arithmetic signal (the lane's own step statistics), no per-driver constant.
+    Returns the period, or 0 if the lane is not interleaved (one phase already as
+    smooth as the whole)."""
+    diff = np.abs(np.diff(lane.astype(np.int64)))
+    nz = diff[diff != 0]
+    if nz.size < 4:
+        return 0
+    whole_step = int(np.median(nz))
+    if whole_step == 0:
+        return 0
+    for period in range(2, max_period + 1):
+        steps = []
+        for ph in range(period):
+            sub = lane[ph::period].astype(np.int64)
+            if len(sub) < 4:
+                steps = []
+                break
+            d = np.abs(np.diff(sub))
+            d = d[d != 0]
+            steps.append(int(np.median(d)) if d.size else 0)
+        if not steps:
+            continue
+        # Each phase must move by a small fraction of the combined per-frame swing
+        # -- i.e. the big every-frame step really is the round-robin, not the music.
+        if max(steps) * 4 <= whole_step:
+            return period
+    return 0
+
+
+def fit_interleaved_lane(lane, start, stop, note_table, width_mask=0xFFFF):
+    """Fit ``lane[start:stop)`` as an N-phase interleaved generator: deinterleave
+    into ``lane[start+ph::N]`` phase streams, note-slice and fit each phase with the
+    ordinary archetype library (each slot is a normal per-note vibrato/glide/hold
+    melody), and return an ``("interleave", {"period": N, "phases": [...]})`` fit
+    that renders by re-interleaving the phase covers.
+
+    This closes the per-frame software-arp / two-note-chord freq lane (e.g. David
+    Whittaker's octave/chord arps) where the gate stays high so
+    :func:`note_boundaries` finds no retrigger and EVERY combined-lane frame is a
+    note-sized jump, defeating both the whole-segment cover and
+    :func:`freq_note_onsets` (which would then slice at every frame).  The recovered
+    form is N closed-form per-phase melodies plus the single interleave period --
+    every value a generator, no stored per-frame output (HARD RULE #0).  Returns
+    None if the span is not interleaved or any phase is itself irreducible (so a
+    genuinely un-fit lane still surfaces rather than being faked)."""
+    span = lane[start:stop].astype(np.int64)
+    period = _interleave_period(span)
+    if period == 0:
+        return None
+    phases = []
+    for ph in range(period):
+        sub = span[ph::period]
+        if len(sub) == 0:
+            phases.append(("empty", {}))
+            continue
+        # Note-slice the phase by its OWN large freq jumps (the same note-onset rule
+        # the freq lane uses), so each slot's per-note vibrato/glide cell is one
+        # fittable fixed-centre segment.
+        d = np.abs(np.diff(sub))
+        nz = d[d != 0]
+        thr = max(8, 4 * int(np.median(nz))) if nz.size else 8
+        ons = sorted({0, *(np.nonzero(d > thr)[0] + 1).tolist()})
+        pts = ons + [len(sub)]
+        pieces = []
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            if b <= a:
+                continue
+            fit = fit_segment(sub[a:b], 0, note_table, None, width_mask)
+            if fit is None:
+                return None
+            pieces.append((fit[0], fit[1], b - a))
+        if len(pieces) == 1:
+            phases.append((pieces[0][0], pieces[0][1]))
+        else:
+            phases.append(("piecewise", {"pieces": pieces}))
+    return ("interleave", {"period": period, "phases": phases})
+
+
+def render_interleaved(seg_len, period, phases, note_table):
+    """Re-interleave the ``period`` per-phase covers back into one lane of length
+    ``seg_len``: phase ``ph`` fills frames ``ph, ph+period, ph+2*period, ...``."""
+    out = np.zeros(seg_len, dtype=np.int64)
+    for ph in range(period):
+        plen = len(range(ph, seg_len, period))
+        if plen == 0:
+            continue
+        out[ph::period] = render_fit(phases[ph], plen, note_table, None)
+    return out
+
+
 def fit_event_lane(col):
     """Cover an 8-bit non-generator register (ctrl/AD/SR/filter/volume) with the
     cheap structured archetypes between change points, byte-exact.  Returns a
@@ -2295,6 +2397,8 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
         return render_wavetable_ptr(plen, prm["table"], prm["phase"], prm["advance"])
     if name == "citg":
         return render_citg(prm, plen)
+    if name == "interleave":
+        return render_interleaved(plen, prm["period"], prm["phases"], note_table)
     if name == "additive_pw":
         table = prm.get("carry_table")
         if table:

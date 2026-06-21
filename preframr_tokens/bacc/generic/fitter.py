@@ -124,6 +124,27 @@ def fit_generator_lanes(state, note_table):
             )
             if _unfit_frames(fres_grid) < _unfit_frames(fres):
                 fres = fres_grid
+        if _unfit_frames(fres):
+            # A per-frame software arp / two-note chord (gate held high) writes a
+            # different note slot every frame, so note_boundaries finds no retrigger
+            # and the whole phrase collapses into one over-long un-fit block (every
+            # frame is a note-sized jump, defeating freq_note_onsets too).  Retry the
+            # un-fit span(s) the grid re-slice still left over as an N-phase
+            # INTERLEAVE -- deinterleave into the round-robin note slots, each a normal
+            # per-note vibrato/glide melody -- and adopt it ONLY where it actually
+            # closes the gap, so a genuinely irreducible freq lane (which the
+            # interleave matcher rejects) still surfaces rather than being faked into
+            # raw bytes (HARD RULE #0).
+            retried = []
+            for start, stop, fit in fres:
+                if fit is None:
+                    inter = A.fit_interleaved_lane(
+                        flane, start, stop, note_table, FREQ_WIDTH
+                    )
+                    if inter is not None:
+                        fit = inter
+                retried.append((start, stop, fit))
+            fres = retried
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
         # The pulse-width register is 12-bit; fitting it with its true width lets a
