@@ -348,9 +348,17 @@ def _recover_fixed_params(img, wave_L):
     where mt_chnwave is the wavetable executor's store target.
 
     GATETIMER: the gate-off check ``lda mt_chncounter,x (BD lo hi);
-    cmp #GATETIMERPARAM (C9 imm); beq mt_getnewnote (F0 rel)`` -- distinguished
-    from the gate-timer reload check (``cmp #$03``) by the long forward branch
-    to the new-note fetch.  Returns (gatetimer, firstwave) or (None, None)."""
+    cmp #GATETIMERPARAM (C9 imm); beq mt_getnewnote (F0 rel)``.  This is the only
+    one of the ``BD..;C9..;F0`` sites whose loaded operand is *the channel down-
+    counter itself* (``mt_chncounter``), which is uniquely identified as the
+    target of the lone ``dec <abs>,x ; beq tick0`` in ``mt_execchn``.  The other
+    such sites load ``mt_chnnewfx`` and compare it to ``#TONEPORTA`` ($03) (the
+    note-init / mt_normalnote toneporta skips), so the previous "pick the largest
+    forward branch" heuristic mis-recovered GATETIMERPARAM as 3 on PULSEOPTIMI-
+    ZATION==0 builds -- where the real gate-off branch is SHORT (it sits just
+    before mt_getnewnote) while the toneporta-skip branches are far.  That made
+    the hard-restart fire one tick (one frame) early.  Returns
+    (gatetimer, firstwave) or (None, None)."""
     data = img.data
     chnwave = _chnwave_reg(img, wave_L)
     firstwave = None
@@ -363,12 +371,26 @@ def _recover_fixed_params(img, wave_L):
             ):
                 firstwave = data[o + 1]
                 break
+    # mt_chncounter is the operand of the unique "dec <abs>,x ; beq" (mt_execchn:
+    # dec mt_chncounter,x ; beq mt_tick0).
+    counter = None
+    for o in range(len(data) - 3):
+        if data[o] == 0xDE and data[o + 3] == 0xF0:
+            counter = data[o + 1] | (data[o + 2] << 8)
+            break
     gatetimer = None
     best_off = -1
     for o in range(len(data) - 6):
         if data[o] == 0xBD and data[o + 3] == 0xC9 and data[o + 5] == 0xF0:
+            operand = data[o + 1] | (data[o + 2] << 8)
+            if counter is not None:
+                # Exact: the gate-off check is the site that loads mt_chncounter.
+                if operand == counter:
+                    return data[o + 4], firstwave
+                continue
+            # Fallback (counter not found): old far-branch heuristic.
             off = data[o + 6] if data[o + 6] < 128 else data[o + 6] - 256
-            if off > best_off:  # gate-off -> getnewnote is the far jump
+            if off > best_off:
                 best_off = off
                 gatetimer = data[o + 4]
     return gatetimer, firstwave
