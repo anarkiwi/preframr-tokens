@@ -71,20 +71,32 @@ def per_frame_state_from_bus(records, cpf=None, t0=None):
     if cpf is None:
         cpf = detect_play_period(cyc)
     starts = _frame_starts(cyc)
-    ends = np.concatenate((starts[1:], [len(cyc)]))
     gstart_cyc = cyc[starts]
     if t0 is None:
         t0 = first_play_cycle(cyc, cpf)
     boot_off = int(np.searchsorted(gstart_cyc, t0 - cpf / 2))
-    nframes = len(starts) - boot_off
-    seq = np.zeros((nframes, NREG), dtype=np.int64)
-    cur = [0] * NREG
-    for group in range(len(starts)):
-        for k in range(starts[group], ends[group]):
-            if reg[k] < NREG:
-                cur[reg[k]] = val[k]
-        if group >= boot_off:
-            seq[group - boot_off] = cur
+    ngroups = len(starts)
+    nframes = ngroups - boot_off
+    if nframes <= 0:
+        return np.zeros((0, NREG), dtype=np.int64), t0, cpf
+    # Vectorised per-frame state: scatter each write into its (group, reg) cell
+    # keeping the LAST write per cell (the frame's register value), then forward
+    # -fill the running register file across groups.  Equivalent byte-for-byte to
+    # the running-file loop but O(nwrites + ngroups*NREG) in numpy, so multispeed
+    # traces (tens of millions of writes) reconstruct in milliseconds, not the
+    # minutes a Python per-write loop costs.
+    group = np.repeat(np.arange(ngroups), np.diff(np.append(starts, len(cyc))))
+    valid = reg < NREG
+    grid = np.zeros((ngroups, NREG), dtype=np.int64)
+    seen = np.zeros((ngroups, NREG), dtype=bool)
+    g_v, r_v, v_v = group[valid], reg[valid], val[valid]
+    grid[g_v, r_v] = v_v  # later writes overwrite earlier -> last write per cell
+    seen[g_v, r_v] = True
+    # forward-fill held values down the group axis where a group wrote nothing.
+    idx = np.where(seen, np.arange(ngroups)[:, None], 0)
+    idx = np.maximum.accumulate(idx, axis=0)
+    full = np.take_along_axis(grid, idx, axis=0)
+    seq = full[boot_off:].copy()
     return seq, t0, cpf
 
 

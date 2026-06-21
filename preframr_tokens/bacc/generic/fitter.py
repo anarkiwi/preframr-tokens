@@ -140,13 +140,19 @@ def discover_note_table_from_bus(records, min_hits=8):
         base = min(k for k, c in score.items() if c >= min_hits)
     else:
         base = min(score, key=lambda k: -score[k])
-    ram = {}
-    sel = (addr >= 0x0100) & (addr < 0xD000)
-    for address, value in zip(addr[sel], val[sel]):
-        ram[int(address)] = int(value)
+    # Snapshot the 256-byte note-table window [base, base+256) as last-write-wins
+    # per address.  Vectorised so a multispeed trace (tens of millions of RAM
+    # accesses) builds the table in milliseconds rather than a Python per-access
+    # loop; equivalent to the running dict (a later write to an address overwrites
+    # an earlier one) restricted to the window we actually read.
+    window = np.zeros(256, dtype=np.int64)
+    sel = (addr >= base) & (addr < base + 256)
+    if np.any(sel):
+        off = addr[sel].astype(np.int64) - base
+        window[off] = val[sel].astype(np.int64)  # last write wins (stable order)
     table = []
     for note in range(128):
-        lo = ram.get(base + 2 * note, 0)
-        hi = ram.get(base + 2 * note + 1, 0)
+        lo = int(window[2 * note]) if 2 * note < 256 else 0
+        hi = int(window[2 * note + 1]) if 2 * note + 1 < 256 else 0
         table.append(lo | (hi << 8))
     return table
