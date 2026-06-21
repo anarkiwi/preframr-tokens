@@ -789,7 +789,11 @@ def _packed_freq_table(img, lay):
     of range by a wavetable relative step (``note &= $7f`` reaching 96..127, or
     a low ``firstnote`` letting a high note exceed ``lastnote``) therefore
     overruns the unpadded table into the adjacent relocated bytes and produces
-    an image-specific frequency, whereas the editor table returns 0.
+    a frequency that is a deterministic function of the packer's relocation
+    layout -- the overrun lo bytes are the CONSTANT standard ``freqtblhi``
+    table, and the hi bytes are the low bytes of the relocated orderlist /
+    pattern absolute addresses -- whereas the editor table returns 0.  (Not
+    irreducible: traced byte-for-byte to source.)
 
     Reconstruct the exact bytes the packed player reads, straight from the
     image: for absolute note ``n`` (0..127),
