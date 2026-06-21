@@ -292,6 +292,35 @@ def test_prefix_ratewalk_recovers_rate_table():
     assert match[2]["rate_table"][:5] == table
 
 
+def test_prefix_ratewalk_recovers_long_period_reflecting_triangle():
+    # A SID-Wizard PW sweep wavetable is a reflecting triangle: ramp up +127 for
+    # ~21 frames, dwell 1 at the apex, ramp down -128 for ~21 frames, dwell 2 at
+    # the trough -- a period-~45 signed-rate table that the old period-12 cap could
+    # not reach.  The lifted cap recovers the whole sweep as ONE looping rate table
+    # (the generator), not a chain of short accum stubs or stored per-step data.
+    table = [127] * 21 + [0] + [-128] * 21 + [0, 0]
+    lane = A.render_ratewalk(len(table) * 4, 0x300, table, 0, 0xFFF)
+    match = A._prefix_ratewalk(lane, 0xFFF)
+    assert match is not None
+    assert match[1] == "ratewalk"
+    assert match[2]["rate_table"] == table  # the period-45 loop, not raw output
+    rendered = A.render_ratewalk(
+        len(lane), match[2]["v0"], match[2]["rate_table"], 0, 0xFFF
+    )
+    assert np.array_equal(rendered, lane)  # byte-exact over many cycles
+
+
+def test_prefix_ratewalk_rejects_single_pass_over_long_table():
+    # A long rate "table" that is traversed only ONCE (match < 2 periods) is not a
+    # reused loop -- accepting it would amount to storing the per-step deltas raw.
+    # The >=2-full-periods guard declines it, so a genuine generator is required.
+    table = [7 * i - 100 for i in range(40)]  # 40 distinct one-shot steps
+    lane = A.render_ratewalk(len(table), 0x100, table, 0, 0xFFFF)  # exactly one pass
+    match = A._prefix_ratewalk(lane, 0xFFFF, maxp=48)
+    # no period whose table replays >= 2 cycles fits the single-pass ramp.
+    assert match is None or match[0] < 2 * len(match[2]["rate_table"])
+
+
 def test_prefix_maskaccum_stall_recovers_period_and_rate():
     # a single-rate accumulator that HOLDS on a periodic tick-0 stall mask (the
     # GoatTracker tempo-paced continuous-effect skip): step +0x10 on the period-6
@@ -836,6 +865,76 @@ def test_legato_vibrato_freq_recovered_via_pw_reset_boundary():
     program = recover_generic("legato_vib.sid", None, bus)
     resid, _, _ = residual(program, bus)
     assert resid[0] == 0 and resid[1] == 0  # voice-0 freq byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_pw_lane_resliced_at_sweep_resets_when_whole_note_unfittable():
+    # A legato voice whose pulse-width re-seeds the sweep at each new note: the gate
+    # stays high (note_boundaries finds nothing after the first note-on), so the
+    # whole held note is ONE over-long PW block.  Each note's PW is a linear sweep
+    # that snaps back to a fresh start at the next note -- the whole-block cover
+    # cannot fold the snap-backs, but slicing the PW lane at the SAME bus-visible
+    # pw-sweep re-seeds the freq lane uses recovers each note's sweep byte-exact.
+    note_freqs = [0x0900, 0x0C00, 0x0700, 0x0A00]
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 4 * 64
+    for frame in range(nframes):
+        note = note_freqs[(frame // 64) % len(note_freqs)] if frame >= 2 else 0
+        reg[0], reg[1] = note & 0xFF, (note >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 2 else 0x40  # gate rises once at frame 2, then HELD
+        # voice-0 PW: a +24 ramp that snaps back to 0x200 at each new note (every 64
+        # frames) -- the per-note sweep re-seed.  Snap is far larger than the step,
+        # so pw_sweep_resets surfaces the boundary; the held-note block is otherwise
+        # unfittable as one piece.
+        pw = (0x200 + 24 * (frame % 64)) & 0xFFF
+        reg[2], reg[3] = pw & 0xFF, (pw >> 8) & 0x0F
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(bus)
+    # the held note is a single note-on, but the PW re-seeds each new note.
+    assert A.note_boundaries(state)[0] == [2]
+    assert A.pw_sweep_resets(state, 0)  # the per-note PW snap-backs are surfaced
+    program = recover_generic("legato_pw.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[2] == 0 and resid[3] == 0  # voice-0 pw lane byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_pw_reslice_fallback_does_not_fire_without_sweep_resets():
+    # A smoothly-paced reflecting-triangle PW with NO per-note re-seed (the
+    # FamiCommodore-style continuous sweep) has no pw_sweep_resets, so the reslice
+    # fallback never fires and the PW cover is identical to slicing at note
+    # boundaries alone -- the protection that keeps a genuine whole-segment generator
+    # from being fragmented at its own reflection drops.
+    rate_table = [16] * 20 + [-16] * 20  # a clean symmetric reflecting triangle
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = len(rate_table) * 4
+    pw = 0x400
+    for frame in range(nframes):
+        reg[0], reg[1] = 0x00, 0x10  # voice-0 constant note
+        reg[4] = 0x41 if frame >= 2 else 0x40  # gate rises once, held
+        reg[2], reg[3] = pw & 0xFF, (pw >> 8) & 0x0F
+        if frame >= 2:
+            pw = (pw + rate_table[(frame - 2) % len(rate_table)]) & 0xFFF
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(bus)
+    assert A.pw_sweep_resets(state, 0) == []  # no re-seed -> fallback inert
+    program = recover_generic("smooth_pw.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[2] == 0 and resid[3] == 0  # the whole-segment sweep is recovered
     assert sum(resid.values()) == 0
 
 
