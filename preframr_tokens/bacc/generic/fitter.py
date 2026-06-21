@@ -111,6 +111,22 @@ def fit_generator_lanes(state, note_table):
         flane = A.lane_freq(state, voice)
         fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, FREQ_WIDTH)
         if _unfit_frames(fres):
+            # A purely-legato melody can advance with NO control/ADSR/PW/gate
+            # retrigger by zeroing the oscillator between held notes (a freq-zero
+            # rest separator).  Then almost every nonzero step is a note-sized jump
+            # to/from 0, so freq_note_onsets's 4*median threshold catches nothing and
+            # the whole phrase is one over-long un-fit block.  Re-slice at the
+            # bus-visible zero-crossing boundaries (note<->rest) and keep it only if
+            # it strictly recovers more of the lane, so a generator that merely passes
+            # through 0 (a sweep crossing zero) reduces nothing and is not fragmented.
+            rest_ons = sorted(set(freq_ons) | set(A.freq_rest_boundaries(state, voice)))
+            fres_rest = A.fit_lane(
+                flane, rest_ons, nframes, note_table, None, FREQ_WIDTH
+            )
+            if _unfit_frames(fres_rest) < _unfit_frames(fres):
+                fres = fres_rest
+                freq_ons = rest_ons
+        if _unfit_frames(fres):
             # The per-voice cover left a gap; re-slice the freq lane at the global
             # tick grid (the muted-voice churn case) and keep it only if it strictly
             # recovers more of the lane.

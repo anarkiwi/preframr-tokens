@@ -1633,6 +1633,121 @@ def test_interleave_not_applied_to_smooth_freq_lane():
     assert A.fit_interleaved_lane(lane, 0, len(lane), None, F.FREQ_WIDTH) is None
 
 
+def _legato_zero_rest_freq_bus(notes, note_dur, rest_dur):
+    """A pure-legato tune whose melody advances by ZEROING the oscillator between
+    held notes (the Parker Bros. / Gyruss / Party_Quiz idiom).
+
+    The gate rises ONCE and stays high forever (control byte constant, no ADSR/PW
+    retrigger), so ``note_boundaries``, ``pw_sweep_resets`` AND ``freq_note_onsets``
+    all find nothing -- the freq lane is ``note_A`` held ``note_dur`` frames, then 0
+    held ``rest_dur`` frames, then ``note_B``, ...  Because almost every nonzero
+    freq step is itself a note-sized jump to/from 0, the median nonzero step is huge
+    and the ``4*median`` onset threshold catches no jump, collapsing the whole
+    phrase into one over-long un-fit block until it is sliced at the zero-crossings.
+    """
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    frame = 0
+    for note in notes:
+        for _ in range(note_dur):
+            reg[0], reg[1] = note & 0xFF, (note >> 8) & 0xFF
+            reg[4] = 0x41 if frame >= 1 else 0x40  # gate rises once, held forever
+            reg[24] = 0x0F
+            for index in range(25):
+                recs.append((cyc, 0xD400 + index, reg[index], 1))
+                cyc += 2
+            cyc += _CPF - 2 * 25
+            frame += 1
+        for _ in range(rest_dur):
+            reg[0], reg[1] = 0, 0  # the freq-zero note separator / rest
+            reg[4] = 0x41
+            reg[24] = 0x0F
+            for index in range(25):
+                recs.append((cyc, 0xD400 + index, reg[index], 1))
+                cyc += 2
+            cyc += _CPF - 2 * 25
+            frame += 1
+    return np.array(recs, dtype=BUS_DT)
+
+
+def test_freq_rest_boundaries_detect_zero_crossings_under_held_gate():
+    # A legato melody zeroed between notes: the boundary detector fires at every
+    # note<->rest crossing (enter AND leave each rest), and NOT inside a held note,
+    # so each held note and each rest becomes one fittable segment.
+    notes = [0x12D1, 0x11C3, 0x1300]  # arbitrary distinct note freqs
+    bus = _legato_zero_rest_freq_bus(notes, note_dur=9, rest_dur=1)
+    state, _, _ = per_frame_state_from_bus(bus)
+    bounds = A.freq_rest_boundaries(state, 0)
+    # note0[0:9] rest[9:10] note1[10:19] rest[19:20] note2[20:29] rest[29:30]
+    assert bounds == [9, 10, 19, 20, 29]
+
+
+def test_freq_rest_boundaries_inert_without_zero_writes():
+    # A lane that never writes freq 0 exposes no rest boundary -- a generator that
+    # never silences the oscillator is not over-sliced (and one that merely passes
+    # through 0 mid-sweep is handled by the strict-gain adoption guard, below).
+    cell = list(range(0x1000, 0x1000 + 40))
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    for frame, v0 in enumerate(cell):
+        reg[0], reg[1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 1 else 0x40
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    state, _, _ = per_frame_state_from_bus(np.array(recs, dtype=BUS_DT))
+    assert A.freq_rest_boundaries(state, 0) == []
+
+
+def test_legato_zero_rest_melody_recovers_residual_zero_end_to_end():
+    # End to end (the Parker Bros. / Gyruss / Party_Quiz signature): a pure-legato
+    # voice whose notes advance only by zeroing the freq lane between held notes
+    # recovers byte-exact -- the freq_rest_boundaries slice turns the over-long
+    # phrase into per-note holds plus per-rest hold(0)s, the note/rest list (the
+    # score), never per-frame stored output (HARD RULE #0).
+    notes = [0x12D1, 0x11C3, 0x1300, 0x10A0, 0x1455, 0x1207]
+    bus = _legato_zero_rest_freq_bus(notes, note_dur=9, rest_dur=1)
+    program = recover_generic("zero_rest.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq lane byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_freq_rest_slice_not_adopted_for_sweep_crossing_zero():
+    # A genuine constant-rate freq sweep that merely PASSES THROUGH 0 mid-ramp must
+    # NOT be fragmented at the zero crossing: the strict-gain adoption guard keeps
+    # the rest re-slice only when it recovers more of the lane, so the single smooth
+    # sweep (already covered whole) is left as one accumulator and a real generator
+    # is never split into raw-byte holds to fake a residual-zero (HARD RULE #0).
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    # a ramp that steps by 8 and crosses 0 once (wrapping the 16-bit accumulator):
+    vals = [(0xFFE0 + 8 * f) & 0xFFFF for f in range(40)]
+    for frame, v0 in enumerate(vals):
+        reg[0], reg[1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 1 else 0x40
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    program = recover_generic("sweep0.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert sum(resid.values()) == 0
+    # the freq lane is one accumulator/citg sweep, NOT a chain of one-hold-per-frame
+    # pieces (which a spurious zero-crossing slice would have produced).
+    genfits = F.fit_generator_lanes(per_frame_state_from_bus(bus)[0], None)[0]
+    fres, _ = genfits[(0, "freq")]
+    holds = sum(1 for _, _, fit in fres if fit is not None and fit[0] == "hold")
+    assert holds <= 1  # not fragmented into a hold per frame
+
+
 _BUSTRACE = os.environ.get("GENERIC_BUSTRACE")
 
 
