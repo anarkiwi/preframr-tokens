@@ -1,13 +1,91 @@
 # preframr-tokens
 
-The white-box SID decompiler codec: a register dump (`.dump.parquet`) becomes an
-inline op-program token stream, **residual-zero** (decode reproduces the dump
-byte-exact) at **< 1 token / frame**. Extracted from the
-[preframr](https://github.com/anarkiwi/preframr) research codebase.
+The white-box SID decompiler codec. A C64 SID tune is **decompiled** into a
+compact op-program — not a dense per-frame register stream — and that program
+regenerates the original chip writes **byte-exact** (residual = 0). The whole
+tune fits a small context window: every gate tune encodes well under 4096 tokens.
+Extracted from the [preframr](https://github.com/anarkiwi/preframr) research
+codebase.
 
-Torch-free (numpy + pandas/pyarrow only). The training-side concerns (model,
-loss, DataLoader, predict) live in the main `preframr` repo; this package is the
-encoding layer.
+Torch-free (numpy + pandas/pyarrow + [py65](https://pypi.org/project/py65/) for
+the 6502 emulation, [pygoattracker](https://pypi.org/project/pygoattracker/) for
+the GoatTracker backend). The training-side concerns (model, loss, DataLoader,
+predict) live in the main `preframr` repo; this package is the encoding layer.
+
+## The idea: `trace = VM(program)`
+
+A SID register dump looks dense — per-frame vibrato, portamento, pulse-width
+modulation, arpeggio, envelope ramps — but that density is *generated* by a tiny
+fixed op-set running in the player. The frames are *playback*; the composer wrote
+*steps*. So the codec recovers the **program**, never the per-frame trace.
+
+### BACC — the bounded accumulator
+
+The special-case effects (vibrato, slide, arp, PWM, ADSR, filter/pitch/pulse
+sweeps) are not distinct generators. They are one primitive, the **bounded
+accumulator (BACC)**:
+
+> `value += rate every dwell frames`, with `boundary ∈ {wrap-N, reflect, none}`,
+> `width ∈ {8, 12}` bits, and an output map `∈ {absolute, base+offset,
+> note-table-scaled}` (or a table-walk).
+
+They differ only in their parameters. A voice's whole modulation is one
+straight-line PROGRAM of BACC ops. Per-instrument generators are
+**pitch-invariant**: vibrato is a depth shift, arp a set of semitone offsets, PWM
+a sweep rate — realized through the note table at render time, not stored
+per-note. (Free-running modulation falls out naturally: phase is generator
+*state*, not reset per note.)
+
+Notes ride a **canonical 12-TET A440 grid**: the note token is the absolute
+semitone index on a fixed A440 reference, computed from the onset frequency the
+driver actually renders (`pitch.fn_to_grid`). So the same concert pitch is the
+**same token across drivers** — Hubbard's register write and GoatTracker's
+note-table lookup both resolve to one grid index. This is what unifies the token
+alphabet across engines.
+
+The gate is **residual = 0, byte-exact**. A lossy codec trivially hits any token
+budget, so the budgets only mean anything losslessly — `verify_residual` is the
+invariant the codec is held to.
+
+### The virtual machine / recover → render loop
+
+The codec is a set of per-driver **backends**, selected by player fingerprint
+(`backends/base.py: select_backend`). Each backend implements three methods:
+
+- `matches(psid)` — does this backend handle the tune's playroutine?
+- `recover(psid, nframes, subtune)` — run the playroutine white-box (py65,
+  tapping driver RAM) and return a `BaccProgram` (score + pitch-invariant
+  instrument generators + initial-state seed).
+- `render(program)` — render the program back to a `(nframes, 25)` per-frame SID
+  register array.
+
+`recover_program` recovers the program; `render_program` renders it; and
+`verify_residual` requires the rendered array to equal the ground-truth dump
+**byte-exact** (modulo each backend's small declared don't-care mask, e.g. unused
+PW-high bits). Backends ship for **Hubbard** (Monty-class + 5_Title_Tunes),
+**GoatTracker** (gt2reloc), and **lft** (algorithmic RSID); a **DMC** backend is
+in progress. All of them serialize into one shared token alphabet (the base-16
+LEB digit stream + `REPEAT` / `TRANSPOSE` markers), so a single learnable
+vocabulary spans every driver.
+
+Repeated phrases dedup via an **inline backward orderlist** — backward-reference
+only, no forward declaration, no frozen table. Any prefix cut at an event
+boundary is itself a valid, decodable, continuable song. A transposed phrase
+repeat is a single `TRANSPOSE` op (a backward `REPEAT` whose copied notes are
+re-coordinated by one constant grid-interval Δ), exactly what a tracker
+orderlist's transpose does.
+
+## Two-file input, migrating to `.sid`-only
+
+The codec is currently a **two-file** codec: it takes a `.sid` (the player +
+song data) and a per-frame register `.dump.parquet` of the ground-truth chip
+writes. It recovers the program by emulating the `.sid`, then verifies the render
+against the dump.
+
+The dump is produced offline by the `anarkiwi/headlessvice` VICE container. An
+active migration replaces that external dump with **in-process emulation** (the
+`sidemu` py65 path already runs the playroutine), moving toward a **`.sid`-only**
+codec.
 
 ## Install
 
@@ -15,79 +93,76 @@ encoding layer.
 pip install preframr-tokens
 ```
 
-## Importing
-
-Import from the package root:
-
-```python
-from preframr_tokens import per_frame_state, CPF, measure, verify_residual
-```
-
-`preframr_tokens.__all__` is the promised surface. Everything under
-`preframr_tokens.codec.*` is internal and may move between releases — depend on
-the root re-exports.
-
 ## Quick start
 
 ```python
 import preframr_tokens as P
 
-dump = "Monty_on_the_Run.1.dump.parquet"          # a SID register dump (chip 0)
-state = P.per_frame_state(dump, P.CPF, 1_000_000)  # (n_frames, 25) per-frame reg state
-assert P.verify_residual(state)                    # lossless: decode == dump, byte-exact
-breakdown, frames = P.measure(state)               # token-count breakdown + frame count
-print(breakdown["total"] / frames, "tokens/frame")
+sid, dump = "Monty_on_the_Run.sid", "Monty_on_the_Run.1.dump.parquet"
+
+# Recover the BACC program, verify it's byte-exact, serialize to token ids.
+assert P.verify_residual(sid, dump, P.CPF)        # residual = 0 (lossless)
+program = P.recover_program(sid, dump, P.CPF)     # .sid + .dump -> BaccProgram
+ids = P.program_to_ids(program)                   # model-facing token id stream
+
+breakdown, frames = P.measure(program)            # {block: tokens}, frame count
+print(breakdown["total"], "tokens", "/", frames, "frames")
+
+state = P.render_program(program)                 # BaccProgram -> (nframes, 25)
+prog2 = P.ids_to_program(ids, driver=program.driver)  # round-trips byte-exact
 ```
+
+## Public API
+
+`preframr_tokens.__all__` is the promised surface; everything under
+`preframr_tokens.bacc.*` and `preframr_tokens.codec.*` is internal and may move
+between releases — depend on the root re-exports.
+
+- `recover_program(sid, dump, cpf=CPF, subtune=0)` — `(.sid, .dump) → BaccProgram`.
+- `render_program(program)` — `BaccProgram → (nframes, 25)` register state.
+- `verify_residual(sid, dump, cpf=CPF, subtune=0)` — `True` iff render == dump,
+  byte-exact (the gate).
+- `program_to_ids(program)` / `ids_to_program(ids, driver=...)` — the model-facing
+  token id stream (round-trips byte-exact to the program).
+- `measure(program)` — `({block: tokens}, nframes)`; `breakdown["total"]` is the
+  pre-BPE token count.
+- `VOCAB` / `PAD_ID` — token alphabet size and the reserved padding id.
+- `per_frame_state(dump, cpf, maxframes)` / `CPF` / `NTSC_CPF` /
+  `cpf_from_meta(prefix)` — the dump reader + PAL/NTSC frame clock (`CPF` = 19656
+  PAL cycles/frame, `NTSC_CPF` = 17095).
 
 ## The input dump format
 
-A raw tune is a `.dump.parquet` of register writes captured from a SID player,
-with at least the columns `clock` (absolute φ2 cycle), `reg` (0..24), `val`
-(byte written), and `chipno` (SID chip; only chip 0 is read). The 25-register
-state is reconstructed per absolute frame at the tune's frame clock
-(`CPF` = 19656 PAL cycles/frame, `NTSC_CPF` = 17095; `cpf_from_meta` selects from
-a `.meta.txt` sidecar).
+A raw tune's register dump is a `.dump.parquet` of register writes captured from a
+SID player, with at least the columns `clock` (absolute φ2 cycle), `reg` (0..24),
+`val` (byte written), and `chipno` (only chip 0 is read). `per_frame_state`
+reconstructs the 25-register state per absolute frame at the tune's frame clock.
 
 Register map (`base = voice * 7`): +0/+1 freq lo/hi, +2/+3 pulse-width lo/hi,
 +4 control (bit0 GATE, bit3 TEST, bits4–7 waveform), +5 AD, +6 SR. Globals:
 21/22 filter cutoff lo/hi, 23 resonance/routing, 24 mode/volume.
 
-## The codec (inline op-program)
+## The gate / tests
 
-The trace is the output of a tiny deterministic playroutine; the codec recovers
-the GENERATOR rather than encoding the per-frame output. Each SID lane (freq ×3,
-pulse-width ×3, ctrl/AD/SR ×3, filter globals) is decomposed into a small fixed
-op-set and serialized as an inline, time-ordered event stream
-`(start_frame, lane, op)` with implicit holds dropped:
+The permanent gate is `tests/test_monty_context_budget.py`: it recovers the BACC
+program from *Monty on the Run* (sub 1), asserts `verify_residual` is `True`, and
+requires both `< 1 token/frame` and the whole song `< 8192` tokens. Its fixtures
+are auto-acquired (the `.sid` is downloaded, the dump rendered) — there is no skip
+path, and the gate may never be removed or bypassed. The same dual gate applies to
+the GoatTracker and Hubbard 5TT tunes.
 
-- **freq lanes** use an absolute-anchored 12-TET pitch encoder: `NOTE(interval)`
-  (a relative semitone step, the small model-facing alphabet) plus parametric
-  modulation generators — `VIB` (triangle vibrato), `SLIDE` (linear portamento),
-  `ARP` (fixed-interval arpeggio) — and `RAW`/`REST`/`MOD` byte-exact fallbacks.
-- **non-freq lanes** use `LOAD(value)` / `RUN`/`WALK` parametric sweeps; sweep
-  shapes are shared in a rate-pattern codebook with dwell vectors in a global LZ
-  side-stream.
+Run the full gate (black, pytest, pylint, pyright, coverage) with:
 
-Reuse is **backward-looking only** (inline LZ over events); there is no preamble,
-no frozen table, and no forward declaration. Any prefix cut at an event boundary
-is itself a valid, decodable, continuable song.
+```bash
+./run_tests.sh
+```
 
-### Residual-zero is the gate
+## Where the design narrative lives
 
-`verify_residual(state)` returns `True` iff the codec's structures reconstruct
-the dump byte-exact. This is the invariant the codec is held to — a lossy codec
-trivially hits any token budget, so the < 1 token/frame economy only counts when
-residual = 0. The permanent gate `tests/test_monty_context_budget.py` asserts
-both on the full Rob Hubbard *Monty on the Run* dump and may never be skipped.
-
-## Public API
-
-- `per_frame_state(dump, cpf, maxframes)` — dump (`.parquet`) → `(n_frames, 25)`
-  per-frame register state (the codec input).
-- `CPF` / `NTSC_CPF` / `cpf_from_meta(prefix)` — the PAL/NTSC frame clock.
-- `measure(state)` — `(breakdown, frames)`; `breakdown["total"]` is the pre-BPE
-  token count.
-- `verify_residual(state)` — `True` iff decode == dump, byte-exact.
+The canonical, end-to-end narrative — how the codec landed, the op-set grounding,
+and the cross-driver design — lives in the sibling `preframr-xpt` repo: start at
+its `AGENTS.md`, then `design/encoding/` (`sid_player_decompiler.md`,
+`sid_opset_inventory.md`, `cross_driver_note_unification.md`).
 
 ## Stability
 
