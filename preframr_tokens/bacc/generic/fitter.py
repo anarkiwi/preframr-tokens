@@ -34,6 +34,19 @@ AD = (5, 12, 19)
 SR = (6, 13, 20)
 EVENT_REGS = set(CTRL + AD + SR) | {21, 22, 23, 24}  # + filter cutoff/res + volume
 
+# Hardware register widths drive the accumulator WRAP boundary the generic
+# matchers fold a swept lane into (a hardware fact, not a per-tune constant): the
+# SID frequency register is 16-bit but the pulse-width register is 12-bit
+# (pw-hi only exposes its low nibble), so a free-running / swept PW accumulator
+# wraps modulo 4096, not 65536.  Fitting the PW lane with the wrong 16-bit wrap
+# turns each 4096-wrap into a spurious rate change, so a table-driven PW
+# accumulator (maskaccum / dwellratewalk) cannot span a wrap and a single wrapping
+# pulse-sweep fragments into one short piece per wrap cycle (past the cover's piece
+# cap), leaving the whole lane un-fit; the 12-bit wrap folds it into one
+# accumulator that wraps exactly as the chip does at 0xFFF.
+FREQ_WIDTH = 0xFFFF
+PW_WIDTH = 0xFFF
+
 
 def _noteon_points(noteons, voice):
     """Note-on frames for a voice with the pre-roll boundary at frame 0."""
@@ -64,13 +77,10 @@ def fit_generator_lanes(state, note_table):
         ons = _noteon_points(noteons, voice)
         freq_ons = sorted(set(ons) | set(A.pw_sweep_resets(state, voice)))
         flane = A.lane_freq(state, voice)
-        fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, 0xFFFF)
+        fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, FREQ_WIDTH)
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
-        # The pulse-width register is 12-bit; fitting it with its true width lets a
-        # table-driven PW accumulator (dwellratewalk) wrap exactly as the chip does
-        # at the 0xFFF boundary rather than at 0xFFFF.
-        pres = A.fit_lane(plane, ons, nframes, note_table, carry, 0xFFF)
+        pres = A.fit_lane(plane, ons, nframes, note_table, carry, PW_WIDTH)
         out[(voice, "freq")] = (fres, None)
         out[(voice, "pw")] = (pres, carry)
     return out, noteons

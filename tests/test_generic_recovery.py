@@ -271,6 +271,32 @@ def test_maskaccum_stall_requires_multiple_cycles():
     assert A._prefix_maskaccum_stall(lane, 0xFFFF, mincycles=3) is None
 
 
+def test_pw_lane_12bit_wrap_folds_into_one_accumulator():
+    # The GoatTracker free-running pulse-sweep: a single-rate accumulator stepped
+    # on a period-6 stall mask whose value WRAPS modulo 4096 (the SID pulse-width
+    # register is 12-bit, not 16-bit).  Rendered at the hardware 12-bit width the
+    # whole wrapping sweep recovers as ONE maskaccum; fit with the wrong 16-bit
+    # wrap each 4096-wrap reads as a spurious rate change and the matcher cannot
+    # span the wrap, so the wrapping lane fragments instead of folding -- which is
+    # why the PW lane must be fit at F.PW_WIDTH.
+    assert F.PW_WIDTH == 0xFFF and F.FREQ_WIDTH == 0xFFFF
+    mask = [1, 1, 1, 1, 1, 0]
+    lane = A.render_maskaccum(180, 0x0F00, -0x00F0, mask, F.PW_WIDTH)
+    assert int(lane.min()) >= 0 and int(lane.max()) <= F.PW_WIDTH  # 12-bit, wraps
+    assert int(np.diff(lane).max()) > 0  # at least one wrap (a positive jump)
+    # 12-bit wrap: one accumulator covers the whole wrapping sweep, byte-exact.
+    at12 = A._prefix_maskaccum_stall(lane, F.PW_WIDTH)
+    assert at12 is not None and at12[1] == "maskaccum"
+    assert at12[2]["rate"] == -0x00F0 and at12[2]["mask"][:6] == mask
+    assert at12[0] == len(lane)
+    rendered = A.render_fit((at12[1], at12[2]), len(lane))
+    assert np.array_equal(rendered, lane)
+    # Wrong 16-bit wrap: the matcher cannot span the 4096-wrap, so it covers far
+    # less than the whole lane (the fragmentation the PW width fixes).
+    at16 = A._prefix_maskaccum_stall(lane, 0xFFFF)
+    assert at16 is None or at16[0] < len(lane)
+
+
 def test_fit_tablewalk_lead_round_trip():
     # a delayed period-6 modulation (the Hammurabi-style long hold then LFO table):
     # 20 constant frames, then a period-6 offset table -- one rule, not two pieces.
