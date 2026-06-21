@@ -205,6 +205,39 @@ def freq_note_onsets(state, voice):
     return (np.nonzero(np.abs(diff) > threshold)[0] + 1).tolist()
 
 
+def freq_rest_boundaries(state, voice):
+    """Frames where the voice's FREQUENCY lane enters or leaves a hard rest -- a
+    write of frequency 0 -- the analogue of :func:`freq_note_onsets` for a player
+    that separates legato notes by zeroing the oscillator.
+
+    Some bespoke game drivers (e.g. Parker Bros.: Gyruss, Party_Quiz) advance a
+    PURELY-legato melody -- gate held high forever, no control / ADSR / PW / gate
+    retrigger, so :func:`note_boundaries`, :func:`pw_sweep_resets` and
+    :func:`freq_note_onsets` all find nothing -- by writing frequency 0 for one (or
+    a few) frames BETWEEN held notes (a freq-zero note separator / rest).  Because
+    almost every nonzero freq step is then itself a note-sized jump to or from 0,
+    the median nonzero step is huge and :func:`freq_note_onsets`'s ``4*median``
+    threshold catches no jump at all, so the whole phrase collapses into one
+    over-long, unfittable segment.
+
+    A frequency of exactly 0 under a held gate is a chip-visible event -- the player
+    explicitly silences the oscillator -- so the frames where the lane crosses the
+    zero boundary (note -> rest and rest -> note) are bus-visible note-ons for the
+    freq lane.  Slicing there turns each held note into one closed-form ``hold``
+    (the note from the table) and each rest into one ``hold(0)``: the recovered
+    melody is the note/rest list (the score), every value a generator, no per-frame
+    output stored (HARD RULE #0).  This is purely a bus-derived, last-resort EXTRA
+    slice set: it is adopted only when it strictly recovers more of the lane (see
+    :func:`fitter.fit_generator_lanes`), so a genuine generator that merely passes
+    through 0 (a sweep crossing zero, a vibrato around a low centre) reduces nothing
+    on the retry and is left as one segment, never fragmented."""
+    fr = lane_freq(state, voice).astype(np.int64)
+    is_rest = fr == 0
+    if not np.any(is_rest):
+        return []
+    return (np.nonzero(is_rest[:-1] != is_rest[1:])[0] + 1).tolist()
+
+
 def all_voice_boundaries(state):
     """The union, across ALL three voices, of every bus-visible note-on
     (:func:`note_boundaries`) and pulse-sweep re-seed (:func:`pw_sweep_resets`) --
