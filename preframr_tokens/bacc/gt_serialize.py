@@ -15,8 +15,12 @@ Token shape (all through the shared base-16 LEB digit alphabet, no new ids):
   tables   : the four generator-parameter columns (wave/pulse/filter/speed),
              each: length, left[], right[]  -- the PWM/arp/filter-sweep params
   instrs   : count, then per instrument-generator the 9 abstract fields
-  patterns : count, then per pattern a backward-LZ row stream; each literal row
-             is (note_token, instr_ref, effect, data) where note_token is the
+  patterns : count, then per-pattern row-count headers, then ONE global
+             backward-LZ row stream over ALL patterns concatenated (the window
+             spans pattern boundaries so a phrase repeated in a later pattern can
+             copy from an earlier one); decode re-slices the flat row stream into
+             patterns by the row counts. Each literal row is
+             (note_token, instr_ref, effect, data) where note_token is the
              canonical 12-TET interval (Part B) for a pitched note, or a small
              marker for REST/KEYOFF/KEYON, and effect is the shared effect vocab
   orderlist: per subtune x channel a backward-LZ entry stream (PlayPattern /
@@ -190,17 +194,6 @@ def _row_read(ids, i):
     return (note, instr, command, data), i
 
 
-def _emit_pattern(out, rows):
-    """One pattern as a backward-LZ stream of abstract rows."""
-    _wu(out, len(rows))
-    _lz_emit(out, rows, _row_lit)
-
-
-def _read_pattern(ids, i):
-    nrows, i = _ru(ids, i)
-    return _lz_read(ids, i, nrows, _row_read)
-
-
 # --- orderlist (backward) --------------------------------------------------
 # Orderlist entries serialize as (op, value): op 0 PlayPattern(num),
 # 1 Repeat(count), 2 Transpose(semitones, zig-zag signed).
@@ -341,11 +334,17 @@ def gt_program_to_ids(program):
     _wu(out, len(song.instruments))
     for instr in song.instruments:
         _emit_instrument(out, instr)
-    # patterns (abstract rows)
+    # patterns (abstract rows): per-pattern row-count headers, then ONE global
+    # backward-LZ row stream over all patterns concatenated. The single window
+    # spans pattern boundaries (a phrase repeated in a later pattern copies from
+    # an earlier one); decode re-slices the flat stream back by the row counts.
     _wu(out, len(song.patterns))
+    flat = []
     for pat in song.patterns:
         rows = [(r.note, r.instrument, r.command, r.data) for r in pat.rows]
-        _emit_pattern(out, rows)
+        _wu(out, len(rows))
+        flat.extend(rows)
+    _lz_emit(out, flat, _row_lit)
     # orderlists (backward), per subtune x channel
     _wu(out, len(song.subtunes))
     for sub in song.subtunes:
@@ -401,10 +400,16 @@ def gt_ids_to_program(ids):
         instr, i = _read_instrument(ids, i, k + 1)
         instruments.append(instr)
     n_pat, i = _ru(ids, i)
-    patterns = []
+    counts = []
     for _ in range(n_pat):
-        rows, i = _read_pattern(ids, i)
-        patterns.append(_rows_to_pattern(rows))
+        c, i = _ru(ids, i)
+        counts.append(c)
+    flat, i = _lz_read(ids, i, sum(counts), _row_read)
+    patterns = []
+    off = 0
+    for c in counts:
+        patterns.append(_rows_to_pattern(flat[off : off + c]))
+        off += c
     n_sub, i = _ru(ids, i)
     subtunes = []
     for _ in range(n_sub):
