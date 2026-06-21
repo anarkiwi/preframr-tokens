@@ -955,6 +955,40 @@ def _fold_loop(walked, maxp, mincycles):
     return None
 
 
+def _fold_loop_prefix(walked, maxp, mincycles):
+    """Fold the longest PREFIX of a walked-value sequence into the smallest
+    period-P loop ``table`` (P in 4..maxp, >=3 distinct values) it steps through
+    cyclically from its first entry, requiring at least ``mincycles`` full cycles.
+
+    This generalises :func:`_fold_loop` (which admits a lane only when ALL of the
+    walked values lie on one loop) to the longest-prefix contract every other
+    matcher in this module follows: a song whose voice runs one looping arp/note
+    wavetable for several pattern rows and then SWITCHES to another (a multi-pattern
+    melody is one note-on segment when the gate never retriggers) folds its FIRST
+    pattern here, and the greedy cover lays the next pattern down as the next
+    wavetable_ptr piece.  Each piece is still a genuine reused generator (the
+    period-P table) paced by the shared advance clock -- never the whole melody
+    stored byte-for-byte.  Returns ``(table, walked_used)`` for the longest such
+    prefix, or None.  Among periods that fold a prefix, the one whose prefix covers
+    the most walked entries wins (ties broken by the smaller period)."""
+    length = len(walked)
+    best = None
+    for period in range(4, min(maxp, length) + 1):
+        if length < period * mincycles:
+            continue
+        table = walked[:period]
+        if len(set(table)) < 3:
+            continue
+        used = period
+        while used < length and walked[used] == table[used % period]:
+            used += 1
+        if used < period * mincycles:
+            continue
+        if best is None or used > best[1]:
+            best = (table, used)
+    return best
+
+
 def _prefix_wavetable_ptr(seg, maxp=32, minrun=12, mincycles=2):
     """Longest byte-exact advance-clocked wavetable-pointer prefix.
 
@@ -982,16 +1016,24 @@ def _prefix_wavetable_ptr(seg, maxp=32, minrun=12, mincycles=2):
     walked, advance = _walked_table(seg)
     if not advance.any() or advance.all():
         return None  # a constant hold, or a step-every-frame plain tablewalk
-    table = _fold_loop(walked, maxp, mincycles)
-    if table is None:
+    # Fold the LONGEST PREFIX of the walk onto one loop (not necessarily the whole
+    # segment): a multi-pattern melody held under one un-retriggered note is a chain
+    # of looping arp/note-wavetable sections, so cover its first section here and let
+    # the greedy cover lay the next section down as the next wavetable_ptr piece --
+    # each piece a genuine period-P generator, never the whole melody stored raw.
+    fold = _fold_loop_prefix(walked, maxp, mincycles)
+    if fold is None:
         return None
+    table, _ = fold
     rend = render_wavetable_ptr(length, table, 0, advance)
     match = _match_prefix(rend, seg)
     if match >= minrun:
+        # Trim the advance clock to the matched run: a prefix piece only consumes
+        # advance[:match], so the remaining bits belong to the next piece's clock.
         return (
             match,
             "wavetable_ptr",
-            {"table": table, "phase": 0, "advance": advance.tolist()},
+            {"table": table, "phase": 0, "advance": advance[:match].tolist()},
         )
     return None
 
