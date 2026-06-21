@@ -195,6 +195,15 @@ GATE_FIXTURES = (
     # frame; byte-exact only with the detected simplepulse flag + packed table.
     ("DEMOS/G-L/Jetta.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
+    # Hammurabi -- GoatTracker frequency-latch timing (the instrument-vibrato-only
+    # packed build, NOEFFECTS!=0). At a gate-off boundary the packed player flips
+    # mt_chninstr to the new note's instrument 1-2 frames before the note inits
+    # and the continuous vibrato reads its param LIVE from that new instrument
+    # (mt_insvibparam-1), wobbling the held (old) frequency. The editor/full-FX
+    # model used the param latched at note-init, so it held the old frequency and
+    # diverged on freq-lo in consecutive gate-off pairs. Byte-exact only with the
+    # detected live-vibrato build flag driving the live param read.
+    ("GAMES/G-L/Hammurabi.sid", 1),
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove
     # the cadence detector + sub-frame framing are lossless.

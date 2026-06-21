@@ -881,6 +881,57 @@ def _detect_simplepulse(img, lay):
     return False
 
 
+def _vibparam_base(img, lay):
+    """Address of ``mt_insvibparam`` (the instrument vibrato-param column,
+    instrument 1 at offset 0), or None when the build has no instrument vibrato
+    (NOINSTRVIB, so the column is absent)."""
+    flags = _instrument_flags(img, lay)
+    if flags["noinsvib"]:
+        return None
+    cols = lay["cols"]
+    ci = 3  # ad, sr, wave
+    if not flags["nopulse"]:
+        ci += 1
+    if not flags["nofilter"]:
+        ci += 1
+    return cols[ci]  # vibparam column base == mt_insvibparam
+
+
+def _detect_live_vibrato(img, lay):
+    """True iff the build reads the instrument vibrato param LIVE every tick.
+
+    greloc's instrument-vibrato-only build (NOEFFECTS != 0: no pattern-FX
+    machinery -- no ``mt_chnfx``/``mt_chnparam``/effect jump table) runs the
+    continuous instrument vibrato straight off the channel's CURRENT instrument
+    each tick (player.s ``mt_wavedone`` .ELSE branch):
+
+        ldy mt_chninstr,y          ; current channel instrument
+        lda mt_insvibparam-1,y     ; B9  (vibparam-1) -- its speed-table param
+        tay                        ; A8
+
+    so at a gate-off boundary -- where ``mt_getnewnote`` flips ``mt_chninstr``
+    to the new note's instrument 1-2 frames before the note inits -- the held
+    (old) frequency is vibrated with the NEW instrument's param. The full-FX
+    build (NOEFFECTS == 0) instead dispatches through ``mt_chnparam``, a param
+    LATCHED only at note-init, so it does NOT vibrate during that window.
+
+    The signature is the live read ``B9 (vibparam-1)lo (vibparam-1)hi A8``: an
+    ``lda mt_insvibparam-1,y`` immediately followed by ``tay`` (the
+    continuous-effect path consumes the param into Y). The full-FX build's
+    only ``lda mt_insvibparam-1,y`` is in note-init and is followed by
+    ``sta mt_chnparam,x`` (95 ..), never ``tay``."""
+    base = _vibparam_base(img, lay)
+    if base is None:
+        return False
+    operand = (base - 1) & 0xFFFF
+    lo, hi = operand & 0xFF, (operand >> 8) & 0xFF
+    d = img.data
+    for o in range(len(d) - 3):
+        if d[o] == 0xB9 and d[o + 1] == lo and d[o + 2] == hi and d[o + 3] == 0xA8:
+            return True
+    return False
+
+
 # =========================== packed freq table =============================
 def _packed_freq_table(img, lay):
     """The 128-entry note->frequency table the PACKED player actually reads.
@@ -944,6 +995,7 @@ OPTIMIZE_PULSE = False
 OPTIMIZE_REALTIME = False
 FREQ_TABLE = None  # packed-image note->freq table (None -> editor's table)
 SIMPLEPULSE = False  # packed SIMPLEPULSE one-byte pulse build flag
+LIVE_VIBRATO = False  # NOEFFECTS!=0 build: live instrument-vibrato param read
 
 
 def reconstruct_song(sid_path=SID_PATH):
@@ -953,7 +1005,7 @@ def reconstruct_song(sid_path=SID_PATH):
     each candidate and keeps the one whose render matches the real player.
     """
     global ADPARAM, FLAGS, OPTIMIZE_PULSE, OPTIMIZE_REALTIME, FREQ_TABLE
-    global SIMPLEPULSE
+    global SIMPLEPULSE, LIVE_VIBRATO
     img = _Image(sid_path)
     lay = _derive_layout(img)
     # Recover the hard-restart ADPARAM/SRPARAM from the player image (the
@@ -969,6 +1021,11 @@ def reconstruct_song(sid_path=SID_PATH):
     # the packed player computes pulse width by a different code path; detect it
     # so the render runs that path on the (un-inverted) packed pulse table.
     SIMPLEPULSE = _detect_simplepulse(img, lay)
+    # NOEFFECTS!=0 build (instrument-vibrato-only): the continuous vibrato reads
+    # its param LIVE from the current channel instrument, so it vibrates the held
+    # frequency through the 1-2 gate-off frames before a new note inits. Detect it
+    # so the render reproduces that gate-off-window modulation.
+    LIVE_VIBRATO = _detect_live_vibrato(img, lay)
     # The packed player reads an UNPADDED freq table; recover the exact 128-entry
     # table (overrun bytes included) so out-of-range notes render byte-exactly.
     FREQ_TABLE = _packed_freq_table(img, lay)
@@ -1014,6 +1071,7 @@ def render_params():
         "optimize_realtime": OPTIMIZE_REALTIME,
         "freq_table": FREQ_TABLE,
         "simplepulse": SIMPLEPULSE,
+        "live_vibrato": LIVE_VIBRATO,
     }
 
 
@@ -1040,6 +1098,7 @@ def _flag_summary(img, lay, flags):
         optimize_pulse=OPTIMIZE_PULSE,
         optimize_realtime=OPTIMIZE_REALTIME,
         simplepulse=SIMPLEPULSE,
+        live_vibrato=LIVE_VIBRATO,
     )
 
 
@@ -1063,6 +1122,7 @@ def render_state(
     subtune=0,
     freq_table=_UNSET,
     simplepulse=None,
+    live_vibrato=None,
 ):
     """Per-frame 25-register SID state (forward-held), aligned 1:1 with the
     real player.  pygoattracker folds song-init into the first play_frame call
@@ -1087,6 +1147,8 @@ def render_state(
         freq_table = FREQ_TABLE
     if simplepulse is None:
         simplepulse = SIMPLEPULSE
+    if live_vibrato is None:
+        live_vibrato = LIVE_VIBRATO
     p = Player(
         song,
         subtune=subtune,
@@ -1095,6 +1157,7 @@ def render_state(
         optimize_realtime=optimize_realtime,
         freq_table=freq_table,
         simplepulse=bool(simplepulse),
+        live_vibrato=bool(live_vibrato),
     )
     regs = [0] * NREG
     out = np.zeros((nframes, NREG), dtype=np.int64)
