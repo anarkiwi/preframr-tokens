@@ -233,6 +233,76 @@ def test_prefix_tablewalk_lead_recovers_lead_and_table():
     assert match[2]["table"][:6] == table
 
 
+# A reflecting-triangle PW table over 12 levels (the FamiCommodore-style voice-2
+# wavetable) and a non-uniform groove advance clock (some frames step, some hold).
+_WPTR_TABLE = [
+    0x080,
+    0x088,
+    0x090,
+    0x0A0,
+    0x0A8,
+    0x0B0,
+    0x0C0,
+    0x0C8,
+    0x0D0,
+    0x0E0,
+    0x0E8,
+    0x0F0,
+    0x0E8,
+    0x0E0,
+    0x0D0,
+    0x0C8,
+    0x0C0,
+    0x0B0,
+    0x0A8,
+    0x0A0,
+    0x090,
+    0x088,
+]
+# a drifting (non-periodic) groove: mostly step, with holds inserted aperiodically.
+_WPTR_GROOVE = ([1, 1, 0] * 7 + [1, 1, 1, 0, 1, 0]) * 4
+
+
+def test_wavetable_ptr_holds_when_advance_clear():
+    # the pointer steps on a set advance bit and HOLDS the prior entry on a clear
+    # bit -- the value content is the table, the pacing is the external clock.
+    out = A.render_wavetable_ptr(6, [10, 20, 30, 40], 0, [1, 0, 1, 1, 0])
+    assert out.tolist() == [10, 20, 20, 30, 40, 40]
+
+
+def test_fit_wavetable_ptr_round_trip():
+    # an advance-clocked reflecting-triangle wavetable with a drifting dwell --
+    # exactly the wavetable-paced PW that defeats periodic tablewalk/ratewalk.
+    advance = _WPTR_GROOVE
+    lane = A.render_wavetable_ptr(len(advance) + 1, _WPTR_TABLE, 0, advance)
+    fit = _fit_round_trips(lane)
+    assert fit[0] in ("wavetable_ptr", "piecewise")
+
+
+def test_prefix_wavetable_ptr_recovers_table_and_clock():
+    advance = _WPTR_GROOVE
+    lane = A.render_wavetable_ptr(len(advance) + 1, _WPTR_TABLE, 0, advance)
+    match = A._prefix_wavetable_ptr(lane)
+    assert match is not None
+    assert match[1] == "wavetable_ptr"
+    assert match[2]["table"] == _WPTR_TABLE  # the period-22 generator, not raw data
+    assert match[2]["advance"] == advance  # the recovered shared groove clock
+
+
+def test_prefix_wavetable_ptr_rejects_step_every_frame():
+    # a plain period-P value table that steps every frame is NOT a groove-paced
+    # pointer walk; wavetable_ptr declines it so the cheaper tablewalk handles it.
+    lane = A.render_tablewalk(48, _WPTR_TABLE, 0)
+    assert A._prefix_wavetable_ptr(lane) is None
+
+
+def test_prefix_wavetable_ptr_rejects_two_value_pingpong():
+    # a 2-value dwell is a pingpong/hold, not a genuine reused value table; the
+    # >=3-distinct-values guard keeps wavetable_ptr from absorbing it as raw data.
+    lane = A.render_wavetable_ptr(40, [0x10, 0x20], 0, [1, 0, 1, 0] * 9 + [1, 1, 1])
+    assert A._prefix_wavetable_ptr(lane) is None
+
+
 def test_fit_additive_pw_round_trip():
     carry = np.array([1, 0, 0, 0] * 16, dtype=np.int64)
     lane = A.render_additive_pw(48, 0x0A00, 3, carry)
@@ -332,22 +402,17 @@ _BUSTRACE = os.environ.get("GENERIC_BUSTRACE")
 def test_whole_tune_residual_zero_real_trace():
     """Whole-tune residual-zero on a real native trace (opt-in).
 
-    The bus-state must be reproduced byte-exact across all 25 registers by the
-    self-contained render -- the proven 7/8-corpus whole-tune result (up from 5/8).
-    Hammurabi is now residual-zero via the generic tablewalk_lead archetype (a
-    delayed long-period modulation), and Not_Even_Human renders byte-exact (its
-    only diff is a bus-vs-dump song-end tail, not compared here).  FamiCommodore
-    keeps a genuine generator-lane gap (a voice-2 PW wavetable-paced reflecting
-    triangle with no compact generator form) -- it leaves residual ONLY on the
-    freq/pw lanes and is xfail'd, so the gap is surfaced, never faked; any
-    NON-generator residual is always a hard failure."""
+    The bus-state must be reproduced byte-exact across ALL 25 registers by the
+    self-contained render -- the proven 8/8-corpus whole-tune result (up from 5/8).
+    Hammurabi is residual-zero via the generic tablewalk_lead archetype (a delayed
+    long-period modulation); FamiCommodore is residual-zero via the advance-clocked
+    wavetable_ptr archetype (a voice-2 PW groove-paced reflecting triangle over a
+    period-22 value table); Not_Even_Human renders byte-exact (its only diff is a
+    bus-vs-dump song-end tail, not compared here).  Any genuinely irreducible lane
+    would surface as residual rather than be faked with a per-step-storage cover --
+    so a non-zero residual here is always a hard failure, never xfail'd."""
     records = load_bus(_BUSTRACE)
     program = recover_generic(_BUSTRACE, None, records)
     resid, _, state = residual(program, records)
     total = sum(resid.values())
-    gen = sum(resid[reg] for reg in _GEN_REGS)
-    nongen = total - gen
-    assert nongen == 0, f"non-generator residual on {state.shape}: {resid}"
-    if gen:
-        pytest.xfail(f"documented generator-lane gap: {gen} gen-lane residual cells")
     assert total == 0, f"residual on {state.shape}: {resid}"
