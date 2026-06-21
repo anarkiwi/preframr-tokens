@@ -419,6 +419,46 @@ def test_simplepulse_flag_detected():
     assert gt_unpack.render_params()["simplepulse"] is True
 
 
+_HAMMURABI_REL = "GAMES/G-L/Hammurabi.sid"
+_HAMMURABI_URL = f"{_HVSC_BASE}/{_HAMMURABI_REL}"
+
+
+def test_freq_latch_timing_byte_exact():
+    """Hammurabi: the GoatTracker frequency-latch timing class. The packed
+    instrument-vibrato-only build (greloc NOEFFECTS != 0) reads the continuous
+    instrument-vibrato param LIVE from the channel's current instrument every
+    tick (player.s mt_chninstr -> mt_insvibparam-1). At a gate-off boundary
+    mt_getnewnote flips mt_chninstr to the NEW note's instrument 1-2 frames
+    before the note inits, so the held (old) frequency is wobbled by the new
+    instrument's vibrato (e.g. instr 8 speed-table[1]=5 -> 5299+5 = 5304, freq-lo
+    184). The full-FX model used the param LATCHED at note-init, holding the old
+    frequency and diverging on freq-lo in consecutive gate-off pairs (34 frames).
+    Detecting the live-vibrato build flag and driving the live param read makes
+    the whole song byte-exact."""
+    sid, dump = acquire(_HAMMURABI_REL, _HAMMURABI_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "freq-latch timing is NOT residual-zero on Hammurabi"
+
+
+def test_live_vibrato_flag_detected():
+    """The live-vibrato build flag is recovered from the packed player image:
+    present in the instrument-vibrato-only build (NOEFFECTS != 0, Hammurabi),
+    absent in the full-FX build (NOEFFECTS == 0, Grid_Runner, whose pattern FX
+    force mt_chnfx/mt_chnparam dispatch with a latched param)."""
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    ham, _ = acquire(_HAMMURABI_REL, _HAMMURABI_URL, subtune=1)
+    grid, _ = acquire(_GR_REL, _GR_URL, subtune=1)
+    himg = gt_unpack._Image(ham)
+    gimg = gt_unpack._Image(grid)
+    assert gt_unpack._detect_live_vibrato(himg, gt_unpack._derive_layout(himg)) is True
+    assert gt_unpack._detect_live_vibrato(gimg, gt_unpack._derive_layout(gimg)) is False
+    # the flag rides the recovered program's render params
+    gt_unpack.reconstruct_song(ham)
+    assert gt_unpack.render_params()["live_vibrato"] is True
+
+
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
     """Part A: the recovered GoatTracker program is the COMMON abstraction --
     per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --

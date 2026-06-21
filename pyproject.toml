@@ -24,7 +24,7 @@ dependencies = [
     "pandas>=2",
     "pyarrow>=14",
     "py65>=1.2",
-    "pygoattracker>=0.1.4",
+    "pygoattracker>=0.1.5",
 ]
 
 [project.optional-dependencies]
