@@ -204,6 +204,14 @@ GATE_FIXTURES = (
     # diverged on freq-lo in consecutive gate-off pairs. Byte-exact only with the
     # detected live-vibrato build flag driving the live param read.
     ("GAMES/G-L/Hammurabi.sid", 1),
+    # Truck-On -- GoatTracker toneporta lastnote latch (calculated-speed vibrato
+    # class). When a toneportamento reaches its target the packed player stores
+    # the target note into mt_chnlastnote (player.s mt_effect_3_found ->
+    # mt_wavenoteabs); a following calculated-speed vibrato then derives its step
+    # from the target-note interval. The render kept a stale lastnote, so the
+    # post-porta vibrato depth was off by the porta's note distance and freq-lo
+    # diverged. Byte-exact only with pygoattracker>=0.1.6's lastnote latch.
+    ("MUSICIANS/L/Linus/Truck-On.sid", 1),
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove
     # the cadence detector + sub-frame framing are lossless.
