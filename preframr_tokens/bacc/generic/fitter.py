@@ -56,6 +56,12 @@ def _noteon_points(noteons, voice):
     return ons
 
 
+def _unfit_frames(res):
+    """Frames left uncovered by an un-fit (None) segment in a fitted lane -- the
+    measure of how much of a lane the cover failed to recover."""
+    return sum(stop - start for start, stop, fit in res if fit is None)
+
+
 def fit_generator_lanes(state, note_table):
     """Fit the freq + pw (16-bit) lanes via the BACC archetype library.  Returns
     ``(fits, noteons)`` where fits maps ``(voice, 'freq'|'pw')`` to
@@ -67,20 +73,43 @@ def fit_generator_lanes(state, note_table):
     high across notes is segmented per note instead of collapsing into one
     over-long, unfittable segment.  The FREQ lane additionally slices at
     :func:`archetypes.pw_sweep_resets` (a per-note pulse-sweep re-seed) so a
-    pure-legato melody with NO control/ADSR retrigger is still segmented per note;
-    the PW lane is NOT sliced there, so an irreducible reflecting-triangle PW would
-    stay one segment and surface rather than fragment into raw-byte pieces."""
+    pure-legato melody with NO control/ADSR retrigger is still segmented per note.
+
+    The PW lane is fitted FIRST without the reset slices, so a smoothly-paced
+    reflecting-triangle PW (FamiCommodore-style, covered whole by ``wavetable_ptr``)
+    is never fragmented.  Only when that whole-segment cover leaves an un-fit (None)
+    span -- a legato melody whose pulse-width re-seeds the sweep at each new note,
+    collapsing the whole note into one over-long, unfittable PW block -- do we RETRY
+    the PW lane sliced at the same bus-visible :func:`archetypes.pw_sweep_resets`
+    re-seeds the freq lane uses, and adopt the retry ONLY when it strictly reduces
+    the un-fit span.  A genuinely irreducible PW (no clean per-note re-seed
+    structure) reduces nothing on the retry and stays one surfaced segment rather
+    than being faked into raw-byte pieces (HARD RULE #0)."""
     noteons = A.note_boundaries(state)
     nframes = len(state)
     out = {}
     for voice in range(3):
         ons = _noteon_points(noteons, voice)
-        freq_ons = sorted(set(ons) | set(A.pw_sweep_resets(state, voice)))
+        resets = A.pw_sweep_resets(state, voice)
+        freq_ons = sorted(set(ons) | set(resets))
         flane = A.lane_freq(state, voice)
         fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, FREQ_WIDTH)
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
+        # The pulse-width register is 12-bit; fitting it with its true width lets a
+        # table-driven PW accumulator (dwellratewalk) wrap exactly as the chip does
+        # at the 0xFFF boundary rather than at 0xFFFF.
         pres = A.fit_lane(plane, ons, nframes, note_table, carry, PW_WIDTH)
+        if resets and _unfit_frames(pres):
+            # The whole-note PW cover left a gap; a per-note PW re-seed (the sweep
+            # snapping back at each new legato note) makes the held note one
+            # over-long unfittable block.  Re-slice at the re-seeds and keep the
+            # result only if it actually recovers more of the lane.
+            pres_sliced = A.fit_lane(
+                plane, freq_ons, nframes, note_table, carry, PW_WIDTH
+            )
+            if _unfit_frames(pres_sliced) < _unfit_frames(pres):
+                pres = pres_sliced
         out[(voice, "freq")] = (fres, None)
         out[(voice, "pw")] = (pres, carry)
     return out, noteons

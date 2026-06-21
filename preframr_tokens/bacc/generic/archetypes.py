@@ -1073,13 +1073,19 @@ def _prefix_tablewalk(seg, maxp=48):
     return best
 
 
-def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=12, minrun=8):
+def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=48, minrun=8):
     """Longest byte-exact wavetable-rate accumulator prefix.  Recovers the
     period-P signed-rate table from the segment's own deltas: find the smallest
     period whose rate table replays the segment, requiring at least one nonzero
     rate (so a constant hold is left to :func:`render_fit`'s cheaper ``hold``).
     The generalisation of :func:`_prefix_maskaccum` to a per-step rate table that
-    closes the fractional-rate / wider-internal-width sweep."""
+    closes the fractional-rate / wider-internal-width sweep.
+
+    The period cap admits the longer SID-Wizard PW/filter sweep wavetables (a
+    ramp-up / apex-dwell / ramp-down reflecting triangle is a period-~45 signed-rate
+    table), but a candidate is accepted only when the matched run covers at least
+    TWO full periods -- so the rate table is a genuinely reused loop, never a single
+    pass over a long table that would amount to storing the per-step deltas raw."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < minrun:
@@ -1095,7 +1101,7 @@ def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=12, minrun=8):
             continue
         rend = render_ratewalk(length, int(seg[0]), table, 0, width_mask)
         match = _match_prefix(rend, seg)
-        if match >= minrun and (best is None or match > best[0]):
+        if match >= max(minrun, 2 * period) and (best is None or match > best[0]):
             best = (
                 match,
                 "ratewalk",
@@ -1447,6 +1453,16 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
             or (cand[0] == base[2] and base[0] == "hold")
         ):
             base = (cand[1], cand[2], cand[0])
+    # A ratewalk that fully covers the window may be the unrolled dwell*P form of a
+    # more compact dwelled rate-wavetable; prefer the dwelled form (a short step table
+    # plus one scalar) when it ties.  Checked HERE, before the full-cover early-return
+    # below, because that return assumes every later matcher only wins by covering
+    # strictly more -- and the dwellratewalk tie-break wins on equal length.  Confined
+    # to the full-cover ratewalk case so the cheap many-short-pieces path is unaffected.
+    if base is not None and base[0] == "ratewalk" and base[2] >= len(seg):
+        dwell_walk = _prefix_dwellratewalk(seg, width_mask)
+        if dwell_walk is not None and dwell_walk[0] >= base[2]:
+            base = (dwell_walk[1], dwell_walk[2], dwell_walk[0])
     # Every matcher below can only REPLACE ``base`` by covering strictly MORE frames
     # (or fires only when ``base is None``); none can win once the cheap library plus
     # maskaccum/ratewalk already reach the end of this window.  Returning here when
