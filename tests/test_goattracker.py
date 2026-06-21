@@ -351,6 +351,39 @@ def test_packed_freqtable_recovers_overrun_bytes():
     )
 
 
+_VIC64_REL = "DEMOS/UNKNOWN/VIC64Demo_tune_5.sid"
+_VIC64_URL = f"{_HVSC_BASE}/{_VIC64_REL}"
+
+
+def test_adsr_hardrestart_byte_exact():
+    """VIC64Demo_tune_5: the ADSR hard-restart (gate-off timer) class. The
+    player slams the SID envelope to the hard-restart ADPARAM/SRPARAM
+    (ad=$0F, sr=$00) for the 1-2 frames before each note-on (player.s
+    mt_normalnote 1303/1313), then writes the note's real ADSR. The old
+    ADPARAM recovery (first AD/SR write the emulator emits) captured the first
+    NOTE's ADSR instead, so the render held a stale envelope through the
+    gate-off frames and diverged on reg 5/6/19/20 in consecutive pairs.
+    Recovering ADPARAM straight from the image's hard-restart store -- by store
+    TARGET (lower-address store == AD), which is the value the chip executes --
+    makes the whole song byte-exact."""
+    sid, dump = acquire(_VIC64_REL, _VIC64_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "ADSR hard-restart recovery is NOT residual-zero on VIC64Demo_tune_5"
+
+
+def test_adparam_recovered_from_image_store():
+    """The hard-restart ADPARAM/SRPARAM is read from the player image's HR store
+    (the immediates the chip executes), keyed by store TARGET so the AD/SR pair
+    is correct regardless of which order greloc emits the two stores."""
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    sid, _ = acquire(_VIC64_REL, _VIC64_URL, subtune=1)
+    img = gt_unpack._Image(sid)
+    # VIC64Demo_tune_5 stores SRPARAM($00) first then ADPARAM($0F): (AD<<8)|SR.
+    assert gt_unpack._adparam_from_image(img) == 0x0F00
+
+
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
     """Part A: the recovered GoatTracker program is the COMMON abstraction --
     per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --

@@ -157,6 +157,13 @@ GATE_FIXTURES = (
     # notes read adjacent image bytes. Byte-exact only with the packed-image
     # freq table (vs the editor's zero-padded table that returns freq 0).
     ("MUSICIANS/N/No-XS/Twilight.sid", 1),
+    # VIC64Demo_tune_5 -- ADSR hard-restart (gate-off timer) class: the player
+    # writes the hard-restart ADPARAM/SRPARAM (ad=$0F, sr=$00) for the 1-2 frames
+    # before each note-on. The old ADPARAM heuristic (first AD/SR write the
+    # emulator emits) captured the first NOTE's ADSR instead, holding a stale
+    # envelope through those gate-off frames. Recovering ADPARAM straight from
+    # the player image's hard-restart store makes it byte-exact.
+    ("DEMOS/UNKNOWN/VIC64Demo_tune_5.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove
