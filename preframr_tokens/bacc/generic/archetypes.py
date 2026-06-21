@@ -161,6 +161,35 @@ def freq_note_onsets(state, voice):
     return (np.nonzero(np.abs(diff) > threshold)[0] + 1).tolist()
 
 
+def all_voice_boundaries(state):
+    """The union, across ALL three voices, of every bus-visible note-on
+    (:func:`note_boundaries`) and pulse-sweep re-seed (:func:`pw_sweep_resets`) --
+    the song's global per-frame tick grid.
+
+    Some players (AMP / TFX / Cyberlogic-style) re-write a voice's freq / pulse
+    registers EVERY frame the song advances, including while that voice's own gate
+    is held LOW (a muted-voice intro, an arpeggio table that keeps stepping under a
+    silenced channel, or a long pre-roll before the channel's first gate rise).
+    The per-voice :func:`note_boundaries` then finds NO slice points inside that
+    span -- the voice exposes none of its own retriggers -- so the whole churning
+    span collapses into ONE over-long segment no single archetype run can cover.
+
+    But the churn is NOT structureless: it advances on the same song tick as the
+    OTHER voices, whose note-ons mark exactly those ticks on the bus.  Slicing the
+    silent voice's lane at the global tick grid (this union) exposes the per-tick
+    generator the player runs.  This is purely a bus-derived, last-resort EXTRA set
+    of slice points: it is applied only as a fallback when the per-voice cover left
+    an un-fit span and is kept only when it strictly recovers more of the lane
+    (see :func:`fitter.fit_generator_lanes`), so a genuinely irreducible lane
+    reduces nothing on the retry and is still surfaced, never sliced into raw-byte
+    pieces (HARD RULE #0)."""
+    grid = set()
+    for voice in range(3):
+        grid.update(note_boundaries(state)[voice])
+        grid.update(pw_sweep_resets(state, voice))
+    return sorted(grid)
+
+
 def lane_freq(state, voice):
     """The voice's 16-bit frequency lane (freq-lo | freq-hi << 8)."""
     base = 7 * voice
