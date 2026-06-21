@@ -194,6 +194,13 @@ GATE_FIXTURES = (
     # editor player gives pulse-hi 0, so the render diverged on every pulse-hi
     # frame; byte-exact only with the detected simplepulse flag + packed table.
     ("DEMOS/G-L/Jetta.sid", 1),
+    # Catalyst -- SET-PULSE-only SIMPLEPULSE: a SIMPLEPULSE build whose pulse
+    # table has no MODULATION steps, so the mt_pulsemod ``adc #$00`` signature is
+    # absent and SIMPLEPULSE went undetected (editor pulse path -> pulse-hi 0 on
+    # every frame). Detected via the SET-PULSE step's two back-to-back Y-indexed
+    # loads (pulsetimetbl then pulsespdtbl with no intervening high store;
+    # player.s mt_setpulse, .IF SIMPLEPULSE != 0). Byte-exact only with the flag.
+    ("MUSICIANS/J/Jammer/Catalyst.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # Hammurabi -- GoatTracker frequency-latch timing (the instrument-vibrato-only
     # packed build, NOEFFECTS!=0). At a gate-off boundary the packed player flips

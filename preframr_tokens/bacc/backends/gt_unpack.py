@@ -865,6 +865,28 @@ def _detect_simplepulse(img, lay):
 
     NOPULSEMOD-only builds (no modulation entries) without SIMPLEPULSE have no
     such add and render identically to the editor, so they need no flag.
+
+    The ``adc #$00`` anchor only fires when the build HAS a pulse-MOD step.  A
+    SIMPLEPULSE build whose pulse table is all SET steps (no modulation) carries
+    no ``mt_pulsemod`` accumulate, so we additionally anchor on the SIMPLEPULSE
+    SET-PULSE step itself.  In ``mt_setpulse`` (player.s ~1108-1124) the editor
+    (``SIMPLEPULSE == 0``) stores the pulse HIGH byte from the value still in A
+    (the ``mt_pulsetimetbl`` byte that selected the set step) BEFORE loading the
+    speed/low byte -- ``sta ghostpulsehi ; lda mt_pulsespdtbl-1,y ; sta
+    ghostpulselo`` -- so a store sits between the time-table read and the
+    speed-table read.  The SIMPLEPULSE build (``SIMPLEPULSE != 0``) drops that
+    high store and feeds the SPEED byte to both registers, so the speed-table
+    load immediately follows the time-table load with NO store between:
+
+        lda mt_pulsetimetbl-1,y   ; B9 (pulse_L-1)lo (pulse_L-1)hi   (set-step test)
+        lda mt_pulsespdtbl-1,y    ; B9 (pulse_R-1)lo (pulse_R-1)hi   (-> A = speed)
+        sta ghostpulselo,x        ; then stored to BOTH lo and hi
+
+    The signature is therefore two back-to-back ``lda ...,y`` of the pulse TIME
+    table then the pulse SPEED table (``B9 Llo Lhi B9 Rlo Rhi``).  The full-mod
+    set step never has two consecutive Y-indexed loads here (its high store
+    breaks them up), so this never false-positives on full-mod builds (verified:
+    0 hits across the byte-exact corpus, incl. Jetta/Hammurabi/Truck-On).
     """
     d = img.data
     speedtbl = (lay["pulse_R"] - 1) & 0xFFFF  # mt_pulsespdtbl-1 operand
@@ -876,6 +898,20 @@ def _detect_simplepulse(img, lay):
             and d[o + 2] == hi
             and d[o + 3] == 0x69  # adc #imm
             and d[o + 4] == 0x00
+        ):
+            return True
+    # SET-PULSE-only SIMPLEPULSE: 'lda pulsetimetbl-1,y' directly followed by
+    # 'lda pulsespdtbl-1,y' (no intervening high-byte store).
+    timetbl = (lay["pulse_L"] - 1) & 0xFFFF  # mt_pulsetimetbl-1 operand
+    tlo, thi = timetbl & 0xFF, (timetbl >> 8) & 0xFF
+    for o in range(len(d) - 6):
+        if (
+            d[o] == 0xB9  # lda mt_pulsetimetbl-1,y
+            and d[o + 1] == tlo
+            and d[o + 2] == thi
+            and d[o + 3] == 0xB9  # lda mt_pulsespdtbl-1,y
+            and d[o + 4] == lo
+            and d[o + 5] == hi
         ):
             return True
     return False
