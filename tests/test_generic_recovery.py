@@ -362,6 +362,36 @@ def test_per_frame_state_empty_trace():
     assert state is None and t0 is None and cpf is None
 
 
+def test_per_frame_state_forward_fills_sparse_writes():
+    """The (vectorised) per-frame reconstruction must hold a register's value
+    across play-calls that do not re-write it -- the running-register-file
+    semantics -- and take the LAST write within a play-call.  This is the
+    invariant a multispeed/coalesced trace (millions of writes, registers
+    written sparsely) relies on; assert it on a tiny hand-built trace."""
+    cpf = 19656
+    recs = []
+    cyc = 1000
+    # frame 0: write reg0=0x11, reg24=0x0F  (reg1 never written -> stays 0)
+    # frame 1: write reg0 twice (0x20 then 0x22 -> last wins); reg24 NOT rewritten
+    # frame 2: write nothing to reg0 (holds 0x22); bump reg24=0x07
+    plan = [
+        [(0, 0x11), (24, 0x0F)],
+        [(0, 0x20), (0, 0x22)],
+        [(24, 0x07)],
+    ]
+    for writes in plan:
+        for reg, val in writes:
+            recs.append((cyc, 0xD400 + reg, val, 1))
+            cyc += 2
+        cyc += cpf  # play-call (blit-group) boundary
+    records = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(records, t0=1000)
+    assert state.shape == (3, 25)
+    assert list(state[:, 0]) == [0x11, 0x22, 0x22]  # last-write + forward-fill
+    assert list(state[:, 1]) == [0, 0, 0]  # never written -> zero
+    assert list(state[:, 24]) == [0x0F, 0x0F, 0x07]  # held then changed
+
+
 def test_recover_rejects_too_short_trace():
     records = np.array([(1000, 0xD400, 0x10, 1)], dtype=BUS_DT)
     with pytest.raises(ValueError, match="did not parse to frames"):
