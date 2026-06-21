@@ -419,6 +419,40 @@ def test_simplepulse_flag_detected():
     assert gt_unpack.render_params()["simplepulse"] is True
 
 
+_CATALYST_REL = "MUSICIANS/J/Jammer/Catalyst.sid"
+_CATALYST_URL = f"{_HVSC_BASE}/{_CATALYST_REL}"
+
+
+def test_simplepulse_setpulse_only_byte_exact():
+    """Catalyst: a SIMPLEPULSE build whose pulse table is all SET steps (no pulse
+    MODULATION). With no mt_pulsemod accumulate the old ``adc #$00`` signature
+    cannot fire, so SIMPLEPULSE went undetected and the editor pulse path gave
+    pulse-hi 0 on every frame. The SET-PULSE step itself is the tell: SIMPLEPULSE
+    drops the editor's pulse-hi store (from the mt_pulsetimetbl byte) and feeds
+    the SPEED byte to both registers, so the speed-table load immediately follows
+    the time-table load with no store between (player.s mt_setpulse,
+    .IF SIMPLEPULSE != 0). Detecting that ``lda mt_pulsetimetbl-1,y ; lda
+    mt_pulsespdtbl-1,y`` pair recovers the flag and the song renders byte-exact."""
+    sid, dump = acquire(_CATALYST_REL, _CATALYST_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "set-pulse-only SIMPLEPULSE is NOT residual-zero on Catalyst"
+
+
+def test_simplepulse_setpulse_only_flag_detected():
+    """The SET-PULSE-only SIMPLEPULSE flag is recovered from Catalyst (which has
+    no mt_pulsemod accumulate) while the full-mod Grid_Runner build stays False --
+    the new set-pulse signature never false-positives on full-mod set steps."""
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    cat, _ = acquire(_CATALYST_REL, _CATALYST_URL, subtune=1)
+    grid, _ = acquire(_GR_REL, _GR_URL, subtune=1)
+    cimg = gt_unpack._Image(cat)
+    gimg = gt_unpack._Image(grid)
+    assert gt_unpack._detect_simplepulse(cimg, gt_unpack._derive_layout(cimg)) is True
+    assert gt_unpack._detect_simplepulse(gimg, gt_unpack._derive_layout(gimg)) is False
+
+
 _HAMMURABI_REL = "GAMES/G-L/Hammurabi.sid"
 _HAMMURABI_URL = f"{_HVSC_BASE}/{_HAMMURABI_REL}"
 
