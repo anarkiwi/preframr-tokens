@@ -72,26 +72,33 @@ def fit_generator_lanes(state, note_table):
     not just a gate rise -- so a legato / hard-restart phrase that keeps the gate
     high across notes is segmented per note instead of collapsing into one
     over-long, unfittable segment.  The FREQ lane additionally slices at
-    :func:`archetypes.pw_sweep_resets` (a per-note pulse-sweep re-seed) so a
-    pure-legato melody with NO control/ADSR retrigger is still segmented per note.
+    :func:`archetypes.pw_sweep_resets` (a per-note pulse-sweep re-seed) and at
+    :func:`archetypes.freq_note_onsets` (a freq jump far larger than the intra-note
+    modulation step) so a pure-legato melody with NO control/ADSR retrigger -- one
+    advancing its notes ONLY in the freq lane (per-note glide-vibrato or
+    arp/vibrato cells) -- is still segmented per note instead of collapsing into one
+    over-long, unfittable segment.
 
-    The PW lane is fitted FIRST without the reset slices, so a smoothly-paced
+    The PW lane is fitted FIRST without any note-on re-slicing, so a smoothly-paced
     reflecting-triangle PW (FamiCommodore-style, covered whole by ``wavetable_ptr``)
     is never fragmented.  Only when that whole-segment cover leaves an un-fit (None)
     span -- a legato melody whose pulse-width re-seeds the sweep at each new note,
     collapsing the whole note into one over-long, unfittable PW block -- do we RETRY
-    the PW lane sliced at the same bus-visible :func:`archetypes.pw_sweep_resets`
-    re-seeds the freq lane uses, and adopt the retry ONLY when it strictly reduces
-    the un-fit span.  A genuinely irreducible PW (no clean per-note re-seed
-    structure) reduces nothing on the retry and stays one surfaced segment rather
-    than being faked into raw-byte pieces (HARD RULE #0)."""
+    the PW lane sliced at the same bus-visible note-ons the freq lane uses
+    (:func:`archetypes.pw_sweep_resets` -- PW's own re-seed drops -- and
+    :func:`archetypes.freq_note_onsets` -- the FREQ-lane note jump, a chip-wide note
+    event, NOT the PW lane's own reflection drops), and adopt the retry ONLY when it
+    strictly reduces the un-fit span.  A genuinely irreducible PW (no clean per-note
+    re-seed structure) reduces nothing on the retry and stays one surfaced segment
+    rather than being faked into raw-byte pieces (HARD RULE #0)."""
     noteons = A.note_boundaries(state)
     nframes = len(state)
     out = {}
     for voice in range(3):
         ons = _noteon_points(noteons, voice)
         resets = A.pw_sweep_resets(state, voice)
-        freq_ons = sorted(set(ons) | set(resets))
+        freq_onsets = A.freq_note_onsets(state, voice)
+        freq_ons = sorted(set(ons) | set(resets) | set(freq_onsets))
         flane = A.lane_freq(state, voice)
         fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, FREQ_WIDTH)
         carry = A.freq_carry_sequence(fres, nframes)
@@ -100,11 +107,14 @@ def fit_generator_lanes(state, note_table):
         # table-driven PW accumulator (dwellratewalk) wrap exactly as the chip does
         # at the 0xFFF boundary rather than at 0xFFFF.
         pres = A.fit_lane(plane, ons, nframes, note_table, carry, PW_WIDTH)
-        if resets and _unfit_frames(pres):
+        if _unfit_frames(pres):
             # The whole-note PW cover left a gap; a per-note PW re-seed (the sweep
             # snapping back at each new legato note) makes the held note one
-            # over-long unfittable block.  Re-slice at the re-seeds and keep the
-            # result only if it actually recovers more of the lane.
+            # over-long unfittable block.  Re-slice at the note-ons the freq lane
+            # exposes (PW's own re-seed drops AND the chip-wide freq note jump) and
+            # keep the result only if it actually recovers more of the lane, so an
+            # irreducible reflecting-triangle PW (which reduces nothing) is never
+            # fragmented.
             pres_sliced = A.fit_lane(
                 plane, freq_ons, nframes, note_table, carry, PW_WIDTH
             )

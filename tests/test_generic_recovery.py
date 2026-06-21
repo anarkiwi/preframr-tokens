@@ -274,6 +274,64 @@ def test_prefix_tablewalk_recovers_period():
     assert match[2]["table"][:9] == table
 
 
+def test_looping_value_table_collapses_to_one_generator_piece():
+    # A per-note freq arp whose 3-note table is itself looped into a longer
+    # super-period (Digitalizer's Ninja: period-48 = 3 notes x 16) replays as ONE
+    # looping value table.  The cheap local matchers grab only a short ratewalk/arp
+    # prefix of the loop and would fragment the rest into one piece per cycle past
+    # the cover cap; a generator (tablewalk, or the ratewalk that subsumes it once
+    # its period cap reaches the loop) must cover the WHOLE loop in a single piece,
+    # byte-exact -- a closed-form program, never per-cycle stored data (HARD RULE #0).
+    table = [0x8368, 0x52C8, 0x3426] * 16
+    table[11] = 0x52C8  # a per-note tail tweak so the super-period is genuinely 48
+    lane = A.render_tablewalk(48 * 12, table, 0)
+    name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
+    assert name in ("tablewalk", "ratewalk")  # one looping generator, not fragments
+    assert plen == len(lane)  # the WHOLE loop in one piece, not a short prefix
+    rendered = A.render_fit((name, prm), len(lane))
+    assert np.array_equal(rendered, lane)
+
+
+def test_tablewalk_promotion_holds_when_proven_library_starts_short():
+    # The promotion guard itself (decoupled from whichever long generator wins): a
+    # period-12 value table beyond the arp cap, where the proven library can only
+    # START a short prefix at seg[0].  tablewalk must clear the substantial-length
+    # bar (> 2x the base run, >= 36) so a genuine looping table is never left as the
+    # short prefix the cheap matchers grab first.
+    table = [
+        0x0500,
+        0x0480,
+        0x0700,
+        0x0640,
+        0x0900,
+        0x0820,
+        0x0700,
+        0x0640,
+        0x0500,
+        0x0480,
+        0x0300,
+        0x0280,
+    ]
+    lane = A.render_tablewalk(12 * 12, table, 0)
+    base = A._longest_archetype(lane, 0, None, None)
+    tw = A._prefix_tablewalk(lane)
+    assert base[2] < len(lane)  # the proven library alone covers only a short prefix
+    assert tw is not None and tw[0] > 2 * base[2] and tw[0] >= 36  # promotion fires
+    # whichever long looping generator wins, the WHOLE loop is one byte-exact piece.
+    name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
+    assert name in ("tablewalk", "ratewalk") and plen == len(lane)
+    assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
+
+
+def test_tablewalk_not_promoted_over_short_coincidental_arp():
+    # A clean period-4 arp must NOT be re-described as a tablewalk: the promotion
+    # fires only when tablewalk covers SUBSTANTIALLY more than the proven library's
+    # run, so a genuine short generator is never shadowed (HARD RULE #0).
+    lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
+    name, _, _ = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
+    assert name == "arp"
+
+
 def test_fit_ratewalk_round_trip():
     # a wavetable-rate accumulator (the FamiCommodore-style sub-resolution sweep):
     # a period-5 signed-rate table drives a single wider-internal-width accumulator
@@ -980,6 +1038,100 @@ def test_load_bus_native_roundtrip(tmp_path, synth_bus):
     synth_bus.tofile(str(path))
     loaded = load_bus(str(path))
     assert np.array_equal(loaded, synth_bus)
+
+
+def _legato_freq_bus(cell, ncells, pw_sweep=False):
+    """A pure-legato tune: the gate rises ONCE and stays high, and the melody
+    advances ONLY in voice-0's freq lane -- each note is a fixed per-frame ``cell``
+    of freq values (a vibrato / arp cell) re-seeded at the next note with a big
+    jump.  No control / ADSR retrigger anywhere, so ``note_boundaries`` and
+    ``pw_sweep_resets`` find nothing; only ``freq_note_onsets`` exposes the notes.
+
+    With ``pw_sweep`` the PW lane also runs a per-note ramping sweep that re-seeds
+    to its start at each note -- but as a SMOOTH ramp (so ``pw_sweep_resets`` finds
+    its drops, yet the sweep only fits per note if the PW lane is sliced at the
+    freq note-ons too)."""
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    notes = [0x0900 + 0x0400 * (n % 5) for n in range(ncells)]  # big per-note jumps
+    nframes = len(cell) * ncells
+    for frame in range(nframes):
+        note = notes[frame // len(cell)]
+        v0 = note + cell[frame % len(cell)]  # the intra-note vibrato wiggle
+        reg[0], reg[1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 1 else 0x40  # gate rises once, then held forever
+        if pw_sweep:
+            pw = 0x100 + 0x20 * (frame % len(cell))  # ramps, re-seeds each note
+            reg[2], reg[3] = pw & 0xFF, (pw >> 8) & 0x0F
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    return np.array(recs, dtype=BUS_DT)
+
+
+def test_freq_note_onsets_detects_big_freq_jumps():
+    # A vibrato cell (small +/- wiggle) re-seeded each note with a big jump: the
+    # detector fires on the per-note jumps (far larger than the intra-note step)
+    # and NOT inside the smooth wiggle, so each note becomes one fittable segment.
+    cell = [0, 16, 32, 16, 0, -16, -32, -16]
+    bus = _legato_freq_bus(cell, 6)
+    state, _, _ = per_frame_state_from_bus(bus)
+    onsets = A.freq_note_onsets(state, 0)
+    # one onset per note boundary (5 transitions between 6 notes), none mid-cell.
+    assert onsets == [len(cell) * n for n in range(1, 6)]
+
+
+def test_freq_note_onsets_ignores_smooth_sweep():
+    # A genuinely smooth single sweep (all steps near the median) must NOT be
+    # sliced -- a freq jump detector that tripped on it would fragment an
+    # irreducible lane into raw-byte pieces and fake a residual-zero (HARD RULE #0).
+    cell = list(range(0, 64, 2))  # one long constant-rate ramp, no note re-seed
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    for frame, off in enumerate(cell):
+        v0 = 0x1000 + off
+        reg[0], reg[1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 1 else 0x40
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    state, _, _ = per_frame_state_from_bus(bus)
+    assert A.freq_note_onsets(state, 0) == []
+
+
+def test_legato_freq_melody_recovers_residual_zero_end_to_end():
+    # End to end: a pure-legato voice whose notes advance ONLY in the freq lane
+    # (each note a per-frame vibrato cell, gate held high) recovers byte-exact --
+    # the freq_note_onsets slice turns each over-long phrase into per-note segments.
+    cell = [0, 16, 32, 16, 0, -16, -32, -16]
+    bus = _legato_freq_bus(cell, 8)
+    program = recover_generic("legato.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq lane byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_legato_pw_sweep_reseeds_at_freq_note_onsets_end_to_end():
+    # The recurring MIXED_02 (Digitalizer / RoMuzak) PW-lane gap: a pure-legato
+    # voice whose per-note pulse-width sweep re-seeds at each note, but with NO
+    # control/ADSR retrigger -- so the PW lane must be sliced at the FREQ note-ons
+    # (the chip-wide note event) or its accumulator runs past the per-note re-seed
+    # and the PW lane is left residual.  The fix recovers it byte-exact.
+    cell = [0, 16, 32, 16, 0, -16, -32, -16]
+    bus = _legato_freq_bus(cell, 8, pw_sweep=True)
+    state, _, _ = per_frame_state_from_bus(bus)
+    assert A.note_boundaries(state)[0] == [1]  # one retrigger -> PW would be unfit
+    program = recover_generic("legato_pw.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[2] == 0 and resid[3] == 0  # voice-0 PW lane byte-exact
+    assert sum(resid.values()) == 0
 
 
 _BUSTRACE = os.environ.get("GENERIC_BUSTRACE")
