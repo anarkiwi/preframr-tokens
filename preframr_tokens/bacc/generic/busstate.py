@@ -74,6 +74,37 @@ def _running_state(bin_idx, reg, val, nbins):
     return np.take_along_axis(grid, idx, axis=0)
 
 
+def _static_hold_state(reg, val, t0, cpf, trace_end):
+    """Whole-tune CONSTANT-HOLD state for a tune that pokes the SID once at boot
+    and then never writes it again -- the register file rings on, unchanged, for
+    the rest of the run.
+
+    Some tunes (BASIC stubs, init-only / silent subtunes, single-chord intros) emit
+    a single boot burst of SID writes and then leave the chip alone; the bus carries
+    that one burst near ``t0`` and millions of quiet cycles after it.  Gap grouping
+    sees one blit group (one frame) and the cadence fallback sees no multi-frame
+    SID-write span, so both degenerate to a single frame and the recovery rejects
+    the tune as unparseable -- even though the chip state is perfectly well defined:
+    it is the boot burst's final per-register value, HELD for the whole duration.
+
+    That held state is the canonical closed-form generator -- every register is a
+    constant ``hold`` -- so it is recovered, not faked: the trace's OWN extent
+    (``trace_end``, the last bus access cycle) relative to frame-0 anchor ``t0`` at
+    the play cadence ``cpf`` gives the frame count over which the value persists, and
+    the boot file (last-write-wins per register) is broadcast across every frame.
+    Pure cadence arithmetic; no driver layout knowledge.
+    """
+    nframes = int(round((trace_end - t0) / cpf)) + 1 if cpf else 0
+    if nframes < 2:
+        return np.zeros((0, NREG), dtype=np.int64)
+    # The held file is last-write-wins per register over the whole (boot-only)
+    # write stream -- the value left ringing on the chip after the final write.
+    boot = np.zeros((1, NREG), dtype=np.int64)
+    valid = reg < NREG
+    boot[0, reg[valid]] = val[valid]  # stable order -> later write wins per reg
+    return np.repeat(boot, nframes, axis=0)
+
+
 def _cadence_state(cyc, reg, val, t0, cpf):
     """Per-frame state binned on the IRQ/play CADENCE rather than on write gaps.
 
@@ -132,6 +163,15 @@ def per_frame_state_from_bus(records, cpf=None, t0=None):
         # at bin 0 and any boot-prolog write (cycle < t0) at a negative bin that
         # the running-state binner drops -- no separate boot offset needed.
         return _cadence_state(cyc, reg, val, t0, cpf), t0, cpf
+    # Static-hold tune: a single boot burst of SID writes (no per-frame cadence, so
+    # gap AND cadence framing both degenerate to one frame) followed by a quiet
+    # chip that rings on the boot value for the rest of the run.  The SID-write span
+    # is ~0 frames but the OVERALL bus trace (``records["cyc"][-1]``) spans many
+    # cadence frames, so the held state is well defined: recover it as a whole-tune
+    # constant rather than rejecting the tune as unparseable.
+    trace_end = int(records["cyc"][-1])
+    if nframes < 2 and cpf and (trace_end - t0) / cpf >= 2:
+        return _static_hold_state(reg, val, t0, cpf, trace_end), t0, cpf
     if nframes <= 0:
         return np.zeros((0, NREG), dtype=np.int64), t0, cpf
     # Vectorised per-frame state: scatter each write into its (group, reg) cell

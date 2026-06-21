@@ -480,6 +480,52 @@ def test_continuous_write_tune_recovers_residual_zero():
     assert sum(resid.values()) == 0
 
 
+def _static_hold_bus(nframes=200, cpf=19656):
+    """A trace that pokes the SID ONCE at boot and then never writes it again --
+    the register file rings on, unchanged, for the rest of the run.
+
+    The boot burst sets a static chord (a value per register); after it the chip is
+    quiet but the CPU keeps running (modelled as non-SID RAM reads), so the OVERALL
+    bus trace spans ``nframes`` cadence frames even though there is exactly one
+    SID-write group.  This is the BASIC-stub / init-only / single-chord-intro
+    signature the gap AND cadence framings both collapse to a single frame."""
+    t0 = 1000
+    boot = {0: 0x49, 1: 0x1C, 4: 0x21, 5: 0x09, 24: 0x0F}  # one static chord
+    recs = [
+        (t0 + i * 2, 0xD400 + reg, val, 1) for i, (reg, val) in enumerate(boot.items())
+    ]
+    # the CPU runs on (non-SID reads) to the end of the requested duration so the
+    # trace extent spans many cadence frames with no further SID write.
+    for frame in range(1, nframes):
+        recs.append((t0 + frame * cpf, 0x0314, 0x00, 0))  # a quiet RAM read
+    return np.array(recs, dtype=BUS_DT), t0, cpf, nframes, boot
+
+
+def test_per_frame_state_static_hold_on_single_boot_burst():
+    """A single boot burst of SID writes followed by a quiet, ringing chip recovers
+    a whole-tune CONSTANT-HOLD state spanning the trace's full cadence extent --
+    not a rejected single frame."""
+    records, t0, _cpf, nframes, boot = _static_hold_bus()
+    state, got_t0, _ = per_frame_state_from_bus(records, t0=t0)
+    assert state.shape == (nframes, 25)
+    assert got_t0 == t0
+    for reg, val in boot.items():
+        assert list(state[:, reg]) == [val] * nframes  # held for the whole tune
+
+
+def test_static_hold_tune_recovers_residual_zero_as_holds():
+    """End to end: the static-hold tune (which the framing could not parse before)
+    recovers a residual-zero generic program whose every lane is a constant ``hold``
+    generator -- a closed-form program, never raw per-frame data."""
+    records, _t0, _cpf, _nf, _boot = _static_hold_bus()
+    program = recover_generic("static.sid", None, records)
+    assert program.nframes > 100
+    resid, _, _ = residual(program, records)
+    assert sum(resid.values()) == 0
+    # the cover is constant holds only -- no per-frame structure was invented.
+    assert set(program.tables["archetypes"]) <= {"hold"}
+
+
 def test_recover_rejects_too_short_trace():
     records = np.array([(1000, 0xD400, 0x10, 1)], dtype=BUS_DT)
     with pytest.raises(ValueError, match="did not parse to frames"):
