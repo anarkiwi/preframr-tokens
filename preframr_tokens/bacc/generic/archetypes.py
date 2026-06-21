@@ -153,12 +153,26 @@ def tri_phase(ctr):
     return osc
 
 
+def _tri_phase_seq(ctr0, seg_len):
+    """The triangle phase 0..3 for the ``seg_len`` consecutive counters starting at
+    ``ctr0`` -- the vectorised :func:`tri_phase`.  Folding the phase into one numpy
+    array lets the vibrato renderers index a precomputed per-phase value table
+    instead of looping :func:`tri_phase` per frame (the recovery's dominant cost on
+    a long vibrato lane was the per-frame Python phase loop)."""
+    osc = (ctr0 + np.arange(seg_len, dtype=np.int64)) & 7
+    return np.where(osc >= 4, osc ^ 7, osc)
+
+
 def render_vibrato(seg_len, base, amp_step, ctr0):
-    """value = base + tri_phase(ctr) * amp_step, 16-bit wrap."""
-    out = np.empty(seg_len, dtype=np.int64)
-    for i in range(seg_len):
-        out[i] = (base + tri_phase(ctr0 + i) * amp_step) & 0xFFFF
-    return out
+    """value = base + tri_phase(ctr) * amp_step, 16-bit wrap.
+
+    The triangle phase only ever takes the four values 0..3, so the four possible
+    outputs are computed once and indexed by the per-frame phase sequence -- a
+    vectorised form byte-identical to the per-frame ``(base + tri_phase(ctr)*amp)``
+    loop but O(seg_len) numpy rather than a Python loop."""
+    phase = _tri_phase_seq(ctr0, seg_len)
+    table = (base + np.arange(4, dtype=np.int64) * amp_step) & 0xFFFF
+    return table[phase]
 
 
 def render_accum(seg_len, v0, rate, width_mask):
@@ -210,30 +224,45 @@ def render_glide(seg_len, n0, step, dwell, lead, note_table, ctr0=0):
     return out
 
 
+def _vibrato_exact_phase_tables(base, amp):
+    """The four (freq, carry) outcomes of the byte-wise vibrato add for triangle
+    phases osc=0..3 -- a single byte-wise add of ``amp`` repeated osc times from
+    ``base``.  ``freq[osc] = (base + osc*amp) & 0xFFFF``; ``carry[osc]`` is the
+    no-CLC carry-out the LAST hi-byte add leaves (1 for osc=0, since no add occurs
+    and the player's CLC-less path inherits the prior set carry).  Precomputing the
+    four outcomes lets :func:`render_vibrato_exact` index them by the phase sequence
+    rather than re-run the inner add loop per frame -- byte-identical, O(1) here."""
+    base &= 0xFFFF
+    dlo, dhi = amp & 0xFF, (amp >> 8) & 0xFF
+    lo, hi = base & 0xFF, (base >> 8) & 0xFF
+    freq = [lo | (hi << 8)]
+    carry = [1]  # osc==0: no add, carry-out is the player's pre-set carry (1)
+    carry_bit = 0
+    for _ in range(3):
+        tmp = lo + dlo
+        lo = tmp & 0xFF
+        tmp = hi + dhi + (tmp >> 8)
+        hi = tmp & 0xFF
+        carry_bit = tmp >> 8
+        freq.append(lo | (hi << 8))
+        carry.append(carry_bit)
+    return np.array(freq, dtype=np.int64), np.array(carry, dtype=np.int64)
+
+
 def render_vibrato_exact(seg_len, base, amp, ctr0):
     """Exact byte-wise vibrato: triangle phase 0..3, freq computed by repeating
     a byte-wise 16-bit add of ``amp`` osc times.  Returns (freq_seq, carry_seq)
     where carry_seq[i] is the no-CLC carry-out the add leaves on frame i (the
-    freq->pw coupling)."""
-    out = np.empty(seg_len, dtype=np.int64)
-    carry = np.zeros(seg_len, dtype=np.int64)
-    base &= 0xFFFF
-    for i in range(seg_len):
-        osc = (ctr0 + i) & 7
-        if osc >= 4:
-            osc ^= 7
-        carry_bit = 1 if osc == 0 else 0
-        lo, hi = base & 0xFF, (base >> 8) & 0xFF
-        dlo, dhi = amp & 0xFF, (amp >> 8) & 0xFF
-        for _ in range(osc):
-            tmp = lo + dlo
-            lo = tmp & 0xFF
-            tmp = hi + dhi + (tmp >> 8)
-            hi = tmp & 0xFF
-            carry_bit = tmp >> 8
-        out[i] = lo | (hi << 8)
-        carry[i] = carry_bit
-    return out, carry
+    freq->pw coupling).
+
+    The triangle phase only ever takes the four values 0..3, so the four (freq,
+    carry) outcomes are precomputed (:func:`_vibrato_exact_phase_tables`) and
+    indexed by the per-frame phase sequence -- byte-identical to the nested
+    per-frame add loop but O(seg_len) numpy, which removes the dominant per-frame
+    Python cost the vibrato/vibskydive search incurred on long lanes."""
+    phase = _tri_phase_seq(ctr0, seg_len)
+    freq_t, carry_t = _vibrato_exact_phase_tables(base, amp)
+    return freq_t[phase], carry_t[phase]
 
 
 def render_vibrato_table(seg_len, base, amp, phase_table, ctr0=0):
@@ -1418,6 +1447,14 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
             or (cand[0] == base[2] and base[0] == "hold")
         ):
             base = (cand[1], cand[2], cand[0])
+    # Every matcher below can only REPLACE ``base`` by covering strictly MORE frames
+    # (or fires only when ``base is None``); none can win once the cheap library plus
+    # maskaccum/ratewalk already reach the end of this window.  Returning here when
+    # the window is fully covered skips their per-piece renders -- behaviour-identical
+    # (a full cover is already maximal) but it removes the bulk of the recovery's cost
+    # on a long lane the cheap rules tile in many short, fully-covered pieces.
+    if base is not None and base[2] >= len(seg):
+        return base
     lead_walk = _prefix_tablewalk_lead(seg)
     if lead_walk is not None and (base is None or lead_walk[0] > base[2]):
         base = (lead_walk[1], lead_walk[2], lead_walk[0])
