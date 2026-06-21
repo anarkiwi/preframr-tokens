@@ -34,6 +34,7 @@ def select_backend(psid):
     play=0, GoatTracker requires play = init + 3) but its specific byte
     signature is checked ahead of the broad GoatTracker shape regardless.
     """
+    from preframr_tokens.bacc.backends.dmc import DmcBackend
     from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
     from preframr_tokens.bacc.backends.hubbard import (
         Hubbard5TTBackend,
@@ -45,6 +46,7 @@ def select_backend(psid):
         HubbardMontyBackend(),
         Hubbard5TTBackend(),
         LftBackend(),
+        DmcBackend(),
         GoatTrackerBackend(),
     ):
         if backend.matches(psid):

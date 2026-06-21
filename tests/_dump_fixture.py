@@ -199,6 +199,11 @@ GATE_FIXTURES = (
     # frame -- single-CPF framing drops >50% of register changes; used to prove
     # the cadence detector + sub-frame framing are lossless.
     ("MUSICIANS/G/Galway_Martin/Times_of_Lore.sid", 1),
+    # DMC (Demo Music Creator) v7.62 -- Brian/Graffity, the largest editor in HVSC
+    # (~10,700 tunes). Recovered into the common abstraction (grid notes +
+    # instrument generators + backward orderlist) and rendered byte-exact by
+    # re-running the player engine on the image rebuilt from that abstraction.
+    ("MUSICIANS/A/Ass_It/Ode_to_Music.sid", 1),
 )
 
 
