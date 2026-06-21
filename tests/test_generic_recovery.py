@@ -461,6 +461,192 @@ def test_pingfold_not_promoted_over_short_coincidental_ramp():
     assert A._prefix_pingfold(lane) is None
 
 
+# ---------------------------------------------------------------------------
+# GoatTracker reflecting-triangle vibrato (vibparam/vibdelay -> render_vibreflect).
+# ---------------------------------------------------------------------------
+def _gt_vibrato_ref(center, speed, cmpvalue, delay, vibtime0, n):
+    """Reference GoatTracker instrument-vibrato, modelling pygoattracker's
+    ``Player._vibrato`` + ``_tickn_command`` (player.s ``mt_effect_0``) byte-for-byte:
+    a ``vibdelay`` hold, then a ``vibtime`` counter reflecting via ``vibtime ^= 0xFF``
+    at ``cmpvalue`` and stepping the frequency +/-``speed`` by the ``vibtime & 1``
+    direction bit.  Confirmed byte-identical to the actual player method."""
+    freq = center & 0xFFFF
+    vibtime = vibtime0 & 0xFF
+    vibdelay = delay
+    out = []
+    for _ in range(n):
+        if vibdelay > 1:
+            vibdelay -= 1
+            out.append(freq)
+            continue
+        if vibtime < 0x80 and vibtime > cmpvalue:
+            vibtime ^= 0xFF
+        vibtime = (vibtime + 2) & 0xFF
+        if vibtime & 1:
+            freq = (freq - speed) & 0xFFFF
+        else:
+            freq = (freq + speed) & 0xFFFF
+        out.append(freq)
+    return np.array(out, dtype=np.int64)
+
+
+def test_render_vibreflect_matches_goattracker_reference():
+    # render_vibreflect is byte-identical to the GoatTracker player's vibrato (the
+    # ^= 0xFF reflect / & 1 direction arithmetic), across speed / depth / delay /
+    # phase -- the construct, not an approximation.
+    for center in (0x0800, 0x1000, 0x2480, 0xFFF0):
+        for speed in (1, 4, 0x10, 0x40, 0x80):
+            for cmpvalue in (2, 6, 8, 0x10, 0x20):
+                for delay in (1, 2, 5, 8):
+                    for vibtime0 in (0, 2, 6):
+                        ref = _gt_vibrato_ref(
+                            center, speed, cmpvalue, delay, vibtime0, 96
+                        )
+                        got = A.render_vibreflect(
+                            96, center, speed, cmpvalue, delay, vibtime0
+                        )
+                        assert np.array_equal(got, ref), (
+                            center,
+                            speed,
+                            cmpvalue,
+                            delay,
+                            vibtime0,
+                        )
+
+
+def test_render_vibreflect_is_depth_bounded_triangle():
+    # The geometry the player produces: a symmetric triangle centred on the note,
+    # apex (cmpvalue//2 + 1)*speed, period 2*cmpvalue + 4 -- a depth-bounded
+    # reflecting triangle, never an unbounded ramp.
+    center, speed, cmpvalue = 0x1000, 0x10, 0x08
+    lane = A.render_vibreflect(200, center, speed, cmpvalue, 1, 0)
+    apex = (cmpvalue // 2 + 1) * speed
+    assert lane.max() - center == apex
+    assert center - lane.min() == apex  # symmetric about the centre
+    period = 2 * cmpvalue + 4
+    devs = lane - center
+    assert all(devs[i] == devs[i % period] for i in range(len(devs)))
+
+
+def test_prefix_vibreflect_recovers_params_byte_exact():
+    # The matcher recovers (center, speed, cmpvalue, delay) from the lane and renders
+    # the WHOLE multi-cycle triangle in one byte-exact piece -- the five scalars of a
+    # reused generator, never the stored per-frame ramp (HARD RULE #0).
+    for center, speed, cmpvalue, delay in (
+        (0x1000, 0x10, 0x08, 1),
+        (0x2000, 0x20, 0x10, 4),
+        (0x0800, 0x04, 0x06, 1),
+        (0x1000, 0x10, 0x08, 8),
+        (0x2480, 0x18, 0x0A, 5),
+    ):
+        lane = A.render_vibreflect(200, center, speed, cmpvalue, delay, 0)
+        match = A._prefix_vibreflect(lane)
+        assert match is not None and match[1] == "vibreflect"
+        assert match[0] == len(lane)  # the whole triangle in one piece
+        assert match[2]["speed"] == speed
+        rendered = A.render_fit((match[1], match[2]), len(lane))
+        assert np.array_equal(rendered, lane)
+
+
+def test_vibreflect_collapses_held_note_vibrato_to_one_generator():
+    # A long held-note GoatTracker vibrato must cover in ONE vibreflect piece (recovered
+    # as a CITG vibreflect-mode) rather than the chain of short accum/arp stubs the cheap
+    # library tiles each half-cycle into -- otherwise it blows past the piece cap.
+    lane = A.render_vibreflect(300, 0x2480, 0x18, 0x0A, 5, 0)
+    run = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
+    assert run is not None
+    name, prm, plen = run
+    assert plen == len(lane)
+    assert name == "citg" and prm.get("mode") == "vibreflect"
+    assert np.array_equal(A.render_fit((name, prm), plen), lane)
+
+
+def test_vibreflect_gliding_center_per_note_segments():
+    # A melody whose vibrato rides a centre that JUMPS each note: sliced at the freq
+    # note-onsets into per-note fixed-centre segments, each one a vibreflect.  The
+    # whole gliding-centre phrase recovers byte-exact as a per-note vibreflect cover.
+    centers = [0x1000, 0x1200, 0x0E00, 0x1400]
+    pieces = [A.render_vibreflect(40, c, 0x10, 0x08, 1, 0) for c in centers]
+    lane = np.concatenate(pieces)
+    onsets = [0, 40, 80, 120]  # the per-note centre-jump boundaries
+    fit = A.fit_lane(lane, onsets, len(lane), None, None, F.FREQ_WIDTH)
+    rendered, bad = F.render_generator_lane(fit, len(lane), None, None)
+    assert bad == 0
+    assert np.array_equal(rendered, lane)
+
+
+def test_vibreflect_rejects_monotonic_ramp():
+    # A pure linear ramp is an ACCUMULATOR, not a vibrato: it never reflects (all steps
+    # one sign), so the vibreflect matcher must decline it (left to the cheaper accum).
+    ramp = A.render_accum(80, 0x100, 7, 0xFFFF)
+    match = A._prefix_vibreflect(ramp)
+    assert match is None or match[0] < len(ramp)
+
+
+def test_vibreflect_rejects_raw_lane():
+    # A structureless raw lane (no constant +/-speed reflecting triangle) is NOT a
+    # vibrato and must not be faked as one -- the matcher declines so the gap surfaces.
+    rng = np.random.RandomState(0)
+    raw = rng.randint(0, 0x4000, size=80).astype(np.int64)
+    match = A._prefix_vibreflect(raw)
+    assert match is None or match[0] < len(raw)
+
+
+def _synth_vibrato_bus(nframes=200):
+    """A native ``BUS_DT`` bus trace whose voice-0 frequency runs a GoatTracker
+    reflecting-triangle vibrato (the construct), so the whole-tune fitter must close
+    the freq lane byte-exact from the bus.  Voice 0 holds a steady gate (one note),
+    its freq is the vibrato lane; the rest is a constant hold."""
+    vib = A.render_vibreflect(nframes, 0x1480, 0x18, 0x0A, 4, 0)
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    for frame in range(nframes):
+        f0 = int(vib[frame])
+        reg[0], reg[1] = f0 & 0xFF, (f0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 2 else 0x40  # voice-0 gate rises at frame 2
+        reg[5], reg[6] = 0x00, 0xF0  # steady ADSR (one note, held)
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    return np.array(recs, dtype=BUS_DT)
+
+
+def test_synth_vibrato_bus_whole_tune_residual_zero():
+    # A self-contained synthetic bus whose voice-0 freq is a GoatTracker vibrato must
+    # recover residual-zero: the freq lane is closed by the reflecting-triangle
+    # generator (recovered from the bus, not stored), all 25 registers byte-exact.
+    bus = _synth_vibrato_bus()
+    program = recover_generic("synth_vib.sid", None, bus)
+    resid, rendered, state = residual(program, bus)
+    assert sum(resid.values()) == 0
+    assert np.array_equal(rendered[: len(state)], state[: len(rendered)])
+
+
+def test_citg_vibreflect_preset_render_parity():
+    # The CITG vibreflect mode renders byte-identically to the zoo render_vibreflect,
+    # so admitting it as a CITG mode never changes the produced lane.
+    for center, speed, cmpvalue, delay in (
+        (0x1000, 0x10, 0x08, 1),
+        (0x2000, 0x20, 0x10, 4),
+    ):
+        params = A.citg_preset(
+            "vibreflect",
+            {
+                "center": center,
+                "speed": speed,
+                "cmpvalue": cmpvalue,
+                "delay": delay,
+                "vibtime0": 0,
+            },
+        )
+        assert params is not None and params["mode"] == "vibreflect"
+        ref = A.render_vibreflect(120, center, speed, cmpvalue, delay, 0)
+        assert np.array_equal(A.render_citg(params, 120), ref)
+
+
 def test_fit_wrapaccum_round_trip():
     lane = A.render_wrapaccum(48, 0x100, 0x40, 0x100, 0x800)
     _fit_round_trips(lane)
