@@ -45,6 +45,70 @@ def gate_noteons(state):
     return res
 
 
+def note_boundaries(state):
+    """Per-voice note-on frames, generalising :func:`gate_noteons` to every
+    bus-visible note-on RETRIGGER, not just a 0->1 gate edge.
+
+    Some players advance the melody on an internal tempo counter while the gate
+    bit stays HIGH across consecutive notes (legato / hard-restart style); the new
+    note is then signalled on the bus not by a gate rise but by a fresh write to
+    the voice's CONTROL byte (a waveform change or a 1-frame gate hard-restart) or
+    to its ADSR registers (a new attack/decay/sustain/release at note-on).  A
+    generator lane that is only sliced at gate rises therefore collapses a whole
+    multi-note phrase into ONE over-long segment that no single archetype run can
+    cover, leaving the lane unfit.
+
+    This returns, per voice, the union of (a) the gate-rise frames, (b) the frames
+    where the voice's control byte changes, and (c) the frames where the voice's
+    AD or SR byte changes.  Every signal is a pure SID note-on semantic read from
+    the reconstructed register state -- no per-driver constant.  It is PER VOICE
+    (never unioned across voices): a genuinely single sustained note exposes none
+    of these retriggers and stays one segment, so an irreducible lane is still
+    surfaced, never sliced into raw-byte pieces.
+    """
+    res = {}
+    for voice in range(3):
+        base = 7 * voice
+        ctrl = state[:, base + 4].astype(np.int64)
+        ad = state[:, base + 5].astype(np.int64)
+        sr = state[:, base + 6].astype(np.int64)
+        gate = ctrl & 1
+        rise = (gate[1:] == 1) & (gate[:-1] == 0)
+        ctrl_change = np.diff(ctrl) != 0
+        adsr_change = (np.diff(ad) != 0) | (np.diff(sr) != 0)
+        ons = np.nonzero(rise | ctrl_change | adsr_change)[0] + 1
+        res[voice] = ons.tolist()
+    return res
+
+
+def pw_sweep_resets(state, voice):
+    """Frames where the voice's pulse-width SWEEP is re-seeded: a downward PW step
+    far larger than the sweep's own typical per-frame step.
+
+    A pure-legato instrument can advance the melody with NO control / ADSR / gate
+    retrigger at all (:func:`note_boundaries` finds nothing), yet still RESET its
+    pulse-width sweep at each new note -- a sharp PW drop back to the sweep start.
+    That drop is a bus-visible note-on for the otherwise silent freq lane, so it is
+    a useful EXTRA slice point for the freq lane.  The threshold is derived from the
+    lane's own median nonzero step (no per-driver constant): a genuinely smooth PWM
+    sweep never trips it, so a single sustained note is not over-sliced.
+
+    NB: used ONLY to slice the FREQ lane.  It is deliberately NOT applied to the PW
+    lane itself -- a reflecting-triangle PW has its own large reflection drops, and
+    slicing the PW lane at them would fragment a genuine generator (or an
+    irreducible lane) into raw-byte pieces and FAKE a residual-zero; the PW lane is
+    instead covered as a whole (e.g. by ``pingpong`` / ``wavetable_ptr``) or, if
+    irreducible, left as one segment so the gap surfaces (HARD RULE #0).
+    """
+    pw = lane_pw(state, voice)
+    diff = np.diff(pw)
+    nonzero = np.abs(diff[diff != 0])
+    if nonzero.size == 0:
+        return []
+    threshold = max(8, 4 * int(np.median(nonzero)))
+    return (np.nonzero(diff < -threshold)[0] + 1).tolist()
+
+
 def lane_freq(state, voice):
     """The voice's 16-bit frequency lane (freq-lo | freq-hi << 8)."""
     base = 7 * voice
