@@ -49,6 +49,7 @@ packages = [
     "preframr_tokens.codec",
     "preframr_tokens.bacc",
     "preframr_tokens.bacc.backends",
+    "preframr_tokens.bacc.generic",
 ]
 
 [tool.setuptools.package-data]
