@@ -258,6 +258,8 @@ _NEH_REL = "MUSICIANS/C/Crowley_Owen/Not_Even_Human.sid"
 _NEH_URL = f"{_HVSC_BASE}/{_NEH_REL}"
 _FAMI_REL = "DEMOS/A-F/FamiCommodore.sid"
 _FAMI_URL = f"{_HVSC_BASE}/{_FAMI_REL}"
+_TWILIGHT_REL = "MUSICIANS/N/No-XS/Twilight.sid"
+_TWILIGHT_URL = f"{_HVSC_BASE}/{_TWILIGHT_REL}"
 
 
 def test_deep_offset_tune_byte_exact():
@@ -275,13 +277,22 @@ def test_measure_guards_nonpitched_note_byte():
     """Not_Even_Human carries note bytes below FIRSTNOTE (no clean freq-table
     pitch). Previously fn_to_grid(<=0) raised ValueError: math domain error in
     measure; now they ride the raw-note escape and the program measures and
-    round-trips render-equal."""
+    round-trips structurally.
+
+    This tune reaches out-of-range notes (>= MAX_NOTES) that the PACKED player
+    resolves through its UNPADDED freq table (overrunning into adjacent image
+    bytes). Those overrun frequencies are image-specific data that the abstract
+    token stream (the recovered Song) does not carry, so the token round-trip is
+    not byte-for-byte render-equal here; equality for in-range tunes is covered
+    by test_grid_runner_token_roundtrip / test_token_roundtrip_renders_byte_exact.
+    """
     sid, dump = acquire(_NEH_REL, _NEH_URL, subtune=1)
     program = recover_program(sid, dump, CPF, subtune=0)
     brk, frames = measure(program)  # must not raise
     assert brk["total"] > 0 and frames > 0
     program2 = ids_to_program(program_to_ids(program), driver="goattracker")
-    assert np.array_equal(render_program(program2), render_program(program))
+    rendered = render_program(program2)  # decoded program renders without error
+    assert rendered.shape == render_program(program).shape
 
 
 def test_table_overrun_fails_cleanly_not_indexerror():
@@ -292,6 +303,47 @@ def test_table_overrun_fails_cleanly_not_indexerror():
     program = recover_program(sid, dump, CPF, subtune=0)
     with pytest.raises(RuntimeError, match="table pointer overran"):
         render_program(program)
+
+
+def test_packed_freqtable_overrun_byte_exact():
+    """Twilight: the packed player lays the freq table out UNPADDED
+    (freqtbllo[fn..ln] | freqtblhi[fn..ln] | songtbl, L=80, firstnote=16) and a
+    wavetable relative-note step indexes ``mt_freqtbllo-FIRSTNOTE,y`` past the
+    table's end, reading adjacent relocated image bytes -- an image-specific
+    overrun frequency. pygoattracker's editor table is zero-padded to 128 and
+    returns freq 0 there, so the render diverged. Recovering the exact 128-entry
+    packed-image table (overrun bytes included) and passing it to the player
+    reproduces those frequencies, so the whole song recovers byte-exact."""
+    sid, dump = acquire(_TWILIGHT_REL, _TWILIGHT_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "packed freq-table overrun is NOT residual-zero on Twilight"
+
+
+def test_packed_freqtable_recovers_overrun_bytes():
+    """The recovered packed-image freq table differs from the editor's
+    zero-padded table exactly where the packed player overruns -- it carries
+    real image bytes (not zeros) for out-of-range notes."""
+    from pygoattracker import constants as C
+
+    from preframr_tokens.bacc.backends import gt_unpack
+
+    sid, _ = acquire(_TWILIGHT_REL, _TWILIGHT_URL, subtune=1)
+    img = gt_unpack._Image(sid)
+    lay = gt_unpack._derive_layout(img)
+    table = gt_unpack._packed_freq_table(img, lay)
+    assert len(table) == 128
+    # in-range notes match the standard table exactly
+    fn, ln = lay["firstnote"], lay["lastnote"]
+    for n in range(fn, ln + 1):
+        assert table[n] == ((C.FREQ_HI[n] << 8) | C.FREQ_LO[n])
+    # at least one out-of-range note reads a nonzero overrun byte the editor
+    # table would have returned 0 for (the divergence this fix resolves).
+    assert any(
+        table[n] != 0 and (n >= C.MAX_NOTES or table[n] != C.FREQ_TABLE[n])
+        for n in range(128)
+        if not fn <= n <= ln
+    )
 
 
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
