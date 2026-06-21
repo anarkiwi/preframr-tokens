@@ -517,6 +517,116 @@ def test_pingpong_reflects_at_exact_extreme():
     assert np.array_equal(rendered, lane)
 
 
+def _muted_voice_grid_state(nticks=120):
+    """A synthetic 25-register state where voice 2's freq lane churns under a held-LOW
+    gate the whole tune (a muted-voice intro / arp table under a silenced channel),
+    while voice 0 plays a real note per song tick (a gate hard-restart) -- so the
+    song's tick grid is bus-visible ONLY through voice 0.
+
+    The ticks are deliberately NON-UNIFORM in length and voice 2 holds a distinct,
+    aperiodic value for each (variable-length) tick: from a non-tick-aligned start no
+    single periodic generator (accum / ratewalk / tablewalk) can span the irregular
+    re-seeds, so a per-voice cover (voice 2 exposes no note-on of its own) leaves the
+    whole lane un-fit.  Sliced at the global tick grid -- the irregular voice-0
+    note-on frames -- each tick is a trivial one-piece hold, recovered byte-exact."""
+    rng = np.random.default_rng(1234)
+    bases = (0x0300 + rng.integers(0, 0x0C00, nticks)).tolist()
+    lens = (3 + rng.integers(0, 5, nticks)).tolist()  # tick length 3..7 frames
+    nframes = int(sum(lens))
+    state = np.zeros((nframes, 25), dtype=np.int64)
+    state[:, 24] = 0x0F  # master volume hold
+    state[:, 18] = 0x10  # voice-2 control: triangle, gate held LOW the whole tune
+    frame = 0
+    for tick_no in range(nticks):
+        v0 = 0x1000 + 0x40 * (tick_no % 48)  # voice-0 melody note (cyclic)
+        for j in range(lens[tick_no]):
+            state[frame, 0], state[frame, 1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+            state[frame, 4] = 0x10 if j == 0 else 0x11  # gate hard-restart at tick
+            v2 = bases[tick_no]
+            state[frame, 14], state[frame, 15] = v2 & 0xFF, (v2 >> 8) & 0xFF
+            frame += 1
+    return state
+
+
+def test_all_voice_boundaries_unions_every_voice():
+    # The global tick grid is the union of every voice's note-ons -- here only voice 0
+    # exposes any (voice 2's gate is held low), so the grid is exactly voice 0's.
+    state = _muted_voice_grid_state()
+    grid = A.all_voice_boundaries(state)
+    nb = A.note_boundaries(state)
+    assert nb[2] == [] and nb[1] == []  # muted / silent voices expose nothing
+    assert grid == sorted(set(nb[0]))  # grid == voice-0's note-on frames
+    assert len(grid) > 1
+
+
+def test_muted_voice_freq_lane_recovered_at_global_grid():
+    # The muted-voice churn case: voice 2's freq lane re-seeds to an aperiodic value on
+    # every (non-uniform) song tick while its OWN gate never rises, so its per-voice
+    # boundaries find nothing and the whole lane is one over-long unfittable segment.
+    # The fallback re-slice at the global tick grid (voice 0's note-ons) exposes the
+    # per-tick holds and recovers the lane byte-exact -- without faking raw bytes.
+    state = _muted_voice_grid_state()
+    note_table = np.zeros(128, dtype=np.int64)
+    assert A.note_boundaries(state)[2] == []  # voice 2 exposes no own boundary
+    assert A.pw_sweep_resets(state, 2) == []
+    flane = A.lane_freq(state, 2)
+    own_fit = A.fit_lane(flane, [0], len(state), note_table, None, F.FREQ_WIDTH)
+    # The per-voice slice leaves the whole churning lane un-fit (surfaced, not faked).
+    assert sum(e - s for s, e, f in own_fit if f is None) == len(state)
+    # The full fitter falls back to the global grid and recovers the lane byte-exact.
+    genfits, _ = F.fit_generator_lanes(state, note_table)
+    fres, _ = genfits[(2, "freq")]
+    rendered, bad = F.render_generator_lane(fres, len(state), note_table, None)
+    assert bad == 0
+    assert np.array_equal(rendered, flane)  # byte-exact, generator-recovered
+    # The fallback is strict: a lane already covered per-voice is left untouched.
+    v0lane = A.lane_freq(state, 0)
+    v0fit, _ = genfits[(0, "freq")]
+    v0r, v0bad = F.render_generator_lane(v0fit, len(state), note_table, None)
+    assert v0bad == 0 and np.array_equal(v0r, v0lane)
+
+
+def _muted_voice_pw_grid_state(nticks=120):
+    """As :func:`_muted_voice_grid_state` but the muted voice's 12-bit PULSE-WIDTH
+    lane (not freq) churns -- an aperiodic per-(variable)-tick pulse value under a
+    held-low gate.  Exercises the PW grid fallback (the same muted-voice churn can
+    drive the pulse register of a silenced channel)."""
+    rng = np.random.default_rng(7)
+    bases = (0x010 + rng.integers(0, 0xFE0, nticks)).tolist()  # 12-bit pulse values
+    lens = (3 + rng.integers(0, 5, nticks)).tolist()
+    nframes = int(sum(lens))
+    state = np.zeros((nframes, 25), dtype=np.int64)
+    state[:, 24] = 0x0F
+    state[:, 18] = 0x10  # voice-2 gate held LOW
+    frame = 0
+    for tick_no in range(nticks):
+        v0 = 0x1000 + 0x40 * (tick_no % 48)
+        for j in range(lens[tick_no]):
+            state[frame, 0], state[frame, 1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+            state[frame, 4] = 0x10 if j == 0 else 0x11
+            pw = bases[tick_no]
+            state[frame, 16], state[frame, 17] = pw & 0xFF, (pw >> 8) & 0x0F
+            frame += 1
+    return state
+
+
+def test_muted_voice_pw_lane_recovered_at_global_grid():
+    # The muted-voice churn driving the 12-bit PULSE-WIDTH lane: the per-voice cover
+    # leaves the whole lane un-fit; the global-grid fallback recovers it byte-exact at
+    # the 12-bit PW width.
+    state = _muted_voice_pw_grid_state()
+    note_table = np.zeros(128, dtype=np.int64)
+    assert A.note_boundaries(state)[2] == []
+    plane = A.lane_pw(state, 2)
+    own_fit = A.fit_lane(plane, [0], len(state), note_table, None, F.PW_WIDTH)
+    assert sum(e - s for s, e, f in own_fit if f is None) == len(state)
+    genfits, _ = F.fit_generator_lanes(state, note_table)
+    pres, carry = genfits[(2, "pw")]
+    rendered, bad = F.render_generator_lane(pres, len(state), note_table, carry)
+    assert bad == 0
+    assert np.array_equal(rendered, plane)
+
+
 def test_dwellratewalk_pw_recovers_residual_zero_end_to_end():
     # End to end: a voice whose 12-bit pulse-width is a table-driven reflecting ramp
     # (signed step held dwell frames, looping) under a held gate recovers byte-exact.

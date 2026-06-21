@@ -93,6 +93,15 @@ def fit_generator_lanes(state, note_table):
     rather than being faked into raw-byte pieces (HARD RULE #0)."""
     noteons = A.note_boundaries(state)
     nframes = len(state)
+    # The song's global per-frame tick grid (note-ons across ALL voices).  Used
+    # ONLY as a last-resort EXTRA slice set when a voice's OWN boundaries leave a
+    # generator lane un-fit -- a voice whose freq/pw registers keep churning on the
+    # song tick while its own gate is held low (a muted-voice intro / pre-roll /
+    # arpeggio table under a silenced channel) exposes none of its own retriggers,
+    # so the whole churn collapses into one over-long unfittable block; the other
+    # voices' note-ons mark exactly those ticks.  Kept only when it strictly
+    # recovers more of the lane, so an irreducible lane is still surfaced.
+    grid = A.all_voice_boundaries(state)
     out = {}
     for voice in range(3):
         ons = _noteon_points(noteons, voice)
@@ -101,6 +110,20 @@ def fit_generator_lanes(state, note_table):
         freq_ons = sorted(set(ons) | set(resets) | set(freq_onsets))
         flane = A.lane_freq(state, voice)
         fres = A.fit_lane(flane, freq_ons, nframes, note_table, None, FREQ_WIDTH)
+        if _unfit_frames(fres):
+            # The per-voice cover left a gap; re-slice the freq lane at the global
+            # tick grid (the muted-voice churn case) and keep it only if it strictly
+            # recovers more of the lane.
+            fres_grid = A.fit_lane(
+                flane,
+                sorted(set(freq_ons) | set(grid)),
+                nframes,
+                note_table,
+                None,
+                FREQ_WIDTH,
+            )
+            if _unfit_frames(fres_grid) < _unfit_frames(fres):
+                fres = fres_grid
         carry = A.freq_carry_sequence(fres, nframes)
         plane = A.lane_pw(state, voice)
         # The pulse-width register is 12-bit; fitting it with its true width lets a
@@ -120,6 +143,20 @@ def fit_generator_lanes(state, note_table):
             )
             if _unfit_frames(pres_sliced) < _unfit_frames(pres):
                 pres = pres_sliced
+        if _unfit_frames(pres):
+            # Still un-fit: the same muted-voice churn can drive the PW lane (a
+            # pulse sweep stepping under a silenced channel).  Re-slice the PW lane
+            # at the global tick grid as a last resort, kept only on strict gain.
+            pres_grid = A.fit_lane(
+                plane,
+                sorted(set(ons) | set(grid)),
+                nframes,
+                note_table,
+                carry,
+                PW_WIDTH,
+            )
+            if _unfit_frames(pres_grid) < _unfit_frames(pres):
+                pres = pres_grid
         out[(voice, "freq")] = (fres, None)
         out[(voice, "pw")] = (pres, carry)
     return out, noteons
