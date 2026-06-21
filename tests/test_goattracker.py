@@ -459,6 +459,26 @@ def test_live_vibrato_flag_detected():
     assert gt_unpack.render_params()["live_vibrato"] is True
 
 
+_TRUCKON_REL = "MUSICIANS/L/Linus/Truck-On.sid"
+_TRUCKON_URL = f"{_HVSC_BASE}/{_TRUCKON_REL}"
+
+
+def test_toneporta_lastnote_vibrato_byte_exact():
+    """Truck-On: the GoatTracker toneporta-lastnote latch class. When a
+    toneportamento reaches/crosses its target note the packed player stores the
+    target note into mt_chnlastnote (player.s mt_effect_3_found -> mt_wavenoteabs,
+    under NOCALCULATEDSPEED == 0). A following calculated-speed (high-bit
+    speedtable) vibrato then derives its step from the target-note interval. The
+    render kept a STALE lastnote after a toneporta, so a post-porta calculated-
+    speed vibrato used the pre-porta note interval and its depth was off by the
+    porta's note distance, diverging on freq-lo. pygoattracker>=0.1.6 latches
+    lastnote on toneporta completion, making the song byte-exact."""
+    sid, dump = acquire(_TRUCKON_REL, _TRUCKON_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "toneporta-lastnote vibrato is NOT residual-zero on Truck-On"
+
+
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):
     """Part A: the recovered GoatTracker program is the COMMON abstraction --
     per-voice tracker ROWS + instrument-GENERATOR defs + a backward ORDERLIST --
