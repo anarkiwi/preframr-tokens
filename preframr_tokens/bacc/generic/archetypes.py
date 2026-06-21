@@ -890,6 +890,64 @@ def _prefix_maskaccum(seg, width_mask=0xFFFF):
     return None
 
 
+def _prefix_maskaccum_stall(seg, width_mask=0xFFFF, maxp=24, minrun=12, mincycles=3):
+    """Longest byte-exact single-rate periodic-stall accumulator prefix.  Recovers
+    the dominant nonzero rate and the period-P advance mask whose stepped
+    accumulator replays the LONGEST prefix.
+
+    The driver-agnostic model of a swept register (pulse-width / freq) whose
+    accumulator steps by a fixed amount on the player's continuous-effect frames
+    but HOLDS on the periodic tick-0 frames -- the fixed-period 'stall' a
+    tempo-paced player imposes on its continuous effects.  Unlike
+    :func:`_prefix_maskaccum` (which needs ONE global rate and a short period), this
+    is a true longest-prefix matcher that stops where the rate changes (the next
+    table step), so the greedy cover chains one piece per table step.  It requires
+    >=``mincycles`` full mask cycles, and the caller only lets it win when it covers
+    SUBSTANTIALLY more than the proven library's run (see
+    :func:`_longest_archetype_aug`), so a coincidental long period cannot shadow a
+    genuine accumulator/arp -- an over-eager 'win on any length' form fragments the
+    rest of the cover and nets more residual than it closes."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diff = np.diff(seg) % (width_mask + 1)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    nonzero = dsign[dsign != 0]
+    if len(nonzero) < 3:
+        return None
+    vals, cnts = np.unique(nonzero, return_counts=True)
+    rate = int(vals[np.argmax(cnts)])
+    # advance frames are those stepping by exactly the dominant rate; a frame that
+    # steps by a different rate (the next table step) is NOT an advance and ends
+    # the longest prefix this matcher can cover with one (rate, mask) pair.
+    advance = (dsign == rate).astype(int)
+    best = None
+    for period in range(1, min(maxp, len(advance)) + 1):
+        if len(advance) < mincycles * period:
+            continue
+        mask = advance[:period].tolist()
+        steps = sum(mask)
+        # require at least one advance AND (for period>1) at least one genuine
+        # stall: an all-advance mask is just a plain accum the proven library
+        # already covers and must not be re-described here.
+        if steps < 1 or (period > 1 and steps == period):
+            continue
+        rend = render_maskaccum(length, int(seg[0]), rate, mask, width_mask)
+        match = _match_prefix(rend, seg)
+        if match >= max(minrun, mincycles * period) and (
+            best is None or match > best[0]
+        ):
+            best = (
+                match,
+                "maskaccum",
+                {"v0": int(seg[0]), "rate": rate, "mask": mask, "width": width_mask},
+            )
+        if best and best[0] == length:
+            break
+    return best
+
+
 def _prefix_tablewalk(seg, maxp=48):
     """Longest byte-exact periodic table-walk prefix: smallest period P (2..maxp)
     whose value table replays the segment, requiring >=2 distinct values and
@@ -1198,6 +1256,11 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     is likewise allowed to win on length: the wavetable-paced reflecting triangle
     whose drifting dwell defeats the periodic generators is a single long piece
     here, where a coincidental pingpong/arp prefix would otherwise shadow it.
+    ``maskaccum_stall`` (a single-rate accumulator that HOLDS on a recovered
+    periodic tick-0 stall mask -- the tempo-paced player's continuous-effect skip)
+    wins only when it covers SUBSTANTIALLY more than the proven library's run, so a
+    short coincidental arp/accum prefix cannot fragment a genuine sustained sweep
+    while a merely-as-long coincidental period cannot shadow a real generator.
     ``tablewalk`` (an undelayed period-P value table beyond the arp cap) stays a
     LAST RESORT -- it fires only where the proven library returns None, so a
     coincidental short period never shadows a genuine accumulator/arp."""
@@ -1216,6 +1279,16 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     wptr = _prefix_wavetable_ptr(seg)
     if wptr is not None and (base is None or wptr[0] > base[2]):
         base = (wptr[1], wptr[2], wptr[0])
+    # A periodic-stall accumulator may legitimately run far longer than a short
+    # coincidental arp/accum prefix the proven library grabs first; let it win
+    # only when it covers SUBSTANTIALLY more (>= twice the base run, and an
+    # absolute floor) so a genuine sustained sweep is not fragmented, while a
+    # merely-as-long coincidental period cannot shadow a real generator.
+    stall = _prefix_maskaccum_stall(seg, width_mask)
+    if stall is not None and (
+        base is None or (stall[0] > 2 * base[2] and stall[0] >= 36)
+    ):
+        base = (stall[1], stall[2], stall[0])
     if base is None:
         tablewalk = _prefix_tablewalk(seg)
         if tablewalk is not None:
