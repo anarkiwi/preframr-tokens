@@ -35,19 +35,32 @@ groove defeats the fixed-period ``arp`` / ``dwellaccum``) into one period-P tabl
 plus the separable advance clock -- a genuine reused generator, never per-step
 stored output (HARD RULE #0).
 
-The ~19 clean generators above are all special cases of ONE op, the **Clocked
+The clean generators above are all special cases of ONE op, the **Clocked
 Indexed-Table Generator** (:func:`render_citg` + :func:`_prefix_citg`): a period-P
 loop table read through a pointer advanced by a recovered advance-clock (every-frame
 / periodic-dwell / periodic-mask / external groove tick), the pointer either
-SELECTING a value (READ) or selecting a signed step ADDED to a width-wrapped
-accumulator (ACCUM), with a lead-stall, seed, phase and loop point.  CITG is tried
-FIRST in the cover search (:func:`_longest_archetype_aug`) with the full zoo as the
-FALLBACK; because every matcher here is byte-exact-or-None, trying CITG first can
-never regress correctness, and :data:`CITG_FALLBACK_COUNTS` measures exactly which
-archetypes CITG already subsumes vs. which still fall back (the trivial ``hold``
-baseline, sub-3-frame arps, and the parametric/composite shapes of §2d --
-``vibrato`` / ``pingpong`` / ``decay`` / ``wrapaccum`` / ``glide`` /
-``vibskydive`` / ``arp_decay`` / ``additive_pw`` -- which stay in the zoo).
+SELECTING a value (READ) or selecting a signed step ADDED to an accumulator that
+either masks to the lane WIDTH or wraps by an explicit [lo,hi) span (ACCUM), with a
+lead-stall, seed, phase and loop point.  CITG is tried FIRST in the cover search
+(:func:`_longest_archetype_aug`) with the full zoo as the FALLBACK; because every
+matcher here is byte-exact-or-None, trying CITG first can never regress correctness,
+and :data:`CITG_FALLBACK_COUNTS` measures exactly which archetypes CITG subsumes vs.
+which still fall back.
+
+CITG now subsumes the WHOLE clocked-table/accumulator family byte-exact: the
+constant baseline (``hold``, a degenerate period-1 READ), the short value cycle and
+long value table (``arp`` / ``tablewalk`` / ``tablewalk_lead`` reads), every
+accumulator clock (``accum`` / ``dwellaccum`` / ``maskaccum`` / ``ratewalk`` /
+``dwellratewalk``), the modulo-wrap sawtooth (``wrapaccum``, an explicit [lo,hi)
+WRAP), the phased negative-rate ramp (``decay``, a phased-dwell ACCUM), and the
+external-groove pointer walk (``wavetable_ptr``).  What still FALLS BACK to the zoo
+is exactly the §2d set the design doc flags as NOT a single CITG -- the parametric
+shapes ``vibrato`` / ``vibrato_exact`` / ``pingpong`` / ``pingfold`` (a triangle /
+reflect / mirror-fold rule, not a stored table) and the composites / cross-lane
+couplings ``vibskydive`` / ``arp_decay`` / ``additive_pw`` / ``glide`` (two CITGs
+overlaid on one lane, an exogenous sibling-lane carry, or a strided note-table
+read).  These are kept in the zoo as documented exceptions: forcing them into the
+single op would either store data or risk the residual-zero gate (HARD RULE #0).
 """
 
 import os
@@ -725,7 +738,10 @@ def _citg_gates(seg_len, clock, lead):
     alen = len(advance) if advance else 1
     mask = clock.get("mask")
     dwell = clock.get("dwell", 1)
-    fired = 0  # armed frames seen so far (after the lead stall)
+    # ``cphase`` seeds the armed-frame counter so the FIRST dwell step can land
+    # partway through the period (a clock that is already mid-cycle when it arms --
+    # the ``decay`` phase ``ctr0``), rather than only after a full dwell.
+    fired = clock.get("phase", 0)
     for i in range(seg_len):
         if i < lead:
             continue
@@ -780,7 +796,28 @@ def render_citg(params, seg_len):
                     ptr = loop
         return out
     width = params.get("width", 0xFFFF)
+    wrap = params.get("wrap")
     val = seed & width
+    if wrap is not None:
+        # WRAP=modulo[lo,hi): a free-running accumulator that wraps by the span
+        # (hi-lo) when an add crosses a bound -- the chip's RMW sawtooth PWM
+        # (``wrapaccum``).  The add is NOT width-masked (the wrap IS the bound), so
+        # the bounded accumulator stays in [lo,hi) exactly as the driver's variable
+        # does, never as stored data (HARD RULE #0).
+        lo_b, hi_b = wrap["lo"], wrap["hi"]
+        span = hi_b - lo_b
+        for i in range(seg_len):
+            out[i] = val
+            val += int(table[ptr])
+            if val >= hi_b:
+                val -= span
+            elif val < lo_b:
+                val += span
+            if ptr_step[i] and period:
+                ptr += 1
+                if ptr >= period:
+                    ptr = loop
+        return out
     for i in range(seg_len):
         out[i] = val
         if acc_gate[i]:
@@ -850,12 +887,40 @@ def citg_preset(name, prm):
             "seed": prm["v0"],
             "width": prm.get("width", 0xFFFF),
         }
+    if name == "wrapaccum":
+        # A free-running modulo accumulator: a single-rate every-frame accumulate
+        # whose WRAP rule is [lo,hi) (the chip's sawtooth PWM that wraps by the span
+        # rather than at the register width).  CITG carries the wrap as an explicit
+        # bound pair, so the bounded accumulator is one closed-form rule, not a
+        # per-wrap fragmented store.
+        return {
+            "mode": "accum",
+            "table": [prm["rate"]],
+            "clock": {"kind": "every"},
+            "seed": prm["v0"],
+            "wrap": {"lo": prm["lo"], "hi": prm["hi"]},
+        }
     if name == "dwellaccum":
         return {
             "mode": "accum",
             "table": [prm["rate"]],
             "clock": {"kind": "dwell", "dwell": prm["dwell"]},
             "lead": prm["lead"],
+            "seed": prm["v0"],
+            "width": 0xFFFF,
+        }
+    if name == "decay":
+        # A drum / skydive ramp: the accumulator DECREMENTS by ``rate`` every
+        # ``every`` frames after a ``lead`` hold, emitting the pre-decrement value.
+        # That is a single-entry negative-rate ACCUM stepped on a periodic dwell, the
+        # clock seeded at phase ``ctr0`` so the first decrement can land partway
+        # through the period (decay's ``ctr0``).  The width-wrap is the same 16-bit
+        # mask render_decay applies.
+        return {
+            "mode": "accum",
+            "table": [-prm["rate"]],
+            "clock": {"kind": "dwell", "dwell": prm["every"], "phase": prm["ctr0"]},
+            "lead": prm.get("lead", 0),
             "seed": prm["v0"],
             "width": 0xFFFF,
         }
@@ -1813,27 +1878,52 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
     HARD RULE #0 minima the zoo matchers enforce (>=2 cycles, >=3 distinct values
     for a folded table, a substantial run for a long period): the closed-form
     content is the period-P table, the only per-frame stream is the separable
-    advance clock.  The ``vibrato`` / ``pingpong`` parametric shapes and the
-    ``vibskydive`` / ``arp_decay`` / ``additive_pw`` composites are NOT single
-    CITGs (§2d) and are deliberately left to the zoo fallback -- CITG declines them
-    here so they are never faked into a value table."""
+    advance clock.  The candidate set spans the whole clocked-table/accumulator
+    family -- the constant ``hold`` (a degenerate period-1 read), the ``arp`` /
+    ``tablewalk`` reads, every accumulator clock, the ``wrapaccum`` modulo-wrap and
+    the ``decay`` phased negative ramp -- so the only archetypes that still fall back
+    are the §2d parametric shapes (``vibrato`` / ``pingpong`` / ``pingfold``) and the
+    composites / cross-lane couplings (``vibskydive`` / ``arp_decay`` /
+    ``additive_pw`` / ``glide``), which are NOT single CITGs: CITG declines them here
+    (``citg_preset`` returns None) so they are never faked into a value table."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < 1:
         return None
     best = None  # (match_len, citg_params)
 
-    def _consider(zoo_name, zoo_prm):
+    def _consider(zoo_name, zoo_prm, minrun=_MINRUN):
         nonlocal best
         params = citg_preset(zoo_name, zoo_prm)
         if params is None:
             return
-        if width_mask is not None and params["mode"] == "accum":
+        # The accumulator forms carry the lane WIDTH unless they wrap by an explicit
+        # bound pair (``wrapaccum``), whose [lo,hi) span IS the wrap -- masking it to
+        # the register width would double-bound the accumulator and break parity.
+        # ``decay`` always wraps at 16 bits (its zoo renderer does ``& 0xFFFF``
+        # regardless of lane), so it pins its own width and is not re-masked.
+        if (
+            width_mask is not None
+            and params["mode"] == "accum"
+            and "wrap" not in params
+            and zoo_name != "decay"
+        ):
             params["width"] = width_mask
         rend = render_citg(params, length)
         match = _match_prefix(rend, seg)
-        if match >= _MINRUN and (best is None or match > best[0]):
+        if match >= minrun and (best is None or match > best[0]):
             best = (match, params)
+
+    # CLOCK = never (the constant baseline) -------------------------------
+    # The degenerate CITG: a period-1 READ table whose pointer never moves -- the
+    # ``hold``.  Emitting it here lets CITG subsume the constant baseline (the
+    # dominant cover piece) rather than falling back to the zoo ``hold`` for every
+    # held note/rest; it covers the whole constant prefix, so it ties or beats the
+    # zoo hold and wins.  This is the §3a "hold is a CITG preset" reduction.
+    hold = 1
+    while hold < length and seg[hold] == seg[0]:
+        hold += 1
+    _consider("hold", {"value": int(seg[0])}, minrun=1)
 
     # CLOCK = every-frame --------------------------------------------------
     # ACCUM: a constant-rate accumulator (the cheap ``accum``) and the period-P
@@ -1850,14 +1940,22 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
     rate_walk = _prefix_ratewalk(seg, width_mask)
     if rate_walk is not None:
         _consider(rate_walk[1], rate_walk[2])
+    # ACCUM with WRAP=modulo[lo,hi): a free-running sawtooth PWM accumulator whose
+    # value wraps by the span rather than at the register width (``wrapaccum``).
+    wrap_acc = _prefix_wrapaccum(seg)
+    if wrap_acc is not None:
+        _consider(wrap_acc[1], wrap_acc[2])
     # READ: an undelayed period-P value table (``tablewalk``) and a lead-hold then
-    # a period-P table (``tablewalk_lead``).
+    # a period-P table (``tablewalk_lead``).  A short value cycle (e.g. a 2-frame
+    # alternation between two notes) is a genuine period-P read, so the read floor is
+    # the zoo ``arp`` floor (>=2 -- one full short cycle), not the accumulator
+    # ``_MINRUN``; this is what subsumes the dominant short-``arp`` zoo fallback.
     table_walk = _prefix_tablewalk(seg)
     if table_walk is not None:
-        _consider(table_walk[1], table_walk[2])
+        _consider(table_walk[1], table_walk[2], minrun=2)
     lead_walk = _prefix_tablewalk_lead(seg)
     if lead_walk is not None:
-        _consider(lead_walk[1], lead_walk[2])
+        _consider(lead_walk[1], lead_walk[2], minrun=2)
 
     # CLOCK = periodic dwell ----------------------------------------------
     # READ: the small-period dwelled value cycle (``arp``).  ACCUM: a single-rate
@@ -1865,13 +1963,18 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
     # the dwelled signed-step wavetable accumulator (``dwellratewalk``).
     arp = _prefix_arp(seg)
     if arp is not None:
-        _consider(arp[1], arp[2])
+        _consider(arp[1], arp[2], minrun=2)
     dwell_accum = _longest_dwell_accum(seg)
     if dwell_accum is not None:
         _consider(dwell_accum[1], dwell_accum[2])
     dwell_walk = _prefix_dwellratewalk(seg, width_mask)
     if dwell_walk is not None:
         _consider(dwell_walk[1], dwell_walk[2])
+    # ACCUM (negative single rate) stepped on a phased periodic dwell after a lead
+    # hold -- a drum / skydive ramp (``decay``).
+    decay = _prefix_decay(seg)
+    if decay is not None:
+        _consider(decay[1], decay[2])
 
     # CLOCK = periodic mask -----------------------------------------------
     # ACCUM: a single-rate accumulator gated by a recovered period-Q advance mask,
