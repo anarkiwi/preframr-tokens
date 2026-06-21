@@ -229,9 +229,49 @@ def test_citg_render_parity_accum_clocks():
         )
 
 
+def test_citg_render_parity_wrapaccum():
+    # WRAP-mode CITG subsumes wrapaccum: a free-running modulo accumulator that wraps
+    # by the span (hi-lo) rather than the register width, byte-identical to the zoo
+    # render_wrapaccum across signs / bounds / wide rates.
+    for v0, rate, lo, hi in (
+        (0x100, 0x40, 0x100, 0x800),
+        (0x100, -0x40, 0x100, 0x800),
+        (0x4000, 0x0C00, 0x0400, 0xF000),
+    ):
+        ref = A.render_wrapaccum(48, v0, rate, lo, hi)
+        _citg_parity("wrapaccum", {"v0": v0, "rate": rate, "lo": lo, "hi": hi}, ref, 48)
+
+
+def test_citg_render_parity_decay():
+    # ACCUM-mode CITG subsumes decay: a negative single-rate accumulator stepped on
+    # a phased periodic dwell after a lead hold, byte-identical to render_decay (with
+    # the lead hold prepended exactly as _prefix_decay covers it) across every / phase.
+    for every in (1, 2, 3, 4):
+        for ctr0 in range(every):
+            for lead in (0, 3):
+                body = A.render_decay(40 - lead, 0x4000, 0x0100, every, ctr0)
+                ref = np.concatenate([np.full(lead, 0x4000, dtype=np.int64), body])
+                _citg_parity(
+                    "decay",
+                    {
+                        "v0": 0x4000,
+                        "rate": 0x0100,
+                        "every": every,
+                        "ctr0": ctr0,
+                        "lead": lead,
+                    },
+                    ref,
+                    40,
+                )
+
+
 def test_citg_preset_declines_non_citg_archetypes():
     # the parametric shapes and composites the doc flags (§2d) are NOT single CITGs;
     # citg_preset returns None for them so they are never faked into a value table.
+    # ``wrapaccum`` and ``decay`` are NOT here: each is a clean CITG accum -- the
+    # former an explicit [lo,hi) modulo WRAP (§2c), the latter a phased negative-rate
+    # periodic-dwell ACCUM -- now subsumed (see test_citg_render_parity_wrapaccum and
+    # test_citg_render_parity_decay).
     for name in (
         "vibrato",
         "vibrato_exact",
@@ -240,8 +280,6 @@ def test_citg_preset_declines_non_citg_archetypes():
         "arp_decay",
         "additive_pw",
         "glide",
-        "decay",
-        "wrapaccum",
     ):
         assert A.citg_preset(name, {}) is None
 
@@ -1168,8 +1206,27 @@ def test_static_hold_tune_recovers_residual_zero_as_holds():
     assert program.nframes > 100
     resid, _, _ = residual(program, records)
     assert sum(resid.values()) == 0
-    # the cover is constant holds only -- no per-frame structure was invented.
-    assert set(program.tables["archetypes"]) <= {"hold"}
+    # the cover is constant holds only -- no per-frame structure was invented.  CITG
+    # subsumes the zoo ``hold`` as a degenerate period-1 READ, so the tally may name
+    # either ``hold`` or ``citg``; both must be constant generators (no invented
+    # structure).  Verify every generator-lane piece is a constant: a zoo ``hold`` or
+    # a degenerate single-value CITG read.
+    assert set(program.tables["archetypes"]) <= {"hold", "citg"}
+    for _key, payload in program.tables["genfits"].items():
+        for _start, _stop, fit in payload["segments"]:
+            if fit is None:
+                continue
+            name, prm = fit
+            if name == "piecewise":
+                inner = [(n, p) for n, p, _ in prm["pieces"]]
+            else:
+                inner = [(name, prm)]
+            for nm, pp in inner:
+                assert nm in ("hold", "empty", "citg"), nm
+                if nm == "citg":
+                    # a constant generator: a period-1 (single distinct value) READ
+                    assert pp["mode"] == "read"
+                    assert len(set(pp["table"])) == 1
 
 
 def test_recover_rejects_too_short_trace():
