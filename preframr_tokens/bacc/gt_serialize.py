@@ -37,6 +37,12 @@ _KIND_PITCH = 0
 _KIND_REST = 1
 _KIND_KEYOFF = 2
 _KIND_KEYON = 3
+# A playable note byte whose GoatTracker freq-table entry is non-positive (e.g. a
+# note below FIRSTNOTE, which the playroutine still sounds as a wrapped/transposed
+# tone) has no clean 12-TET grid identity. It rides a literal raw-note escape so
+# the row stays byte-exact and lossless -- mirroring the Hubbard aliased-tail-note
+# escape -- instead of feeding log2(<=0) into the pitch grid.
+_KIND_RAWNOTE = 4
 
 
 # --- helpers shared with serialize ----------------------------------------
@@ -116,7 +122,12 @@ def _note_token(note_byte):
         return _KIND_KEYOFF, 0
     if note_byte == c.KEYON:
         return _KIND_KEYON, 0
-    fn = c.FREQ_TABLE[note_byte - c.FIRSTNOTE]
+    idx = note_byte - c.FIRSTNOTE
+    fn = c.FREQ_TABLE[idx] if 0 <= idx < len(c.FREQ_TABLE) else 0
+    if fn <= 0:
+        # No clean freq-table pitch (note below FIRSTNOTE / past the table); keep
+        # the raw note byte so the row round-trips byte-exact.
+        return _KIND_RAWNOTE, note_byte
     return _KIND_PITCH, fn_to_grid(fn)
 
 
@@ -155,6 +166,8 @@ def _row_lit(out, row):
     _wu(out, kind)
     if kind == _KIND_PITCH:
         _wi(out, interval)
+    elif kind == _KIND_RAWNOTE:
+        _wu(out, interval)  # the raw note byte (no clean grid pitch)
     _wu(out, instr)
     _wu(out, command)
     _wu(out, data)
@@ -165,6 +178,8 @@ def _row_read(ids, i):
     if kind == _KIND_PITCH:
         interval, i = _ri(ids, i)
         note = _grid_to_note_byte(interval)
+    elif kind == _KIND_RAWNOTE:
+        note, i = _ru(ids, i)
     else:
         from pygoattracker import constants as c
 

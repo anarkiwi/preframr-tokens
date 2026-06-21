@@ -22,8 +22,14 @@ from preframr_tokens import (
     verify_residual,
 )
 from preframr_tokens.bacc.backends import select_backend
-from preframr_tokens.bacc.backends.goattracker import make_program, render_song
-from tests._dump_fixture import acquire
+from preframr_tokens.bacc.backends.goattracker import (
+    _align,
+    _align_offset,
+    _boot1_offset,
+    make_program,
+    render_song,
+)
+from tests._dump_fixture import _HVSC_BASE, acquire
 
 pygoattracker = pytest.importorskip("pygoattracker")
 
@@ -102,6 +108,53 @@ def test_select_backend_dispatches_goattracker():
     assert select_backend(_GtPsid()).name == "goattracker"
 
 
+# --- boot-frame alignment (the dominant corpus byte-exact failure) ----------
+def test_align_drops_leading_init_frames():
+    """Standard framing: the render holds some leading init/hard-restart frames
+    before the dump's boot frame; _align must drop exactly those (Grid_Runner
+    class). boot==render[2], boot1==render[3] here, so offset is 2."""
+    boot = [1] + [0] * 24
+    boot1 = [2] + [0] * 24
+    rendered = np.array(
+        [[9] * 25, [8] * 25, boot, boot1, [3] * 25, [4] * 25], dtype=np.int64
+    )
+    assert _align_offset(rendered, boot, boot1) == 2
+    out = _align(rendered, boot, boot1, 3)
+    assert np.array_equal(out, np.array([boot, boot1, [3] * 25], dtype=np.int64))
+
+
+def test_align_deep_offset_beyond_old_slack():
+    """The dump's first_play_cycle can start well into playback: the render needs
+    >32 frames of ADSR/init ramp before it reaches the dump's boot frame. The old
+    32-frame window fell back to offset 0 and shifted the whole render; the wider
+    window finds it (this is the ~Need_More_NOPs deep-offset class)."""
+    boot = [7] + [0] * 24
+    boot1 = [6] + [0] * 24
+    lead = [[0] * 24 + [15]] * 40  # 40 cold init frames, past the old slack
+    rendered = np.array(lead + [boot, boot1, [5] * 25], dtype=np.int64)
+    assert _align_offset(rendered, boot, boot1) == 40
+    out = _align(rendered, boot, boot1, 2)
+    assert np.array_equal(out, np.array([boot, boot1], dtype=np.int64))
+
+
+def test_align_prepends_dump_leading_silence_frame():
+    """Leading-silence dump (the Alienator class): the dump captured an all-zero
+    silence frame 0 that the player's render never emits -- the render starts
+    straight at boot1. _align must prepend the dump's frame 0 so the aligned
+    render reproduces it byte-for-byte, instead of falling back to offset 0 and
+    shifting the entire render one frame."""
+    boot = [0] * 24 + [15]  # the leading silence frame the render omits
+    boot1 = [34] + [0] * 23 + [15]
+    rendered = np.array([boot1, [68] + [0] * 23 + [15], boot1], dtype=np.int64)
+    # render has no frame equal to boot, so the boot+boot1 search yields None ...
+    assert _align_offset(rendered, boot, boot1) is None
+    # ... and the boot1 anchor is at render frame 0.
+    assert _boot1_offset(rendered, boot1) == 0
+    out = _align(rendered, boot, boot1, 3)
+    assert np.array_equal(out[0], np.array(boot))  # frame 0 restored exactly
+    assert np.array_equal(out[1], np.array(boot1))  # render begins right after
+
+
 @pytest.fixture(scope="module")
 def grid_runner_paths():
     return acquire(_GR_REL, _GR_URL, subtune=1)
@@ -135,6 +188,49 @@ def test_grid_runner_token_roundtrip(grid_runner_paths):
     program = recover_program(sid, dump, CPF, subtune=0)
     program2 = ids_to_program(program_to_ids(program), driver="goattracker")
     assert np.array_equal(render_program(program2), render_program(program))
+
+
+# --- real-tune regressions for the boot-align fix + the two render/measure bugs
+_NMN_REL = "MUSICIANS/F/Fegolhuzz/Need_More_NOPs.sid"
+_NMN_URL = f"{_HVSC_BASE}/{_NMN_REL}"
+_NEH_REL = "MUSICIANS/C/Crowley_Owen/Not_Even_Human.sid"
+_NEH_URL = f"{_HVSC_BASE}/{_NEH_REL}"
+_FAMI_REL = "DEMOS/A-F/FamiCommodore.sid"
+_FAMI_URL = f"{_HVSC_BASE}/{_FAMI_REL}"
+
+
+def test_deep_offset_tune_byte_exact():
+    """Need_More_NOPs: the dump starts ~36 frames into playback, past the old
+    32-frame alignment window, so the old backend fell back to offset 0 and
+    mismatched everywhere (the ~893-tune boot-frame class). With the widened,
+    window-based alignment it recovers byte-exact."""
+    sid, dump = acquire(_NMN_REL, _NMN_URL, subtune=1)
+    assert verify_residual(
+        sid, dump, CPF, subtune=0
+    ), "deep-offset boot alignment is NOT residual-zero on Need_More_NOPs"
+
+
+def test_measure_guards_nonpitched_note_byte():
+    """Not_Even_Human carries note bytes below FIRSTNOTE (no clean freq-table
+    pitch). Previously fn_to_grid(<=0) raised ValueError: math domain error in
+    measure; now they ride the raw-note escape and the program measures and
+    round-trips render-equal."""
+    sid, dump = acquire(_NEH_REL, _NEH_URL, subtune=1)
+    program = recover_program(sid, dump, CPF, subtune=0)
+    brk, frames = measure(program)  # must not raise
+    assert brk["total"] > 0 and frames > 0
+    program2 = ids_to_program(program_to_ids(program), driver="goattracker")
+    assert np.array_equal(render_program(program2), render_program(program))
+
+
+def test_table_overrun_fails_cleanly_not_indexerror():
+    """FamiCommodore recovers but a table pointer overruns at render. The bare
+    pygoattracker IndexError is now surfaced as a clear backend RuntimeError
+    naming the table-pointer overrun (no fabricated frames)."""
+    sid, dump = acquire(_FAMI_REL, _FAMI_URL, subtune=1)
+    program = recover_program(sid, dump, CPF, subtune=0)
+    with pytest.raises(RuntimeError, match="table pointer overran"):
+        render_program(program)
 
 
 def test_grid_runner_is_abstract_not_bytes(grid_runner_paths):

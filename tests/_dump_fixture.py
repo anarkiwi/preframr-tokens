@@ -140,6 +140,17 @@ GATE_FIXTURES = (
     ("MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 1),
     ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
     ("MUSICIANS/J/Jammer/Grid_Runner.sid", 1),
+    # GoatTracker boot-frame alignment + recover/render regressions:
+    # Need_More_NOPs -- deep-offset boot frame (dump starts ~36 frames into
+    # playback, past the old 32-frame window); now byte-exact via the widened,
+    # window-based alignment.
+    ("MUSICIANS/F/Fegolhuzz/Need_More_NOPs.sid", 1),
+    # Not_Even_Human -- note bytes below FIRSTNOTE (no clean freq-table pitch);
+    # the raw-note escape keeps measure from feeding log2(<=0) into the grid.
+    ("MUSICIANS/C/Crowley_Owen/Not_Even_Human.sid", 1),
+    # FamiCommodore -- a recovered table pointer overruns at render; must fail
+    # cleanly with a descriptive RuntimeError, not a bare pygoattracker IndexError.
+    ("DEMOS/A-F/FamiCommodore.sid", 1),
     ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # multispeed (~3x): Galway's play routine fires several times per raster
     # frame -- single-CPF framing drops >50% of register changes; used to prove
