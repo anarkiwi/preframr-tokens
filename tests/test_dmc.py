@@ -41,7 +41,13 @@ from preframr_tokens.bacc.backends.dmc import DmcBackend
 from preframr_tokens.bacc.dmc_serialize import (
     _emit_pattern_toks,
     _read_pattern_toks,
+    _tok_delta,
+    _tok_lit,
+    _tok_lit_len,
+    _tok_read,
+    _tok_shift,
 )
+from preframr_tokens.bacc.serialize import REPEAT, TRANSPOSE, _lz_emit_t, _lz_read_t
 from preframr_tokens.bacc.pitch import fn_to_grid
 from preframr_tokens.bacc.sidemu import load_psid
 from tests._dump_fixture import acquire
@@ -150,6 +156,34 @@ def test_pattern_token_serializer_roundtrip_with_fx_and_escape():
     back, consumed = _read_pattern_toks(out, 0)
     assert consumed == len(out)
     assert back == toks
+
+
+def test_dmc_shared_score_lz_transpose_roundtrip_and_saves():
+    """The DMC pattern-token stream now rides the SHARED post-BACC transposed LZ.
+    A phrase repeated exactly factors as REPEAT; the same phrase repeated a fifth
+    up factors as TRANSPOSE+Delta -- both round-trip byte-exact and emit fewer
+    tokens than the raw literal stream."""
+    freq = list(range(0x100, 0x100 + 96))  # clean bijection: every note canonical
+    anchor = fn_to_grid(freq[0])
+    # an all-note phrase: a transposed repeat factors as one TRANSPOSE+Delta (a
+    # mixed note/control phrase breaks the run at the non-note tokens, by design)
+    phrase = [("note", 10), ("note", 12), ("note", 14), ("note", 15)]
+    transposed = [("note", n + 7) for (_, n) in phrase]  # a fifth up
+    toks = phrase + phrase + transposed  # literal run, exact repeat, transposed
+    out = []
+    _lz_emit_t(
+        out,
+        toks,
+        lambda t: _tok_lit_len(t, freq, anchor),
+        lambda o, t: _tok_lit(o, t, freq, anchor),
+        _tok_delta,
+    )
+    assert REPEAT in out and TRANSPOSE in out  # both factorings fired
+    raw = sum(_tok_lit_len(t, freq, anchor) for t in toks)
+    assert len(out) < raw  # the shared LZ is a real, lossless reduction
+    back, consumed = _lz_read_t(out, 0, len(toks), _tok_read, _tok_shift)
+    assert consumed == len(out)
+    assert back == toks  # byte-exact inverse
 
 
 @pytest.fixture(scope="module")
