@@ -281,9 +281,12 @@ def test_measure_guards_nonpitched_note_byte():
 
     This tune reaches out-of-range notes (>= MAX_NOTES) that the PACKED player
     resolves through its UNPADDED freq table (overrunning into adjacent image
-    bytes). Those overrun frequencies are image-specific data that the abstract
-    token stream (the recovered Song) does not carry, so the token round-trip is
-    not byte-for-byte render-equal here; equality for in-range tunes is covered
+    bytes). Those overrun frequencies are a deterministic function of the
+    packer's relocation layout (constant freqtblhi bytes + the low bytes of the
+    relocated orderlist/pattern addresses) -- not irreducible, but the abstract
+    token stream (the recovered Song) does not encode that layout, so the token
+    round-trip is not byte-for-byte render-equal here; equality for in-range
+    tunes is covered
     by test_grid_runner_token_roundtrip / test_token_roundtrip_renders_byte_exact.
     """
     sid, dump = acquire(_NEH_REL, _NEH_URL, subtune=1)
@@ -309,8 +312,10 @@ def test_packed_freqtable_overrun_byte_exact():
     """Twilight: the packed player lays the freq table out UNPADDED
     (freqtbllo[fn..ln] | freqtblhi[fn..ln] | songtbl, L=80, firstnote=16) and a
     wavetable relative-note step indexes ``mt_freqtbllo-FIRSTNOTE,y`` past the
-    table's end, reading adjacent relocated image bytes -- an image-specific
-    overrun frequency. pygoattracker's editor table is zero-padded to 128 and
+    table's end, reading adjacent relocated image bytes -- an overrun frequency
+    determined by the packer's relocation layout (constant freqtblhi +
+    relocated address low-bytes), not musical content.
+    pygoattracker's editor table is zero-padded to 128 and
     returns freq 0 there, so the render diverged. Recovering the exact 128-entry
     packed-image table (overrun bytes included) and passing it to the player
     reproduces those frequencies, so the whole song recovers byte-exact."""
