@@ -94,9 +94,20 @@ def test_archetypes_recovered_not_raw(synth_bus):
     program = recover_generic("synth.sid", None, synth_bus)
     tally = program.tables["archetypes"]
     # the freq/pw lanes are described by GENERATOR programs, never per-frame data:
-    # the synthetic tune must recover the arp + an accumulator (not all holds).
-    assert tally.get("arp", 0) >= 1
-    assert tally.get("accum", 0) + tally.get("dwellaccum", 0) >= 1
+    # the synthetic tune must recover structured generators (an arp + an
+    # accumulator), not all holds.  With CITG tried first the arp/accumulator are
+    # now covered as the unified ``citg`` op, so the recovered tally must contain at
+    # least one such non-hold generator (CITG or the zoo forms it subsumes).
+    generators = (
+        tally.get("citg", 0)
+        + tally.get("arp", 0)
+        + tally.get("accum", 0)
+        + tally.get("dwellaccum", 0)
+        + tally.get("ratewalk", 0)
+        + tally.get("tablewalk", 0)
+    )
+    assert generators >= 2
+    assert set(tally) - {"hold"}  # not described as raw constant holds alone
 
 
 def test_render_is_self_contained(synth_bus):
@@ -134,6 +145,133 @@ def test_archetype_renderers_byte_exact():
     assert walk.tolist() == [1, 2, 5, 1, 2, 5]
 
 
+# ---------------------------------------------------------------------------
+# CITG render parity: the unified Clocked Indexed-Table Generator renderer is a
+# STRICT superset of the zoo's renderers.  For every archetype that is a clean
+# single CITG (the §2c parameterizations), render_citg(citg_preset(X)) reproduces
+# render_X(...) byte-for-byte across parameter sweeps -- so trying CITG first can
+# never regress the renderer, only the matcher's choice of (also byte-exact) form.
+# ---------------------------------------------------------------------------
+def _citg_parity(zoo_name, zoo_prm, ref, seg_len):
+    """Assert render_citg(citg_preset(zoo_name, zoo_prm)) == ref byte-for-byte."""
+    params = A.citg_preset(zoo_name, zoo_prm)
+    assert params is not None, zoo_name
+    got = A.render_citg(params, seg_len)
+    assert np.array_equal(got, ref), (zoo_name, got[:16].tolist(), ref[:16].tolist())
+
+
+def test_citg_render_parity_read_clocks():
+    # READ-mode CITG subsumes hold / tablewalk / tablewalk_lead / arp / wavetable_ptr.
+    _citg_parity("hold", {"value": 0x1234}, np.full(20, 0x1234, dtype=np.int64), 20)
+    for table in ([5, 9, 2, 7], [0x100, 0x200, 0x80, 0x300, 0x40]):
+        for phase in range(len(table)):
+            ref = A.render_tablewalk(40, table, phase)
+            _citg_parity("tablewalk", {"table": table[phase:] + table[:phase]}, ref, 40)
+    for lead in (0, 1, 5, 12):
+        ref = A.render_tablewalk_lead(50, lead, 0x40, [0x40, 0x60, 0x80, 0x60])
+        _citg_parity(
+            "tablewalk_lead",
+            {"lead": lead, "value0": 0x40, "table": [0x40, 0x60, 0x80, 0x60]},
+            ref,
+            50,
+        )
+    for dwell in (1, 2, 3, 4):
+        for freqs in ([1, 2, 3], [0x10, 0x20, 0x30, 0x40]):
+            ref = A.render_arp(60, freqs, len(freqs), 0, dwell)
+            _citg_parity("arp", {"freqs": freqs, "dwell": dwell}, ref, 60)
+    advance = [1, 1, 0, 1, 0, 1, 1, 0] * 4
+    wt = [10, 20, 30, 40, 50]
+    ref = A.render_wavetable_ptr(len(advance) + 1, wt, 0, advance)
+    _citg_parity(
+        "wavetable_ptr",
+        {"table": wt, "phase": 0, "advance": advance},
+        ref,
+        len(advance) + 1,
+    )
+
+
+def test_citg_render_parity_accum_clocks():
+    # ACCUM-mode CITG subsumes accum / maskaccum / dwellaccum / ratewalk /
+    # dwellratewalk, width-wrapped exactly as the chip's RMW accumulator.
+    for v0, rate in ((0x100, 7), (0xFFF0, 0x40), (0x10, -3)):
+        ref = A.render_accum(30, v0, rate, 0xFFFF)
+        _citg_parity("accum", {"v0": v0, "rate": rate}, ref, 30)
+    for mask in ([1, 0, 1, 0], [1, 1, 1, 0, 0], [1, 0, 0]):
+        ref = A.render_maskaccum(40, 0x200, 0x30, mask, 0xFFF)
+        _citg_parity(
+            "maskaccum",
+            {"v0": 0x200, "rate": 0x30, "mask": mask, "width": 0xFFF},
+            ref,
+            40,
+        )
+    for dwell in (1, 2, 3):
+        for lead in (0, 4):
+            ref = A.render_dwell_accum(40, 0x100, 5, dwell, lead, 0)
+            _citg_parity(
+                "dwellaccum",
+                {"v0": 0x100, "rate": 5, "dwell": dwell, "lead": lead},
+                ref,
+                40,
+            )
+    for rt in ([16, 16, 32, 0, 16], [127] * 5 + [-128] * 5):
+        ref = A.render_ratewalk(50, 0x200, rt, 0, 0xFFF)
+        _citg_parity(
+            "ratewalk", {"v0": 0x200, "rate_table": rt, "width": 0xFFF}, ref, 50
+        )
+    for dwell in (2, 4, 8):
+        rt = [-66, 68, -68, 70]
+        ref = A.render_dwellratewalk(60, 0x600, rt, dwell, 0, 0xFFF)
+        _citg_parity(
+            "dwellratewalk",
+            {"v0": 0x600, "rate_table": rt, "dwell": dwell, "width": 0xFFF},
+            ref,
+            60,
+        )
+
+
+def test_citg_preset_declines_non_citg_archetypes():
+    # the parametric shapes and composites the doc flags (§2d) are NOT single CITGs;
+    # citg_preset returns None for them so they are never faked into a value table.
+    for name in (
+        "vibrato",
+        "vibrato_exact",
+        "pingpong",
+        "vibskydive",
+        "arp_decay",
+        "additive_pw",
+        "glide",
+        "decay",
+        "wrapaccum",
+    ):
+        assert A.citg_preset(name, {}) is None
+
+
+def test_citg_matcher_is_byte_exact_or_none():
+    # the CITG matcher returns a cover ONLY if render_citg reproduces the prefix
+    # byte-exact -- the safety property that makes trying it first non-regressing.
+    for builder in (
+        lambda: A.render_tablewalk(48, [0x10, 0x20, 0x30, 0x40], 0),
+        lambda: A.render_ratewalk(48, 0x200, [16, 16, 32, 0, 16]),
+        lambda: A.render_maskaccum(60, 0x200, 0x20, [1, 0, 1, 0]),
+        lambda: A.render_arp(48, [0x100, 0x200, 0x300], 3, 0, 2),
+    ):
+        lane = builder()
+        match = A._prefix_citg(lane, None, 0xFFFF)
+        assert match is not None and match[1] == "citg"
+        rendered = A.render_fit((match[1], match[2]), match[0])
+        assert np.array_equal(rendered, lane[: match[0]])  # byte-exact prefix
+
+
+def test_citg_wins_and_records_fallback_tally():
+    # CITG is tried first and WINS a clean looping generator; the win/fallback
+    # tally records it (the instrument that measures what CITG subsumes).
+    A.reset_citg_counts()
+    lane = A.render_tablewalk(48, [0x10, 0x20, 0x30, 0x40], 0)
+    name, _, plen = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
+    assert name == "citg" and plen == len(lane)
+    assert A.CITG_FALLBACK_COUNTS["citg_won"] >= 1
+
+
 def _fit_round_trips(lane, note_table=None, carry=None):
     """The fitter recovers ``lane`` as a single-segment cover that renders back
     byte-exact (residual-zero)."""
@@ -148,7 +286,9 @@ def _fit_round_trips(lane, note_table=None, carry=None):
 def test_fit_vibrato_round_trip():
     lane, _ = A.render_vibrato_exact(64, 0x1000, 0x40, 0)
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("vibrato", "vibrato_exact")
+    # CITG (tried first) may cover the vibrato as a value tablewalk; the zoo's
+    # vibrato/vibrato_exact is the fallback.  Either is byte-exact (asserted above).
+    assert fit[0] in ("vibrato", "vibrato_exact", "citg", "piecewise")
 
 
 def _vibrato_ref(seg_len, base, amp_step, ctr0):
@@ -214,13 +354,13 @@ def test_fit_glide_round_trip():
     note_table = np.array([0x1000 + 0x80 * i for i in range(64)], dtype=np.int64)
     lane = A.render_glide(48, 10, 1, 3, 4, note_table)
     fit = _fit_round_trips(lane, note_table=note_table)
-    assert fit[0] in ("glide", "accum", "dwellaccum", "piecewise")
+    assert fit[0] in ("glide", "accum", "dwellaccum", "citg", "piecewise")
 
 
 def test_fit_decay_round_trip():
     body = A.render_decay(40, 0x4000, 0x0100, 2, 0)
     fit = _fit_round_trips(body)
-    assert fit[0] in ("decay", "accum", "dwellaccum", "piecewise")
+    assert fit[0] in ("decay", "accum", "dwellaccum", "citg", "piecewise")
 
 
 def test_fit_pingpong_round_trip():
@@ -340,8 +480,14 @@ def test_looping_value_table_collapses_to_one_generator_piece():
     table = [0x8368, 0x52C8, 0x3426] * 16
     table[11] = 0x52C8  # a per-note tail tweak so the super-period is genuinely 48
     lane = A.render_tablewalk(48 * 12, table, 0)
+    # The zoo collapses the loop to one looping generator (tablewalk / ratewalk).
+    zname, _, zplen = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
+    assert zname in ("tablewalk", "ratewalk")  # one looping generator, not fragments
+    assert zplen == len(lane)  # the WHOLE loop in one piece, not a short prefix
+    # With CITG tried first the unified op subsumes it (the value table is a citg
+    # read), covering at least as much and rendering the WHOLE loop byte-exact.
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name in ("tablewalk", "ratewalk")  # one looping generator, not fragments
+    assert name in ("tablewalk", "ratewalk", "citg")
     assert plen == len(lane)  # the WHOLE loop in one piece, not a short prefix
     rendered = A.render_fit((name, prm), len(lane))
     assert np.array_equal(rendered, lane)
@@ -372,19 +518,30 @@ def test_tablewalk_promotion_holds_when_proven_library_starts_short():
     tw = A._prefix_tablewalk(lane)
     assert base[2] < len(lane)  # the proven library alone covers only a short prefix
     assert tw is not None and tw[0] > 2 * base[2] and tw[0] >= 36  # promotion fires
-    # whichever long looping generator wins, the WHOLE loop is one byte-exact piece.
+    # the zoo promotion fires: whichever long looping generator wins covers the whole
+    # loop in one piece (not the short prefix the cheap matchers grab first).
+    zname, _, zplen = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
+    assert zname in ("tablewalk", "ratewalk") and zplen == len(lane)
+    # and CITG (tried first) subsumes it as one byte-exact citg piece over the loop.
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name in ("tablewalk", "ratewalk") and plen == len(lane)
+    assert name in ("tablewalk", "ratewalk", "citg") and plen == len(lane)
     assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
 def test_tablewalk_not_promoted_over_short_coincidental_arp():
-    # A clean period-4 arp must NOT be re-described as a tablewalk: the promotion
-    # fires only when tablewalk covers SUBSTANTIALLY more than the proven library's
-    # run, so a genuine short generator is never shadowed (HARD RULE #0).
+    # A clean period-4 arp must NOT be re-described as a long-period tablewalk: the
+    # zoo promotion fires only when tablewalk covers SUBSTANTIALLY more than the
+    # proven library's run, so a genuine short generator is never shadowed (HARD
+    # RULE #0).  The zoo names it ``arp``; CITG (tried first) subsumes it as ONE
+    # compact short-period citg piece over the whole lane, never a fragmented store.
     lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
-    name, _, _ = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name == "arp"
+    zname, _, _ = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
+    assert zname == "arp"
+    name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
+    assert name in ("arp", "citg") and plen == len(lane)
+    if name == "citg":
+        assert len(prm["table"]) <= 6  # a short looping table, not a long store
+    assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
 def test_fit_ratewalk_round_trip():
@@ -393,7 +550,7 @@ def test_fit_ratewalk_round_trip():
     # whose value climbs without a short value period -- recovered as one ratewalk.
     lane = A.render_ratewalk(60, 0x0200, [16, 16, 32, 0, 16])
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("ratewalk", "maskaccum", "piecewise")
+    assert fit[0] in ("ratewalk", "maskaccum", "citg", "piecewise")
 
 
 def test_prefix_ratewalk_recovers_rate_table():
@@ -453,10 +610,16 @@ def test_prefix_maskaccum_stall_recovers_period_and_rate():
 def test_maskaccum_stall_not_promoted_over_short_coincidental_arp():
     # a clean period-4 arp must NOT be re-described as a stall accumulator: the
     # stall matcher only wins when it covers SUBSTANTIALLY more than the proven
-    # library's run, so a genuine short generator is never shadowed.
+    # library's run, so a genuine short generator is never shadowed.  The zoo names
+    # it ``arp``; CITG (tried first) subsumes it as ONE compact short-period piece.
     lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
-    name, _, _ = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
-    assert name == "arp"
+    zname, _, _ = A._longest_archetype_zoo(lane, 0, None, None, 0xFFFF)
+    assert zname == "arp"
+    name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
+    assert name in ("arp", "citg") and plen == len(lane)
+    if name == "citg":
+        assert len(prm["table"]) <= 6  # a short looping table, not a long store
+    assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
 def test_maskaccum_stall_requires_multiple_cycles():
@@ -504,7 +667,7 @@ def test_fit_tablewalk_lead_round_trip():
     table = [0x40, 0x60, 0x80, 0x60, 0x40, 0x20]
     lane = A.render_tablewalk_lead(60, 20, 0x40, table)
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("tablewalk_lead", "tablewalk", "piecewise")
+    assert fit[0] in ("tablewalk_lead", "tablewalk", "citg", "piecewise")
 
 
 def test_prefix_tablewalk_lead_recovers_lead_and_table():
@@ -524,7 +687,7 @@ def test_fit_dwellratewalk_round_trip():
     rate_table = [-66, 68, -68, 70, -70, 72]
     lane = A.render_dwellratewalk(96, 0x600, rate_table, 8, 0, 0xFFF)
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("dwellratewalk", "piecewise")
+    assert fit[0] in ("dwellratewalk", "citg", "piecewise")
 
 
 def test_prefix_dwellratewalk_recovers_table_and_dwell():
@@ -753,7 +916,7 @@ def test_fit_wavetable_ptr_round_trip():
     advance = _WPTR_GROOVE
     lane = A.render_wavetable_ptr(len(advance) + 1, _WPTR_TABLE, 0, advance)
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("wavetable_ptr", "piecewise")
+    assert fit[0] in ("wavetable_ptr", "citg", "piecewise")
 
 
 def test_prefix_wavetable_ptr_recovers_table_and_clock():

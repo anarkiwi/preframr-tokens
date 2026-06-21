@@ -34,9 +34,25 @@ otherwise fragment into one short arp/hold piece per dwell run (its non-uniform
 groove defeats the fixed-period ``arp`` / ``dwellaccum``) into one period-P table
 plus the separable advance clock -- a genuine reused generator, never per-step
 stored output (HARD RULE #0).
+
+The ~19 clean generators above are all special cases of ONE op, the **Clocked
+Indexed-Table Generator** (:func:`render_citg` + :func:`_prefix_citg`): a period-P
+loop table read through a pointer advanced by a recovered advance-clock (every-frame
+/ periodic-dwell / periodic-mask / external groove tick), the pointer either
+SELECTING a value (READ) or selecting a signed step ADDED to a width-wrapped
+accumulator (ACCUM), with a lead-stall, seed, phase and loop point.  CITG is tried
+FIRST in the cover search (:func:`_longest_archetype_aug`) with the full zoo as the
+FALLBACK; because every matcher here is byte-exact-or-None, trying CITG first can
+never regress correctness, and :data:`CITG_FALLBACK_COUNTS` measures exactly which
+archetypes CITG already subsumes vs. which still fall back (the trivial ``hold``
+baseline, sub-3-frame arps, and the parametric/composite shapes of §2d --
+``vibrato`` / ``pingpong`` / ``decay`` / ``wrapaccum`` / ``glide`` /
+``vibskydive`` / ``arp_decay`` / ``additive_pw`` -- which stay in the zoo).
 """
 
-from collections import defaultdict
+import os
+import sys
+from collections import Counter, defaultdict
 
 import numpy as np
 
@@ -46,6 +62,34 @@ _MINRUN = 3  # minimum frames for a structured archetype run to beat hold.
 # search and rejects a cover so fragmented it would be raw-byte storage in
 # disguise (more pieces than a genuine generator program should need).
 _MAXPIECES = 64
+
+# CITG fallback instrumentation.  The unified Clocked Indexed-Table Generator is
+# tried FIRST in the cover search; when it covers a run at least as long as the
+# zoo would, CITG WINS and the zoo never runs (a measured step toward retiring the
+# zoo).  When CITG declines or covers strictly less, the full archetype zoo is the
+# fallback and we record which archetype it fell back to -- so a campaign can SEE
+# exactly which cases CITG does not yet subsume.  Counting is cheap and always on
+# (a module-level Counter); a per-decision stderr line is gated behind CITG_TRACE
+# so normal runs are never spammed.  ``CITG_DISABLE`` turns the whole CITG-first
+# path off (the zoo runs unchanged) -- an escape hatch, never needed for
+# correctness since the matcher is byte-exact-or-None.
+CITG_FALLBACK_COUNTS = Counter()
+_CITG_TRACE = bool(os.environ.get("CITG_TRACE"))
+_CITG_DISABLE = bool(os.environ.get("CITG_DISABLE"))
+
+
+def reset_citg_counts():
+    """Clear the CITG win/fallback tally (used by the campaign harness / tests to
+    measure the CITG-won vs zoo-fallback proportion of a single fit)."""
+    CITG_FALLBACK_COUNTS.clear()
+
+
+def _citg_record(outcome, detail=""):
+    """Tally one cover decision (``outcome`` is ``"citg_won"`` or
+    ``"fallback:<zoo archetype>"``) and, under CITG_TRACE, emit a stderr line."""
+    CITG_FALLBACK_COUNTS[outcome] += 1
+    if _CITG_TRACE:
+        print(f"CITG {outcome} {detail}".rstrip(), file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +633,216 @@ def render_wavetable_ptr(seg_len, table, phase, advance):
             ptr = (ptr + 1) % period
         out[i] = table[ptr]
     return out
+
+
+# ---------------------------------------------------------------------------
+# The unified Clocked Indexed-Table Generator (CITG).
+#
+# Every generator archetype above is a special case of ONE op: a period-P loop
+# table TABLE read through a pointer that advances on a recovered ADVANCE-CLOCK,
+# the pointer either SELECTING a value (MODE="read") or selecting a signed step
+# ADDED to a width-wrapped accumulator (MODE="accum").  The clock is one of:
+#   * "every"   -- the pointer advances every frame (tablewalk / accum / ratewalk);
+#   * "dwell"   -- the pointer advances every ``dwell`` frames (arp / dwellaccum /
+#                  dwellratewalk), after an optional ``lead``-frame stall;
+#   * "mask"    -- the pointer advances on a period-Q boolean mask (maskaccum: the
+#                  mask gates the accumulate of a single-entry step table);
+#   * "advance" -- the pointer advances on an EXTERNAL per-voice advance vector --
+#                  the separable groove tick that paces a wavetable_ptr walk.
+# ``lead`` holds the seed for ``lead`` frames before the clock arms; ``phase`` is
+# the pointer's start index (the ``ctr0`` of the periodic forms); ``loop`` is the
+# index the pointer wraps to (default 0 -- HARD RULE #0 requires a loop, never a
+# one-shot store).  ``width`` masks the accumulator (16-bit freq / 12-bit pw) and
+# is the only WRAP rule the accumulator forms here need (modulo); the reflecting /
+# triangle shapes stay in the zoo as ``pingpong`` / ``pingfold`` fallbacks.
+#
+# This renderer is a STRICT superset of the per-archetype renderers: every preset
+# in :func:`citg_preset` renders byte-identically to its zoo renderer (proven by a
+# parametrized parity test), so trying CITG first can never regress correctness --
+# the matcher is byte-exact-or-None and the zoo runs as fallback when it declines.
+# ---------------------------------------------------------------------------
+def _citg_gates(seg_len, clock, lead):
+    """The (accumulate-gate, pointer-step) clock streams for a CITG run.
+
+    Returns two boolean ``int64`` arrays of length ``seg_len``: ``acc_gate[i]`` is
+    whether the accumulator adds the current table entry on frame ``i`` (ACCUM
+    mode), and ``ptr_step[i]`` is whether the pointer advances to the next table
+    entry AFTER frame ``i``.  Splitting the two is what lets ONE op subsume both the
+    "hold the accumulator on non-clock frames" forms (maskaccum / dwellaccum -- a
+    single-entry step table gated by the clock, pointer never moving) and the
+    "accumulate every frame but step the entry on a sub-clock" form (dwellratewalk
+    -- the pointer advances on the dwell while the accumulate fires every frame).
+    Both gates are inert during the ``lead``-frame stall (the clock arms after it),
+    so a lead-hold is a genuine stall, never stored output.
+
+    Clock kinds:
+      * ``every``     -- add and step every armed frame (accum / ratewalk / the
+                         every-frame tablewalk read);
+      * ``dwell``     -- add and step every ``dwell`` armed frames (dwellaccum, and
+                         the arp read whose pointer advances every dwell);
+      * ``dwell_ptr`` -- add every armed frame, step the pointer every ``dwell``
+                         armed frames (dwellratewalk);
+      * ``mask``      -- add and step on a period-Q boolean mask (maskaccum);
+      * ``advance``   -- add and step on an EXTERNAL advance vector (the
+                         groove-paced wavetable_ptr walk)."""
+    acc_gate = np.zeros(seg_len, dtype=np.int64)
+    ptr_step = np.zeros(seg_len, dtype=np.int64)
+    kind = clock["kind"]
+    advance = clock.get("advance")
+    alen = len(advance) if advance else 1
+    mask = clock.get("mask")
+    dwell = clock.get("dwell", 1)
+    fired = 0  # armed frames seen so far (after the lead stall)
+    for i in range(seg_len):
+        if i < lead:
+            continue
+        if kind == "every":
+            add = step = True
+        elif kind == "dwell":
+            add = step = (fired + 1) % dwell == 0
+        elif kind == "dwell_ptr":
+            add = True
+            step = (fired + 1) % dwell == 0
+        elif kind == "mask":
+            add = step = bool(mask[fired % len(mask)])
+        else:  # advance
+            add = step = bool(advance[fired % alen])
+        acc_gate[i] = add
+        ptr_step[i] = step
+        fired += 1
+    return acc_gate, ptr_step
+
+
+def render_citg(params, seg_len):
+    """Render the unified Clocked Indexed-Table Generator to a lane of length
+    ``seg_len``.  ``params`` carries ``mode`` ("read" | "accum"), ``table`` (values
+    for read, signed steps for accum), ``clock`` (the advance schedule -- see
+    :func:`_citg_gates`), ``seed`` (the read value0 / accum acc0), ``lead``,
+    ``phase`` (the pointer's start index), ``loop`` (the index the pointer wraps to,
+    default 0), and ``width`` (the accumulator mask, ACCUM only).
+
+    In READ mode the lane is the constant ``seed`` during the ``lead`` stall and
+    then ``table[ptr]`` with the pointer stepped by the clock -- a lead-hold then a
+    table walk.  In ACCUM mode the lane is the running accumulator: the value
+    emitted on frame ``i`` is the accumulator BEFORE this frame's add, so the seed
+    is emitted first and every step is width-wrapped exactly as the chip's RMW
+    accumulator wraps (modulo the lane width) -- a closed-form program, never
+    stored output (HARD RULE #0)."""
+    mode = params["mode"]
+    table = params["table"]
+    period = len(table)
+    lead = params.get("lead", 0)
+    phase = params.get("phase", 0)
+    loop = params.get("loop", 0)
+    seed = params.get("seed", 0)
+    acc_gate, ptr_step = _citg_gates(seg_len, params["clock"], lead)
+    out = np.empty(seg_len, dtype=np.int64)
+    ptr = phase % period if period else 0
+    if mode == "read":
+        for i in range(seg_len):
+            out[i] = seed if i < lead else table[ptr]
+            if ptr_step[i] and period:
+                ptr += 1
+                if ptr >= period:
+                    ptr = loop
+        return out
+    width = params.get("width", 0xFFFF)
+    val = seed & width
+    for i in range(seg_len):
+        out[i] = val
+        if acc_gate[i]:
+            val = (val + int(table[ptr])) & width
+        if ptr_step[i] and period:
+            ptr += 1
+            if ptr >= period:
+                ptr = loop
+    return out
+
+
+def citg_preset(name, prm):
+    """Map a zoo archetype ``(name, params)`` to the equivalent CITG ``params`` so
+    :func:`render_citg` reproduces that archetype's output byte-for-byte, or None
+    for an archetype that is NOT a single clean CITG (the ``vibrato`` /
+    ``pingpong`` parametric shapes and the ``vibskydive`` / ``arp_decay`` /
+    ``additive_pw`` composites -- §2d of the design doc -- which stay in the zoo).
+
+    This is the executable form of the doc's §2c parameterization table; it is used
+    only by the render-parity test (each preset == its zoo renderer over parameter
+    sweeps), proving CITG's renderer is a strict superset of the zoo's."""
+    if name in ("hold", "empty"):
+        value = prm.get("value", 0)
+        return {
+            "mode": "read",
+            "table": [value],
+            "clock": {"kind": "every"},
+            "seed": value,
+        }
+    if name == "tablewalk":
+        table = prm["table"]
+        return {"mode": "read", "table": table, "clock": {"kind": "every"}}
+    if name == "tablewalk_lead":
+        return {
+            "mode": "read",
+            "table": prm["table"],
+            "clock": {"kind": "every"},
+            "lead": prm["lead"],
+            "seed": prm["value0"],
+        }
+    if name == "arp":
+        return {
+            "mode": "read",
+            "table": prm["freqs"],
+            "clock": {"kind": "dwell", "dwell": prm.get("dwell", 1)},
+        }
+    if name == "wavetable_ptr":
+        return {
+            "mode": "read",
+            "table": prm["table"],
+            "clock": {"kind": "advance", "advance": prm["advance"]},
+            "phase": prm.get("phase", 0),
+        }
+    if name == "accum":
+        return {
+            "mode": "accum",
+            "table": [prm["rate"]],
+            "clock": {"kind": "every"},
+            "seed": prm["v0"],
+            "width": 0xFFFF,
+        }
+    if name == "maskaccum":
+        return {
+            "mode": "accum",
+            "table": [prm["rate"]],
+            "clock": {"kind": "mask", "mask": prm["mask"]},
+            "seed": prm["v0"],
+            "width": prm.get("width", 0xFFFF),
+        }
+    if name == "dwellaccum":
+        return {
+            "mode": "accum",
+            "table": [prm["rate"]],
+            "clock": {"kind": "dwell", "dwell": prm["dwell"]},
+            "lead": prm["lead"],
+            "seed": prm["v0"],
+            "width": 0xFFFF,
+        }
+    if name == "ratewalk":
+        return {
+            "mode": "accum",
+            "table": prm["rate_table"],
+            "clock": {"kind": "every"},
+            "seed": prm["v0"],
+            "width": prm.get("width", 0xFFFF),
+        }
+    if name == "dwellratewalk":
+        return {
+            "mode": "accum",
+            "table": prm["rate_table"],
+            "clock": {"kind": "dwell_ptr", "dwell": prm["dwell"]},
+            "seed": prm["v0"],
+            "width": prm.get("width", 0xFFFF),
+        }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1507,6 +1761,107 @@ def _prefix_wavetable_ptr(seg, maxp=32, minrun=12, mincycles=2):
     return None
 
 
+def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
+    """The ONE unified matcher: recover a byte-exact longest-prefix CITG cover of a
+    lane segment, or None.
+
+    Rather than a parallel reimplementation of every per-archetype recovery, this
+    enumerates the small candidate set the design doc's §3b procedure describes --
+    one per (MODE, CLOCK-class, table-shape) the unified op admits -- by REUSING the
+    proven per-archetype synthesis (the period folders, the advance-clock /
+    maskaccum machinery, the dwell recovery) and translating each clean winner to
+    its CITG parameterization (:func:`citg_preset`).  Each candidate is re-rendered
+    through :func:`render_citg` and accepted only on the LONGEST byte-exact prefix
+    (``_match_prefix``), so the matcher is byte-exact-or-None exactly like the zoo:
+    trying it first can never regress correctness, and where it declines the zoo
+    fallback runs.
+
+    The recovered structures are all genuine reused generators gated by the same
+    HARD RULE #0 minima the zoo matchers enforce (>=2 cycles, >=3 distinct values
+    for a folded table, a substantial run for a long period): the closed-form
+    content is the period-P table, the only per-frame stream is the separable
+    advance clock.  The ``vibrato`` / ``pingpong`` parametric shapes and the
+    ``vibskydive`` / ``arp_decay`` / ``additive_pw`` composites are NOT single
+    CITGs (§2d) and are deliberately left to the zoo fallback -- CITG declines them
+    here so they are never faked into a value table."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < 1:
+        return None
+    best = None  # (match_len, citg_params)
+
+    def _consider(zoo_name, zoo_prm):
+        nonlocal best
+        params = citg_preset(zoo_name, zoo_prm)
+        if params is None:
+            return
+        if width_mask is not None and params["mode"] == "accum":
+            params["width"] = width_mask
+        rend = render_citg(params, length)
+        match = _match_prefix(rend, seg)
+        if match >= _MINRUN and (best is None or match > best[0]):
+            best = (match, params)
+
+    # CLOCK = every-frame --------------------------------------------------
+    # ACCUM: a constant-rate accumulator (the cheap ``accum``) and the period-P
+    # signed-rate wavetable accumulator (``ratewalk``) -- recovered from the
+    # segment's own deltas.
+    if length >= _MINRUN:
+        delta = int(seg[1]) - int(seg[0])
+        if delta != 0:
+            j = 0
+            while j + 1 < length and int(seg[j + 1]) - int(seg[j]) == delta:
+                j += 1
+            if j + 1 >= _MINRUN:
+                _consider("accum", {"v0": int(seg[0]), "rate": delta})
+    rate_walk = _prefix_ratewalk(seg, width_mask)
+    if rate_walk is not None:
+        _consider(rate_walk[1], rate_walk[2])
+    # READ: an undelayed period-P value table (``tablewalk``) and a lead-hold then
+    # a period-P table (``tablewalk_lead``).
+    table_walk = _prefix_tablewalk(seg)
+    if table_walk is not None:
+        _consider(table_walk[1], table_walk[2])
+    lead_walk = _prefix_tablewalk_lead(seg)
+    if lead_walk is not None:
+        _consider(lead_walk[1], lead_walk[2])
+
+    # CLOCK = periodic dwell ----------------------------------------------
+    # READ: the small-period dwelled value cycle (``arp``).  ACCUM: a single-rate
+    # accumulator stepped every ``dwell`` frames after a lead (``dwellaccum``) and
+    # the dwelled signed-step wavetable accumulator (``dwellratewalk``).
+    arp = _prefix_arp(seg)
+    if arp is not None:
+        _consider(arp[1], arp[2])
+    dwell_accum = _longest_dwell_accum(seg)
+    if dwell_accum is not None:
+        _consider(dwell_accum[1], dwell_accum[2])
+    dwell_walk = _prefix_dwellratewalk(seg, width_mask)
+    if dwell_walk is not None:
+        _consider(dwell_walk[1], dwell_walk[2])
+
+    # CLOCK = periodic mask -----------------------------------------------
+    # ACCUM: a single-rate accumulator gated by a recovered period-Q advance mask,
+    # both the short-period (``maskaccum``) and longest-prefix stall forms.
+    mask_acc = _prefix_maskaccum(seg, width_mask)
+    if mask_acc is not None:
+        _consider(mask_acc[1], mask_acc[2])
+    stall = _prefix_maskaccum_stall(seg, width_mask)
+    if stall is not None:
+        _consider(stall[1], stall[2])
+
+    # CLOCK = external advance vector -------------------------------------
+    # READ: a pointer over a looping value table paced by the per-voice groove tick
+    # (``wavetable_ptr``) -- the general case every other table clock specialises.
+    wptr = _prefix_wavetable_ptr(seg)
+    if wptr is not None:
+        _consider(wptr[1], wptr[2])
+
+    if best is None:
+        return None
+    return (best[0], "citg", best[1])
+
+
 # ---------------------------------------------------------------------------
 # Greedy cover.
 # ---------------------------------------------------------------------------
@@ -1590,6 +1945,38 @@ def _longest_archetype(seg, ctr0, note_table=None, carry_seg=None):
 
 
 def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
+    """The cover search's per-run matcher, with the unified CITG tried FIRST and the
+    full archetype zoo (:func:`_longest_archetype_zoo`) as the FALLBACK.
+
+    CITG (:func:`_prefix_citg`) is a byte-exact-or-None matcher just like every zoo
+    matcher, so trying it first can NEVER regress correctness: at worst it declines
+    or covers less and the zoo runs unchanged.  CITG WINS when it covers a run at
+    least as long as the zoo's (ties to CITG, the canonical unified form), and the
+    zoo wins -- and we record which archetype -- only when it covers strictly more.
+    This guarantees coverage parity by construction (the chosen run is always
+    ``max(citg, zoo)``), so a whole-tune that was residual-zero stays residual-zero,
+    while the per-fit win/fallback tally (:data:`CITG_FALLBACK_COUNTS`) measures
+    exactly how much of the zoo CITG already subsumes.
+
+    ``CITG_DISABLE`` short-circuits to the zoo alone (an escape hatch; never needed
+    for correctness).  When CITG and the zoo cover the same length, CITG is chosen,
+    but a zoo win that the doc flags as a genuine non-CITG case (the ``vibrato`` /
+    ``pingpong`` shapes and the ``vibskydive`` / ``arp_decay`` / ``additive_pw``
+    composites, §2d) shows up in the fallback tally as the cases still to close."""
+    if _CITG_DISABLE:
+        return _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask)
+    citg = _prefix_citg(seg, note_table, width_mask, ctr0)
+    zoo = _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask)
+    citg_len = citg[0] if citg is not None else -1
+    zoo_len = zoo[2] if zoo is not None else -1
+    if citg is not None and citg_len >= zoo_len:
+        _citg_record("citg_won", citg[2].get("mode", ""))
+        return (citg[1], citg[2], citg[0])
+    _citg_record(f"fallback:{zoo[0]}" if zoo is not None else "fallback:none")
+    return zoo
+
+
+def _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask):
     """:func:`_longest_archetype` plus the generic periodic / wavetable generators.
 
     ``maskaccum`` (a fixed-period-paced accumulator) and ``ratewalk`` (a period-P
@@ -1906,6 +2293,8 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
         )
     if name == "wavetable_ptr":
         return render_wavetable_ptr(plen, prm["table"], prm["phase"], prm["advance"])
+    if name == "citg":
+        return render_citg(prm, plen)
     if name == "additive_pw":
         table = prm.get("carry_table")
         if table:
