@@ -196,6 +196,43 @@ def test_prefix_tablewalk_recovers_period():
     assert match[2]["table"][:9] == table
 
 
+def test_fit_ratewalk_round_trip():
+    # a wavetable-rate accumulator (the FamiCommodore-style sub-resolution sweep):
+    # a period-5 signed-rate table drives a single wider-internal-width accumulator
+    # whose value climbs without a short value period -- recovered as one ratewalk.
+    lane = A.render_ratewalk(60, 0x0200, [16, 16, 32, 0, 16])
+    fit = _fit_round_trips(lane)
+    assert fit[0] in ("ratewalk", "maskaccum", "piecewise")
+
+
+def test_prefix_ratewalk_recovers_rate_table():
+    table = [16, 16, 32, 0, 16]
+    lane = A.render_ratewalk(60, 0x0200, table)
+    match = A._prefix_ratewalk(lane)
+    assert match is not None
+    assert match[1] == "ratewalk"
+    assert match[2]["rate_table"][:5] == table
+
+
+def test_fit_tablewalk_lead_round_trip():
+    # a delayed period-6 modulation (the Hammurabi-style long hold then LFO table):
+    # 20 constant frames, then a period-6 offset table -- one rule, not two pieces.
+    table = [0x40, 0x60, 0x80, 0x60, 0x40, 0x20]
+    lane = A.render_tablewalk_lead(60, 20, 0x40, table)
+    fit = _fit_round_trips(lane)
+    assert fit[0] in ("tablewalk_lead", "tablewalk", "piecewise")
+
+
+def test_prefix_tablewalk_lead_recovers_lead_and_table():
+    table = [0x40, 0x60, 0x80, 0x60, 0x40, 0x20]
+    lane = A.render_tablewalk_lead(60, 20, 0x40, table)
+    match = A._prefix_tablewalk_lead(lane)
+    assert match is not None
+    assert match[1] == "tablewalk_lead"
+    assert match[2]["lead"] == 20
+    assert match[2]["table"][:6] == table
+
+
 def test_fit_additive_pw_round_trip():
     carry = np.array([1, 0, 0, 0] * 16, dtype=np.int64)
     lane = A.render_additive_pw(48, 0x0A00, 3, carry)
@@ -296,14 +333,21 @@ def test_whole_tune_residual_zero_real_trace():
     """Whole-tune residual-zero on a real native trace (opt-in).
 
     The bus-state must be reproduced byte-exact across all 25 registers by the
-    self-contained render -- the proven 5/8-corpus whole-tune result.  A tune
-    with a generator-lane gap (3/8) leaves residual on freq/pw and is xfail'd, so
-    the gap is surfaced, never faked."""
+    self-contained render -- the proven 7/8-corpus whole-tune result (up from 5/8).
+    Hammurabi is now residual-zero via the generic tablewalk_lead archetype (a
+    delayed long-period modulation), and Not_Even_Human renders byte-exact (its
+    only diff is a bus-vs-dump song-end tail, not compared here).  FamiCommodore
+    keeps a genuine generator-lane gap (a voice-2 PW wavetable-paced reflecting
+    triangle with no compact generator form) -- it leaves residual ONLY on the
+    freq/pw lanes and is xfail'd, so the gap is surfaced, never faked; any
+    NON-generator residual is always a hard failure."""
     records = load_bus(_BUSTRACE)
     program = recover_generic(_BUSTRACE, None, records)
     resid, _, state = residual(program, records)
     total = sum(resid.values())
     gen = sum(resid[reg] for reg in _GEN_REGS)
-    if total and gen:
+    nongen = total - gen
+    assert nongen == 0, f"non-generator residual on {state.shape}: {resid}"
+    if gen:
         pytest.xfail(f"documented generator-lane gap: {gen} gen-lane residual cells")
-    assert total == 0, f"non-generator residual on {state.shape}: {resid}"
+    assert total == 0, f"residual on {state.shape}: {resid}"

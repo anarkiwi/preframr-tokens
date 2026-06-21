@@ -9,9 +9,12 @@ Every archetype reads only SID-chip / arithmetic semantics; there is NO
 per-driver constant here.  This is the driver-agnostic form of the recovery the
 hand backends do by disassembly: hold / accum / dwellaccum / wrapaccum / arp /
 glide / vibrato / pingpong / decay (+ the composites) cover the proven library,
-and :func:`render_maskaccum` / :func:`render_tablewalk` add the two generic
-periodic generators (a fixed-period-paced accumulator and a period-P value
-table) that the full fitter layers on top.
+and four generic periodic / wavetable generators close the generator-lane gaps:
+:func:`render_maskaccum` (a fixed-period-paced accumulator), :func:`render_ratewalk`
+(a period-P signed-rate wavetable accumulator -- the fractional-rate /
+wider-internal-width sweep), :func:`render_tablewalk` (a period-P value table
+beyond the arp cap), and :func:`render_tablewalk_lead` (a lead hold then a
+period-P value table -- a delayed long-period modulation).
 """
 
 from collections import defaultdict
@@ -20,6 +23,10 @@ import numpy as np
 
 _WINDOW = 384  # max frames a single archetype-run search inspects.
 _MINRUN = 3  # minimum frames for a structured archetype run to beat hold.
+# Max archetype pieces in one note-on cover before we give up (None).  Bounds the
+# search and rejects a cover so fragmented it would be raw-byte storage in
+# disguise (more pieces than a genuine generator program should need).
+_MAXPIECES = 64
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +294,36 @@ def render_tablewalk(seg_len, table, ctr0=0):
     out = np.empty(seg_len, dtype=np.int64)
     for i in range(seg_len):
         out[i] = table[(ctr0 + i) % period]
+    return out
+
+
+def render_ratewalk(seg_len, v0, rate_table, ctr0=0, width_mask=0xFFFF):
+    """Wavetable-rate accumulator: value += rate_table[(ctr0 + i) % P] each frame,
+    width-masked.  This is the wider-internal-width / fractional-rate sweep where
+    the player accumulates an RMW variable whose per-frame step is sequenced by a
+    short period-P rate wavetable, viewed through the (possibly narrower) register.
+    It generalises :func:`render_maskaccum` (one rate gated by a 0/1 mask) to a
+    full period-P signed-rate table, so a sub-resolution sweep whose effective rate
+    drifts on a fixed pattern is one rule, not stored data."""
+    period = len(rate_table)
+    out = np.empty(seg_len, dtype=np.int64)
+    val = v0
+    for i in range(seg_len):
+        out[i] = val & width_mask
+        val = (val + rate_table[(ctr0 + i) % period]) & width_mask
+    return out
+
+
+def render_tablewalk_lead(seg_len, lead, value0, table, ctr0=0):
+    """A ``lead``-frame constant hold at ``value0`` followed by a period-P value
+    table walk -- a DELAYED periodic modulation (a long sustain, then an LFO
+    offset table).  Folding the lead hold into one rule lets the cover reach the
+    long-period table in a single piece, so a short coincidental arp at the note
+    start cannot shadow the genuine (longer-period) modulation that follows."""
+    period = len(table)
+    out = np.empty(seg_len, dtype=np.int64)
+    for i in range(seg_len):
+        out[i] = value0 if i < lead else table[(ctr0 + i - lead) % period]
     return out
 
 
@@ -783,6 +820,76 @@ def _prefix_tablewalk(seg, maxp=48):
     return best
 
 
+def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=12, minrun=8):
+    """Longest byte-exact wavetable-rate accumulator prefix.  Recovers the
+    period-P signed-rate table from the segment's own deltas: find the smallest
+    period whose rate table replays the segment, requiring at least one nonzero
+    rate (so a constant hold is left to :func:`render_fit`'s cheaper ``hold``).
+    The generalisation of :func:`_prefix_maskaccum` to a per-step rate table that
+    closes the fractional-rate / wider-internal-width sweep."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diff = np.diff(seg) % (width_mask + 1)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    best = None
+    for period in range(1, min(maxp, max(1, len(dsign))) + 1):
+        if len(dsign) < period:
+            continue
+        table = dsign[:period].tolist()
+        if not any(table):
+            continue
+        rend = render_ratewalk(length, int(seg[0]), table, 0, width_mask)
+        match = _match_prefix(rend, seg)
+        if match >= minrun and (best is None or match > best[0]):
+            best = (
+                match,
+                "ratewalk",
+                {"v0": int(seg[0]), "rate_table": table, "width": width_mask},
+            )
+        if best and best[0] == length:
+            break
+    return best
+
+
+def _prefix_tablewalk_lead(seg, maxp=24, minrun=8):
+    """Longest byte-exact lead-hold-then-table-walk prefix: try absorbing 0..lead
+    of the constant prefix into a ``lead`` hold, then the smallest period-P value
+    table (>=2 distinct values, >=2 full cycles) that replays the remainder.  This
+    admits a long-period delayed modulation the plain table walk misses because a
+    short coincidental arp at the note start otherwise shadows it in the cover."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    lead0 = 1
+    while lead0 < length and seg[lead0] == seg[0]:
+        lead0 += 1
+    best = None
+    for lead in range(0, min(lead0, length - 1) + 1):
+        body = seg[lead:]
+        if len(body) < minrun:
+            continue
+        for period in range(2, min(maxp, len(body) // 2) + 1):
+            if not np.array_equal(body[:period], body[period : 2 * period]):
+                continue
+            table = body[:period].tolist()
+            if len(set(table)) < 2:
+                continue
+            rend = render_tablewalk_lead(length, lead, int(seg[0]), table)
+            match = _match_prefix(rend, seg)
+            if match >= lead + 2 * period and (best is None or match > best[0]):
+                best = (
+                    match,
+                    "tablewalk_lead",
+                    {"lead": lead, "value0": int(seg[0]), "table": table},
+                )
+        if best and best[0] == length:
+            break
+    return best
+
+
 # ---------------------------------------------------------------------------
 # Greedy cover.
 # ---------------------------------------------------------------------------
@@ -866,20 +973,30 @@ def _longest_archetype(seg, ctr0, note_table=None, carry_seg=None):
 
 
 def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
-    """:func:`_longest_archetype` plus the two generic periodic generators.
+    """:func:`_longest_archetype` plus the generic periodic / wavetable generators.
 
-    ``maskaccum`` (a fixed-period-paced accumulator) is allowed to win on length
-    or to break a hold tie.  ``tablewalk`` (a period-P value table beyond the arp
-    cap) is a LAST RESORT -- it fires only where the proven library returns None,
-    so a coincidental short period never shadows a genuine accumulator/arp."""
+    ``maskaccum`` (a fixed-period-paced accumulator) and ``ratewalk`` (a period-P
+    signed-rate wavetable accumulator) are allowed to win on length or to break a
+    hold tie -- a structured sweep beats a bare hold.  ``ratewalk`` closes the
+    fractional-rate / wider-internal-width sweep (an RMW accumulator stepped by a
+    short rate wavetable).  ``tablewalk_lead`` (a lead hold then a period-P value
+    table) is allowed to win on length so a DELAYED long-period modulation is
+    covered in one piece rather than shadowed by a short coincidental arp prefix.
+    ``tablewalk`` (an undelayed period-P value table beyond the arp cap) stays a
+    LAST RESORT -- it fires only where the proven library returns None, so a
+    coincidental short period never shadows a genuine accumulator/arp."""
     base = _longest_archetype(seg, ctr0, note_table, carry_seg)
-    maskaccum = _prefix_maskaccum(seg, width_mask)
-    if maskaccum is not None and (
-        base is None
-        or maskaccum[0] > base[2]
-        or (maskaccum[0] == base[2] and base[0] == "hold")
-    ):
-        base = (maskaccum[1], maskaccum[2], maskaccum[0])
+    for matcher in (_prefix_maskaccum, _prefix_ratewalk):
+        cand = matcher(seg, width_mask)
+        if cand is not None and (
+            base is None
+            or cand[0] > base[2]
+            or (cand[0] == base[2] and base[0] == "hold")
+        ):
+            base = (cand[1], cand[2], cand[0])
+    lead_walk = _prefix_tablewalk_lead(seg)
+    if lead_walk is not None and (base is None or lead_walk[0] > base[2]):
+        base = (lead_walk[1], lead_walk[2], lead_walk[0])
     if base is None:
         tablewalk = _prefix_tablewalk(seg)
         if tablewalk is not None:
@@ -907,7 +1024,7 @@ def fit_segment(seg, ctr0, note_table=None, carry_seg=None, width_mask=0xFFFF):
         name, prm, plen = run
         pieces.append((name, prm, plen))
         i += plen
-        if len(pieces) > 64:
+        if len(pieces) > _MAXPIECES:
             return None
     if len(pieces) == 1:
         return (pieces[0][0], pieces[0][1])
@@ -1052,6 +1169,12 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
         )
     if name == "tablewalk":
         return render_tablewalk(plen, prm["table"], off)
+    if name == "ratewalk":
+        return render_ratewalk(
+            plen, prm["v0"], prm["rate_table"], 0, prm.get("width", 0xFFFF)
+        )
+    if name == "tablewalk_lead":
+        return render_tablewalk_lead(plen, prm["lead"], prm["value0"], prm["table"])
     if name == "additive_pw":
         table = prm.get("carry_table")
         if table:

@@ -10,8 +10,11 @@ program, and the freq note table from bus value-provenance.
 The recovered program is carried in a :class:`BaccProgram` (``driver="generic"``)
 and rendered back by the SELF-CONTAINED :func:`render_generic` -- no hand backend
 is consulted.  :func:`residual` reports per-register residual frame counts against
-the bus-state; on the proven tunes the generator lanes render residual-zero and
-the documented generator-lane gaps (3/8 corpus tunes) are surfaced, never faked.
+the bus-state; on the proven tunes the generator lanes render residual-zero (the
+Hammurabi generator-lane gap is closed by the generic tablewalk_lead archetype,
+and ratewalk adds the fractional-rate / wider-internal-width sweep), and any
+genuinely remaining residual -- e.g. FamiCommodore's voice-2 PW wavetable-paced
+reflecting triangle -- is surfaced, never faked.
 """
 
 import numpy as np

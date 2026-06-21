@@ -7,7 +7,8 @@ and NO per-driver constants:
   - generator lanes (freq lo/hi, pw lo/hi): the BACC archetype library
     (:mod:`archetypes`), sliced at gate-rise note-ons, plus a pre-roll segment
     covering ``[0, first note-on)`` (the player sets an initial note/sweep before
-    the first gate-rise) and the generic maskaccum/tablewalk periodic generators.
+    the first gate-rise) and the generic maskaccum / ratewalk / tablewalk /
+    tablewalk_lead periodic / wavetable generators.
   - non-generator lanes (ctrl / AD / SR / filter cutoff+res / volume): a compact
     piecewise program whose switch points are the note/pattern boundaries the bus
     exposes -- this is also the orderlist / song-structure reconstruction.
