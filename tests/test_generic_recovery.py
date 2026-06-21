@@ -289,6 +289,30 @@ def test_prefix_wavetable_ptr_recovers_table_and_clock():
     assert match[2]["advance"] == advance  # the recovered shared groove clock
 
 
+def test_prefix_wavetable_ptr_folds_longest_prefix_of_multi_section_melody():
+    # A FutureComposer voice running one looping note/arp wavetable for several
+    # pattern rows and then SWITCHING to a different one is a single un-retriggered
+    # note-on segment whose walk does NOT fold onto one loop -- but its FIRST
+    # section does.  The prefix fold must recover that section as one wavetable_ptr
+    # piece (the period-P table + its advance clock), not decline the whole lane.
+    table_a = [0x0800, 0x0900, 0x0A00, 0x0B00, 0x0900]  # section-A note wavetable
+    table_b = [0x1000, 0x1100, 0x1200, 0x0F00]  # a DIFFERENT section-B wavetable
+    groove = [1, 1, 0] * 12  # dwelled advance clock (some frames hold)
+    sec_a = A.render_wavetable_ptr(len(groove) + 1, table_a, 0, groove)
+    sec_b = A.render_wavetable_ptr(len(groove) + 1, table_b, 0, groove)
+    lane = np.concatenate([sec_a, sec_b])
+    match = A._prefix_wavetable_ptr(lane)
+    assert match is not None
+    assert match[1] == "wavetable_ptr"
+    assert match[2]["table"] == table_a  # section A's generator, not the whole melody
+    assert match[0] == len(sec_a)  # the prefix stops exactly where section B begins
+    assert len(match[2]["advance"]) == match[0]  # clock trimmed to the matched run
+    # and the greedy whole-segment cover lays the chain down piece by piece, exact.
+    fit = A.fit_segment(lane, 0)
+    rendered = A.render_fit(fit, len(lane))
+    assert np.array_equal(rendered, lane)
+
+
 def test_prefix_wavetable_ptr_rejects_step_every_frame():
     # a plain period-P value table that steps every frame is NOT a groove-paced
     # pointer walk; wavetable_ptr declines it so the cheaper tablewalk handles it.
