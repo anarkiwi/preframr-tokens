@@ -90,6 +90,60 @@ def test_token_roundtrip_renders_byte_exact():
     assert np.array_equal(render_program(program2), render_program(program))
 
 
+def test_global_pattern_lz_reslices_patterns():
+    """The global cross-pattern row-LZ runs ONE backward window over all patterns
+    concatenated, so a phrase repeated in a later pattern copies from an earlier
+    one; decode must re-slice the flat row stream back into the SAME patterns
+    (right count, right per-pattern row counts, right rows). Two patterns that
+    share an identical phrase exercise the cross-pattern copy + the re-slice."""
+    from pygoattracker import Instrument, Pattern, Row, Song, build_sng
+    from pygoattracker.constants import note_value
+
+    from preframr_tokens.bacc.gt_serialize import (
+        gt_ids_to_program,
+        gt_program_to_ids,
+    )
+
+    song = Song(name="GLZ", author="T", copyright="2026")
+    wave_ptr = song.wavetable.add(0x41, 0x00)
+    song.wavetable.add(0xFF, 0x00)
+    song.instruments.append(
+        Instrument(
+            attack_decay=0x09,
+            sustain_release=0x00,
+            wave_ptr=wave_ptr,
+            gateoff_timer=2,
+            first_wave=0x09,
+            name="LEAD",
+        )
+    )
+    phrase = [
+        Row(note=note_value("C-4"), instrument=1),
+        Row(note=note_value("E-4"), instrument=1),
+        Row(note=note_value("G-4"), instrument=1),
+    ]
+    pat_a = Pattern.empty(16)
+    pat_b = Pattern.empty(8)  # different length -> exercises per-pattern counts
+    for k, r in enumerate(phrase):
+        pat_a.rows[k] = r
+        pat_b.rows[k] = r  # same phrase, later pattern: cross-pattern copy
+    song.patterns = [pat_a, pat_b]
+
+    program = make_program(build_sng(song), _DEMO_SEED, 128)
+    ids = gt_program_to_ids(program)
+    program2 = gt_ids_to_program(ids)
+    song2 = program2.tables["song"]
+    # re-slice fidelity: same pattern count + same per-pattern row counts + rows
+    assert len(song2.patterns) == 2
+    assert [len(p.rows) for p in song2.patterns] == [16, 8]
+    src = program.tables["song"]
+    for p_in, p_out in zip(src.patterns, song2.patterns):
+        assert [(r.note, r.instrument, r.command, r.data) for r in p_in.rows] == [
+            (r.note, r.instrument, r.command, r.data) for r in p_out.rows
+        ]
+    assert np.array_equal(render_program(program2), render_program(program))
+
+
 def test_measure_breaks_down_program():
     program = make_program(_demo_sng(), _DEMO_SEED, 128)
     brk, frames = measure(program)
@@ -172,7 +226,10 @@ def test_grid_runner_context_budget(grid_runner_paths):
     program = recover_program(sid, dump, CPF, subtune=0)
     assert program.driver == "goattracker"
     brk, frames = measure(program)
-    # < 1 token/frame AND the whole song fits the 8192-token context window.
+    # The global cross-pattern row-LZ (one backward window over ALL patterns
+    # concatenated instead of a fresh window per pattern) brings Grid_Runner to
+    # ~2,817 tokens (was 4,132 with per-pattern windows). It still must fit
+    # < 1 token/frame AND the 8192-token context window, and now also under 4096.
     assert brk["total"] / frames < 1.0, (
         f"Grid_Runner: {brk['total']} tokens / {frames} frames = "
         f"{brk['total'] / frames:.3f} tok/frame (must be < 1)"
@@ -180,6 +237,10 @@ def test_grid_runner_context_budget(grid_runner_paths):
     assert brk["total"] < 8192, (
         f"Grid_Runner: {brk['total']} tokens for the whole song >= 8192 "
         f"(must fit the 8192-token context window)"
+    )
+    assert brk["total"] < 4096, (
+        f"Grid_Runner: {brk['total']} tokens >= 4096 -- the global "
+        f"cross-pattern row-LZ should keep it well under 4096 (~2,817)"
     )
 
 
