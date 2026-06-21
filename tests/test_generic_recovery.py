@@ -290,6 +290,89 @@ def test_prefix_tablewalk_lead_recovers_lead_and_table():
     assert match[2]["table"][:6] == table
 
 
+def test_fit_dwellratewalk_round_trip():
+    # the HardTrack-style PULSE wavetable: a signed-step table held a fixed dwell per
+    # entry, accumulated into the 12-bit pulse-width register -- a reflecting ramp PWM
+    # whose effective period (dwell*P) is far beyond the plain ratewalk period cap.
+    rate_table = [-66, 68, -68, 70, -70, 72]
+    lane = A.render_dwellratewalk(96, 0x600, rate_table, 8, 0, 0xFFF)
+    fit = _fit_round_trips(lane)
+    assert fit[0] in ("dwellratewalk", "piecewise")
+
+
+def test_prefix_dwellratewalk_recovers_table_and_dwell():
+    rate_table = [-66, 68, -68, 70, -70, 72, -72, 74, -74, -64, 66]
+    lane = A.render_dwellratewalk(11 * 8 * 3, 0x600, rate_table, 8, 0, 0xFFF)
+    match = A._prefix_dwellratewalk(lane, 0xFFF)
+    assert match is not None
+    assert match[1] == "dwellratewalk"
+    assert match[2]["dwell"] == 8
+    assert match[2]["rate_table"] == rate_table  # the step table, not raw output
+    rendered = A.render_fit((match[1], match[2]), len(lane))
+    assert np.array_equal(rendered, lane)
+
+
+def test_dwellratewalk_wraps_at_12bit_boundary():
+    # a step crossing the 12-bit pulse-width boundary wraps as the chip accumulator
+    # does (mod 0x1000), not at 0xFFFF -- so a table-driven PW sweep that overflows
+    # is still recovered byte-exact rather than diverging at the wrap.
+    rate_table = [0x080, 0x080]
+    lane = A.render_dwellratewalk(64, 0x0F00, rate_table, 4, 0, 0xFFF)
+    assert lane.max() <= 0xFFF and lane.min() >= 0
+    match = A._prefix_dwellratewalk(lane, 0xFFF)
+    # a single-step table folds to a plain accum/ratewalk; the >=2-distinct-steps
+    # guard declines it here, leaving the cheaper rule to handle the pure ramp.
+    assert match is None
+
+
+def test_dwellratewalk_declines_per_frame_ratewalk():
+    # a per-frame rate wavetable (dwell 1) is a plain ratewalk; the dwell>1 guard
+    # keeps dwellratewalk from re-describing it as a degenerate dwelled table.
+    lane = A.render_ratewalk(60, 0x0200, [16, 32, 16, 48])
+    assert A._prefix_dwellratewalk(lane, 0xFFFF) is None
+
+
+def test_pingpong_reflects_at_exact_extreme():
+    # a fine +/-1 triangle vibrato that reflects AT the visible extreme (emitting the
+    # apex as a turning point) must be recovered as ONE pingpong over its full run,
+    # not the 7-frame stub the past-extreme-only reflect convention left behind.
+    base, lo, hi = 1114, 1108, 1122
+    lane = A.render_pingpong(200, base, 1, lo, hi, 0, 0, 1)
+    assert lane.min() == lo and lane.max() == hi  # apex emitted, no overshoot
+    match = A._prefix_pingpong(lane)
+    assert match is not None and match[0] == len(lane)  # whole run, not a stub
+    rendered = A.render_fit((match[1], match[2]), len(lane))
+    assert np.array_equal(rendered, lane)
+
+
+def test_dwellratewalk_pw_recovers_residual_zero_end_to_end():
+    # End to end: a voice whose 12-bit pulse-width is a table-driven reflecting ramp
+    # (signed step held dwell frames, looping) under a held gate recovers byte-exact.
+    rate_table = [-66, 68, -68, 70, -70, 72, -72, 74, -74, -64, 66]
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    nframes = 11 * 8 * 4
+    pw = 0x600
+    period = len(rate_table)
+    for frame in range(nframes):
+        reg[0], reg[1] = 0x00, 0x10  # voice-0 constant note
+        reg[4] = 0x41 if frame >= 2 else 0x40  # gate rises once, then held
+        reg[2], reg[3] = pw & 0xFF, (pw >> 8) & 0x0F
+        if frame >= 2:
+            pw = (pw + rate_table[((frame - 2) // 8) % period]) & 0xFFF
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    bus = np.array(recs, dtype=BUS_DT)
+    program = recover_generic("dwellpw.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[2] == 0 and resid[3] == 0  # voice-0 pw lane byte-exact
+    assert sum(resid.values()) == 0
+
+
 # A reflecting-triangle PW table over 12 levels (the FamiCommodore-style voice-2
 # wavetable) and a non-uniform groove advance clock (some frames step, some hold).
 _WPTR_TABLE = [
