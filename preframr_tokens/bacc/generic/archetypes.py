@@ -23,6 +23,17 @@ EXTERNAL per-voice advance clock -- a wavetable-paced walk whose drifting,
 non-periodic dwell is the separable groove tick, not stored output).  ``pingpong``
 also reflects at EITHER the visible extreme or one past it, so a fine triangle
 vibrato that turns on its apex is one piece, not a stub.
+
+``wavetable_ptr`` is admitted on the NON-GENERATOR lanes too (ctrl / AD / SR /
+filter / volume), not just freq/pw: the dwell-paced PAGE-WALK player (e.g. Master
+Composer) drives the WHOLE register file as ``page[ptr]`` with ``ptr`` advanced by
+a non-uniform per-step dwell -- a SINGLE chip-wide step clock shared across every
+lane -- so each non-generator lane is literally ``tablewalk(page_reg, ptr)`` over
+that shared pointer.  Recovering it there collapses what the cheap library would
+otherwise fragment into one short arp/hold piece per dwell run (its non-uniform
+groove defeats the fixed-period ``arp`` / ``dwellaccum``) into one period-P table
+plus the separable advance clock -- a genuine reused generator, never per-step
+stored output (HARD RULE #0).
 """
 
 from collections import defaultdict
@@ -1501,10 +1512,26 @@ def fit_event_lane(col):
 
 
 def _longest_event_archetype(seg):
-    """Longest byte-exact prefix of a non-generator lane: only the cheap
-    structured archetypes (hold / accum / dwellaccum / arp), which are far faster
-    than the full vibrato/pingpong search and still residual-exact for these
-    never-carry-coupled registers."""
+    """Longest byte-exact prefix of a non-generator lane: the cheap structured
+    archetypes (hold / accum / dwellaccum / arp), which are far faster than the
+    full vibrato/pingpong search and still residual-exact for these never-carry-
+    coupled registers, PLUS the advance-clocked ``wavetable_ptr`` (a pointer over
+    a small looping value table stepped by an EXTERNAL, possibly non-uniform
+    advance clock).
+
+    The ``wavetable_ptr`` matcher is what closes the dwell-paced PAGE-WALK player
+    (e.g. Master Composer), where the WHOLE register file is ``page[ptr]`` with
+    ``ptr`` advanced by a non-uniform per-step dwell table -- a SINGLE chip-wide
+    step clock shared across every lane.  Each non-generator lane is then literally
+    ``tablewalk(page_reg, ptr)``: a small per-step value table read through that
+    shared pointer.  Without it the groove (a non-uniform dwell with no fixed
+    period) defeats ``arp`` / ``dwellaccum`` and the cover fragments into one
+    short ``arp`` / ``hold`` piece per dwell run -- effectively storing the lane's
+    output piecemeal (a HARD RULE #0 risk).  With it the lane collapses to one
+    period-P table plus the separable advance clock (the groove tick, shared
+    across all lanes), a genuine reused generator with no per-step data storage.
+    It is allowed to win on length so a non-uniform groove that a coincidental
+    short ``arp`` prefix would otherwise shadow is covered in a single piece."""
     seg = np.asarray(seg[:_WINDOW], dtype=np.int64)
     length = len(seg)
     hold = 1
@@ -1527,6 +1554,9 @@ def _longest_event_archetype(seg):
     arp = _prefix_arp(seg)
     if arp is not None:
         cands.append(arp)
+    wptr = _prefix_wavetable_ptr(seg)
+    if wptr is not None:
+        cands.append(wptr)
 
     def _rank(cand):
         name = cand[1]

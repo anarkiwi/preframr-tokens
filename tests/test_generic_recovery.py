@@ -491,6 +491,31 @@ def test_event_lane_fit_round_trip():
     assert np.array_equal(rendered, col)
 
 
+def test_event_lane_recovers_dwell_paced_page_walk_as_wavetable_ptr():
+    # The dwell-paced PAGE-WALK player (e.g. Master Composer) drives a non-generator
+    # register (here a ctrl/waveform lane) as ``page[ptr]`` where ``ptr`` is advanced
+    # by a NON-UNIFORM per-step dwell -- the chip-wide groove.  Without wavetable_ptr
+    # the event-lane cover fragments into one short arp/hold piece per dwell run
+    # (effectively storing the lane's output, a HARD RULE #0 risk); with it the lane
+    # collapses to ONE period-P table plus the separable advance clock.
+    table = [0x11, 0x10, 0x21, 0x20, 0x41, 0x40, 0x15, 0x14]
+    dwell = [4, 10, 9, 8, 3, 7, 12, 5]  # genuinely non-uniform (no fixed period)
+    col = []
+    for step in range(60):
+        col += [table[step % len(table)]] * dwell[step % len(dwell)]
+    col = np.array(col[:900], dtype=np.int64)
+    segs = A.fit_event_lane(col)
+    rendered = A.render_event_lane(segs, len(col))
+    assert np.array_equal(rendered, col)  # still byte-exact
+    names = [name for _, _, name, _ in segs]
+    assert "wavetable_ptr" in names  # the page walk is a genuine reused generator
+    wptr = next(prm for _, _, name, prm in segs if name == "wavetable_ptr")
+    assert wptr["table"] == table  # the period-8 page, not raw per-frame data
+    # and the cover is far more compact than the per-dwell-run arp/hold fragmentation
+    # the cheap library alone would produce over the same non-uniform groove.
+    assert len(segs) <= len(table) + 4
+
+
 def test_note_table_recovered_from_bus_provenance():
     # build a trace where each freq-lo SID write is preceded by a RAM read of the
     # same value from a contiguous stride-2 region -- the note-table provenance.
