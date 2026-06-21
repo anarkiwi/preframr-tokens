@@ -151,6 +151,65 @@ def test_fit_vibrato_round_trip():
     assert fit[0] in ("vibrato", "vibrato_exact")
 
 
+def _vibrato_ref(seg_len, base, amp_step, ctr0):
+    """Reference (per-frame scalar loop) for :func:`A.render_vibrato`."""
+    return np.array(
+        [(base + A.tri_phase(ctr0 + i) * amp_step) & 0xFFFF for i in range(seg_len)],
+        dtype=np.int64,
+    )
+
+
+def _vibrato_exact_ref(seg_len, base, amp, ctr0):
+    """Reference (per-frame byte-wise add loop) for :func:`A.render_vibrato_exact`."""
+    out = np.empty(seg_len, dtype=np.int64)
+    carry = np.zeros(seg_len, dtype=np.int64)
+    base &= 0xFFFF
+    dlo, dhi = amp & 0xFF, (amp >> 8) & 0xFF
+    for i in range(seg_len):
+        osc = A.tri_phase(ctr0 + i)
+        carry_bit = 1 if osc == 0 else 0
+        lo, hi = base & 0xFF, (base >> 8) & 0xFF
+        for _ in range(osc):
+            tmp = lo + dlo
+            lo = tmp & 0xFF
+            tmp = hi + dhi + (tmp >> 8)
+            hi = tmp & 0xFF
+            carry_bit = tmp >> 8
+        out[i] = lo | (hi << 8)
+        carry[i] = carry_bit
+    return out, carry
+
+
+def test_vibrato_renderers_match_scalar_loop():
+    # the vectorised vibrato renderers (phase-table indexing) are byte-identical to
+    # the per-frame scalar loops they replaced -- including the freq->pw carry-out.
+    for base in (0x0000, 0x1234, 0xFFF0, 0x00C0):
+        for amp in (1, 0x40, 0x0140, 0x3FFF):
+            for ctr0 in range(8):
+                for seg_len in (1, 2, 5, 31, 64):
+                    assert np.array_equal(
+                        A.render_vibrato(seg_len, base, amp, ctr0),
+                        _vibrato_ref(seg_len, base, amp, ctr0),
+                    )
+                    fr, cr = A.render_vibrato_exact(seg_len, base, amp, ctr0)
+                    rfr, rcr = _vibrato_exact_ref(seg_len, base, amp, ctr0)
+                    assert np.array_equal(fr, rfr)
+                    assert np.array_equal(cr, rcr)
+
+
+def test_aug_full_cover_early_return_matches_unconditional_fit():
+    # the full-window early-return in _longest_archetype_aug only skips matchers that
+    # cannot win once the window is fully covered, so the chosen run is unchanged: an
+    # arp the cheap library covers end-to-end still fits as one byte-exact run.
+    lane = A.render_arp(60, [0x100, 0x200, 0x300], 3, 0, 1)
+    run = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
+    assert run is not None
+    name, prm, plen = run
+    rendered = A.render_fit((name, prm), plen)
+    assert np.array_equal(rendered, lane[:plen])
+    assert plen == len(lane)
+
+
 def test_fit_glide_round_trip():
     note_table = np.array([0x1000 + 0x80 * i for i in range(64)], dtype=np.int64)
     lane = A.render_glide(48, 10, 1, 3, 4, note_table)
