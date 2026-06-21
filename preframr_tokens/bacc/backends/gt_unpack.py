@@ -689,9 +689,79 @@ def _build_patterns(img, lay):
 
 
 # =========================== ADPARAM =======================================
+def _hr_store_imm_tgt(d, p):
+    """Parse ``A9 imm ; STA <tgt>`` at offset ``p``: returns ``(imm, tgt, len)``
+    or ``None``.  STA forms: ``9D lo hi`` (abs,x), ``99 lo hi`` (abs,y),
+    ``95 zp`` (zp,x), ``85 zp`` (zp)."""
+    if d[p] != 0xA9:
+        return None
+    imm = d[p + 1]
+    q = p + 2
+    if d[q] in (0x9D, 0x99):  # sta abs,x / abs,y
+        return imm, d[q + 1] | (d[q + 2] << 8), (q + 3) - p
+    if d[q] in (0x95, 0x85):  # sta zp,x / zp
+        return imm, d[q + 1], (q + 2) - p
+    return None
+
+
+def _hr_store_len(d, o):
+    """Length of an ``A9 imm ; STA ; A9 imm ; STA`` hard-restart pair at offset
+    ``o`` (player.s mt_normalnote 1303-1318), or ``None`` if none starts here.
+    Returns ``(srimm, adimm, total_len)``.
+
+    The two store targets are CONSECUTIVE registers; the chip/RAM layout always
+    places AD below SR (SIDBASE+$05 < SIDBASE+$06; ``mt_chnad`` before
+    ``mt_chnsr``; ghostad before ghostsr), so the LOWER-address store is AD and
+    the HIGHER-address store is SR -- read the immediate by its store TARGET,
+    not by position (greloc emits the two stores in either order across
+    player versions)."""
+    first = _hr_store_imm_tgt(d, o)
+    if first is None:
+        return None
+    imm1, tgt1, len1 = first
+    second = _hr_store_imm_tgt(d, o + len1)
+    if second is None:
+        return None
+    imm2, tgt2, len2 = second
+    if abs(tgt1 - tgt2) != 1:  # not a consecutive ad/sr register pair
+        return None
+    # lower address == AD (chnad/SIDBASE+5/ghostad); higher == SR.
+    if tgt1 < tgt2:
+        adimm, srimm = imm1, imm2
+    else:
+        adimm, srimm = imm2, imm1
+    return srimm, adimm, len1 + len2
+
+
+def _adparam_from_image(img):
+    """Recover (ADPARAM<<8)|SRPARAM straight from the player's hard-restart
+    store -- the ground truth the chip executes (player.s mt_normalnote, 1303
+    ``lda #SRPARAM`` then 1313 ``lda #ADPARAM``).  Returns 0 if no HR store is
+    found (a NUMHRINSTR==0 build does no hard restart).
+
+    The HR store sits in ``mt_normalnote`` immediately after the gateoff guard:
+    ``beq mt_rest`` (TONEPORTA check, F0) or ``bcs mt_skiphr``/``mt_nohr_legato``
+    (FIRSTNOHR check, B0).  Anchoring on that preceding conditional branch
+    excludes same-shaped ``A9 imm ; sta ; A9 imm ; sta`` pairs in the init
+    routines (which zero adjacent RAM registers behind an ``ldx`` loop)."""
+    d = img.data
+    for o in range(2, len(d) - 10):
+        if d[o - 2] not in (0xB0, 0xF0):  # bcs / beq guard precedes the HR store
+            continue
+        hit = _hr_store_len(d, o)
+        if hit is not None:
+            srimm, adimm, _ = hit
+            return (adimm << 8) | srimm
+    return 0
+
+
 def _adparam_from_py65(sid_path, nframes=24):
     """First nonzero AD/SR pair the real player writes is the hard-restart
-    ADPARAM/SRPARAM.  Returns (AD<<8)|SR or 0."""
+    ADPARAM/SRPARAM.  Returns (AD<<8)|SR or 0.
+
+    Fragile fallback only: a tune whose first note's real ADSR is emitted
+    before any hard-restart frame returns the NOTE's ADSR, not ADPARAM -- so
+    the image-anchored recovery (``_adparam_from_image``) is preferred."""
     try:
         emu = SIDEmu(load_psid(sid_path))
         emu.init(0)
@@ -708,18 +778,9 @@ def _adparam_from_py65(sid_path, nframes=24):
 
 
 def _find_adparam_static(img):
-    """Fallback: two adjacent ``A9 imm 9D lo hi`` hard-restart stores."""
-    d = img.data
-    for o in range(len(d) - 10):
-        if not (
-            d[o] == 0xA9 and d[o + 2] == 0x9D and d[o + 5] == 0xA9 and d[o + 7] == 0x9D
-        ):
-            continue
-        tgt = d[o + 3] | (d[o + 4] << 8)
-        tgt2 = d[o + 8] | (d[o + 9] << 8)
-        if (tgt, tgt2) == (0xD405, 0xD406) or (tgt2 - tgt) == 7:
-            return (d[o + 1] << 8) | d[o + 6]
-    return 0x0F00
+    """Legacy fallback: two adjacent hard-restart stores; defaults to the
+    GoatTracker stock ``ad=$0F, sr=$00`` when no store is found."""
+    return _adparam_from_image(img) or 0x0F00
 
 
 # =========================== optimization flags ============================
@@ -849,7 +910,12 @@ def reconstruct_song(sid_path=SID_PATH):
     global ADPARAM, FLAGS, OPTIMIZE_PULSE, OPTIMIZE_REALTIME, FREQ_TABLE
     img = _Image(sid_path)
     lay = _derive_layout(img)
-    ADPARAM = _adparam_from_py65(sid_path) or _find_adparam_static(img)
+    # Recover the hard-restart ADPARAM/SRPARAM from the player image (the
+    # immediates the chip actually executes, player.s 1303/1313) rather than
+    # the first AD/SR write the emulator emits -- that heuristic captures the
+    # first NOTE's ADSR when no hard-restart frame precedes it, mis-recovering
+    # the HR value and holding a stale ADSR through the gate-off frames.
+    ADPARAM = _adparam_from_image(img) or _adparam_from_py65(sid_path) or 0x0F00
     # The pulse/realtime skip optimizations are baked into the player image at
     # pack time; derive them per-SID so the render matches this build exactly.
     OPTIMIZE_PULSE, OPTIMIZE_REALTIME = _detect_optimizations(img)
