@@ -1551,6 +1551,88 @@ def test_legato_pw_sweep_reseeds_at_freq_note_onsets_end_to_end():
     assert sum(resid.values()) == 0
 
 
+def _interleaved_freq_bus(notes, vibrato, period=2):
+    """A per-frame software-arp / two-note-chord tune (David Whittaker style): the
+    gate rises once and stays high while voice-0's freq lane round-robins ``period``
+    note SLOTS, writing a different slot's note every frame.  Each slot drifts with
+    its own small ``vibrato`` wiggle, so the COMBINED lane swings by a note-sized
+    step on every frame (no control/ADSR retrigger -> ``note_boundaries`` finds
+    nothing) while each phase ``lane[ph::period]`` stays a smooth per-note melody.
+
+    ``notes[slot][k]`` is slot ``slot``'s freq centre for its ``k``-th note; the
+    note advances every ``period * len(vibrato)`` frames so each slot plays a few
+    notes."""
+    recs = []
+    cyc = 1000
+    reg = [0] * 25
+    vlen = len(vibrato)
+    nnotes = len(notes[0])
+    nframes = period * vlen * nnotes
+    for frame in range(nframes):
+        slot = frame % period
+        within = frame // period  # this slot's running frame index
+        note_idx = within // vlen
+        centre = notes[slot][note_idx]
+        v0 = (centre + vibrato[within % vlen]) & 0xFFFF
+        reg[0], reg[1] = v0 & 0xFF, (v0 >> 8) & 0xFF
+        reg[4] = 0x41 if frame >= 1 else 0x40  # gate rises once, then held forever
+        reg[24] = 0x0F
+        for index in range(25):
+            recs.append((cyc, 0xD400 + index, reg[index], 1))
+            cyc += 2
+        cyc += _CPF - 2 * 25
+    return np.array(recs, dtype=BUS_DT)
+
+
+def test_interleave_period_detects_round_robin_not_smooth_sweep():
+    # A per-frame 2-slot arp swings by a note-sized step every frame, but each
+    # deinterleaved phase is smooth -> period 2; a single smooth sweep is period 0.
+    arp = np.array([0x0900, 0x1100] * 32, dtype=np.int64)
+    assert A._interleave_period(arp) == 2
+    smooth = np.arange(0x1000, 0x1000 + 64, dtype=np.int64)
+    assert A._interleave_period(smooth) == 0
+
+
+def test_fit_interleaved_lane_round_trips_two_note_chord():
+    # Two interleaved vibrato melodies (the octave/chord arp) deinterleave into two
+    # ordinary per-note covers and re-interleave byte-exact -- a closed-form
+    # generator (per-phase melodies + the one period), never stored per-frame data.
+    vibrato = [0, 16, 32, 16, 0, -16, -32, -16]
+    notes = [[0x0900, 0x0B00, 0x0800], [0x1180, 0x1380, 0x1000]]  # base + ~octave
+    bus = _interleaved_freq_bus(notes, vibrato, period=2)
+    state, _, _ = per_frame_state_from_bus(bus)
+    # Only the single initial gate rise -- NO per-note retrigger across the phrase,
+    # so the whole arp collapses into one over-long un-fit segment without the retry.
+    assert A.note_boundaries(state)[0] == [1]
+    lane = A.lane_freq(state, 0)
+    fit = A.fit_interleaved_lane(lane, 0, len(lane), None, F.FREQ_WIDTH)
+    assert fit is not None and fit[0] == "interleave"
+    assert fit[1]["period"] == 2  # recovered round-robin width, not per-frame data
+    rendered = A.render_fit(fit, len(lane), None, None)
+    assert np.array_equal(rendered, lane)
+
+
+def test_interleaved_freq_arp_recovers_residual_zero_end_to_end():
+    # End to end: the recurring David Whittaker freq-lane gap -- a per-frame
+    # software arp under a held gate that defeats note-jump reslicing (every frame
+    # is a note-sized jump) recovers byte-exact via the interleave retry.
+    vibrato = [0, 16, 32, 16, 0, -16, -32, -16]
+    notes = [[0x0900, 0x0B00, 0x0800], [0x1180, 0x1380, 0x1000]]
+    bus = _interleaved_freq_bus(notes, vibrato, period=2)
+    program = recover_generic("whittaker_arp.sid", None, bus)
+    resid, _, _ = residual(program, bus)
+    assert resid[0] == 0 and resid[1] == 0  # voice-0 freq lane byte-exact
+    assert sum(resid.values()) == 0
+
+
+def test_interleave_not_applied_to_smooth_freq_lane():
+    # A genuinely smooth single freq sweep is NOT interleaved: the matcher returns
+    # None so an irreducible lane still surfaces rather than being faked into a
+    # spurious round-robin of raw-byte phases (HARD RULE #0).
+    lane = np.arange(0x1000, 0x1000 + 200, dtype=np.int64)
+    assert A.fit_interleaved_lane(lane, 0, len(lane), None, F.FREQ_WIDTH) is None
+
+
 _BUSTRACE = os.environ.get("GENERIC_BUSTRACE")
 
 
