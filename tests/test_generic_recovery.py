@@ -174,6 +174,25 @@ def test_fit_wrapaccum_round_trip():
     _fit_round_trips(lane)
 
 
+def test_prefix_wrapaccum_large_rate_is_fast_and_exact():
+    # A WIDE free-running sweep (rate in the thousands, like a multispeed freq lane)
+    # must recover byte-exact WITHOUT scanning O(|rate|) wrap boundaries -- the
+    # boundary is data-determined, so the matcher derives the few candidates from the
+    # wrap points and stays fast.  This is the dense-multispeed perf cliff that made
+    # whole tunes exceed the harness budget despite recovering residual-zero.
+    import time as _time
+
+    lane = A.render_wrapaccum(60, 0x4000, 0x0C00, 0x0400, 0xF000)
+    start = _time.perf_counter()
+    match = A._prefix_wrapaccum(lane)
+    assert _time.perf_counter() - start < 1.0  # not O(|rate|) ~ thousands of renders
+    assert match is not None and match[1] == "wrapaccum"
+    rend = A.render_wrapaccum(
+        60, match[2]["v0"], match[2]["rate"], match[2]["lo"], match[2]["hi"]
+    )
+    assert np.array_equal(rend, lane)  # byte-exact
+
+
 def test_fit_maskaccum_round_trip():
     lane = A.render_maskaccum(48, 0x200, 0x20, [1, 0, 1, 0])
     _fit_round_trips(lane)
