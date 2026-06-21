@@ -72,10 +72,15 @@ def _ri(ids, i):
 # --- canonical note token (Part B, absolute A440 12-TET grid) -------------
 # The Hubbard note field is the ABSOLUTE canonical grid index -- IDENTICAL to
 # the GoatTracker token for the same concert pitch -- not a driver-table delta.
-# It packs a 1-bit escape into the LEB LSB: bit0=0 -> a zig-zag canonical grid
-# index in the upper bits; bit0=1 -> a literal note-table INDEX (for rare
+# It packs two flag bits into the LEB low bits: bit0=0 -> a zig-zag canonical
+# grid index in the upper bits; bit0=1 -> a literal note-table INDEX (for rare
 # aliased tail notes outside the clean ET run, so the re-coordinate stays
-# byte-exact and lossless). Position-independent, so the row LZ/REPEAT is sound.
+# byte-exact and lossless). bit1 is a porta-present flag: porta is the SAME value
+# (0) on >98% of note-ons, so rather than always spend a LEB token on it we fold
+# "this row carries a non-zero porta" into the note token here and only emit the
+# porta field when the flag is set -- a free fold, since the grid index has slack
+# in its low LEB digit. Position-independent (a pure function of the row's note
+# and porta), so the row LZ/REPEAT/TRANSPOSE matching stays sound.
 def _zz(n):
     n = int(n)
     return (n << 1) ^ (n >> 63)
@@ -85,21 +90,23 @@ def _unzz(z):
     return (z >> 1) ^ -(z & 1)
 
 
-def _note_field(out, note, static_img, grid_of):
-    """Emit the canonical note token for a Hubbard note-table index."""
+def _note_field(out, note, porta, static_img, grid_of):
+    """Emit the canonical note token (bit0=escape, bit1=porta-present)."""
+    pf = 2 if porta else 0
     g = grid_of.get(note)
     if g is not None and hubbard_table_fn(static_img, note) > 0:
-        _wu(out, _zz(g) << 1)  # bit0=0: canonical absolute grid index
+        _wu(out, (_zz(g) << 2) | pf)  # bit0=0: canonical absolute grid index
     else:
-        _wu(out, (note << 1) | 1)  # bit0=1: literal index escape (aliased tail)
+        _wu(out, (note << 2) | pf | 1)  # bit0=1: literal index escape (alias)
 
 
 def _read_note_field(ids, i, index_of):
-    """Inverse of _note_field -> the exact Hubbard note-table index."""
+    """Inverse of _note_field -> (note index, porta-present flag, i)."""
     z, i = _ru(ids, i)
+    has_porta = bool(z & 2)
     if z & 1:
-        return z >> 1, i  # literal index escape
-    return index_of[_unzz(z >> 1)], i  # canonical grid index -> note index
+        return z >> 2, has_porta, i  # literal index escape
+    return index_of[_unzz(z >> 2)], has_porta, i  # grid index -> note index
 
 
 def _voice_rows(program):
@@ -117,10 +124,11 @@ def _voice_rows(program):
 def _lit_cost(row, static_img, grid_of):
     out = []
     _wu(out, row[0])
-    _note_field(out, row[1], static_img, grid_of)
+    _note_field(out, row[1], row[4], static_img, grid_of)
     _wu(out, row[2])
     _wu(out, row[3])
-    _wu(out, row[4])
+    if row[4]:  # porta folded into the note token; emit only when non-zero
+        _wu(out, row[4])
     return len(out)
 
 
@@ -204,14 +212,15 @@ def _emit_rows(out, rows, seen, instruments, static_img, grid_of):
         else:
             r = rows[i]
             _wu(out, r[0])
-            _note_field(out, r[1], static_img, grid_of)
+            _note_field(out, r[1], r[4], static_img, grid_of)
             _wu(out, r[2])
             if r[2] not in seen:
                 seen.add(r[2])
                 for b in instruments[r[2]]:
                     _wu(out, b)
             _wu(out, r[3])
-            _wu(out, r[4])
+            if r[4]:  # porta-present flag lives in the note token (see _note_field)
+                _wu(out, r[4])
             i += 1
 
 
@@ -323,7 +332,7 @@ def ids_to_program(ids, driver="hubbard_monty"):
                     rows.append((dt, note, instr, lnth, porta))
             else:
                 dt, i = _ru(ids, i)
-                note, i = _read_note_field(ids, i, index_of)
+                note, has_porta, i = _read_note_field(ids, i, index_of)
                 instr, i = _ru(ids, i)
                 if instr not in seen:
                     seen.add(instr)
@@ -333,7 +342,10 @@ def ids_to_program(ids, driver="hubbard_monty"):
                         row.append(b)
                     instruments[instr] = row
                 lnth, i = _ru(ids, i)
-                porta, i = _ru(ids, i)
+                if has_porta:  # porta field present only when its note-token flag set
+                    porta, i = _ru(ids, i)
+                else:
+                    porta = 0
                 rows.append((dt, note, instr, lnth, porta))
         prevf = 0
         for dt, note, instr, lnth, porta in rows:

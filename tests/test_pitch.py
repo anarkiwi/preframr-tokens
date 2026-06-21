@@ -93,13 +93,15 @@ def test_serialized_note_token_identical_across_drivers():
     img = _clean_et_static_img()
     _, index_to_grid = serialize.hubbard_grid_bijection(img)
     for hub_note, name in _GT_NAME.items():
-        # Hubbard emitted note token for its note-table index.
+        # Hubbard emitted note token for its note-table index (porta=0, so the
+        # folded porta-present flag at bit1 is clear and the token is the pure
+        # zig-zag grid index -- identical to GoatTracker's for the same pitch).
         hub_tok = []
-        serialize._note_field(hub_tok, hub_note, img, index_to_grid)
+        serialize._note_field(hub_tok, hub_note, 0, img, index_to_grid)
         # GoatTracker emitted note token for the SAME concert pitch.
         gt_kind, gt_grid = gt_serialize._note_token(C.note_value(name))
         gt_tok = []
-        serialize._wu(gt_tok, serialize._zz(gt_grid) << 1)
+        serialize._wu(gt_tok, serialize._zz(gt_grid) << 2)
         assert gt_kind == gt_serialize._KIND_PITCH
         assert hub_tok == gt_tok, (
             f"{name}: Hubbard note token {hub_tok} != GoatTracker {gt_tok} "
@@ -107,7 +109,7 @@ def test_serialized_note_token_identical_across_drivers():
         )
         # And the token decodes back to the canonical grid index both share.
         z, _ = serialize._ru(hub_tok, 0)
-        assert serialize._unzz(z >> 1) == fn_to_grid(_gt_note_fn(C.note_value(name)))
+        assert serialize._unzz(z >> 2) == fn_to_grid(_gt_note_fn(C.note_value(name)))
 
 
 def test_micro_deviation_is_subcent_for_a4():
@@ -144,14 +146,17 @@ def _decode_rows(out, img):
                 rows.append((dt, index_of[grid_of[note] + delta], instr, lnth, porta))
         else:
             dt, i = s._ru(out, i)
-            note, i = s._read_note_field(out, i, index_of)
+            note, has_porta, i = s._read_note_field(out, i, index_of)
             instr, i = s._ru(out, i)
             if instr not in seen:
                 seen.add(instr)
                 for _ in range(8):
                     _, i = s._ru(out, i)
             lnth, i = s._ru(out, i)
-            porta, i = s._ru(out, i)
+            if has_porta:  # porta field present only when its note-token flag set
+                porta, i = s._ru(out, i)
+            else:
+                porta = 0
             rows.append((dt, note, instr, lnth, porta))
     return rows
 
