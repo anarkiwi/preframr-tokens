@@ -159,36 +159,43 @@ def _sidtrace_bin():
 
 
 @pytest.mark.skipif(_sidtrace_bin() is None, reason="no preframr-sidtrace binary")
-def test_grid_runner_song_data_recovered_by_identity(tmp_path):
+def test_grid_runner_song_data_recovered_by_identity_distill(tmp_path):
+    """The PRODUCTION identity gate: recover Grid_Runner's song data from the
+    compact SDST distill artifact ALONE (a few KB, NOT a multi-GB bus trace),
+    classified SMC-correctly by access type, byte-exact vs the player's RAM and
+    pygoattracker."""
     pytest.importorskip("pygoattracker")
     from pygoattracker.reader import parse_sng
     from pygoattracker.writer import build_sng
 
     from preframr_tokens.bacc.backends import gt_unpack
-    from preframr_tokens.bacc.generic.bustrace import load_bus
+    from preframr_tokens.bacc.generic.distill import load_distill
     from preframr_tokens.bacc.generic.sidtrace import run_sidtrace
     from preframr_tokens.bacc.sidemu import load_psid
 
     prefix = str(tmp_path / "grid")
-    _, bus_path = run_sidtrace(_GRID_SID, prefix, subtune=1, nframes=400)
-    recs = load_bus(bus_path)
+    _, distill_path = run_sidtrace(_GRID_SID, prefix, subtune=1, nframes=400)
+    dist = load_distill(distill_path)
     psid = load_psid(_GRID_SID)
-    part = I.partition(recs, load_image=psid.data, load_addr=psid.load_addr)
+
+    # The artifact is tiny -- the whole point of distilling in the emulator.
+    assert os.path.getsize(distill_path) < 64 * 1024
 
     # The GoatTracker song-data region, derived purely from the player image.
     img = gt_unpack._Image(_GRID_SID)  # pylint: disable=protected-access
     lay = gt_unpack._derive_layout(img)  # pylint: disable=protected-access
     lo, hi = lay["freqtbllo"], img.end() - 1
 
-    # (a) Every byte of the song-data region is read-only during play: the
-    #     write/read-set partition cleanly isolates it (SID shadow / scratch /
-    #     self-mod operands subtract out -- none lie in this region).
-    assert not part.play_written[lo : hi + 1].any()
-    assert part.play_read[lo : hi + 1].any()  # the player actually reads the data
+    # (a) The SMC-correct classifier isolates the region: no byte of it is
+    #     written during play, none is executed, all are read as data -- so it is
+    #     classified song-data by ACCESS TYPE (not by write-set subtraction).
+    sm = dist.song_data_mask()
+    assert sm[lo : hi + 1].all()
+    assert not dist.smc_mask()[lo : hi + 1].any()
 
     # (b) The lifted bytes are byte-identical to the player's OWN loaded image
-    #     (genuine program data, read off RAM -- never fabricated).
-    lifted = I.lift_song_data(part, lo, hi)
+    #     (genuine program data, read off the snapshot of RAM -- never fabricated).
+    lifted = I.lift_song_data_distill(dist, lo, hi)
     resident = bytes(psid.data[lo - psid.load_addr : hi + 1 - psid.load_addr])
     assert lifted == resident
 
@@ -200,3 +207,42 @@ def test_grid_runner_song_data_recovered_by_identity(tmp_path):
     # Recovered by identity: the player indexes a small instrument set, NOT the
     # ~1000 output-similarity clusters the per-register fit path produces.
     assert 1 <= len(song.instruments) <= 63
+
+
+_DMC_SID = os.path.join(_FIXTURES, "Ode_to_Music.sid")
+
+
+@pytest.mark.skipif(_sidtrace_bin() is None, reason="no preframr-sidtrace binary")
+def test_dmc_song_data_recovered_by_identity_distill(tmp_path):
+    """A second driver (DMC, the most-used HVSC editor): the SMC-correct distill
+    recovery lifts the DMC tune's song-data region from the post-init RAM
+    snapshot, and those bytes parse into the SAME DMC song the undmc-format
+    parser decodes from the player's own image -- byte-exact, read off RAM."""
+    from preframr_tokens.bacc import dmc_format as df
+    from preframr_tokens.bacc.generic.distill import load_distill
+    from preframr_tokens.bacc.generic.sidtrace import run_sidtrace
+    from preframr_tokens.bacc.sidemu import load_psid
+
+    prefix = str(tmp_path / "dmc")
+    _, distill_path = run_sidtrace(_DMC_SID, prefix, subtune=1, nframes=400)
+    dist = load_distill(distill_path)
+    psid = load_psid(_DMC_SID)
+
+    # The oracle song, parsed from the player's own loaded image.
+    oracle = df.parse_song(df.Mem(psid.load_addr, psid.data), 0)
+    regions = df.song_regions(oracle)
+    assert regions  # the DMC parser found the song-data regions
+
+    # Every DMC song-data region is lifted from the distill's RAM SNAPSHOT
+    # byte-identical to the player's own image (genuine program data, read off
+    # RAM, never fabricated -- HARD RULE #0), and is classified song-data by
+    # access type (read as data during play, never written, never executed --
+    # the SMC-correct classifier, not write-set subtraction).
+    sm = dist.song_data_mask()
+    for start, length in regions:
+        snap_bytes = bytes(dist.ram[start : start + length])
+        img_bytes = bytes(
+            psid.data[start - psid.load_addr : start + length - psid.load_addr]
+        )
+        assert snap_bytes == img_bytes
+        assert sm[start : start + length].any()
