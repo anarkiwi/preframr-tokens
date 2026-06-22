@@ -145,13 +145,60 @@ def _genfits_blocks(out, program):
     return bounds
 
 
+# A 1-token format tag prefixes the generic stream so the two lossless forms
+# coexist: the per-register genfits form (the proven fallback) and the
+# tracker-lifted form (shared instruments + per-lane note-event LZ -- orders of
+# magnitude smaller when the program lifts losslessly).  The encoder picks the
+# smaller of the two AFTER verifying the tracker form round-trips, so a tune the
+# lift cannot byte-exactly re-express simply stays on the genfits form (HARD
+# RULE #0: never weaken exactness to claim a token win).
+_FMT_GENFITS = 0
+_FMT_TRACKER = 1
+
+
 def generic_program_to_ids(program):
     """Serialize a ``driver="generic"`` :class:`BaccProgram` to a flat list of
     token ids (lossless / byte-exact inverse of :func:`generic_ids_to_program`).
+
+    Emits the TRACKER-lifted form (a shared instrument pool + per-lane note-event
+    REPEAT/TRANSPOSE LZ) when it is smaller AND verified byte-exact; otherwise the
+    per-register genfits form.  A leading format tag selects the decode path.
     """
-    out = []
-    _genfits_blocks(out, program)
-    return out
+    genfits_ids = [_FMT_GENFITS]
+    _genfits_blocks(genfits_ids, program)
+    tracker_ids = _try_tracker_ids(program)
+    if tracker_ids is not None and len(tracker_ids) < len(genfits_ids):
+        return tracker_ids
+    return genfits_ids
+
+
+def _try_tracker_ids(program):
+    """The tracker-lifted token stream for ``program``, prefixed with
+    :data:`_FMT_TRACKER`, or ``None`` if the lift does not round-trip byte-exact
+    (the tracker decode must rebuild the SAME genfits/eventfits the program holds).
+    """
+    from preframr_tokens.bacc.tracker_serialize import (
+        tracker_ids_to_program,
+        tracker_program_to_ids,
+    )
+
+    import numpy as np
+
+    from preframr_tokens.bacc.generic.recover import render_generic
+
+    try:
+        body = tracker_program_to_ids(program)
+        rebuilt = tracker_ids_to_program(body)
+        # Verify the tracker form RENDERS byte-identically to the program (the lift
+        # is lossless by construction; this is the HARD RULE #0 gate -- a tune whose
+        # tracker re-expression is not byte-exact falls back to genfits, never
+        # silently lossy).  Render equality is the true invariant (the segment
+        # tuples/keys may differ representationally but must render identically).
+        if not np.array_equal(render_generic(rebuilt), render_generic(program)):
+            return None
+    except (TypeError, ValueError, KeyError, IndexError):
+        return None
+    return [_FMT_TRACKER] + body
 
 
 def generic_ids_to_program(ids):
@@ -160,7 +207,11 @@ def generic_ids_to_program(ids):
     is per-register fits, not a score); ``seed`` is omitted (provenance-only, not
     needed to render) so the round-trip is defined by what render consumes:
     ``nframes``, ``boot``, ``note_table``, ``genfits``, ``eventfits``."""
-    i = 0
+    if ids and ids[0] == _FMT_TRACKER:
+        from preframr_tokens.bacc.tracker_serialize import tracker_ids_to_program
+
+        return tracker_ids_to_program(ids[1:])
+    i = 1 if ids and ids[0] == _FMT_GENFITS else 0
     nframes, i = _ru(ids, i)
     boot = []
     for _ in range(25):
@@ -193,17 +244,30 @@ def generic_ids_to_program(ids):
 
 
 def generic_measure(program):
-    """Return ``({block: tokens}, nframes)`` for a generic program's token
-    stream: per-block breakdown of boot / note_table / genfits / eventfits."""
+    """Return ``({block: tokens}, nframes)`` for a generic program's token stream.
+
+    Reports the breakdown of the form actually emitted by
+    :func:`generic_program_to_ids`: the tracker-lifted form (header / instr_def /
+    score) when it is chosen, otherwise the per-register genfits form (boot /
+    note_table / genfits / eventfits)."""
+    chosen = generic_program_to_ids(program)
+    if chosen and chosen[0] == _FMT_TRACKER:
+        from preframr_tokens.bacc.tracker_serialize import tracker_measure
+
+        brk, nframes = tracker_measure(program)
+        brk["fmt"] = "tracker"
+        brk["total"] = len(chosen)
+        return brk, nframes
     out = []
     bounds = _genfits_blocks(out, program)
     nframes_tokens = bounds["boot"] - 25
     brk = {
+        "fmt": "genfits",
         "nframes": nframes_tokens,
         "boot": 25,
         "note_table": bounds["note_table"] - bounds["boot"],
         "genfits": bounds["genfits"] - bounds["note_table"],
         "eventfits": bounds["eventfits"] - bounds["genfits"],
-        "total": len(out),
+        "total": len(chosen),
     }
     return brk, program.nframes

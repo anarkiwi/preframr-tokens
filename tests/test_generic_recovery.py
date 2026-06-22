@@ -2119,25 +2119,33 @@ def test_generic_token_roundtrip_synthetic():
     assert rt.nframes == prog.nframes
     assert rt.boot == prog.boot
     assert rt.tables["note_table"] == prog.tables["note_table"]
-    assert rt.tables["genfits"] == prog.tables["genfits"]
-    assert rt.tables["eventfits"] == prog.tables["eventfits"]
+    # The serializer now carries a leading format tag and picks the SMALLER of the
+    # per-register genfits form (_FMT_GENFITS) and the tracker-lifted form
+    # (_FMT_TRACKER); a tracker round-trip rebuilds render-IDENTICAL (not necessarily
+    # dict-identical -- carry is recomputed) genfits/eventfits, so the load-bearing
+    # invariant is RENDER byte-exactness, not dict identity.
+    assert np.array_equal(render_program(rt), render_generic(prog))
     # direct module entrypoints agree with the dispatch
     assert generic_program_to_ids(prog) == ids
     assert generic_ids_to_program(ids).tables == rt.tables
-    # render dispatch resolves generic + is byte-exact across the round-trip
-    assert np.array_equal(render_program(rt), render_generic(prog))
+    if ids[0] == 0:  # genfits form chosen: the genfits/eventfits round-trip exactly
+        assert rt.tables["genfits"] == prog.tables["genfits"]
+        assert rt.tables["eventfits"] == prog.tables["eventfits"]
     brk, nframes = measure(prog)
     assert nframes == prog.nframes
     assert brk["total"] == len(ids)
-    assert set(brk) == {
-        "nframes",
-        "boot",
-        "note_table",
-        "genfits",
-        "eventfits",
-        "total",
-    }
-    assert brk["boot"] == 25
+    assert brk["fmt"] in ("tracker", "genfits")
+    if brk["fmt"] == "genfits":
+        assert set(brk) == {
+            "fmt",
+            "nframes",
+            "boot",
+            "note_table",
+            "genfits",
+            "eventfits",
+            "total",
+        }
+        assert brk["boot"] == 25
 
 
 def test_generic_token_roundtrip_synth_bus(synth_bus):
