@@ -98,13 +98,12 @@ def recover_from_sid(
         sid_to_dump_and_bustrace,
     )
 
-    dump_state, bus_path, t0 = sid_to_dump_and_bustrace(
+    dump_state, bus, t0, _distill_path = sid_to_dump_and_bustrace(
         sid_path, subtune, nframes, sidtrace_path, out_prefix
     )
     if dump_state is None or len(dump_state) < 2:
         raise ValueError(f"sidtrace produced no frames for {sid_path}")
-    records = load_bus(bus_path)
-    program = recover_generic(sid_path, None, records, t0=t0)
+    program = recover_generic(sid_path, None, bus, t0=t0)
     rendered = render_generic(program)
     nf = min(len(rendered), len(dump_state))
     resid = {

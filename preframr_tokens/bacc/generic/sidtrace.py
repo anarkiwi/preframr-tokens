@@ -98,10 +98,13 @@ def _frame_starts(cyc, gap=BURST_GAP):
 
 def run_sidtrace(sid_path, out_prefix, subtune=1, nframes=200, sidtrace_path=None):
     """Run ``preframr-sidtrace`` once over ``sid_path`` (subtune is 1-based),
-    emitting ``<out_prefix>.sidwr.bin`` and ``<out_prefix>.bus.bin``.
+    emitting ``<out_prefix>.sidwr.bin`` (the small timestamped SID-write stream,
+    the render gate) and ``<out_prefix>.distill.bin`` (the compact SDST artifact
+    the SMC-correct recovery consumes -- a few KB, NOT the retired multi-GB raw
+    bus trace).
 
-    Returns ``(sidwr_path, bus_path)``.  Raises :class:`FileNotFoundError` when no
-    binary is available (env-gated; default CI never reaches here)."""
+    Returns ``(sidwr_path, distill_path)``.  Raises :class:`FileNotFoundError`
+    when no binary is available (env-gated; default CI never reaches here)."""
     binary = sidtrace_path or sidtrace_bin()
     if binary is None:
         raise FileNotFoundError(
@@ -114,30 +117,56 @@ def run_sidtrace(sid_path, out_prefix, subtune=1, nframes=200, sidtrace_path=Non
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    return f"{out_prefix}.sidwr.bin", f"{out_prefix}.bus.bin"
+    return f"{out_prefix}.sidwr.bin", f"{out_prefix}.distill.bin"
+
+
+def sidwr_to_bus(sidwr_path):
+    """Synthesise a SID-write-only :data:`bustrace.BUS_DT` record array from a
+    ``.sidwr.bin``.
+
+    The full cycle-by-cycle bus trace is no longer emitted (it was GBs/tune); the
+    legacy per-register generic recovery (:func:`recover_generic`) needs only the
+    SID-write substream to reconstruct the per-frame register state, which the
+    small ``.sidwr.bin`` carries verbatim.  Reads are absent, so the optional
+    note-table-by-read enhancer simply does not fire -- the per-register fit path
+    still covers the output.  The SMC-correct song-data recovery uses the
+    ``.distill.bin`` artifact, not this synthesised stream.
+    """
+    from preframr_tokens.bacc.generic.bustrace import BUS_DT  # local: avoid cycle
+
+    recs = np.fromfile(sidwr_path, dtype=SIDWR_DT)
+    bus = np.zeros(len(recs), dtype=BUS_DT)
+    bus["cyc"] = recs["cyc"]
+    bus["addr"] = recs["addr"]
+    bus["val"] = recs["val"]
+    bus["rw"] = 1  # SID writes
+    return bus
 
 
 def sid_to_dump_and_bustrace(
     sid_path, subtune=1, nframes=200, sidtrace_path=None, out_prefix=None
 ):
-    """From a ``.sid`` ALONE, produce the per-frame register dump AND the bus
-    trace in-process via ONE ``preframr-sidtrace`` run -- no pre-rendered
-    ``.dump.parquet`` input.
+    """From a ``.sid`` ALONE, produce the per-frame register dump, a SID-write
+    bus-state array, and the compact distill artifact via ONE
+    ``preframr-sidtrace`` run -- no pre-rendered ``.dump.parquet`` input and no
+    multi-GB raw trace.
 
-    Returns ``(dump_state, bus_path, t0)`` where ``dump_state`` is the
-    ``(nframes, 25)`` register array (the dump), ``bus_path`` is the native
-    ``.bus.bin`` for the generic recovery, and ``t0`` is the dump's frame-0
-    anchor (so the bus-state is framed onto the SAME grid).
+    Returns ``(dump_state, bus, t0, distill_path)`` where ``dump_state`` is the
+    ``(nframes, 25)`` register array (the dump), ``bus`` is the SID-write-only
+    :data:`bustrace.BUS_DT` array (synthesised from ``.sidwr.bin`` for the legacy
+    per-register recovery), ``t0`` is the dump's frame-0 anchor, and
+    ``distill_path`` is the SDST artifact for the SMC-correct identity recovery.
 
-    When ``out_prefix`` is given the artifacts persist there (cache reuse across
-    runs); otherwise they land in a temporary directory the caller owns.
+    When ``out_prefix`` is given the artifacts persist there; otherwise they land
+    in a temporary directory the caller owns.
     """
     if out_prefix is None:
         out_prefix = os.path.join(
             tempfile.mkdtemp(prefix="preframr_sidtrace_"), "trace"
         )
-    sidwr_path, bus_path = run_sidtrace(
+    sidwr_path, distill_path = run_sidtrace(
         sid_path, out_prefix, subtune, nframes, sidtrace_path
     )
     dump_state, t0 = sidwr_state(sidwr_path)
-    return dump_state, bus_path, t0
+    bus = sidwr_to_bus(sidwr_path)
+    return dump_state, bus, t0, distill_path

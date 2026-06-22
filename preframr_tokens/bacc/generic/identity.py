@@ -177,3 +177,50 @@ def lift_song_data_from_sid(sid_path, records, t0=None):
         return part, b"", None
     lo, hi = max(runs, key=lambda r: r[1] - r[0])
     return part, lift_song_data(part, lo, hi), (lo, hi)
+
+
+# --------------------------------------------------------------------------- #
+# SMC-correct identity recovery from the compact SDST distill artifact.
+#
+# The legacy ``partition``/``song_data_mask`` above operate on the (multi-GB)
+# raw bus trace and classify by the WRITE-SET subtraction -- which MISCLASSIFIES
+# under self-modifying code: code written during play looks like "not data", and
+# SMC operands pollute the partition.  The distill artifact instead carries the
+# per-address ACCESS-TYPE map the emulator accumulated, so the data region is
+# classified by access TYPE: instruction-fetch (code) / data-read / data-write /
+# SMC (= executed AND written during play).  Song data = read-as-data during
+# play, never written during play, NEVER executed -- SMC code excluded correctly.
+# This is the production path; it consumes a few-KB artifact, never a raw trace.
+# --------------------------------------------------------------------------- #
+def song_regions(dist):
+    """Contiguous ``(lo, hi)`` song-data byte ranges from a :class:`Distill`,
+    classified SMC-correctly by access type (see :meth:`Distill.song_data_mask`)."""
+    return regions(dist.song_data_mask())
+
+
+def lift_song_data_distill(dist, lo, hi):
+    """Lift the song-data bytes for the inclusive range ``[lo, hi]`` VERBATIM from
+    the distill's post-init RAM SNAPSHOT -- the player's own RAM, captured once at
+    the init->play boundary, never fabricated (HARD RULE #0).  Returns ``bytes``."""
+    return bytes(dist.ram[lo : hi + 1])
+
+
+def lift_song_region_distill(dist):
+    """The widest contiguous SMC-correct song-data region from a distill artifact.
+
+    Returns ``(region_bytes, (lo, hi))`` for the largest run of read-as-data /
+    never-written / never-executed RAM the emulator snapshotted, or ``(b"", None)``
+    when the artifact isolated no song data (honest fallback, not a fabricated
+    region -- HARD RULE #0)."""
+    runs = song_regions(dist)
+    if not runs:
+        return b"", None
+    lo, hi = max(runs, key=lambda r: r[1] - r[0])
+    return lift_song_data_distill(dist, lo, hi), (lo, hi)
+
+
+def smc_regions(dist):
+    """Contiguous ``(lo, hi)`` ranges classified as SELF-MODIFYING CODE (executed
+    AND written during play).  Surfaced so the recovery can report SMC honestly
+    and confirm none of it leaked into the song-data region."""
+    return regions(dist.smc_mask())
