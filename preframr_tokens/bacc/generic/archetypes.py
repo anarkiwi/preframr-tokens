@@ -41,26 +41,40 @@ loop table read through a pointer advanced by a recovered advance-clock (every-f
 / periodic-dwell / periodic-mask / external groove tick), the pointer either
 SELECTING a value (READ) or selecting a signed step ADDED to an accumulator that
 either masks to the lane WIDTH or wraps by an explicit [lo,hi) span (ACCUM), with a
-lead-stall, seed, phase and loop point.  CITG is tried FIRST in the cover search
-(:func:`_longest_archetype_aug`) with the full zoo as the FALLBACK; because every
-matcher here is byte-exact-or-None, trying CITG first can never regress correctness,
-and :data:`CITG_FALLBACK_COUNTS` measures exactly which archetypes CITG subsumes vs.
-which still fall back.
+lead-stall, seed, phase and loop point.  CITG is now the SOLE generator-lane cover
+op (:func:`_longest_archetype_aug` -> :func:`_prefix_citg`): the archetype "zoo" of
+parallel per-run matchers has been RETIRED.  CITG was migrated subsume-then-delete,
+parity-gated -- each archetype was first admitted as a CITG mode whose render is
+byte-identical to the former zoo renderer, the win/fallback tally
+(:data:`CITG_FALLBACK_COUNTS`) was driven to fallback=0 across the 9 cached corpus
+traces and a broad HVSC sample (DMC / GoatTracker_V2.x / Music_Assembler /
+Soundmonitor / MIXED), and only THEN were the two zoo cover functions
+(``_longest_archetype`` / ``_longest_archetype_zoo``) deleted.  Because every CITG
+candidate is byte-exact-or-None, the residual-zero ok-set is unchanged -- no tune
+regressed (HARD RULE #0).
 
-CITG now subsumes the WHOLE clocked-table/accumulator family byte-exact: the
-constant baseline (``hold``, a degenerate period-1 READ), the short value cycle and
-long value table (``arp`` / ``tablewalk`` / ``tablewalk_lead`` reads), every
-accumulator clock (``accum`` / ``dwellaccum`` / ``maskaccum`` / ``ratewalk`` /
+CITG subsumes the WHOLE clocked-table/accumulator family byte-exact: the constant
+baseline (``hold``, a degenerate period-1 READ), the short value cycle and long
+value table (``arp`` / ``tablewalk`` / ``tablewalk_lead`` reads), every accumulator
+clock (``accum`` / ``dwellaccum`` / ``maskaccum`` + stall / ``ratewalk`` /
 ``dwellratewalk``), the modulo-wrap sawtooth (``wrapaccum``, an explicit [lo,hi)
-WRAP), the phased negative-rate ramp (``decay``, a phased-dwell ACCUM), and the
-external-groove pointer walk (``wavetable_ptr``).  What still FALLS BACK to the zoo
-is exactly the §2d set the design doc flags as NOT a single CITG -- the parametric
-shapes ``vibrato`` / ``vibrato_exact`` / ``pingpong`` / ``pingfold`` (a triangle /
-reflect / mirror-fold rule, not a stored table) and the composites / cross-lane
-couplings ``vibskydive`` / ``arp_decay`` / ``additive_pw`` / ``glide`` (two CITGs
-overlaid on one lane, an exogenous sibling-lane carry, or a strided note-table
-read).  These are kept in the zoo as documented exceptions: forcing them into the
-single op would either store data or risk the residual-zero gate (HARD RULE #0).
+WRAP), the phased negative-rate ramp (``decay``, a phased-dwell ACCUM), the
+external-groove pointer walk (``wavetable_ptr``), the reflecting / mirror-fold
+triangles (``pingpong`` -> ``reflect`` mode / ``pingfold``), the byte-wise and
+reflecting vibratos (``vibrato`` / ``vibrato_exact`` / ``vibreflect``), the COMPOSE
+composites (``vibskydive`` / ``arp_decay`` -- a second CITG overlaid on the hi byte),
+the CARRY-COUPLE simple-pw (``additive_pw`` -- an exogenous sibling-lane carry) and
+the strided note-table glide (``glide``).  The former zoo ``render_*`` / ``_prefix_*``
+functions are RETAINED, but only as CITG's internal recovery / render primitives
+(``_prefix_citg`` recovers each mode's parameters through them and ``render_citg``
+renders each mode through them) -- they are no longer a parallel cover engine.
+
+A lane that no CITG mode covers byte-exact is SURFACED as a nonzero residual, never
+faked into a stored value table (HARD RULE #0): a small set of fractional-rate sine
+LFO vibrato tunes (e.g. DefleMask ``Commodorian_Peace``) remains open this way --
+neither the zoo nor CITG ever closed them (they need a fractional-phase sine LFO
+generator that does not yet exist), so leaving them as a surfaced gap is the honest
+state, not a regression.
 """
 
 import os
@@ -76,30 +90,27 @@ _MINRUN = 3  # minimum frames for a structured archetype run to beat hold.
 # disguise (more pieces than a genuine generator program should need).
 _MAXPIECES = 64
 
-# CITG fallback instrumentation.  The unified Clocked Indexed-Table Generator is
-# tried FIRST in the cover search; when it covers a run at least as long as the
-# zoo would, CITG WINS and the zoo never runs (a measured step toward retiring the
-# zoo).  When CITG declines or covers strictly less, the full archetype zoo is the
-# fallback and we record which archetype it fell back to -- so a campaign can SEE
-# exactly which cases CITG does not yet subsume.  Counting is cheap and always on
-# (a module-level Counter); a per-decision stderr line is gated behind CITG_TRACE
-# so normal runs are never spammed.  ``CITG_DISABLE`` turns the whole CITG-first
-# path off (the zoo runs unchanged) -- an escape hatch, never needed for
-# correctness since the matcher is byte-exact-or-None.
+# CITG cover instrumentation.  The unified Clocked Indexed-Table Generator is the
+# SOLE generator-lane cover op now (the archetype zoo has been retired): every cover
+# decision is recorded as ``citg_won`` when CITG covers the run, or ``fallback:none``
+# when CITG declines and the cover leaves the run un-fit (a genuinely irreducible
+# lane, surfaced not faked).  The tally is the measurement instrument that proved the
+# subsume-then-delete migration reached fallback=0.  Counting is cheap and always on
+# (a module-level Counter); a per-decision stderr line is gated behind CITG_TRACE so
+# normal runs are never spammed.
 CITG_FALLBACK_COUNTS = Counter()
 _CITG_TRACE = bool(os.environ.get("CITG_TRACE"))
-_CITG_DISABLE = bool(os.environ.get("CITG_DISABLE"))
 
 
 def reset_citg_counts():
     """Clear the CITG win/fallback tally (used by the campaign harness / tests to
-    measure the CITG-won vs zoo-fallback proportion of a single fit)."""
+    measure the CITG-won vs un-fit proportion of a single fit)."""
     CITG_FALLBACK_COUNTS.clear()
 
 
 def _citg_record(outcome, detail=""):
     """Tally one cover decision (``outcome`` is ``"citg_won"`` or
-    ``"fallback:<zoo archetype>"``) and, under CITG_TRACE, emit a stderr line."""
+    ``"fallback:none"``) and, under CITG_TRACE, emit a stderr line."""
     CITG_FALLBACK_COUNTS[outcome] += 1
     if _CITG_TRACE:
         print(f"CITG {outcome} {detail}".rstrip(), file=sys.stderr)
@@ -810,13 +821,18 @@ def _citg_gates(seg_len, clock, lead):
     return acc_gate, ptr_step
 
 
-def render_citg(params, seg_len):
+def render_citg(params, seg_len, note_table=None, carry=None):
     """Render the unified Clocked Indexed-Table Generator to a lane of length
     ``seg_len``.  ``params`` carries ``mode`` ("read" | "accum"), ``table`` (values
     for read, signed steps for accum), ``clock`` (the advance schedule -- see
     :func:`_citg_gates`), ``seed`` (the read value0 / accum acc0), ``lead``,
     ``phase`` (the pointer's start index), ``loop`` (the index the pointer wraps to,
     default 0), and ``width`` (the accumulator mask, ACCUM only).
+
+    ``note_table`` supplies the shared pitch table the ``glide`` mode reads through;
+    ``carry`` supplies the per-frame exogenous carry the ``additive_pw`` carry-couple
+    mode adds (the freq lane's no-CLC carry-out).  Both are the cross-cutting inputs
+    the COMPOSE / CARRY-COUPLE modes need beyond a self-contained lane.
 
     In READ mode the lane is the constant ``seed`` during the ``lead`` stall and
     then ``table[ptr]`` with the pointer stepped by the clock -- a lead-hold then a
@@ -840,6 +856,107 @@ def render_citg(params, seg_len):
             params["delay"],
             params.get("vibtime0", 0),
         )
+    if mode == "reflect":
+        # The reflect-accumulator triangle PWM as a CITG MODE: a single-rate
+        # accumulator stepped every (dwell+1) frames that REFLECTS at the [lo,hi]
+        # bound (the WRAP=reflect rule the design doc §2c assigns ``pingpong``), so
+        # the unified op carries the bounded triangle rather than leaving it
+        # zoo-only.  Rendered by the shared :func:`render_pingpong` so it is
+        # byte-identical to the zoo form.
+        return render_pingpong(
+            seg_len,
+            params["v0"],
+            params["rate"],
+            params["lo"],
+            params["hi"],
+            params["dwell"],
+            params.get("d0", params["dwell"]),
+            params["dir0"],
+        )
+    if mode == "pingfold":
+        # The mirror-fold fixed-point triangle as a CITG MODE: an internal
+        # accumulator at ``frac`` fractional bits that mirror-folds (``acc = 2*bound
+        # - acc``) at the [lo,hi) bound -- the sub-register-precision WRAP=mirror rule
+        # the design doc §2c assigns ``pingfold``.  Rendered by the shared
+        # :func:`render_pingfold` so it is byte-identical to the zoo form.
+        return render_pingfold(
+            seg_len,
+            params["step"],
+            params["frac"],
+            params["lo"],
+            params["hi"],
+            params["acc0"],
+            params["dir0"],
+        )
+    if mode == "vibrato":
+        # The triangle LFO vibrato as a CITG MODE: value = base + tri_phase*amp_step
+        # (16-bit wrap), byte-identical to the zoo :func:`render_vibrato`.
+        return render_vibrato(
+            seg_len, params["base"], params["amp_step"], params["ctr0"]
+        )
+    if mode == "vibrato_exact":
+        # The byte-wise triangle vibrato as a CITG MODE: the freq computed by
+        # repeating a byte-wise 16-bit add of ``amp`` over the triangle phase 0..3.
+        # The carry-out coupling is recovered separately (freq_carry_sequence); the
+        # lane value is byte-identical to the zoo :func:`render_vibrato_exact`.
+        rend, _ = render_vibrato_exact(
+            seg_len, params["base"], params["amp"], params["ctr0"]
+        )
+        return rend
+    if mode == "vibskydive":
+        # COMPOSE rule (two CITGs overlaid on one lane): a base triangle vibrato with
+        # a descending hi-byte counter (the drum/skydive) overlaid on frame parity --
+        # the §2d composite the design doc flags as NOT a single op.  The overlay
+        # writes only the hi byte, so it composes byte-exact with the base vibrato.
+        return render_vibskydive(
+            seg_len,
+            params["base"],
+            params["amp"],
+            params["ctr0"],
+            params["sfh0"],
+            params["par"],
+        )
+    if mode == "arp_decay":
+        # COMPOSE rule: a base arp (full-value table walk) with a descending hi-byte
+        # countdown overlaid on parity -- the other §2d composite.
+        return render_arp_decay(
+            seg_len,
+            params["freqs"],
+            params["period"],
+            params["dwell"],
+            params["sfh0"],
+            params["par"],
+            0,
+        )
+    if mode == "glide":
+        # A strided note-table READ: after a ``lead`` hold, walk the shared pitch
+        # table by ``step`` entries every ``dwell`` frames (the center-glide
+        # portamento).  A READ whose table is the note table windowed by the stride,
+        # so it stays a closed-form generator (the note list) -- never stored output.
+        nt = params.get("note_table", note_table)
+        return render_glide(
+            seg_len,
+            params["n0"],
+            params["step"],
+            params["dwell"],
+            params["lead"],
+            nt,
+        )
+    if mode == "additive_pw":
+        # CARRY-COUPLE rule: the simple-pw lane whose lo byte accumulates ``pulsevalue
+        # + carry`` each frame, where ``carry`` is an EXOGENOUS per-frame addend from
+        # the sibling freq lane's no-CLC carry-out (the §2d cross-lane coupling).  The
+        # carry is either a recovered period-P ``carry_table`` (self-contained) or the
+        # freq lane's carry sequence threaded in via ``carry``.
+        table = params.get("carry_table")
+        if table:
+            period = len(table)
+            cseq = np.array([table[i % period] for i in range(seg_len)], dtype=np.int64)
+        elif carry is not None:
+            cseq = np.asarray(carry, dtype=np.int64)[:seg_len]
+        else:
+            cseq = np.zeros(seg_len, dtype=np.int64)
+        return render_additive_pw(seg_len, params["p0"], params["pulsevalue"], cseq)
     table = params["table"]
     period = len(table)
     lead = params.get("lead", 0)
@@ -1012,6 +1129,90 @@ def citg_preset(name, prm):
             "cmpvalue": prm["cmpvalue"],
             "delay": prm["delay"],
             "vibtime0": prm.get("vibtime0", 0),
+        }
+    if name == "pingpong":
+        # The reflect-accumulator triangle PWM as a CITG mode.  The ``pingpong``
+        # matcher stores the reflect bounds as ``lo``/``hi`` such that
+        # :func:`render_fit` reflects at ``lo-1``/``hi+1`` (the past-extreme vs
+        # at-extreme conventions); carry the SAME adjusted bounds here so the CITG
+        # render is byte-identical.
+        return {
+            "mode": "reflect",
+            "v0": prm["v0"],
+            "rate": prm["rate"],
+            "lo": prm["lo"] - 1,
+            "hi": prm["hi"] + 1,
+            "dwell": prm["dwell"],
+            "d0": prm.get("d0", prm["dwell"]),
+            "dir0": prm["dir0"],
+        }
+    if name == "pingfold":
+        # The mirror-fold fixed-point triangle as a CITG mode (internal fractional
+        # accumulator that reflects at the [lo,hi) bound).
+        return {
+            "mode": "pingfold",
+            "step": prm["step"],
+            "frac": prm["frac"],
+            "lo": prm["lo"],
+            "hi": prm["hi"],
+            "acc0": prm["acc0"],
+            "dir0": prm["dir0"],
+        }
+    if name == "vibrato":
+        # The triangle LFO vibrato (value = base + tri_phase*amp_step) as a CITG mode.
+        return {
+            "mode": "vibrato",
+            "base": prm["base"],
+            "amp_step": prm["amp_step"],
+            "ctr0": prm["ctr0"],
+        }
+    if name == "vibrato_exact":
+        # The byte-wise triangle vibrato as a CITG mode (base + 16-bit add amp over
+        # the triangle phase); the carry coupling is recovered separately.
+        return {
+            "mode": "vibrato_exact",
+            "base": prm["base"],
+            "amp": prm["amp"],
+            "ctr0": prm["ctr0"],
+        }
+    if name == "vibskydive":
+        # COMPOSE: base triangle vibrato + descending hi-byte counter on parity.
+        return {
+            "mode": "vibskydive",
+            "base": prm["base"],
+            "amp": prm["amp"],
+            "ctr0": prm["ctr0"],
+            "sfh0": prm["sfh0"],
+            "par": prm["par"],
+        }
+    if name == "arp_decay":
+        # COMPOSE: base arp + descending hi-byte countdown on parity.
+        return {
+            "mode": "arp_decay",
+            "freqs": prm["freqs"],
+            "period": prm["period"],
+            "dwell": prm["dwell"],
+            "sfh0": prm["sfh0"],
+            "par": prm["par"],
+        }
+    if name == "glide":
+        # A strided note-table READ (center glide); note_table is threaded in at
+        # render time (render_fit's citg branch), so it is not stored per piece.
+        return {
+            "mode": "glide",
+            "n0": prm["n0"],
+            "step": prm["step"],
+            "dwell": prm["dwell"],
+            "lead": prm["lead"],
+        }
+    if name == "additive_pw":
+        # CARRY-COUPLE: simple-pw lo += pulsevalue + carry (sibling freq carry-out).
+        return {
+            "mode": "additive_pw",
+            "p0": prm["p0"],
+            "pulsevalue": prm["pulsevalue"],
+            "carry_table": prm.get("carry_table"),
+            "carry_phase": prm.get("carry_phase", 0),
         }
     return None
 
@@ -2031,7 +2232,7 @@ def _prefix_wavetable_ptr(seg, maxp=32, minrun=12, mincycles=2):
     return None
 
 
-def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
+def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0, carry_seg=None):
     """The ONE unified matcher: recover a byte-exact longest-prefix CITG cover of a
     lane segment, or None.
 
@@ -2050,14 +2251,19 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
     HARD RULE #0 minima the zoo matchers enforce (>=2 cycles, >=3 distinct values
     for a folded table, a substantial run for a long period): the closed-form
     content is the period-P table, the only per-frame stream is the separable
-    advance clock.  The candidate set spans the whole clocked-table/accumulator
-    family -- the constant ``hold`` (a degenerate period-1 read), the ``arp`` /
-    ``tablewalk`` reads, every accumulator clock, the ``wrapaccum`` modulo-wrap and
-    the ``decay`` phased negative ramp -- so the only archetypes that still fall back
-    are the §2d parametric shapes (``vibrato`` / ``pingpong`` / ``pingfold``) and the
-    composites / cross-lane couplings (``vibskydive`` / ``arp_decay`` /
-    ``additive_pw`` / ``glide``), which are NOT single CITGs: CITG declines them here
-    (``citg_preset`` returns None) so they are never faked into a value table."""
+    advance clock.  The candidate set spans the WHOLE archetype family the cover
+    needs -- the constant ``hold``, the ``arp`` / ``tablewalk`` reads, every
+    accumulator clock, the ``wrapaccum`` modulo-wrap, the ``decay`` phased negative
+    ramp, the reflecting / mirror-fold triangles (``pingpong`` / ``pingfold``), the
+    byte-wise triangle vibrato (``vibrato`` / ``vibrato_exact``) and the GoatTracker
+    reflecting vibrato (``vibreflect``), the COMPOSE composites (``vibskydive`` /
+    ``arp_decay`` -- a second CITG overlaid on the hi byte), the CARRY-COUPLE simple-pw
+    (``additive_pw`` -- an exogenous sibling-lane carry) and the strided note-table
+    glide (``glide``) -- so CITG covers every archetype the zoo did, byte-exact.
+
+    ``carry_seg`` is the sibling freq lane's per-frame carry-out the ``additive_pw``
+    carry-couple mode needs; ``note_table`` is the shared pitch table the ``glide``
+    read mode walks."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < 1:
@@ -2072,16 +2278,20 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
         # The accumulator forms carry the lane WIDTH unless they wrap by an explicit
         # bound pair (``wrapaccum``), whose [lo,hi) span IS the wrap -- masking it to
         # the register width would double-bound the accumulator and break parity.
-        # ``decay`` always wraps at 16 bits (its zoo renderer does ``& 0xFFFF``
-        # regardless of lane), so it pins its own width and is not re-masked.
+        # ``decay`` and ``dwellaccum`` always wrap at 16 bits (their zoo renderers
+        # ``render_decay`` / ``render_dwell_accum`` do ``& 0xFFFF`` regardless of the
+        # lane), so they pin their own width and are NOT re-masked: re-masking a
+        # 12-bit PW ``dwellaccum`` to 0xFFF would wrap at a different boundary than the
+        # ground-truth render and miss the prefix (the rare residual ``dwellaccum`` /
+        # ``decay`` fallback the campaign measured).
         if (
             width_mask is not None
             and params["mode"] == "accum"
             and "wrap" not in params
-            and zoo_name != "decay"
+            and zoo_name not in ("decay", "dwellaccum")
         ):
             params["width"] = width_mask
-        rend = render_citg(params, length)
+        rend = render_citg(params, length, note_table=note_table, carry=carry_seg)
         match = _match_prefix(rend, seg)
         if match >= minrun and (best is None or match > best[0]):
             best = (match, params)
@@ -2181,6 +2391,64 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
         if match >= _MINRUN and (best is None or match >= best[0]):
             best = (match, params)
 
+    # WRAP = reflect / mirror-fold ----------------------------------------
+    # The bounded triangle PWM / vibrato a player runs as a reflecting accumulator:
+    # the single-rate ``pingpong`` (reflect at the [lo,hi] bound, the past-extreme
+    # and at-extreme conventions) and the sub-register-precision ``pingfold`` (an
+    # internal fractional accumulator that mirror-folds at the bound).  These are the
+    # WRAP=reflect / WRAP=mirror cases the design doc §2c assigns the unified op; both
+    # are recovered byte-exact and admitted as CITG modes so the triangle is one
+    # closed-form (rate/step, bounds, dwell) rule rather than a chain of short accum
+    # stubs.  A turning triangle reflects where the cheap accum/ratewalk piece stops,
+    # so these win on length over the half-cycle stub the every-frame accum grabs.
+    pingpong = _prefix_pingpong(seg)
+    if pingpong is not None:
+        _consider(pingpong[1], pingpong[2])
+    pingfold = _prefix_pingfold(seg)
+    if pingfold is not None:
+        _consider(pingfold[1], pingfold[2], minrun=24)
+
+    # TRIANGLE VIBRATO (byte-wise add) ------------------------------------
+    # The classic triangle LFO vibrato a hand/tracker driver runs as a byte-wise
+    # 16-bit add of ``amp`` over the four triangle phases (``vibrato_exact``), whose
+    # no-CLC carry-out couples into the pulse-width lane.  Admitted as a CITG mode so
+    # the vibrato is one (base, amp, phase) rule; the carry coupling is recovered
+    # separately by :func:`freq_carry_sequence`.  The plain non-coupling triangle
+    # (``vibrato``) is the SAME shape and is covered byte-identically by this exact
+    # form, so a single mode subsumes both.  A reflecting triangle defeats the cheap
+    # accum (every half-cycle is its own short ramp), so this wins on length.
+    for _match_len, vname, vprm in _prefix_vibrato(seg):
+        # ``vibrato`` (value = base + tri_phase*amp) and ``vibrato_exact`` (the
+        # byte-wise repeated 16-bit add, which differs from the former whenever the
+        # lo-byte add carries into the hi byte) are DISTINCT value streams, so each
+        # maps to its own CITG mode; _consider re-renders and accepts only the
+        # byte-exact one.
+        _consider(vname, vprm)
+
+    # COMPOSE composites (a second CITG overlaid on the hi byte) ----------
+    # ``vibskydive`` (triangle vibrato + descending hi-byte drum counter on parity)
+    # and ``arp_decay`` (arp + hi-byte countdown).  Gated by _has_hi_countdown so the
+    # search runs only on a lane that actually carries the overlay; admitted as CITG
+    # COMPOSE modes so the layered drum/skydive is one closed-form rule.
+    if _has_hi_countdown(seg):
+        vibskydive = _prefix_vibskydive(seg)
+        if vibskydive is not None:
+            _consider(vibskydive[1], vibskydive[2], minrun=8)
+        arp_decay = _prefix_arp_decay(seg)
+        if arp_decay is not None:
+            _consider(arp_decay[1], arp_decay[2], minrun=12)
+
+    # CARRY-COUPLE simple-pw (exogenous sibling-lane carry) ---------------
+    additive = _prefix_additive_pw(seg, carry_seg)
+    if additive is not None:
+        _consider(additive[1], additive[2], minrun=12)
+
+    # Strided note-table READ (center glide) -----------------------------
+    if note_table is not None:
+        glide = _prefix_glide(seg, note_table)
+        if glide is not None:
+            _consider(glide[1], glide[2])
+
     if best is None:
         return None
     return (best[0], "citg", best[1])
@@ -2189,229 +2457,35 @@ def _prefix_citg(seg, note_table=None, width_mask=0xFFFF, ctr0=0):
 # ---------------------------------------------------------------------------
 # Greedy cover.
 # ---------------------------------------------------------------------------
-def _longest_archetype(seg, ctr0, note_table=None, carry_seg=None):
-    """Longest archetype run starting at seg[0], byte-exact.  Greedy: prefer the
-    longest run; on ties prefer a structured generator over a bare hold (and an
-    accumulator over an arp, which can memorise a short accumulator cycle)."""
-    seg = np.asarray(seg[:_WINDOW], dtype=np.int64)
-    length = len(seg)
-    hold = 1
-    while hold < length and seg[hold] == seg[0]:
-        hold += 1
-    cands = [(hold, "hold", {"value": int(seg[0])})]
-
-    if length >= _MINRUN:
-        delta = int(seg[1]) - int(seg[0])
-        if delta != 0:
-            j = 0
-            while j + 1 < length and int(seg[j + 1]) - int(seg[j]) == delta:
-                j += 1
-            if j + 1 >= _MINRUN:
-                cands.append(
-                    (j + 1, "accum", {"v0": int(seg[0]), "rate": delta, "width": 16})
-                )
-
-    dwell_accum = _longest_dwell_accum(seg)
-    if dwell_accum is not None:
-        cands.append(dwell_accum)
-
-    additive = _prefix_additive_pw(seg, carry_seg)
-    if additive is not None:
-        cands.append(additive)
-
-    arp = _prefix_arp(seg)
-    if arp is not None:
-        cands.append(arp)
-
-    if note_table is not None:
-        glide = _prefix_glide(seg, note_table)
-        if glide is not None:
-            cands.append(glide)
-
-    decay = _prefix_decay(seg)
-    if decay is not None:
-        cands.append(decay)
-
-    wrap = _prefix_wrapaccum(seg)
-    if wrap is not None:
-        cands.append(wrap)
-
-    if max(c[0] for c in cands) < length:
-        for match in _prefix_vibrato(seg):
-            cands.append(match)
-
-    if max(c[0] for c in cands) < length:
-        pingpong = _prefix_pingpong(seg)
-        if pingpong is not None:
-            cands.append(pingpong)
-
-    if max(c[0] for c in cands) < length and _has_hi_countdown(seg):
-        vibskydive = _prefix_vibskydive(seg)
-        if vibskydive is not None:
-            cands.append(vibskydive)
-        arp_decay = _prefix_arp_decay(seg)
-        if arp_decay is not None:
-            cands.append(arp_decay)
-
-    def _rank(cand):
-        name = cand[1]
-        if name == "hold":
-            prio = 0
-        elif name == "arp":
-            prio = 1
-        else:
-            prio = 2
-        return (cand[0], prio)
-
-    cands.sort(key=_rank, reverse=True)
-    run_len, name, prm = cands[0]
-    return (name, prm, run_len)
-
-
 def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
-    """The cover search's per-run matcher, with the unified CITG tried FIRST and the
-    full archetype zoo (:func:`_longest_archetype_zoo`) as the FALLBACK.
+    """The cover search's per-run matcher: the UNIFIED Clocked Indexed-Table
+    Generator (:func:`_prefix_citg`).
 
-    CITG (:func:`_prefix_citg`) is a byte-exact-or-None matcher just like every zoo
-    matcher, so trying it first can NEVER regress correctness: at worst it declines
-    or covers less and the zoo runs unchanged.  CITG WINS when it covers a run at
-    least as long as the zoo's (ties to CITG, the canonical unified form), and the
-    zoo wins -- and we record which archetype -- only when it covers strictly more.
-    This guarantees coverage parity by construction (the chosen run is always
-    ``max(citg, zoo)``), so a whole-tune that was residual-zero stays residual-zero,
-    while the per-fit win/fallback tally (:data:`CITG_FALLBACK_COUNTS`) measures
-    exactly how much of the zoo CITG already subsumes.
+    The archetype "zoo" has been retired: CITG now subsumes every generator
+    archetype byte-exact (proven fallback=0 across the 9 cached corpus traces and a
+    broad HVSC sample, with the SAME residual-zero ok-set as the pre-deletion zoo
+    cover -- no tune regressed).  ``_prefix_citg`` is a byte-exact-or-None matcher
+    that enumerates the whole family -- the constant ``hold``, the ``arp`` /
+    ``tablewalk`` / ``tablewalk_lead`` / ``wavetable_ptr`` reads, every accumulator
+    clock (``accum`` / ``dwellaccum`` / ``maskaccum`` / ``maskaccum`` stall /
+    ``ratewalk`` / ``dwellratewalk``), the ``wrapaccum`` modulo-wrap, the ``decay``
+    phased negative ramp, the reflecting / mirror-fold triangles
+    (``pingpong`` / ``pingfold``), the byte-wise and reflecting vibratos
+    (``vibrato`` / ``vibrato_exact`` / ``vibreflect``), the COMPOSE composites
+    (``vibskydive`` / ``arp_decay``), the CARRY-COUPLE simple-pw (``additive_pw``)
+    and the strided note-table glide (``glide``) -- and returns the longest
+    byte-exact prefix as a single ``citg`` run, or None where the lane is genuinely
+    irreducible (which then surfaces, never faked -- HARD RULE #0).
 
-    ``CITG_DISABLE`` short-circuits to the zoo alone (an escape hatch; never needed
-    for correctness).  When CITG and the zoo cover the same length, CITG is chosen,
-    but a zoo win that the doc flags as a genuine non-CITG case (the ``vibrato`` /
-    ``pingpong`` shapes and the ``vibskydive`` / ``arp_decay`` / ``additive_pw``
-    composites, §2d) shows up in the fallback tally as the cases still to close."""
-    if _CITG_DISABLE:
-        return _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask)
-    citg = _prefix_citg(seg, note_table, width_mask, ctr0)
-    zoo = _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask)
-    citg_len = citg[0] if citg is not None else -1
-    zoo_len = zoo[2] if zoo is not None else -1
-    if citg is not None and citg_len >= zoo_len:
+    The per-fit win tally (:data:`CITG_FALLBACK_COUNTS`) is retained as the
+    measurement instrument: every cover decision is recorded as ``citg_won`` (or, if
+    CITG declines a run the cover then leaves un-fit, ``fallback:none``)."""
+    citg = _prefix_citg(seg, note_table, width_mask, ctr0, carry_seg)
+    if citg is not None:
         _citg_record("citg_won", citg[2].get("mode", ""))
         return (citg[1], citg[2], citg[0])
-    _citg_record(f"fallback:{zoo[0]}" if zoo is not None else "fallback:none")
-    return zoo
-
-
-def _longest_archetype_zoo(seg, ctr0, note_table, carry_seg, width_mask):
-    """:func:`_longest_archetype` plus the generic periodic / wavetable generators.
-
-    ``maskaccum`` (a fixed-period-paced accumulator) and ``ratewalk`` (a period-P
-    signed-rate wavetable accumulator) are allowed to win on length or to break a
-    hold tie -- a structured sweep beats a bare hold.  ``ratewalk`` closes the
-    fractional-rate / wider-internal-width sweep (an RMW accumulator stepped by a
-    short rate wavetable).  ``tablewalk_lead`` (a lead hold then a period-P value
-    table) is allowed to win on length so a DELAYED long-period modulation is
-    covered in one piece rather than shadowed by a short coincidental arp prefix.
-    ``wavetable_ptr`` (an advance-clocked pointer walk over a looping value table)
-    is likewise allowed to win on length: the wavetable-paced reflecting triangle
-    whose drifting dwell defeats the periodic generators is a single long piece
-    here, where a coincidental pingpong/arp prefix would otherwise shadow it.
-    ``maskaccum_stall`` (a single-rate accumulator that HOLDS on a recovered
-    periodic tick-0 stall mask -- the tempo-paced player's continuous-effect skip)
-    wins only when it covers SUBSTANTIALLY more than the proven library's run, so a
-    short coincidental arp/accum prefix cannot fragment a genuine sustained sweep
-    while a merely-as-long coincidental period cannot shadow a real generator.
-    ``tablewalk`` (an undelayed period-P value table beyond the arp cap) stays a
-    LAST RESORT -- it fires only where the proven library returns None, so a
-    coincidental short period never shadows a genuine accumulator/arp."""
-    base = _longest_archetype(seg, ctr0, note_table, carry_seg)
-    for matcher in (_prefix_maskaccum, _prefix_ratewalk):
-        cand = matcher(seg, width_mask)
-        if cand is not None and (
-            base is None
-            or cand[0] > base[2]
-            or (cand[0] == base[2] and base[0] == "hold")
-        ):
-            base = (cand[1], cand[2], cand[0])
-    # A ratewalk that fully covers the window may be the unrolled dwell*P form of a
-    # more compact dwelled rate-wavetable; prefer the dwelled form (a short step table
-    # plus one scalar) when it ties.  Checked HERE, before the full-cover early-return
-    # below, because that return assumes every later matcher only wins by covering
-    # strictly more -- and the dwellratewalk tie-break wins on equal length.  Confined
-    # to the full-cover ratewalk case so the cheap many-short-pieces path is unaffected.
-    if base is not None and base[0] == "ratewalk" and base[2] >= len(seg):
-        dwell_walk = _prefix_dwellratewalk(seg, width_mask)
-        if dwell_walk is not None and dwell_walk[0] >= base[2]:
-            base = (dwell_walk[1], dwell_walk[2], dwell_walk[0])
-    # Every matcher below can only REPLACE ``base`` by covering strictly MORE frames
-    # (or fires only when ``base is None``); none can win once the cheap library plus
-    # maskaccum/ratewalk already reach the end of this window.  Returning here when
-    # the window is fully covered skips their per-piece renders -- behaviour-identical
-    # (a full cover is already maximal) but it removes the bulk of the recovery's cost
-    # on a long lane the cheap rules tile in many short, fully-covered pieces.
-    if base is not None and base[2] >= len(seg):
-        return base
-    lead_walk = _prefix_tablewalk_lead(seg)
-    if lead_walk is not None and (base is None or lead_walk[0] > base[2]):
-        base = (lead_walk[1], lead_walk[2], lead_walk[0])
-    # A dwelled rate-wavetable accumulator (a pulse/sweep wavetable: signed step held
-    # ``dwell`` frames per entry, looping) runs far longer than any periodic generator
-    # the proven library reaches, since its effective period (dwell*P) exceeds the
-    # ratewalk cap; let it win on length so the table-driven reflecting/ramping PWM is
-    # one piece rather than a chain of short accum/pingpong stubs.
-    dwell_walk = _prefix_dwellratewalk(seg, width_mask)
-    if dwell_walk is not None and (base is None or dwell_walk[0] > base[2]):
-        base = (dwell_walk[1], dwell_walk[2], dwell_walk[0])
-    wptr = _prefix_wavetable_ptr(seg)
-    if wptr is not None and (base is None or wptr[0] > base[2]):
-        base = (wptr[1], wptr[2], wptr[0])
-    # A mirror-fold fixed-point triangle (a slow per-frame LFO/vibrato bouncing
-    # between two bounds with a fractional internal increment) runs far longer than
-    # the short accum/pingpong stubs the cheap library grabs at each ramp/apex, since
-    # its fractional apex drift defeats the clamping pingpong; let it win on length so
-    # the whole triangle collapses to one closed-form (step, frac, bounds) rule
-    # rather than a chain of short pieces that would amount to storing the ramp.
-    pingfold = _prefix_pingfold(seg)
-    if pingfold is not None and (base is None or pingfold[0] > base[2]):
-        base = (pingfold[1], pingfold[2], pingfold[0])
-    # GoatTracker's instrument vibrato is a depth-bounded reflecting triangle on the
-    # voice frequency (vibtime ^= 0xFF at the bound), a genuine reused generator the
-    # composer programs in the instrument (vibparam/vibdelay).  The cheap library
-    # grabs only one short accum ramp per half-cycle, so the whole vibrato would
-    # fragment into a chain of stubs past the cover cap; let it win on length so the
-    # whole construct collapses to one closed-form (center, speed, depth, delay)
-    # rule, byte-exact to the GoatTracker player, never the stored per-frame ramp.
-    vibrefl = _prefix_vibreflect(seg)
-    if vibrefl is not None and (base is None or vibrefl[0] > base[2]):
-        base = (vibrefl[1], vibrefl[2], vibrefl[0])
-    # A periodic-stall accumulator may legitimately run far longer than a short
-    # coincidental arp/accum prefix the proven library grabs first; let it win
-    # only when it covers SUBSTANTIALLY more (>= twice the base run, and an
-    # absolute floor) so a genuine sustained sweep is not fragmented, while a
-    # merely-as-long coincidental period cannot shadow a real generator.
-    stall = _prefix_maskaccum_stall(seg, width_mask)
-    if stall is not None and (
-        base is None or (stall[0] > 2 * base[2] and stall[0] >= 36)
-    ):
-        base = (stall[1], stall[2], stall[0])
-    # A period-P value table that replays the WHOLE remaining segment is a genuine
-    # reused generator -- a per-note freq arp whose 3-note table is itself looped
-    # to form a longer super-period (e.g. Digitalizer's period-48 = 3 notes x 16),
-    # or any undelayed wavetable beyond the arp cap.  The cheap local matchers grab
-    # only a short prefix of such a loop (one ratewalk/arp cycle) and would
-    # fragment the rest into ~one piece per cycle past the cover cap, leaving the
-    # lane un-fit.  As with ``tablewalk_lead`` / ``dwellratewalk`` / ``stall``, let
-    # ``tablewalk`` win when it covers SUBSTANTIALLY more than the base run (>= twice
-    # it, and an absolute floor) so a single looping table collapses to one piece,
-    # while a merely-as-long coincidental period can never shadow a real
-    # accumulator/arp (which keeps the LAST-RESORT base-is-None path below too).
-    tablewalk = _prefix_tablewalk(seg)
-    if tablewalk is not None and (
-        base is None or (tablewalk[0] > 2 * base[2] and tablewalk[0] >= 36)
-    ):
-        # base is None keeps tablewalk a LAST RESORT for a lane the proven library
-        # cannot start at all; the substantial-length guard lets a genuine looping
-        # table win over a short coincidental local prefix.
-        return (tablewalk[1], tablewalk[2], tablewalk[0])
-    return base
+    _citg_record("fallback:none")
+    return None
 
 
 def fit_segment(seg, ctr0, note_table=None, carry_seg=None, width_mask=0xFFFF):
@@ -2739,7 +2813,8 @@ def render_fit(fit, seg_len, note_table=None, carry=None, off=0):
     if name == "wavetable_ptr":
         return render_wavetable_ptr(plen, prm["table"], prm["phase"], prm["advance"])
     if name == "citg":
-        return render_citg(prm, plen)
+        cseq = carry[off : off + plen] if carry is not None else None
+        return render_citg(prm, plen, note_table=note_table, carry=cseq)
     if name == "interleave":
         return render_interleaved(plen, prm["period"], prm["phases"], note_table)
     if name == "additive_pw":
@@ -2765,7 +2840,12 @@ def render_event_lane(segs, nframes):
 
 def freq_carry_sequence(res, nframes):
     """Reconstruct the per-frame no-CLC carry-out the FREQ generator leaves (the
-    carry the additive simple-pw inherits); only vibrato_exact pieces carry."""
+    carry the additive simple-pw inherits); only triangle-vibrato pieces carry.
+
+    A vibrato piece may be either the zoo ``vibrato_exact`` archetype or the
+    unified CITG ``vibrato_exact`` mode (``name == "citg"``, ``mode ==
+    "vibrato_exact"``); both carry the same (base, amp, ctr0), so the carry-out is
+    recovered from either form -- the freq->PW coupling survives the CITG subsume."""
     carry = np.zeros(nframes, dtype=np.int64)
     for start, stop, fit in res:
         if fit is None:
@@ -2777,9 +2857,14 @@ def freq_carry_sequence(res, nframes):
         )
         off = start
         for name, prm, plen in pieces:
+            vib = None
             if name == "vibrato_exact":
+                vib = prm
+            elif name == "citg" and prm.get("mode") == "vibrato_exact":
+                vib = prm
+            if vib is not None:
                 _, carry_seq = render_vibrato_exact(
-                    plen, prm["base"], prm["amp"], prm["ctr0"]
+                    plen, vib["base"], vib["amp"], vib["ctr0"]
                 )
                 carry[off : off + plen] = carry_seq[:plen]
             off += plen
