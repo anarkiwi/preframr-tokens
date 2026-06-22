@@ -265,23 +265,52 @@ def test_citg_render_parity_decay():
                 )
 
 
-def test_citg_preset_declines_non_citg_archetypes():
-    # the parametric shapes and composites the doc flags (§2d) are NOT single CITGs;
-    # citg_preset returns None for them so they are never faked into a value table.
-    # ``wrapaccum`` and ``decay`` are NOT here: each is a clean CITG accum -- the
-    # former an explicit [lo,hi) modulo WRAP (§2c), the latter a phased negative-rate
-    # periodic-dwell ACCUM -- now subsumed (see test_citg_render_parity_wrapaccum and
-    # test_citg_render_parity_decay).
-    for name in (
-        "vibrato",
-        "vibrato_exact",
-        "pingpong",
-        "vibskydive",
-        "arp_decay",
-        "additive_pw",
-        "glide",
-    ):
-        assert A.citg_preset(name, {}) is None
+def test_citg_preset_subsumes_every_archetype():
+    # The archetype zoo has been retired: citg_preset now maps EVERY former zoo
+    # archetype to a CITG parameterization, including the parametric shapes and
+    # composites the design doc originally flagged as non-CITG (§2d) -- the reflecting
+    # / mirror-fold triangles (``pingpong`` / ``pingfold``), the byte-wise / reflecting
+    # vibratos (``vibrato`` / ``vibrato_exact`` / ``vibreflect``), the COMPOSE
+    # composites (``vibskydive`` / ``arp_decay``), the CARRY-COUPLE simple-pw
+    # (``additive_pw``) and the strided note-table glide (``glide``).  Each maps to a
+    # non-None CITG params dict (a real fit is byte-exact-validated by the matcher).
+    cases = {
+        "hold": {"value": 0x10},
+        "tablewalk": {"table": [1, 2, 3]},
+        "tablewalk_lead": {"table": [1, 2, 3], "lead": 2, "value0": 9},
+        "arp": {"freqs": [1, 2], "dwell": 1},
+        "wavetable_ptr": {"table": [1, 2, 3], "advance": [1, 0], "phase": 0},
+        "accum": {"v0": 1, "rate": 2},
+        "maskaccum": {"v0": 1, "rate": 2, "mask": [1, 0]},
+        "wrapaccum": {"v0": 1, "rate": 2, "lo": 0, "hi": 10},
+        "dwellaccum": {"v0": 1, "rate": 2, "dwell": 2, "lead": 0},
+        "decay": {"v0": 9, "rate": 1, "every": 2, "ctr0": 0, "lead": 0},
+        "ratewalk": {"v0": 1, "rate_table": [1, 2]},
+        "dwellratewalk": {"v0": 1, "rate_table": [1, 2], "dwell": 2},
+        "vibreflect": {
+            "center": 0x1000,
+            "speed": 2,
+            "cmpvalue": 4,
+            "delay": 1,
+            "vibtime0": 0,
+        },
+        "pingpong": {"v0": 1, "rate": 1, "lo": 0, "hi": 8, "dwell": 0, "dir0": 0},
+        "pingfold": {"step": 5, "frac": 1, "lo": 0, "hi": 128, "acc0": 0, "dir0": 1},
+        "vibrato": {"base": 0x1000, "amp_step": 4, "ctr0": 0},
+        "vibrato_exact": {"base": 0x1000, "amp": 4, "ctr0": 0},
+        "vibskydive": {"base": 0x1000, "amp": 4, "ctr0": 0, "sfh0": 5, "par": 0},
+        "arp_decay": {
+            "freqs": [1, 2],
+            "period": 2,
+            "dwell": 1,
+            "sfh0": 5,
+            "par": 0,
+        },
+        "additive_pw": {"p0": 0x100, "pulsevalue": 2, "carry_table": [0, 1]},
+        "glide": {"n0": 3, "step": 1, "dwell": 2, "lead": 0},
+    }
+    for name, prm in cases.items():
+        assert A.citg_preset(name, prm) is not None, name
 
 
 def test_citg_matcher_is_byte_exact_or_none():
@@ -308,6 +337,140 @@ def test_citg_wins_and_records_fallback_tally():
     name, _, plen = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
     assert name == "citg" and plen == len(lane)
     assert A.CITG_FALLBACK_COUNTS["citg_won"] >= 1
+
+
+def _citg_subsumes(lane, mode, note_table=None, carry_seg=None, width_mask=0xFFFF):
+    """The CITG matcher (the sole cover op) recovers ``lane`` as a single ``citg``
+    run in the expected ``mode``, rendering back byte-exact -- the proof that the
+    former zoo archetype is now subsumed into CITG, not faked into a value table.
+
+    Used for the modes whose shape is the UNIQUE byte-exact-longest CITG cover (a
+    turning reflect/fold triangle, the reflecting vibrato, the hi-byte composites):
+    the matcher must pick exactly that mode."""
+    lane = np.asarray(lane, dtype=np.int64)
+    match = A._prefix_citg(lane, note_table, width_mask, 0, carry_seg)
+    assert match is not None, mode
+    assert match[1] == "citg" and match[2]["mode"] == mode, (mode, match[2]["mode"])
+    rendered = A.render_fit(
+        (match[1], match[2]), match[0], note_table=note_table, carry=carry_seg
+    )
+    assert np.array_equal(rendered, lane[: match[0]])  # byte-exact prefix
+    return match
+
+
+def _citg_mode_renders(zoo_name, zoo_prm, lane, note_table=None, carry_seg=None):
+    """Prove a CITG MODE exists and is byte-identical to its zoo render: the named
+    archetype's parameters map through :func:`citg_preset` to a CITG ``params`` whose
+    :func:`render_citg` reproduces ``lane`` exactly.
+
+    Used for the modes a CHEAPER equivalent CITG cover byte-exactly subsumes on a
+    short lane -- the byte-wise triangle ``vibrato_exact`` (a period-8 ``ratewalk``
+    on the value lane), the strided note-table ``glide`` (a period-P ``read``), and
+    the short-carry ``additive_pw`` (a period-P lo-byte accumulator).  These are
+    genuinely the SAME closed-form value stream as the cheaper mode (HARD RULE #0:
+    byte-exact, never stored), so the matcher legitimately ties to the cheaper op;
+    the proof of subsumption is that the named mode round-trips byte-exact AND the
+    matcher covers the whole lane byte-exact as SOME citg mode."""
+    lane = np.asarray(lane, dtype=np.int64)
+    params = A.citg_preset(zoo_name, zoo_prm)
+    assert params is not None and params["mode"] == zoo_name, zoo_name
+    nt = np.asarray(note_table) if note_table is not None else None
+    rendered = A.render_citg(params, len(lane), note_table=nt, carry=carry_seg)
+    assert np.array_equal(rendered, lane), zoo_name  # the MODE is byte-identical
+    match = A._prefix_citg(lane, nt, 0xFFFF, 0, carry_seg)
+    assert match is not None and match[1] == "citg"  # covered, never faulted
+    cover = A.render_fit((match[1], match[2]), match[0], note_table=nt, carry=carry_seg)
+    assert np.array_equal(cover, lane[: match[0]])  # the cover is byte-exact
+    return params
+
+
+def test_citg_subsumes_reflect_pingpong():
+    # the reflect-accumulator triangle PWM (pingpong) is now a CITG ``reflect`` mode.
+    # A LONG bounded triangle (period 160 > the ratewalk cap) is the unique byte-exact
+    # longest cover -- it genuinely TURNS at the bound, so no single accum/ratewalk
+    # prefix subsumes it; the matcher must pick the reflect mode for the whole lane.
+    lane = A.render_pingpong(200, 0x00, 1, 0x00, 0x28, 0, 0, 0)
+    _citg_subsumes(lane, "reflect")
+
+
+def test_citg_subsumes_pingfold_triangle():
+    # the mirror-fold fixed-point triangle (pingfold) is now a CITG ``pingfold`` mode.
+    lane = A.render_pingfold(80, 7, 0, 0, 64, 0, 1)
+    _citg_subsumes(lane, "pingfold")
+
+
+def test_citg_subsumes_vibrato_exact_and_carry():
+    # the byte-wise triangle vibrato (vibrato_exact) is now a CITG ``vibrato_exact``
+    # mode that renders byte-identical to the zoo; on the VALUE lane it is the same
+    # closed-form stream as a period-8 ratewalk (the cheaper CITG mode the matcher
+    # ties to), so subsumption is proven by the mode's byte-exact render + a byte-exact
+    # full cover.  freq_carry_sequence still recovers the freq->PW carry from a
+    # ``vibrato_exact``-mode citg piece -- the coupling survives the subsume.
+    lane, ref_carry = A.render_vibrato_exact(64, 0x10C0, 0x0140, 0)
+    params = _citg_mode_renders(
+        "vibrato_exact", {"base": 0x10C0, "amp": 0x0140, "ctr0": 0}, lane
+    )
+    res = [(0, len(lane), ("citg", params))]
+    carry = A.freq_carry_sequence(res, len(lane))
+    assert np.array_equal(carry, ref_carry)  # the coupling survives the subsume
+
+
+def test_citg_subsumes_vibreflect():
+    # GoatTracker's reflecting-triangle instrument vibrato is a CITG ``vibreflect``.
+    lane = A.render_vibreflect(120, 0x1800, 3, 0x20, 4, 0)
+    _citg_subsumes(lane, "vibreflect")
+
+
+def test_citg_subsumes_vibskydive_composite():
+    # the COMPOSE composite (vibrato + descending hi-byte counter) is a CITG
+    # ``vibskydive`` mode -- two CITGs overlaid on one lane, byte-exact.
+    lane = A.render_vibskydive(48, 0x1000, 0x40, 0, 0x30, 1)
+    _citg_subsumes(lane, "vibskydive")
+
+
+def test_citg_subsumes_arp_decay_composite():
+    # the COMPOSE composite (arp + hi-byte countdown) is a CITG ``arp_decay`` mode.
+    lane = A.render_arp_decay(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 1, 0x30, 1)
+    _citg_subsumes(lane, "arp_decay")
+
+
+def test_citg_subsumes_additive_pw_carry_couple():
+    # the CARRY-COUPLE simple-pw (pwlo += pulsevalue + sibling-lane carry) is a CITG
+    # ``additive_pw`` mode; with a recovered period-P carry_table it renders
+    # self-contained.  On a short lane the per-frame step (pulsevalue+carry) folds to
+    # the same period-P signed-step stream as a cheaper accumulator, so the matcher
+    # ties to it; subsumption is the mode's byte-exact render + a byte-exact full
+    # cover (HARD RULE #0: a closed-form step stream, never stored).
+    carry = np.array([1, 0, 0, 0] * 16, dtype=np.int64)
+    lane = A.render_additive_pw(48, 0x0A00, 3, carry)
+    _citg_mode_renders(
+        "additive_pw",
+        {"p0": 0x0A00, "pulsevalue": 3, "carry_table": [1, 0, 0, 0]},
+        lane,
+    )
+
+
+def test_citg_subsumes_glide_note_table_read():
+    # the center-glide strided note-table READ is a CITG ``glide`` mode (the
+    # note_table threaded in at render time, never stored per piece).  A strided
+    # note-table read is the same value stream as a period-P ``read``/``accum`` (the
+    # cheaper CITG mode the matcher ties to), so subsumption is the glide mode's
+    # byte-exact render through the threaded note_table + a byte-exact full cover.
+    note_table = np.array([0x1000 + 0x80 * i for i in range(64)], dtype=np.int64)
+    lane = A.render_glide(48, 10, 1, 3, 4, note_table)
+    _citg_mode_renders(
+        "glide",
+        {"n0": 10, "step": 1, "dwell": 3, "lead": 4},
+        lane,
+        note_table=note_table,
+    )
+
+
+def test_no_zoo_cover_path_remains():
+    # the archetype zoo cover functions are deleted: the only per-run cover op is the
+    # unified CITG (_longest_archetype_aug -> _prefix_citg).
+    assert not hasattr(A, "_longest_archetype")
+    assert not hasattr(A, "_longest_archetype_zoo")
 
 
 def _fit_round_trips(lane, note_table=None, carry=None):
@@ -408,9 +571,10 @@ def test_fit_pingpong_round_trip():
 
 def test_fit_pingfold_round_trip():
     # A mirror-fold fixed-point triangle (an integer-step bounce between 0 and 64).
+    # CITG (the sole cover op) recovers it as a ``citg`` run in its ``pingfold`` mode.
     lane = A.render_pingfold(80, 7, 0, 0, 64, 0, 1)
     fit = _fit_round_trips(lane)
-    assert fit[0] == "pingfold"
+    assert fit[0] == "citg" and fit[1]["mode"] == "pingfold"
 
 
 def test_prefix_pingfold_recovers_fractional_triangle():
@@ -447,8 +611,8 @@ def test_pingfold_collapses_long_triangle_to_one_generator_piece():
     lane = A.render_pingfold(600, 7, 1, 0, 64 << 1, 0, 1)
     fit = A.fit_segment(lane, 0, None, None, F.FREQ_WIDTH)
     assert fit is not None
-    name = fit[0] if fit[0] != "piecewise" else None
-    assert name == "pingfold"  # one rule, not fragments
+    # one rule (a CITG pingfold-mode run), not fragments
+    assert fit[0] == "citg" and fit[1]["mode"] == "pingfold"
     rendered = A.render_fit(fit, len(lane), None, None)
     assert np.array_equal(rendered, lane)
 
@@ -704,14 +868,10 @@ def test_looping_value_table_collapses_to_one_generator_piece():
     table = [0x8368, 0x52C8, 0x3426] * 16
     table[11] = 0x52C8  # a per-note tail tweak so the super-period is genuinely 48
     lane = A.render_tablewalk(48 * 12, table, 0)
-    # The zoo collapses the loop to one looping generator (tablewalk / ratewalk).
-    zname, _, zplen = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
-    assert zname in ("tablewalk", "ratewalk")  # one looping generator, not fragments
-    assert zplen == len(lane)  # the WHOLE loop in one piece, not a short prefix
-    # With CITG tried first the unified op subsumes it (the value table is a citg
-    # read), covering at least as much and rendering the WHOLE loop byte-exact.
+    # CITG (the sole cover op) subsumes the loop as ONE looping generator (a citg
+    # read), covering the WHOLE loop in one byte-exact piece, never per-cycle stored.
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name in ("tablewalk", "ratewalk", "citg")
+    assert name == "citg"
     assert plen == len(lane)  # the WHOLE loop in one piece, not a short prefix
     rendered = A.render_fit((name, prm), len(lane))
     assert np.array_equal(rendered, lane)
@@ -738,33 +898,24 @@ def test_tablewalk_promotion_holds_when_proven_library_starts_short():
         0x0280,
     ]
     lane = A.render_tablewalk(12 * 12, table, 0)
-    base = A._longest_archetype(lane, 0, None, None)
     tw = A._prefix_tablewalk(lane)
-    assert base[2] < len(lane)  # the proven library alone covers only a short prefix
-    assert tw is not None and tw[0] > 2 * base[2] and tw[0] >= 36  # promotion fires
-    # the zoo promotion fires: whichever long looping generator wins covers the whole
-    # loop in one piece (not the short prefix the cheap matchers grab first).
-    zname, _, zplen = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
-    assert zname in ("tablewalk", "ratewalk") and zplen == len(lane)
-    # and CITG (tried first) subsumes it as one byte-exact citg piece over the loop.
+    assert tw is not None and tw[0] >= 36  # the looping table is recovered whole
+    # CITG (the sole cover op) subsumes it as one byte-exact citg piece over the loop,
+    # not the short prefix a cheap accum/arp matcher would grab first.
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name in ("tablewalk", "ratewalk", "citg") and plen == len(lane)
+    assert name == "citg" and plen == len(lane)
     assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
 def test_tablewalk_not_promoted_over_short_coincidental_arp():
-    # A clean period-4 arp must NOT be re-described as a long-period tablewalk: the
-    # zoo promotion fires only when tablewalk covers SUBSTANTIALLY more than the
-    # proven library's run, so a genuine short generator is never shadowed (HARD
-    # RULE #0).  The zoo names it ``arp``; CITG (tried first) subsumes it as ONE
-    # compact short-period citg piece over the whole lane, never a fragmented store.
+    # A clean period-4 arp must NOT be re-described as a long-period tablewalk: a
+    # genuine short generator is never shadowed (HARD RULE #0).  CITG (the sole cover
+    # op) subsumes it as ONE compact short-period citg read over the whole lane, never
+    # a fragmented store.
     lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
-    zname, _, _ = A._longest_archetype_zoo(lane, 0, None, None, F.FREQ_WIDTH)
-    assert zname == "arp"
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, F.FREQ_WIDTH)
-    assert name in ("arp", "citg") and plen == len(lane)
-    if name == "citg":
-        assert len(prm["table"]) <= 6  # a short looping table, not a long store
+    assert name == "citg" and plen == len(lane)
+    assert len(prm["table"]) <= 6  # a short looping table, not a long store
     assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
@@ -833,16 +984,13 @@ def test_prefix_maskaccum_stall_recovers_period_and_rate():
 
 def test_maskaccum_stall_not_promoted_over_short_coincidental_arp():
     # a clean period-4 arp must NOT be re-described as a stall accumulator: the
-    # stall matcher only wins when it covers SUBSTANTIALLY more than the proven
-    # library's run, so a genuine short generator is never shadowed.  The zoo names
-    # it ``arp``; CITG (tried first) subsumes it as ONE compact short-period piece.
+    # stall matcher only wins when it covers SUBSTANTIALLY more than a short prefix,
+    # so a genuine short generator is never shadowed.  CITG (the sole cover op)
+    # subsumes the clean period-4 arp as ONE compact short-period citg read.
     lane = A.render_arp(48, [0x0800, 0x0900, 0x0A00, 0x0900], 4, 0, 1)
-    zname, _, _ = A._longest_archetype_zoo(lane, 0, None, None, 0xFFFF)
-    assert zname == "arp"
     name, prm, plen = A._longest_archetype_aug(lane, 0, None, None, 0xFFFF)
-    assert name in ("arp", "citg") and plen == len(lane)
-    if name == "citg":
-        assert len(prm["table"]) <= 6  # a short looping table, not a long store
+    assert name == "citg" and plen == len(lane)
+    assert len(prm["table"]) <= 6  # a short looping table, not a long store
     assert np.array_equal(A.render_fit((name, prm), len(lane)), lane)
 
 
@@ -1200,7 +1348,9 @@ def test_fit_additive_pw_round_trip():
 def test_fit_vibskydive_round_trip():
     lane = A.render_vibskydive(48, 0x1000, 0x40, 0, 0x30, 1)
     fit = _fit_round_trips(lane)
-    assert fit[0] in ("vibskydive", "piecewise", "vibrato_exact")
+    # CITG (the sole cover op) recovers the composite as a ``citg`` vibskydive-mode
+    # run, or a piecewise chain of citg pieces; the round-trip is byte-exact above.
+    assert fit[0] in ("citg", "piecewise")
 
 
 def test_fit_arp_decay_round_trip():
