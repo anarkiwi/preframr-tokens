@@ -2173,8 +2173,6 @@ def test_whole_tune_residual_zero_real_trace():
 # inverse pair, so render(ids_to_program(program_to_ids(prog), driver="generic"))
 # == render_generic(prog) byte-for-byte.
 from preframr_tokens.bacc.generic_serialize import (  # noqa: E402
-    _read_value,
-    _write_value,
     generic_ids_to_program,
     generic_program_to_ids,
 )
@@ -2185,37 +2183,9 @@ from preframr_tokens.bacc.serialize import (  # noqa: E402
     program_to_ids,
 )
 
-
-def test_generic_value_codec_faithful_inverse():
-    """The generic JSON-value codec round-trips every fit value type verbatim --
-    None / bool / int (signed) / float (bit-exact) / str / nested list / dict."""
-    values = [
-        None,
-        True,
-        False,
-        0,
-        1,
-        -1,
-        123456789,
-        -987654321,
-        3.5,
-        -0.0,
-        1e-9,
-        float("inf"),
-        "read",
-        "",
-        "utf—dash",
-        [1, 2, [3, 4], {"k": "v"}],
-        {"mode": "accum", "clock": {"kind": "every"}, "table": [1, 2, 3], "lead": 0},
-    ]
-    for value in values:
-        out = []
-        _write_value(out, value)
-        got, i = _read_value(out, 0)
-        assert i == len(out)
-        assert got == value or (
-            isinstance(value, float) and repr(got) == repr(value)
-        ), f"{value!r} -> {got!r}"
+# The generic per-register value codec was DELETED with the genfits escape (Stage
+# M2: no escape).  The Tracker IR value codec (int-only fits, no float) is tested in
+# test_tracker_decompile.py::test_value_codec_roundtrip.
 
 
 def _synth_generic_program():
@@ -2269,33 +2239,19 @@ def test_generic_token_roundtrip_synthetic():
     assert rt.nframes == prog.nframes
     assert rt.boot == prog.boot
     assert rt.tables["note_table"] == prog.tables["note_table"]
-    # The serializer now carries a leading format tag and picks the SMALLER of the
-    # per-register genfits form (_FMT_GENFITS) and the tracker-lifted form
-    # (_FMT_TRACKER); a tracker round-trip rebuilds render-IDENTICAL (not necessarily
-    # dict-identical -- carry is recomputed) genfits/eventfits, so the load-bearing
-    # invariant is RENDER byte-exactness, not dict identity.
+    # NO ESCAPE (Stage M2): the serializer ALWAYS emits the Tracker IR form; the
+    # former per-register genfits escape (_FMT_GENFITS) is deleted.  A tracker
+    # round-trip rebuilds render-IDENTICAL (not necessarily dict-identical -- carry is
+    # recomputed) genfits/eventfits, so the load-bearing invariant is RENDER
+    # byte-exactness, not dict identity.
     assert np.array_equal(render_program(rt), render_generic(prog))
     # direct module entrypoints agree with the dispatch
     assert generic_program_to_ids(prog) == ids
     assert generic_ids_to_program(ids).tables == rt.tables
-    if ids[0] == 0:  # genfits form chosen: the genfits/eventfits round-trip exactly
-        assert rt.tables["genfits"] == prog.tables["genfits"]
-        assert rt.tables["eventfits"] == prog.tables["eventfits"]
     brk, nframes = measure(prog)
     assert nframes == prog.nframes
     assert brk["total"] == len(ids)
-    assert brk["fmt"] in ("tracker", "genfits")
-    if brk["fmt"] == "genfits":
-        assert set(brk) == {
-            "fmt",
-            "nframes",
-            "boot",
-            "note_table",
-            "genfits",
-            "eventfits",
-            "total",
-        }
-        assert brk["boot"] == 25
+    assert brk["fmt"] == "tracker"  # always the tracker IR -- no escape
 
 
 def test_generic_token_roundtrip_synth_bus(synth_bus):

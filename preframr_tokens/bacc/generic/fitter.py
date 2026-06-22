@@ -62,6 +62,29 @@ def _unfit_frames(res):
     return sum(stop - start for start, stop, fit in res if fit is None)
 
 
+def _floor_unfit(res, lane):
+    """The §3.6 NO-ESCAPE floor, applied as the LAST resort: replace any segment a
+    structured cover left un-fit (``fit is None``) with a length-N literal-table CITG
+    READ of that span's OWN observed ``lane`` bytes (:func:`archetypes.literal_table_citg`).
+
+    Byte-exact by construction and the SAME ``citg`` vocabulary as every other
+    generator, so the lane renders byte-exact with NO raw-bytes escape (HARD RULE #0).
+    Applied only AFTER every structured re-slice retry, so the literal table never
+    shadows a recoverable recurrence (the spec §8.5 lazy-crutch guard)."""
+    out = []
+    floored = 0
+    for start, stop, fit in res:
+        if fit is None:
+            fit = ("citg", A.literal_table_citg(lane[start:stop]))
+            floored += stop - start
+            # Record the §3.6 floor as a distinct cover outcome so the corpus-health
+            # metric (the fraction of frames on the literal-table floor, spec §8.5)
+            # is honest -- it must stay ~0 for structured tunes.
+            A.record_literal_table_floor(stop - start)
+        out.append((start, stop, fit))
+    return out, floored
+
+
 def fit_generator_lanes(state, note_table):
     """Fit the freq + pw (16-bit) lanes via the BACC archetype library.  Returns
     ``(fits, noteons)`` where fits maps ``(voice, 'freq'|'pw')`` to
@@ -194,6 +217,11 @@ def fit_generator_lanes(state, note_table):
             )
             if _unfit_frames(pres_grid) < _unfit_frames(pres):
                 pres = pres_grid
+        # §3.6 NO-ESCAPE floor (last resort, after every structured retry): any span
+        # still un-fit becomes a literal-table CITG of its own observed bytes, so the
+        # lane is byte-exact via the ``citg`` vocabulary, never a raw escape.
+        fres, _ = _floor_unfit(fres, flane)
+        pres, _ = _floor_unfit(pres, plane)
         out[(voice, "freq")] = (fres, None)
         out[(voice, "pw")] = (pres, carry)
     return out, noteons
