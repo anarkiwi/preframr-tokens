@@ -69,12 +69,18 @@ functions are RETAINED, but only as CITG's internal recovery / render primitives
 (``_prefix_citg`` recovers each mode's parameters through them and ``render_citg``
 renders each mode through them) -- they are no longer a parallel cover engine.
 
-A lane that no CITG mode covers byte-exact is SURFACED as a nonzero residual, never
-faked into a stored value table (HARD RULE #0): a small set of fractional-rate sine
-LFO vibrato tunes (e.g. DefleMask ``Commodorian_Peace``) remains open this way --
-neither the zoo nor CITG ever closed them (they need a fractional-phase sine LFO
-generator that does not yet exist), so leaving them as a surfaced gap is the honest
-state, not a regression.
+A lane that no compact CITG mode covers byte-exact is FLOORED to a §3.6 literal-table
+CITG -- a length-N READ of its OWN observed bytes (CLOCK=every, LOOP=0,
+:func:`literal_table_citg`), applied as the very last resort by
+:func:`fitter.fit_generator_lanes` AFTER every structured re-slice retry, so the
+floor never shadows a recoverable recurrence.  This is the NO-ESCAPE construction
+(design doc §3.6 / §4): byte-exact by construction and the SAME ``citg`` token
+vocabulary as every other generator, so an irreducible axis costs a BIGGER TABLE,
+never a different token class -- exactly how a tracker stores a hand-drawn wavetable
+(HARD RULE #0: a genuine looping table read, never a raw-bytes escape).  The floor is
+instrumented separately (:func:`record_literal_table_floor`) so the corpus-health
+metric -- the fraction of frames on the floor -- stays measurable and ~0 for
+structured tunes.
 """
 
 import os
@@ -95,11 +101,14 @@ _MAXPIECES = 64
 # CITG cover instrumentation.  The unified Clocked Indexed-Table Generator is the
 # SOLE generator-lane cover op now (the archetype zoo has been retired): every cover
 # decision is recorded as ``citg_won`` when CITG covers the run, or ``fallback:none``
-# when CITG declines and the cover leaves the run un-fit (a genuinely irreducible
-# lane, surfaced not faked).  The tally is the measurement instrument that proved the
-# subsume-then-delete migration reached fallback=0.  Counting is cheap and always on
-# (a module-level Counter); a per-decision stderr line is gated behind CITG_TRACE so
-# normal runs are never spammed.
+# when the per-run matcher declines (the outer fitter then either recovers structure
+# by re-slicing, or, as the last resort, applies the §3.6 literal-table FLOOR --
+# tallied separately as ``floor:literal_table`` / ``floor:frames`` by
+# :func:`record_literal_table_floor`).  The tally is the measurement instrument that
+# proved the subsume-then-delete migration reached fallback=0 across the cached corpus
+# and that the no-escape floor stays ~0 frames for structured tunes (the spec §8.5
+# corpus-health metric).  Counting is cheap and always on (a module-level Counter); a
+# per-decision stderr line is gated behind CITG_TRACE so normal runs are never spammed.
 CITG_FALLBACK_COUNTS = Counter()
 _CITG_TRACE = bool(os.environ.get("CITG_TRACE"))
 
@@ -116,6 +125,21 @@ def _citg_record(outcome, detail=""):
     CITG_FALLBACK_COUNTS[outcome] += 1
     if _CITG_TRACE:
         print(f"CITG {outcome} {detail}".rstrip(), file=sys.stderr)
+
+
+def record_literal_table_floor(nframes):
+    """Tally one §3.6 literal-table floor application: a run no compact CITG covered
+    that the outer fitter floored to a length-N literal-table CITG of its own bytes.
+
+    Tracks BOTH the number of floor segments (``floor:literal_table``) and the total
+    floored FRAME count (``floor:frames``) so the corpus-health metric -- the fraction
+    of a tune's frames carried by literal tables (spec §8.5) -- is measurable.  A
+    structured tune must stay ~0; any rise is a backend-recovery regression, never an
+    acceptable IR outcome (the floor is the no-escape floor, not the goal)."""
+    CITG_FALLBACK_COUNTS["floor:literal_table"] += 1
+    CITG_FALLBACK_COUNTS["floor:frames"] += int(nframes)
+    if _CITG_TRACE:
+        print(f"CITG floor:literal_table len={nframes}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -415,29 +439,6 @@ def render_vibrato_exact(seg_len, base, amp, ctr0):
     phase = _tri_phase_seq(ctr0, seg_len)
     freq_t, carry_t = _vibrato_exact_phase_tables(base, amp)
     return freq_t[phase], carry_t[phase]
-
-
-def render_vibrato_table(seg_len, base, amp, phase_table, ctr0=0):
-    """Generic byte-wise vibrato with a searched period-P LFO phase table.
-    Returns (freq_seq, carry_seq) -- the generic form of render_vibrato_exact."""
-    period = len(phase_table)
-    out = np.empty(seg_len, dtype=np.int64)
-    carry = np.zeros(seg_len, dtype=np.int64)
-    base &= 0xFFFF
-    dlo, dhi = amp & 0xFF, (amp >> 8) & 0xFF
-    for i in range(seg_len):
-        osc = int(phase_table[(ctr0 + i) % period])
-        carry_bit = 1 if osc == 0 else 0
-        lo, hi = base & 0xFF, (base >> 8) & 0xFF
-        for _ in range(osc):
-            tmp = lo + dlo
-            lo = tmp & 0xFF
-            tmp = hi + dhi + (tmp >> 8)
-            hi = tmp & 0xFF
-            carry_bit = tmp >> 8
-        out[i] = lo | (hi << 8)
-        carry[i] = carry_bit
-    return out, carry
 
 
 def _hi_overlay(base_lane, sfh0, par, ctr0):
@@ -927,6 +928,27 @@ def render_citg(params, seg_len, note_table=None, carry=None):
             if ptr >= period:
                 ptr = loop
     return out
+
+
+def literal_table_citg(values):
+    """The §3.6 no-escape construction: a CITG READ over the ENTIRE observed
+    ``values`` sequence, walked once per frame, LOOP=0.
+
+    Byte-exact by construction (the table IS the output) and the SAME ``citg`` token
+    vocabulary as every other generator -- the universal FLOOR for an axis no compact
+    recurrence covers.  It is exactly how a tracker stores a hand-drawn wavetable, so
+    it is a normal CITG, never a raw-bytes escape (HARD RULE #0).  Rendering it for
+    ``len(values)`` frames re-emits ``values`` exactly; the LOOP=0 wrap simply is not
+    exercised within those frames.  ``seed`` holds the first value so a degenerate
+    zero-length render is still correct."""
+    table = [int(v) for v in values]
+    return {
+        "mode": "read",
+        "table": table,
+        "clock": {"kind": "every"},
+        "loop": 0,
+        "seed": table[0] if table else 0,
+    }
 
 
 def citg_preset(name, prm):
@@ -2407,6 +2429,12 @@ def _longest_archetype_aug(seg, ctr0, note_table, carry_seg, width_mask):
     if citg is not None:
         _citg_record("citg_won", citg[2].get("mode", ""))
         return (citg[1], citg[2], citg[0])
+    # CITG declines this run.  The cover leaves it un-fit (None) so the OUTER fitter's
+    # re-slice retries (rest boundaries / grid / interleave -- :func:`fit_generator_lanes`)
+    # still get their chance to recover STRUCTURE before the §3.6 literal-table floor
+    # is applied as the very last resort (:func:`floor_unfit_segments`).  Flooring here
+    # instead would shadow those structured retries (the spec's §8.5 lazy-crutch risk),
+    # so the floor stays OUT of the per-run matcher.
     _citg_record("fallback:none")
     return None
 

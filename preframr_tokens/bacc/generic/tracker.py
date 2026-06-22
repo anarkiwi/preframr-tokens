@@ -32,12 +32,98 @@ swept body) -- lossless, just not pitch-shared.
 """
 
 import json
+from dataclasses import dataclass
 
 import numpy as np
 
 from preframr_tokens.bacc.generic import archetypes as A
 from preframr_tokens.bacc.generic import fitter as F
 from preframr_tokens.bacc.generic.busstate import NREG
+
+# ---------------------------------------------------------------------------
+# The Tracker IR (Stage M0): the named, no-escape intermediate representation
+# the generic decompiler compiles into and the serializer consumes.
+#
+# The IR is the (pool, lanes, note_table) triple :func:`lift` already produces,
+# promoted here to a named datatype so both interfaces (backend->IR and IR->tokens)
+# are functions over ONE structure.  The IR has three primitive families:
+#   * P1  the CITG (the SOLE generator pool-entry shape -- see CITG_VALUE_KEYS);
+#   * P2  the NOTE EVENT (a (dt, dur, instr_ref, base, seed) lane record);
+#   * P3  the INDEXED STRUCTURAL WALK (a lane = LZ'd event stream; orderlist /
+#         pattern reuse the SAME REPEAT/TRANSPOSE backward-LZ machinery).
+# No behaviour change: :func:`lift` returns the same triple; :class:`TrackerIR`
+# is a thin named view, and :func:`from_program` / :meth:`as_triple` round-trip it.
+# ---------------------------------------------------------------------------
+
+# The canonical CITG value schema (the design doc's §1.1 nine-field tuple) for the
+# CORE ``read`` / ``accum`` modes -- the SOLE generator pool-entry shape.  ``mode`` +
+# ``table`` + ``clock`` are the always-present core; the rest are optional with the
+# documented defaults so a minimal generator (e.g. a ``hold``) carries only what it
+# needs.  The parametric TABLE-SHAPE / composition modes (§1.1: a closed-form shape
+# tag -- ``vibrato`` / ``reflect`` / ``pingfold`` / ``vibreflect`` -- that EXPANDS to
+# the array, and the §2 ``vibskydive`` / ``arp_decay`` / ``glide`` / ``additive_pw``
+# composites) carry ``mode`` plus their own shape params INSTEAD of an explicit
+# ``table``; that is a within-CITG choice, not a separate primitive.  The serializer's
+# generic-by-value encoder emits whatever keys a CITG params dict holds, so this
+# constant is the executable core schema the canonicalization test pins.
+CITG_VALUE_KEYS = (
+    "mode",  # READ (ptr selects a value) | ACCUM (ptr selects a signed step)
+    "table",  # the period-P loop body (values for READ, signed steps for ACCUM)
+    "clock",  # the advance schedule (a {"kind": ...} dict; see _citg_gates)
+    "seed",  # the READ hold value0 / the ACCUM acc0 (default 0)
+    "lead",  # frames of stall before the clock arms (default 0)
+    "phase",  # the pointer start index (default 0)
+    "loop",  # the index the pointer wraps to (default 0; a LOOP is mandatory)
+    "width",  # the accumulator mask (ACCUM only; default 0xFFFF)
+    "wrap",  # the accumulator wrap rule (modulo[lo,hi); default None = modulo-width)
+)
+# The CITG modes :func:`archetypes.render_citg` dispatches.  ``read`` / ``accum``
+# are the two core P1 modes; the rest are the parametric TABLE-SHAPE expanders
+# (§1.1: a closed-form table body kept as a tag instead of an explicit array) and
+# the §2 composition rules -- all WITHIN-CITG choices, not separate primitives.
+CITG_MODES = (
+    "read",
+    "accum",
+    "vibrato",
+    "vibrato_exact",
+    "reflect",
+    "pingfold",
+    "vibreflect",
+    "vibskydive",
+    "arp_decay",
+    "glide",
+    "additive_pw",
+)
+
+
+@dataclass
+class TrackerIR:
+    """The named Tracker IR: a shared generator/instrument ``pool`` (CITG programs,
+    P1), the per-lane note-event ``lanes`` (P2 records walked as P3), and the shared
+    ``note_table`` every event ``base`` indexes.  This is exactly the triple
+    :func:`lift` returns; :class:`TrackerIR` names it so the migration can refer to
+    one IR datatype rather than an anonymous tuple."""
+
+    pool: list
+    lanes: dict
+    note_table: object  # list[int] | None
+
+    @classmethod
+    def from_program(cls, program):
+        """Lift a generic ``program`` into the named IR (== :func:`lift`)."""
+        pool, lanes, note_table = lift(program)
+        return cls(pool, lanes, note_table)
+
+    def as_triple(self):
+        """The ``(pool, lanes, note_table)`` triple the serializer / :func:`unlift`
+        consume (the IR is still that triple under the hood)."""
+        return self.pool, self.lanes, self.note_table
+
+
+# The §3.6 no-escape literal-table CITG builder lives in :mod:`archetypes` (it is a
+# pure CITG params constructor the fitter floor emits); re-exported here so the IR
+# module is the one place that names the canonical schema + the floor construction.
+literal_table_citg = A.literal_table_citg
 
 # Per-note residue: the accumulator seed / phase / held value -- a few ints per
 # note, NOT per-frame data.  Stripped from the instrument struct (so the struct is
