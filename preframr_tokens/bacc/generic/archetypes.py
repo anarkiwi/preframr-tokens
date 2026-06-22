@@ -83,6 +83,8 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
+from preframr_tokens.bacc.generic import _njit
+
 _WINDOW = 384  # max frames a single archetype-run search inspects.
 _MINRUN = 3  # minimum frames for a structured archetype run to beat hold.
 # Max archetype pieces in one note-on cover before we give up (None).  Bounds the
@@ -324,9 +326,10 @@ def _tri_phase_seq(ctr0, seg_len):
     ``ctr0`` -- the vectorised :func:`tri_phase`.  Folding the phase into one numpy
     array lets the vibrato renderers index a precomputed per-phase value table
     instead of looping :func:`tri_phase` per frame (the recovery's dominant cost on
-    a long vibrato lane was the per-frame Python phase loop)."""
-    osc = (ctr0 + np.arange(seg_len, dtype=np.int64)) & 7
-    return np.where(osc >= 4, osc ^ 7, osc)
+    a long vibrato lane was the per-frame Python phase loop).  njit'd (the
+    ``& 7`` / ``^ 7`` triangle is integer-exact), so the per-frame phase is a
+    compiled loop rather than two numpy passes."""
+    return _njit.tri_phase_seq(int(ctr0), int(seg_len))
 
 
 def render_vibrato(seg_len, base, amp_step, ctr0):
@@ -343,51 +346,34 @@ def render_vibrato(seg_len, base, amp_step, ctr0):
 
 def render_accum(seg_len, v0, rate, width_mask):
     """Linear accumulator (portamento / sweep): value += rate each frame."""
-    out = np.empty(seg_len, dtype=np.int64)
-    val = v0
-    for i in range(seg_len):
-        out[i] = val & width_mask
-        val += rate
-    return out
+    return _njit.render_accum(int(seg_len), int(v0), int(rate), int(width_mask))
 
 
 def render_wrapaccum(seg_len, v0, rate, lo_b, hi_b):
     """Modulo-wrap accumulator (free-running sawtooth PWM): value += rate every
     frame, wrapping by (hi_b - lo_b) when it crosses a bound."""
-    out = np.empty(seg_len, dtype=np.int64)
-    span = hi_b - lo_b
-    val = v0
-    for i in range(seg_len):
-        out[i] = val
-        val += rate
-        if rate > 0 and val >= hi_b:
-            val -= span
-        elif rate < 0 and val < lo_b:
-            val += span
-    return out
+    return _njit.render_wrapaccum(
+        int(seg_len), int(v0), int(rate), int(lo_b), int(hi_b)
+    )
 
 
 def render_arp(seg_len, notes_freqs, period, ctr0, dwell=1):
     """Table-walk arp: cycle period-P over a small freq list, each held
     ``dwell`` frames."""
-    out = np.empty(seg_len, dtype=np.int64)
-    period = len(notes_freqs)
-    for i in range(seg_len):
-        step = (ctr0 + i) // dwell
-        out[i] = notes_freqs[step % period]
-    return out
+    freqs = np.asarray(notes_freqs, dtype=np.int64)
+    # The pure-Python form ignored the passed ``period`` and used len(notes_freqs);
+    # keep that exact behaviour by passing the list length to the kernel.
+    return _njit.render_arp(int(seg_len), freqs, len(freqs), int(ctr0), int(dwell))
 
 
 def render_glide(seg_len, n0, step, dwell, lead, note_table, ctr0=0):
     """Note-table-walk glide: after a ``lead``-frame hold at index n0, walk the
     note table by ``step`` entries every ``dwell`` frames."""
     _ = ctr0
-    out = np.empty(seg_len, dtype=np.int64)
-    for i in range(seg_len):
-        k = 0 if i < lead else (i - lead) // dwell
-        idx = (n0 + step * k) & 0xFF
-        out[i] = note_table[idx] if 0 <= idx < len(note_table) else 0
-    return out
+    nt = np.asarray(note_table, dtype=np.int64)
+    return _njit.render_glide(
+        int(seg_len), int(n0), int(step), int(dwell), int(lead), nt
+    )
 
 
 def _vibrato_exact_phase_tables(base, amp):
@@ -456,19 +442,8 @@ def render_vibrato_table(seg_len, base, amp, phase_table, ctr0=0):
 
 def _hi_overlay(base_lane, sfh0, par, ctr0):
     """Overlay a descending hi-byte counter (drums/skydive) on a base lane."""
-    base_lane = np.asarray(base_lane, dtype=np.int64)
-    length = len(base_lane)
-    out = np.empty(length, dtype=np.int64)
-    sfh = sfh0 & 0xFF
-    for i in range(length):
-        lo = int(base_lane[i]) & 0xFF
-        hi = (int(base_lane[i]) >> 8) & 0xFF
-        if ((ctr0 + i) & 1) == par and sfh != 0:
-            old = sfh
-            sfh = (sfh - 1) & 0xFF
-            hi = old
-        out[i] = lo | (hi << 8)
-    return out
+    base_lane = np.ascontiguousarray(base_lane, dtype=np.int64)
+    return _njit.hi_overlay(base_lane, int(sfh0), int(par), int(ctr0))
 
 
 def render_vibskydive(seg_len, base, amp, ctr0, sfh0, par):
@@ -488,39 +463,25 @@ def render_arp_decay(seg_len, freqs, period, dwell, sfh0, par, ctr0=0):
 def render_additive_pw(seg_len, p0, pulsevalue, carry_seq, width_mask=0xFFF):
     """Carry-coupled additive simple-pw: pwlo += pulsevalue + carry every frame,
     where carry is the freq generator's per-frame carry-out."""
-    out = np.empty(seg_len, dtype=np.int64)
-    hi = p0 & ~0xFF
-    lo = p0 & 0xFF
-    for i in range(seg_len):
-        out[i] = (hi | lo) & width_mask
-        carry = int(carry_seq[i]) if i < len(carry_seq) else 0
-        lo = (lo + pulsevalue + carry) & 0xFF
-    return out
+    cseq = np.ascontiguousarray(carry_seq, dtype=np.int64)
+    return _njit.render_additive_pw(
+        int(seg_len), int(p0), int(pulsevalue), cseq, int(width_mask)
+    )
 
 
 def render_pingpong(seg_len, v0, rate, lo_b, hi_b, dwell, d0, dir0):
     """Reflect accumulator (pulse ping-pong / triangle PWM): value steps +/-rate
     every (dwell+1) frames, reflecting at lo_b/hi_b."""
-    out = np.empty(seg_len, dtype=np.int64)
-    val, dwell_left, direction = v0, d0, dir0
-    for i in range(seg_len):
-        out[i] = val
-        dwell_left -= 1
-        if dwell_left < 0:
-            dwell_left = dwell
-            if direction:
-                nxt = val - rate
-                if nxt < lo_b:
-                    direction = 0
-                    nxt = val + rate
-                val = nxt
-            else:
-                nxt = val + rate
-                if nxt > hi_b:
-                    direction = 1
-                    nxt = val - rate
-                val = nxt
-    return out
+    return _njit.render_pingpong(
+        int(seg_len),
+        int(v0),
+        int(rate),
+        int(lo_b),
+        int(hi_b),
+        int(dwell),
+        int(d0),
+        int(dir0),
+    )
 
 
 def render_pingfold(seg_len, step, frac, lo, hi, acc0, dir0):
@@ -544,18 +505,15 @@ def render_pingfold(seg_len, step, frac, lo, hi, acc0, dir0):
     long-period triangle as one closed-form rule (step, frac, bounds) rather than
     storing the per-frame ramp.  ``lo``/``hi`` are the internal (shifted) fold
     bounds and ``acc0``/``dir0`` the internal seed, all bus-recovered."""
-    out = np.empty(seg_len, dtype=np.int64)
-    acc, direction = acc0, dir0
-    for i in range(seg_len):
-        out[i] = acc >> frac
-        acc += step * direction
-        if acc > hi:
-            acc = 2 * hi - acc
-            direction = -direction
-        elif acc < lo:
-            acc = 2 * lo - acc
-            direction = -direction
-    return out
+    return _njit.render_pingfold(
+        int(seg_len),
+        int(step),
+        int(frac),
+        int(lo),
+        int(hi),
+        int(acc0),
+        int(dir0),
+    )
 
 
 def render_vibreflect(seg_len, center, speed, cmpvalue, delay, vibtime0=0):
@@ -586,76 +544,46 @@ def render_vibreflect(seg_len, center, speed, cmpvalue, delay, vibtime0=0):
     accumulator (``& 0xFFFF`` each step), so this REPLAYS the chip's add/sub exactly
     rather than indexing a phase table; only the five scalar params are stored, never
     the per-frame sequence (HARD RULE #0)."""
-    out = np.empty(seg_len, dtype=np.int64)
-    freq = center & 0xFFFF
-    vibtime = vibtime0 & 0xFF
-    vibdelay = delay
-    for i in range(seg_len):
-        if vibdelay > 1:
-            vibdelay -= 1
-            out[i] = freq
-            continue
-        if vibtime < 0x80 and vibtime > cmpvalue:
-            vibtime ^= 0xFF
-        vibtime = (vibtime + 2) & 0xFF
-        if vibtime & 1:
-            freq = (freq - speed) & 0xFFFF
-        else:
-            freq = (freq + speed) & 0xFFFF
-        out[i] = freq
-    return out
+    return _njit.render_vibreflect(
+        int(seg_len),
+        int(center),
+        int(speed),
+        int(cmpvalue),
+        int(delay),
+        int(vibtime0),
+    )
 
 
 def render_decay(seg_len, v0, rate, every, ctr0):
     """Drum / skydive: value decrements by ``rate`` every ``every`` frames,
     emitting the pre-decrement value."""
-    out = np.empty(seg_len, dtype=np.int64)
-    val = v0
-    for i in range(seg_len):
-        out[i] = val
-        if (ctr0 + i + 1) % every == 0:
-            val = (val - rate) & 0xFFFF
-    return out
+    return _njit.render_decay(int(seg_len), int(v0), int(rate), int(every), int(ctr0))
 
 
 def render_dwell_accum(seg_len, v0, rate, dwell, lead, ctr0):
     """value += rate every ``dwell`` frames after a ``lead``-frame hold."""
     _ = ctr0
-    out = np.empty(seg_len, dtype=np.int64)
-    val = v0
-    counter = 0
-    for i in range(seg_len):
-        out[i] = val & 0xFFFF
-        if i >= lead:
-            counter += 1
-            if counter % dwell == 0:
-                val = (val + rate) & 0xFFFF
-    return out
+    return _njit.render_dwell_accum(
+        int(seg_len), int(v0), int(rate), int(dwell), int(lead)
+    )
 
 
 def render_maskaccum(seg_len, v0, rate, mask, width_mask=0xFFFF):
     """Periodic-dwell accumulator: value += rate on frames where the period-P
     boolean ``mask`` is set (0 = hold).  A wavetable-paced sweep that steps the
     accumulator on a fixed-period pattern rather than every frame."""
-    out = np.empty(seg_len, dtype=np.int64)
-    val = v0
-    period = len(mask)
-    for i in range(seg_len):
-        out[i] = val & width_mask
-        if mask[i % period]:
-            val = (val + rate) & width_mask
-    return out
+    mask_arr = np.asarray(mask, dtype=np.int64)
+    return _njit.render_maskaccum(
+        int(seg_len), int(v0), int(rate), mask_arr, int(width_mask)
+    )
 
 
 def render_tablewalk(seg_len, table, ctr0=0):
     """Periodic table walk: out[i] = table[(ctr0 + i) % P].  Closed-form
     periodic generator for LFO modulations of any period P (the arp primitive
     without the P<=6 cap)."""
-    period = len(table)
-    out = np.empty(seg_len, dtype=np.int64)
-    for i in range(seg_len):
-        out[i] = table[(ctr0 + i) % period]
-    return out
+    table_arr = np.asarray(table, dtype=np.int64)
+    return _njit.render_tablewalk(int(seg_len), table_arr, int(ctr0))
 
 
 def render_ratewalk(seg_len, v0, rate_table, ctr0=0, width_mask=0xFFFF):
@@ -666,13 +594,10 @@ def render_ratewalk(seg_len, v0, rate_table, ctr0=0, width_mask=0xFFFF):
     It generalises :func:`render_maskaccum` (one rate gated by a 0/1 mask) to a
     full period-P signed-rate table, so a sub-resolution sweep whose effective rate
     drifts on a fixed pattern is one rule, not stored data."""
-    period = len(rate_table)
-    out = np.empty(seg_len, dtype=np.int64)
-    val = v0
-    for i in range(seg_len):
-        out[i] = val & width_mask
-        val = (val + rate_table[(ctr0 + i) % period]) & width_mask
-    return out
+    rate_arr = np.asarray(rate_table, dtype=np.int64)
+    return _njit.render_ratewalk(
+        int(seg_len), int(v0), rate_arr, int(ctr0), int(width_mask)
+    )
 
 
 def render_dwellratewalk(seg_len, v0, rate_table, dwell, ctr0=0, width_mask=0xFFFF):
@@ -692,13 +617,15 @@ def render_dwellratewalk(seg_len, v0, rate_table, dwell, ctr0=0, width_mask=0xFF
     The ``width_mask`` is the lane's own width (0xFFF for the 12-bit pulse-width
     register), so a step crossing the register boundary wraps exactly as the chip's
     accumulator does, never as stored data."""
-    out = np.empty(seg_len, dtype=np.int64)
-    period = len(rate_table)
-    val = v0
-    for i in range(seg_len):
-        out[i] = val & width_mask
-        val = (val + rate_table[((ctr0 + i) // dwell) % period]) & width_mask
-    return out
+    rate_arr = np.asarray(rate_table, dtype=np.int64)
+    return _njit.render_dwellratewalk(
+        int(seg_len),
+        int(v0),
+        rate_arr,
+        int(dwell),
+        int(ctr0),
+        int(width_mask),
+    )
 
 
 def render_tablewalk_lead(seg_len, lead, value0, table, ctr0=0):
@@ -707,11 +634,10 @@ def render_tablewalk_lead(seg_len, lead, value0, table, ctr0=0):
     offset table).  Folding the lead hold into one rule lets the cover reach the
     long-period table in a single piece, so a short coincidental arp at the note
     start cannot shadow the genuine (longer-period) modulation that follows."""
-    period = len(table)
-    out = np.empty(seg_len, dtype=np.int64)
-    for i in range(seg_len):
-        out[i] = value0 if i < lead else table[(ctr0 + i - lead) % period]
-    return out
+    table_arr = np.asarray(table, dtype=np.int64)
+    return _njit.render_tablewalk_lead(
+        int(seg_len), int(lead), int(value0), table_arr, int(ctr0)
+    )
 
 
 def render_wavetable_ptr(seg_len, table, phase, advance):
@@ -730,14 +656,9 @@ def render_wavetable_ptr(seg_len, table, phase, advance):
     frames at which the lane steps); it is SHARED across the voice's animated lanes
     (the same groove paces them all), so it is a separable driver clock, never the
     lane's stored output -- the closed-form value content is the period-P table."""
-    period = len(table)
-    out = np.empty(seg_len, dtype=np.int64)
-    ptr = phase % period
-    for i in range(seg_len):
-        if i > 0 and advance[(i - 1) % len(advance)]:
-            ptr = (ptr + 1) % period
-        out[i] = table[ptr]
-    return out
+    table_arr = np.asarray(table, dtype=np.int64)
+    advance_arr = np.asarray(advance, dtype=np.int64)
+    return _njit.render_wavetable_ptr(int(seg_len), table_arr, int(phase), advance_arr)
 
 
 # ---------------------------------------------------------------------------
@@ -1221,11 +1142,13 @@ def citg_preset(name, prm):
 # Prefix matchers (each returns the LONGEST byte-exact prefix it covers).
 # ---------------------------------------------------------------------------
 def _match_prefix(rend, seg):
-    length = min(len(rend), len(seg))
-    eq = rend[:length] == seg[:length]
-    if eq.all():
-        return length
-    return int(np.argmin(eq))
+    # The renderers already return contiguous int64 and seg is an int64 lane, so
+    # the common path needs no copy; only coerce the rare non-conforming input.
+    if rend.dtype != np.int64 or not rend.flags["C_CONTIGUOUS"]:
+        rend = np.ascontiguousarray(rend, dtype=np.int64)
+    if seg.dtype != np.int64 or not seg.flags["C_CONTIGUOUS"]:
+        seg = np.ascontiguousarray(seg, dtype=np.int64)
+    return int(_njit.match_prefix(rend, seg))
 
 
 def _detect_period(arr, maxp=8):
@@ -1571,33 +1494,33 @@ def _prefix_pingpong(seg):
     # both are tried; the exact-extreme convention is the one a fine ``+/-1`` triangle
     # vibrato uses, which the past-extreme-only form left as a 7-frame stub.
     bound_pairs = ((lo_b - 1, hi_b + 1), (lo_b, hi_b))
-    best = None
-    for rate in sorted(set(nonzero.tolist()))[:5]:
-        for refl_lo, refl_hi in bound_pairs:
-            for dwell in range(0, 12):
-                for d0 in range(dwell + 1):
-                    for dir0 in (0, 1):
-                        rend = render_pingpong(
-                            length, base, int(rate), refl_lo, refl_hi, dwell, d0, dir0
-                        )
-                        match = _match_prefix(rend, seg)
-                        if match >= _MINRUN and (best is None or match > best[0]):
-                            best = (
-                                match,
-                                "pingpong",
-                                {
-                                    "v0": base,
-                                    "rate": int(rate),
-                                    "lo": refl_lo + 1,
-                                    "hi": refl_hi - 1,
-                                    "dwell": dwell,
-                                    "d0": d0,
-                                    "dir0": dir0,
-                                },
-                            )
-                            if match == length:
-                                return best
-    return best
+    # The nested (rate, bound-pair, dwell, d0, dir0) candidate grid is enumerated by
+    # the fused njit kernel in the SAME order with the SAME first-wins / strictly-
+    # longer / early-full-match semantics as the former Python loop -- byte-identical,
+    # but with no per-candidate render allocation or dispatch (this was the dominant
+    # per-segment cost on a triangle-PWM-heavy multispeed trace).
+    rates = np.array(sorted(set(nonzero.tolist()))[:5], dtype=np.int64)
+    bound_los = np.array([p[0] for p in bound_pairs], dtype=np.int64)
+    bound_his = np.array([p[1] for p in bound_pairs], dtype=np.int64)
+    seg = np.ascontiguousarray(seg, dtype=np.int64)
+    match, rate, refl_lo, refl_hi, dwell, d0, dir0 = _njit.pingpong_search(
+        seg, int(base), rates, bound_los, bound_his, 12, _MINRUN
+    )
+    if match < 0:
+        return None
+    return (
+        int(match),
+        "pingpong",
+        {
+            "v0": base,
+            "rate": int(rate),
+            "lo": int(refl_lo) + 1,
+            "hi": int(refl_hi) - 1,
+            "dwell": int(dwell),
+            "d0": int(d0),
+            "dir0": int(dir0),
+        },
+    )
 
 
 def _prefix_pingfold(seg, minrun=24):
