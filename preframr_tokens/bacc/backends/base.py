@@ -25,33 +25,20 @@ class DriverBackend(ABC):
 
 
 def select_backend(psid):
-    """Pick the backend whose playroutine matches, or raise (no silent fallback).
+    """Pick the hand backend whose playroutine matches, or raise.
 
-    The Hubbard backends key on exact load/play addresses; the lft white-box
-    backend keys on its $0801-image relocate-into-zero-page signature (play=0,
-    IRQ-driven); GoatTracker is the broader gt2reloc single-speed shape
-    (play = init + 3), tried last. lft never overlaps GoatTracker (lft is
-    play=0, GoatTracker requires play = init + 3) but its specific byte
-    signature is checked ahead of the broad GoatTracker shape regardless.
+    GoatTracker is the only remaining hand backend (the gt2reloc single-speed
+    shape, play = init + 3); it is kept for reference. Anything it does not match
+    has no hand backend -- use the generic path (single-file ``.sid`` recovery via
+    ``preframr_tokens.bacc.generic.recover_from_sid``), which is driver-agnostic.
     """
-    from preframr_tokens.bacc.backends.dmc import DmcBackend
     from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
-    from preframr_tokens.bacc.backends.hubbard import (
-        Hubbard5TTBackend,
-        HubbardMontyBackend,
-    )
-    from preframr_tokens.bacc.backends.lft import LftBackend
 
-    for backend in (
-        HubbardMontyBackend(),
-        Hubbard5TTBackend(),
-        LftBackend(),
-        DmcBackend(),
-        GoatTrackerBackend(),
-    ):
-        if backend.matches(psid):
-            return backend
+    backend = GoatTrackerBackend()
+    if backend.matches(psid):
+        return backend
     raise ValueError(
-        f"no BACC driver backend matches PSID (load={psid.load_addr:#06x} "
-        f"init={psid.init_addr:#06x} play={psid.play_addr:#06x})"
+        "no hand backend matches PSID "
+        f"(load={psid.load_addr:#06x} init={psid.init_addr:#06x} "
+        f"play={psid.play_addr:#06x}); use the generic path"
     )

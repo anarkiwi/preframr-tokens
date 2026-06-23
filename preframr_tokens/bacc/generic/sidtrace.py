@@ -27,7 +27,7 @@ import tempfile
 
 import numpy as np
 
-from preframr_tokens.bacc.generic.busstate import NREG, PW_HI
+from preframr_tokens.bacc.generic.busstate import NREG, PW_HI, _cadence_state
 from preframr_tokens.codec.lsp_validate import (
     BURST_GAP,
     detect_play_period,
@@ -52,12 +52,32 @@ def sidtrace_bin():
 def sidwr_state(sidwr_path, t0=None):
     """Parse a ``.sidwr.bin`` into the per-frame ``(nframes, 25)`` register array.
 
-    Vectorised load of the packed records, then the SAME blit-group framing as
-    :func:`busstate.per_frame_state_from_bus`: a SID-write gap above
-    :data:`BURST_GAP` cycles starts a new play-call, the last value written to
-    each register in a play-call is that frame's value, the PW-high registers are
-    masked to their 4 SID-significant bits (a pure chip semantic), and frame 0 is
-    the play-call at the tune's first steady play cycle (``t0``).
+    Vectorised load of the packed records, then framing at the tune's detected play
+    PERIOD with forward-fill -- one row per play-call, the last value written to each
+    register surviving as that frame's value and held between play-calls -- the SAME
+    grid the corpus training dumps use (:func:`codec.lane_grammar.per_frame_state` and
+    :func:`busstate.per_frame_state_from_bus`).  The PW-high registers are masked to
+    their 4 SID-significant bits (a pure chip semantic) and frame 0 is the play-call at
+    the tune's first steady play cycle (``t0``).
+
+    Two framings reproduce that grid; the cheaper, byte-identical one is chosen:
+
+      * BLIT-GROUP (the default): a SID-write gap above :data:`BURST_GAP` cycles starts
+        a new play-call.  An EVERY-FRAME writer (Grid_Runner, A Mind, ...) exposes one
+        gap-group per play period, so this yields exactly one row per period -- the
+        grid -- and is kept verbatim (byte-identical to the prior behaviour, so the
+        every-frame tunes and the env-gated recovery fixtures are unchanged).
+      * CADENCE: ``round((cyc - t0) / cpf)`` bins writes onto the play-period grid and
+        forward-fills held values down the frame axis (:func:`busstate._cadence_state`,
+        identical to the corpus :func:`per_frame_state`).  A SPARSE writer that plays
+        EVERY raster frame but only WRITES the SID on a fraction of them (Master
+        Composer: 234 write-bursts across ~2300 play-calls) collapses under blit-group
+        framing to one row per WRITE -- dropping the held-value frames between writes --
+        which blows the fixed boot/pool/header costs up to several tok/frame.  When the
+        blit-group count is materially below the play-period span (the bursts span far
+        more periods than there are bursts), the tune is this sparse writer and the
+        cadence framing -- one row per play-call, values held between writes -- is used
+        instead, so the fixed costs amortize over the true frame count.
 
     Returns ``(state, t0)``; ``state`` is ``None`` for a trace with no SID writes.
     """
@@ -78,6 +98,19 @@ def sidwr_state(sidwr_path, t0=None):
         t0 = first_play_cycle(cyc, cpf)
     boot_off = int(np.searchsorted(gstart_cyc, t0 - cpf / 2))
     nframes = len(starts) - boot_off
+    # SPARSE-WRITER DETECTION.  The play-period span (play-calls from frame 0 to the
+    # last write) is the true frame count when the player calls play every period; the
+    # blit-group count is the number of WRITE bursts.  When the bursts cover far more
+    # periods than there are bursts, the player writes the SID only occasionally while
+    # holding the chip state between writes -- so blit-group framing (one row per write)
+    # drops the held frames and under-counts.  Re-frame at the play period (cadence),
+    # forward-filling held values, exactly as the corpus dump is framed.
+    span_frames = int(round((int(cyc[-1]) - t0) / cpf)) + 1 if cpf else 0
+    if cpf and nframes >= 2 and span_frames > nframes and nframes < 0.9 * span_frames:
+        # Cadence framing (corpus-consistent): bin on the play-period grid + forward-fill.
+        # Anchored at ``t0`` so frame 0 is the first steady play-call, identical to the
+        # blit-group anchor and to :func:`per_frame_state` / :func:`_cadence_state`.
+        return _cadence_state(cyc, reg, val, t0, cpf), t0
     seq = np.zeros((nframes, NREG), dtype=np.int64)
     cur = [0] * NREG
     for group in range(len(starts)):

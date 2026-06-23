@@ -1,6 +1,6 @@
 """Driver-agnostic generic recovery from the trusted preframr-sidtrace bus trace.
 
-The hand backends (``bacc/backends/{goattracker,hubbard,...}.py``) each encode
+The hand backend (``bacc/backends/goattracker.py``, kept for reference) encodes
 one playroutine's disassembly to recover a :class:`~preframr_tokens.bacc.primitive.BaccProgram`.
 This package recovers the SAME common abstraction WITHOUT any per-driver
 knowledge, reading only SID-chip semantics plus the trusted preframr-sidtrace
@@ -95,5 +95,25 @@ from preframr_tokens.bacc.generic.recover import (
     render_generic,
     residual,
 )
+from preframr_tokens.bacc.generic.structure_ir import (
+    StructureIR,
+    recover_structure_ir,
+    render_structure,
+    structure_ir_from_ids,
+    structure_ir_to_ids,
+)
 
-__all__ = ["recover_from_sid", "recover_generic", "render_generic", "residual"]
+__all__ = [
+    "recover_from_sid",
+    "recover_generic",
+    "render_generic",
+    "residual",
+    # the structure-recovery path (a structured tune's tracker source -- a deduped
+    # instrument pool + factored patterns/orderlist + the porta/vibrato accumulator
+    # generators -- serialized < 1 token/frame where the output-fit cover floors >= 1).
+    "StructureIR",
+    "recover_structure_ir",
+    "render_structure",
+    "structure_ir_to_ids",
+    "structure_ir_from_ids",
+]

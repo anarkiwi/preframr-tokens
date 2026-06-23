@@ -239,3 +239,10 @@ tests/test_residual_zero_corpus.py
 tests/test_fixtures/*
 !tests/test_fixtures/*.sid
 !tests/test_fixtures/*.dump.parquet
+# Committed per-frame register STATE fixtures (compact uint8 .npz): the generic
+# byte-exact/budget gates (A_Mind_Is_Born + the per-driver corpus budget set)
+# read these in CI with no sidtrace binary, so they must be tracked.
+!tests/test_fixtures/*.generic_state.npz
+!tests/test_fixtures/budget/
+!tests/test_fixtures/budget/*.npz
+!tests/test_fixtures/budget/MANIFEST.tsv

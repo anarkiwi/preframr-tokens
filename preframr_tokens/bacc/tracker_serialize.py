@@ -1,23 +1,34 @@
-"""Serialize a tracker-LIFTED generic program to the model-facing token stream.
+"""Serialize the canonical Tracker IR to the model-facing token stream.
 
-A generic :class:`~preframr_tokens.bacc.primitive.BaccProgram` lifts
-(:mod:`preframr_tokens.bacc.generic.tracker`) into a shared INSTRUMENT pool + a
-per-lane NOTE-EVENT stream.  This module serializes that tracker form through the
-SHARED post-BACC score machinery (:func:`serialize._lz_emit_t`): each lane's event
-stream is factored by inline backward REPEAT (an exact phrase repeat) and TRANSPOSE
-(a phrase replayed at a constant note-table-index shift -- a tracker orderlist
-Transpose), and every instrument is defined inline on first reference and
-referenced by index thereafter (the inline-define-on-first-use dedup the Hubbard /
-GoatTracker scores use).  No new token ids -- the base-16 LEB digit alphabet plus
-the shared REPEAT/TRANSPOSE markers.
+A ``driver="generic"`` :class:`~preframr_tokens.bacc.primitive.BaccProgram` is
+compiled into the :class:`~preframr_tokens.bacc.tracker_ir.TrackerIR` (a shared
+instrument/generator pool + per-voice BUNDLED instrument rows + free sibling lanes +
+the four global lanes), then serialized through the SHARED post-BACC score machinery
+(:func:`serialize._lz_emit_t`):
 
-The header carries ``nframes`` + the frame-0 ``boot`` + the bus-recovered note
-table; the body is the instrument pool (deferred -- emitted inline on first use)
-and the per-lane LZ'd event streams.  Round-trips byte-exact to the lifted program,
-which renders byte-exact (residual-zero) to the bus-state via
-:func:`tracker.render_from_fits`.
+* the POOL holds each unique seed-and-pitch-invariant instrument struct ONCE,
+  token-LZ'd across structs (two instruments sharing a long sub-table collapse), each
+  carrying its fixed SEED SCHEMA (the SEED_KEYS that instrument's per-note residue
+  uses -- constant per struct, so a row's seed is just bare VALUES, no keys/tags);
+* each voice's BUNDLED rows are one LZ stream of ``(dt, dur, refs, bases, seeds)``
+  records (a voice's freq + folded pw/ctrl/ad/sr ride ONE row), factored by inline
+  backward REPEAT (an exact phrase repeat) and TRANSPOSE (a phrase replayed at a
+  constant note-table-index shift -- a tracker orderlist Transpose);
+* free sibling lanes and the global lanes are per-lane LZ'd event streams.
+
+A pitched freq onset's pitch rides as a note-table-RELATIVE ``base`` index (the
+canonical cross-driver alphabet -- see :mod:`pitch`); an algorithmic/unpitched
+segment carries an absolute generator ref instead.  When the tune has no note table
+the ``base`` is constant (-1) and is dropped from every row entirely.  No new token
+ids -- the base-16 LEB digit alphabet plus the shared REPEAT/TRANSPOSE markers.
+
+The serializer round-trips byte-exact to the IR, which :func:`tracker_ir.unlift`
+inverts to the EXACT ``genfits``/``eventfits`` the per-register renderer consumes, so
+``render(unlift(deserialize(serialize(ir)))) == state`` byte-for-byte; the
+render-equality self-check (HARD RULE #0) RAISES on any mismatch (no silent escape).
 """
 
+from preframr_tokens.bacc.generic.tracker import SEED_KEYS
 from preframr_tokens.bacc.primitive import BaccProgram
 from preframr_tokens.bacc.serialize import (
     REPEAT,
@@ -29,24 +40,55 @@ from preframr_tokens.bacc.serialize import (
     _wi,
     _wu,
 )
+from preframr_tokens.bacc.tracker_ir import (
+    CLASSES,
+    GLOBALS,
+    TrackerIR,
+    VoiceTrack,
+)
 
 NREG = 25
 _INSTR_REF_BIAS = 1  # ref -1 (un-fit) encodes as 0; a real ref k encodes as k+1
-# The pool token stream uses only value tags (0..6) + LEB digits (0..31), all
-# below the REPEAT marker (32), so REPEAT is a safe in-stream escape: the pool's
-# flattened tokens are backward-LZ'd at TOKEN granularity (not entry granularity)
-# so two instruments that share a long sub-table -- e.g. the SAME wavetable read
-# at a different phase, the dominant Grid_Runner redundancy -- collapse to one
-# copy.  This is a pure lossless re-encode of the already-deduped pool (HARD
-# RULE #0): :func:`_read_pool_lz` rebuilds the identical flat stream byte-for-byte.
+# The pool token stream uses only value tags (0..6) + LEB digits (0..31), all below
+# the REPEAT marker (32), so REPEAT is a safe in-stream escape: the pool's flattened
+# tokens are backward-LZ'd at TOKEN granularity so two instruments sharing a long
+# sub-table (the SAME wavetable read at a different phase) collapse to one copy.
 _POOL_MIN_COPY = 3  # a copy costs REPEAT + off + len (>=3 tokens); break even at 3
 
+# --- the seed key alphabet (a compact per-note residue codec) ---------------
+# The per-note seed is a small dict over the fixed SEED_KEYS, and the SET of keys an
+# instrument uses is CONSTANT per pool struct (the struct IS the seed-invariant
+# program).  So the keys are stored ONCE per pool entry as a SCHEMA (a list of
+# key-indices), and each row's seed is just the bare VALUES in schema order -- no
+# per-row key strings, dict tags, or counts (the dominant per-row saving on a melodic
+# hold / per-note-sweep lane).
+_SEED_KEY_INDEX = {k: i for i, k in enumerate(SEED_KEYS)}
+_SEED_KEY_LIST = list(SEED_KEYS)
 
-# --- generic JSON-value (de)serialization for instrument structs -----------
+
+# --- generic JSON-value (de)serialization for instrument structs ------------
 # The instrument struct is a small JSON-clean dict/list of ints, str keys, and the
-# "rel" pitch sentinel; encode it by value-type (same scheme as generic_serialize)
-# so it stays correct as the archetype set evolves.
-_T_NONE, _T_FALSE, _T_TRUE, _T_INT, _T_STR, _T_LIST, _T_DICT = range(7)
+# "rel" pitch sentinel; encode it by value-type so it stays correct as the archetype
+# set evolves.  Used for the POOL (once per unique struct), never per row.
+#
+# A homogeneous INT list -- the dominant pool payload, a generator's period-P
+# ``table`` (an accum's signed steps, a read's values) -- gets its own tag ``_T_IARR``
+# so the per-element ``_T_INT`` type tag is paid ONCE for the whole array, not once per
+# element.  A dense-modulation lane's table is dozens-to-hundreds of ints, so dropping
+# the per-element tag is the single largest pool saving (the tag was ~a third of every
+# table's tokens).  All tags stay < REPEAT (32), so the pool's token-LZ escape is still
+# safe.  A mixed/nested list (e.g. a pitch-factored ``["rel", 0, -3]`` -- a str + ints,
+# or a piecewise ``["P", ...]`` body) keeps the generic ``_T_LIST`` element-wise form.
+_T_NONE, _T_FALSE, _T_TRUE, _T_INT, _T_STR, _T_LIST, _T_DICT, _T_IARR = range(8)
+
+
+def _is_int_array(value):
+    """True for a non-empty list/tuple of plain ints (not bools) -- the homogeneous
+    int payload ``_T_IARR`` packs tag-free.  Empty stays generic (no payload to save).
+    """
+    return bool(value) and all(
+        isinstance(x, int) and not isinstance(x, bool) for x in value
+    )
 
 
 def _write_value(out, value):
@@ -66,10 +108,16 @@ def _write_value(out, value):
         for b in data:
             _wu(out, b)
     elif isinstance(value, (list, tuple)):
-        out.append(_T_LIST)
-        _wu(out, len(value))
-        for item in value:
-            _write_value(out, item)
+        if _is_int_array(value):
+            out.append(_T_IARR)
+            _wu(out, len(value))
+            for item in value:
+                _wi(out, item)
+        else:
+            out.append(_T_LIST)
+            _wu(out, len(value))
+            for item in value:
+                _write_value(out, item)
     elif isinstance(value, dict):
         out.append(_T_DICT)
         _wu(out, len(value))
@@ -98,6 +146,13 @@ def _read_value(ids, i):
             b, i = _ru(ids, i)
             data.append(b)
         return data.decode("utf-8"), i
+    if tag == _T_IARR:
+        n, i = _ru(ids, i)
+        items = []
+        for _ in range(n):
+            item, i = _ri(ids, i)
+            items.append(item)
+        return items, i
     if tag == _T_LIST:
         n, i = _ru(ids, i)
         items = []
@@ -116,81 +171,304 @@ def _read_value(ids, i):
     raise ValueError(f"tracker_serialize: unknown value tag {tag}")
 
 
-# --- per-note seed / base (the per-event residue) --------------------------
-def _write_seed(out, seed):
-    """A simple event's seed is a dict; a piecewise event's is a list of dicts.
-    ``None`` (an un-fit event) writes a single 0-length marker."""
-    if seed is None:
-        out.append(_T_NONE)
-    elif isinstance(seed, list):
-        out.append(_T_LIST)
-        _wu(out, len(seed))
-        for piece in seed:
-            _write_value(out, piece)
+# --- the per-ref seed SCHEMA + base shape -----------------------------------
+# A pool entry's schema records, for a simple ("S") body, the ordered seed keys; for
+# a piecewise ("P") body, the per-piece ordered seed keys.  ``ref == -1`` (un-fit) has
+# no body so its events carry no base/seed at all.  The schema is derived from the IR
+# events (consistent per ref by construction), emitted once after the pool, and used
+# to decode each row's base/seed positionally.
+def _schema_of_seed(seed):
+    """The ordered seed-key tuple of one (simple) seed dict (``()`` for None/empty)."""
+    if not seed:
+        return ()
+    return tuple(seed.keys())
+
+
+def _collect_schemas(ir):
+    """For each pool index, the seed schema: an ``("S", key_tuple)`` or
+    ``("P", [key_tuple, ...])``.  Scans every event/row once (every reference to a ref
+    carries the SAME schema, asserted on mismatch -- a structural invariant)."""
+    schema = {}
+
+    def note(ref, seed):
+        if ref < 0:
+            return
+        tag = ir.pool[ref][0]
+        if tag == "P":
+            sc = ("P", tuple(_schema_of_seed(ps) for ps in (seed or [])))
+        else:
+            sc = ("S", _schema_of_seed(seed))
+        prev = schema.get(ref)
+        if prev is None:
+            schema[ref] = sc
+        elif prev != sc:
+            raise ValueError(
+                f"tracker_serialize: ref {ref} has inconsistent seed schema "
+                f"{prev!r} vs {sc!r} (the struct must determine its seed keys)"
+            )
+
+    for track in ir.voices:
+        for _dur, refs, _bases, seeds in track.rows:
+            for ref, seed in zip(refs, seeds):
+                note(ref, seed)
+        for events in track.free.values():
+            for _dur, ref, _base, seed in events:
+                note(ref, seed)
+    for events in ir.globals.values():
+        for _dur, ref, _base, seed in events:
+            note(ref, seed)
+    # A pool entry no event references (cannot happen via lift) defaults to empty.
+    out = []
+    for ref in range(len(ir.pool)):
+        sc = schema.get(ref)
+        if sc is None:
+            tag = ir.pool[ref][0]
+            sc = ("P", ()) if tag == "P" else ("S", ())
+        out.append(sc)
+    return out
+
+
+def _emit_one_schema(out, schema):
+    """Emit ONE seed schema: a tag (0=S, 1=P) then the ordered seed-key indices (a
+    simple key list, or a per-piece key list)."""
+    kind, body = schema
+    if kind == "S":
+        out.append(0)
+        _wu(out, len(body))
+        for key in body:
+            _wu(out, _SEED_KEY_INDEX[key])
     else:
-        _write_value(out, seed)
+        out.append(1)
+        _wu(out, len(body))
+        for piece in body:
+            _wu(out, len(piece))
+            for key in piece:
+                _wu(out, _SEED_KEY_INDEX[key])
 
 
-def _read_seed(ids, i):
-    return _read_value(ids, i)
+def _read_one_schema(ids, i):
+    kind = ids[i]
+    i += 1
+    if kind == 0:
+        n, i = _ru(ids, i)
+        keys = []
+        for _ in range(n):
+            k, i = _ru(ids, i)
+            keys.append(_SEED_KEY_LIST[k])
+        return ("S", tuple(keys)), i
+    npiece, i = _ru(ids, i)
+    pieces = []
+    for _ in range(npiece):
+        m, i = _ru(ids, i)
+        keys = []
+        for _ in range(m):
+            k, i = _ru(ids, i)
+            keys.append(_SEED_KEY_LIST[k])
+        pieces.append(tuple(keys))
+    return ("P", tuple(pieces)), i
 
 
-def _write_base(out, base):
-    """The pitch base index: an int (simple body) or a list of ints (piecewise).
-    Written as a tagged value so it round-trips through :func:`_read_value`."""
-    _write_value(out, base)
+def _emit_schemas(out, schemas):
+    """Emit the per-ref seed schemas as a small DICTIONARY + per-entry index.
+
+    A seed schema is one of only a few distinct shapes (``('seed',)``,
+    ``('lead','seed')``, ...) but EVERY pool entry carries one, so emitting the full
+    key list per entry repeats the same handful of shapes dozens of times.  Instead the
+    DISTINCT schemas (first-seen order) are emitted ONCE as a dictionary, then each pool
+    entry is a single index into it -- the per-entry cost drops from a whole key list to
+    one LEB index (the dominant schema-block saving on a many-instrument tune)."""
+    distinct = []
+    index = {}
+    for sc in schemas:
+        if sc not in index:
+            index[sc] = len(distinct)
+            distinct.append(sc)
+    _wu(out, len(distinct))
+    for sc in distinct:
+        _emit_one_schema(out, sc)
+    for sc in schemas:
+        _wu(out, index[sc])
 
 
-def _read_base(ids, i):
-    return _read_value(ids, i)
+def _read_schemas(ids, i, npool):
+    ndistinct, i = _ru(ids, i)
+    distinct = []
+    for _ in range(ndistinct):
+        sc, i = _read_one_schema(ids, i)
+        distinct.append(sc)
+    schemas = []
+    for _ in range(npool):
+        idx, i = _ru(ids, i)
+        schemas.append(distinct[idx])
+    return schemas, i
 
 
-# --- event literal (the LZ item) -------------------------------------------
-def _event_lit(out, event):
-    """Emit one note-event literal: (dt, dur, ref+bias, base, seed).  The
-    instrument body is NOT emitted here (it is defined inline on first use by the
-    pool-aware wrapper in :func:`_emit_lane`)."""
-    dt, dur, ref, base, seed = event
-    _wu(out, dt)
+# --- one (dur, ref, base, seed) free-lane event literal, schema-driven ------
+# ``ctx`` carries the decode-shared (schemas, has_note_table).  The segment START is
+# NOT stored (the cover tiles a lane contiguously from 0, so start = running sum of
+# durs).  base is emitted only when the tune has a note table (else it is the constant
+# -1 and is implied); seed is the bare values in the ref's schema order (no per-row
+# keys/tags -- the schema is stored once per pool entry).
+def _emit_one(out, ev, ctx):
+    dur, ref, base, seed = ev
     _wu(out, dur)
-    _wu(out, ref + _INSTR_REF_BIAS)
-    _write_base(out, base)
-    _write_seed(out, seed)
+    _emit_lane_entry(out, ref, base, seed, ctx)
 
 
-def _event_read(ids, i):
-    dt, i = _ru(ids, i)
+def _read_one(ids, i, ctx):
     dur, i = _ru(ids, i)
-    ref, i = _ru(ids, i)
-    base, i = _read_base(ids, i)
-    seed, i = _read_seed(ids, i)
-    return (dt, dur, ref - _INSTR_REF_BIAS, base, seed), i
+    ref, base, seed, i = _read_lane_entry(ids, i, ctx)
+    return (dur, ref, base, seed), i
 
 
-def _event_delta(a, b):
-    """The constant note-table-index shift making event ``b`` a transposed copy of
-    ``a`` (same dt / dur / instrument / seed, both simple pitch-factored bodies),
-    else ``None``.  A phrase replayed at a different pitch is a constant-base shift.
-    """
-    if a[0] != b[0] or a[1] != b[1] or a[2] != b[2] or a[4] != b[4]:
-        return None
-    if isinstance(a[3], list) or isinstance(b[3], list):
-        return None  # piecewise body: no single transpose interval
-    if a[3] < 0 or b[3] < 0:
-        return None  # absolute (off-grid) body: not pitch-transposable
-    return b[3] - a[3]
+def _one_cost(ev, ctx):
+    tmp = []
+    _emit_one(tmp, ev, ctx)
+    return len(tmp)
 
 
-def _event_shift(event, delta):
-    dt, dur, ref, base, seed = event
-    return (dt, dur, ref, base + delta, seed)
+def _make_event_codec(ctx):
+    """Bind the decode context into (lit, read, cost, delta, shift) callables for the
+    free-lane event LZ (one event = one (dur, ref, base, seed) record)."""
+
+    def lit(out, ev):
+        _emit_one(out, ev, ctx)
+
+    def read(ids, i):
+        return _read_one(ids, i, ctx)
+
+    def cost(ev):
+        return _one_cost(ev, ctx)
+
+    def delta(a, b):
+        # dur, ref, seed identical; a single non-zero pitch-base shift (TRANSPOSE).
+        if a[0] != b[0] or a[1] != b[1] or a[3] != b[3]:
+            return None
+        if isinstance(a[2], list) or isinstance(b[2], list):
+            return None
+        if a[2] < 0 or b[2] < 0:
+            return None
+        return b[2] - a[2]
+
+    def shift(ev, d):
+        dur, ref, base, seed = ev
+        return (dur, ref, base + d, seed)
+
+    return lit, read, cost, delta, shift
+
+
+# --- a bundled voice row (dur, [ref...], [base...], [seed...]) ---------------
+def _make_row_codec(ctx, nlane):
+    """Bind the decode context + the voice's fixed lane count into the bundled-row LZ
+    callables.  A row is one dur + a per-lane (ref, base, seed) at that shared dur
+    (each lane via the schema codec).  ``nlane`` (= 1 spine + bundled) is constant per
+    voice, so it is emitted ONCE in the voice header, not per row."""
+
+    def lit(out, row):
+        dur, refs, bases, seeds = row
+        _wu(out, dur)
+        for ref, base, seed in zip(refs, bases, seeds):
+            _emit_lane_entry(out, ref, base, seed, ctx)
+
+    def read(ids, i):
+        dur, i = _ru(ids, i)
+        refs, bases, seeds = [], [], []
+        for _ in range(nlane):
+            ref, base, seed, i = _read_lane_entry(ids, i, ctx)
+            refs.append(ref)
+            bases.append(base)
+            seeds.append(seed)
+        return (dur, refs, bases, seeds), i
+
+    def cost(row):
+        tmp = []
+        lit(tmp, row)
+        return len(tmp)
+
+    def delta(a, b):
+        # same dur/refs/seeds; the spine (lane 0) shifts by a single interval, every
+        # pitch-bearing lane by the same delta, absolute lanes unchanged.
+        if a[0] != b[0] or a[1] != b[1] or a[3] != b[3]:
+            return None
+        d = None
+        for ab, bb in zip(a[2], b[2]):
+            if isinstance(ab, list) or isinstance(bb, list):
+                return None
+            if ab < 0 or bb < 0:
+                if ab != bb:
+                    return None
+                continue
+            dd = bb - ab
+            if d is None:
+                d = dd
+            elif dd != d:
+                return None
+        return d
+
+    def shift(row, d):
+        dur, refs, bases, seeds = row
+        nb = [b + d if (not isinstance(b, list) and b >= 0) else b for b in bases]
+        return (dur, refs, nb, seeds)
+
+    return lit, read, cost, delta, shift
+
+
+def _emit_lane_entry(out, ref, base, seed, ctx):
+    """One lane's (ref, base, seed) inside a bundled row (schema-driven, no tags)."""
+    schemas, has_nt = ctx
+    _wu(out, ref + _INSTR_REF_BIAS)
+    if ref < 0:
+        return
+    kind, body = schemas[ref]
+    if kind == "P":
+        if has_nt:
+            for b in base:
+                _wu(out, b + 1)
+        for keys, ps in zip(body, seed):
+            for key in keys:
+                _wi(out, ps[key])
+    else:
+        if has_nt:
+            _wu(out, base + 1)
+        for key in body:
+            _wi(out, seed[key])
+
+
+def _read_lane_entry(ids, i, ctx):
+    schemas, has_nt = ctx
+    rref, i = _ru(ids, i)
+    ref = rref - _INSTR_REF_BIAS
+    if ref < 0:
+        return ref, -1, None, i
+    kind, body = schemas[ref]
+    if kind == "P":
+        npiece = len(body)
+        bases = [-1] * npiece
+        if has_nt:
+            bases = []
+            for _ in range(npiece):
+                b, i = _ru(ids, i)
+                bases.append(b - 1)
+        seeds = []
+        for keys in body:
+            ps = {}
+            for key in keys:
+                v, i = _ri(ids, i)
+                ps[key] = v
+            seeds.append(ps)
+        return ref, bases, seeds, i
+    base = -1
+    if has_nt:
+        b, i = _ru(ids, i)
+        base = b - 1
+    seed = {}
+    for key in body:
+        v, i = _ri(ids, i)
+        seed[key] = v
+    return ref, base, seed, i
 
 
 # --- instrument pool (defined ONCE up front, then referenced by index) -------
-# The pool is emitted before the lanes (not inline) so the per-lane event LZ is a
-# clean stream of fixed-shape literals: a REPEAT/TRANSPOSE copy never has to carry
-# an instrument definition, and cost estimation never has to model whether a
-# literal also defines an instrument.  Each instrument is a small JSON struct.
 def _flatten_pool(pool):
     """The pool's entries flattened to one value-token stream (no LZ)."""
     flat = []
@@ -200,11 +478,10 @@ def _flatten_pool(pool):
 
 
 def _lz_tokens(stream, min_copy=_POOL_MIN_COPY):
-    """Backward-LZ a flat token ``stream`` into an output token list, escaping a
-    copy with the :data:`REPEAT` marker (safe: the value stream never emits a
-    token >= REPEAT).  Hash-of-3-grams accelerated greedy match (O(n)); a match is
-    taken only when it is strictly shorter than the literals it replaces.  The
-    inverse is :func:`_unlz_tokens`."""
+    """Backward-LZ a flat token ``stream`` into an output token list, escaping a copy
+    with the :data:`REPEAT` marker (safe: the value stream never emits a token >=
+    REPEAT).  Hash-of-3-grams accelerated greedy match (O(n)); a match is taken only
+    when strictly shorter than the literals it replaces."""
     out = []
     n = len(stream)
     table = {}  # 3-gram -> list of start positions (most recent last)
@@ -222,7 +499,7 @@ def _lz_tokens(stream, min_copy=_POOL_MIN_COPY):
                         break
                 if length > best_len:
                     best_len, best_off = length, off
-                if best_len >= 64:  # good-enough cap keeps the scan bounded
+                if best_len >= 512:  # good-enough cap keeps the scan bounded
                     break
         cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
         if best_len >= min_copy and cost_copy < best_len:
@@ -233,7 +510,6 @@ def _lz_tokens(stream, min_copy=_POOL_MIN_COPY):
         else:
             out.append(stream[i])
             step = 1
-        # index every 3-gram start we just passed over
         for j in range(i, min(i + step, n - 2)):
             table.setdefault((stream[j], stream[j + 1], stream[j + 2]), []).append(j)
         i += step
@@ -241,8 +517,7 @@ def _lz_tokens(stream, min_copy=_POOL_MIN_COPY):
 
 
 def _unlz_tokens(ids, i, ntokens):
-    """Inverse of :func:`_lz_tokens`: rebuild ``ntokens`` flat value-tokens from
-    the LZ'd stream starting at ``ids[i]``.  Returns ``(flat, new_index)``."""
+    """Inverse of :func:`_lz_tokens`: rebuild ``ntokens`` flat value-tokens."""
     flat = []
     while len(flat) < ntokens:
         tok = ids[i]
@@ -260,8 +535,8 @@ def _unlz_tokens(ids, i, ntokens):
 
 
 def _emit_pool(out, pool):
-    """Emit the instrument pool: its count, its flat-token length, then the
-    TOKEN-LZ'd flat stream (so shared sub-tables across instruments collapse)."""
+    """Emit the instrument pool: its count, its flat-token length, then the TOKEN-LZ'd
+    flat stream (so shared sub-tables across instruments collapse)."""
     _wu(out, len(pool))
     flat = _flatten_pool(pool)
     _wu(out, len(flat))
@@ -279,59 +554,105 @@ def _read_pool(ids, i):
     return pool, i
 
 
-# --- lane encode (pool already defined; events are plain LZ literals) --------
-def _emit_lane(out, events):
-    """Backward-LZ a lane's event stream.  TRANSPOSE factors a transposed phrase
-    repeat (a constant note-table-index shift)."""
+# --- lane / row stream encode (REPEAT + TRANSPOSE, or token-LZ; pick cheaper) ---
+# A stream of comparable items (free-lane events / bundled voice rows) is encoded the
+# cheaper of two ways, with a 1-token selector:
+#   MODE 0  ITEM-LZ: the shared :func:`serialize._lz_emit_t` -- inline backward
+#           REPEAT (an exact phrase repeat) + TRANSPOSE (a phrase replayed at a
+#           constant note-table-index shift), the cross-driver phrase machinery.
+#   MODE 1  TOKEN-LZ: the items flattened to one value-token stream and backward-LZ'd
+#           at TOKEN granularity (:func:`_lz_tokens`) -- collapses VALUE-level
+#           redundancy a phrase-granularity REPEAT misses (the same few dt / ref /
+#           seed values recurring out of phase, the dominant generic-lane redundancy).
+# TRANSPOSE wins on a pitch-shifted tracker phrase; TOKEN-LZ wins on a busy lane with
+# no clean phrase structure -- so the encoder measures both and keeps the smaller, the
+# prompt's "whichever is fewer tokens" applied per stream (decode reads the selector).
+_MODE_ITEM_LZ = 0
+_MODE_TOKEN_LZ = 1
 
-    def lit_cost(event):
-        tmp = []
-        _event_lit(tmp, event)
-        return len(tmp)
 
-    _wu(out, len(events))
-    _lz_emit_t(out, events, lit_cost, _event_lit, _event_delta)
+def _emit_stream(out, items, lit, cost, delta):
+    """Emit ``len(items)`` then the cheaper of {item-LZ (REPEAT+TRANSPOSE), token-LZ}
+    of ``items`` (a 1-token selector picks the mode; ``lit``/``cost`` render/measure a
+    single item, ``delta`` is the TRANSPOSE interval test)."""
+    _wu(out, len(items))
+    if not items:
+        return
+    item_body = []
+    _lz_emit_t(item_body, items, cost, lit, delta)
+    flat = []
+    for it in items:
+        lit(flat, it)
+    token_body = _lz_tokens(flat, _POOL_MIN_COPY)
+    # +1 for the mode selector either way; token-LZ also stores the flat length.
+    if 1 + len(item_body) <= 1 + _u_len(len(flat)) + len(token_body):
+        out.append(_MODE_ITEM_LZ)
+        out.extend(item_body)
+    else:
+        out.append(_MODE_TOKEN_LZ)
+        _wu(out, len(flat))
+        out.extend(token_body)
 
 
-def _read_lane(ids, i):
+def _read_stream(ids, i, read, shift):
+    """Inverse of :func:`_emit_stream`: rebuild the item list (``read`` parses one item
+    from a flat token list; ``shift`` re-coordinates a TRANSPOSE copy)."""
     n, i = _ru(ids, i)
-    events, i = _lz_read_t(ids, i, n, _event_read, _event_shift)
-    return events, i
+    if n == 0:
+        return [], i
+    mode = ids[i]
+    i += 1
+    if mode == _MODE_ITEM_LZ:
+        items, i = _lz_read_t(ids, i, n, read, shift)
+        return items, i
+    ntokens, i = _ru(ids, i)
+    flat, i = _unlz_tokens(ids, i, ntokens)
+    items, j = [], 0
+    for _ in range(n):
+        item, j = read(flat, j)
+        items.append(item)
+    return items, i
 
 
-# --- lane ordering: a stable, decode-reproducible key ----------------------
-def _lane_order(lanes):
-    """Generator lanes (``("g", "V:freq"|"V:pw")``) first in voice order, then
-    event lanes (``("e", reg)``) in register order -- a fixed order both sides
-    reproduce so the flat stream needs no per-lane id."""
-
-    def key(lane_id):
-        kind, val = lane_id
-        if kind == "g":
-            voice, cls = val.split(":")
-            return (0, int(voice), 0 if cls == "freq" else 1)
-        return (1, val, 0)
-
-    return sorted(lanes, key=key)
+def _emit_events(out, events, ctx):
+    """Encode a free lane's ``(dt, dur, ref, base, seed)`` event stream."""
+    lit, _read, cost, delta, _shift = _make_event_codec(ctx)
+    _emit_stream(out, events, lit, cost, delta)
 
 
-# --- top-level codec -------------------------------------------------------
-def _header(out, program):
-    _wu(out, program.nframes)
-    for b in program.boot:
+def _read_events(ids, i, ctx):
+    _lit, read, _cost, _delta, shift = _make_event_codec(ctx)
+    return _read_stream(ids, i, read, shift)
+
+
+def _emit_rows(out, rows, ctx, nlane):
+    """Encode a voice's BUNDLED row stream (TRANSPOSE factors a transposed bundled
+    phrase -- a constant spine-pitch shift).  ``nlane`` is fixed for the voice (1 spine
+    + bundled siblings) and derived from the voice header, not stored per row."""
+    lit, _read, cost, delta, _shift = _make_row_codec(ctx, nlane)
+    _emit_stream(out, rows, lit, cost, delta)
+
+
+def _read_rows(ids, i, ctx, nlane):
+    _lit, read, _cost, _delta, shift = _make_row_codec(ctx, nlane)
+    return _read_stream(ids, i, read, shift)
+
+
+# --- top-level header -------------------------------------------------------
+def _emit_header(out, ir):
+    _wu(out, ir.nframes)
+    for b in ir.boot:
         _wu(out, b)
-    note_table = program.tables.get("note_table")
-    if note_table is None:
+    if ir.note_table is None:
         _wu(out, 0)
     else:
         _wu(out, 1)
-        _wu(out, len(note_table))
-        for v in note_table:
+        _wu(out, len(ir.note_table))
+        for v in ir.note_table:
             _wu(out, v)
 
 
-def _read_header(ids):
-    i = 0
+def _read_header(ids, i):
     nframes, i = _ru(ids, i)
     boot = []
     for _ in range(NREG):
@@ -349,60 +670,131 @@ def _read_header(ids):
     return nframes, boot, note_table, i
 
 
-def tracker_program_to_ids(program):
-    """Serialize a tracker-lifted generic program to token ids (inverse of
-    :func:`tracker_ids_to_program`)."""
-    from preframr_tokens.bacc.generic.tracker import lift
+# --- a class is one of CLASSES, encoded by its fixed index ------------------
+_CLASS_INDEX = {cls: i for i, cls in enumerate(CLASSES)}
+_CLASS_LIST = list(CLASSES)
 
-    pool, lanes, _ = lift(program)
+
+def _emit_voice(out, track, ctx):
+    # the bundled classes (a bitmask over CLASSES, decode-reproducible order); the row
+    # lane count (1 spine + bundled) is derived from this mask, not stored per row.
+    mask = 0
+    for cls in track.bundled:
+        mask |= 1 << _CLASS_INDEX[cls]
+    _wu(out, mask)
+    _emit_rows(out, track.rows, ctx, 1 + len(track.bundled))
+    # the free sibling lanes (those not bundled), in CLASSES order
+    free_classes = [cls for cls in CLASSES if cls in track.free]
+    _wu(out, len(free_classes))
+    for cls in free_classes:
+        _wu(out, _CLASS_INDEX[cls])
+        _emit_events(out, track.free[cls], ctx)
+
+
+def _read_voice(ids, i, ctx):
+    mask, i = _ru(ids, i)
+    bundled = [cls for cls in CLASSES if mask & (1 << _CLASS_INDEX[cls])]
+    rows, i = _read_rows(ids, i, ctx, 1 + len(bundled))
+    nfree, i = _ru(ids, i)
+    free = {}
+    for _ in range(nfree):
+        cidx, i = _ru(ids, i)
+        events, i = _read_events(ids, i, ctx)
+        free[_CLASS_LIST[cidx]] = events
+    return VoiceTrack(bundled=bundled, rows=rows, free=free), i
+
+
+# --- the IR codec -----------------------------------------------------------
+def _ir_to_ids(ir):
+    schemas = _collect_schemas(ir)
+    ctx = (schemas, ir.note_table is not None)
     out = []
-    _header(out, program)
-    _emit_pool(out, pool)
-    _wu(out, len(_lane_order(lanes)))
-    for lane_id in _lane_order(lanes):
-        kind, val = lane_id
-        out.append(0 if kind == "g" else 1)
-        if kind == "g":
-            voice, cls = val.split(":")
-            _wu(out, int(voice))
-            _wu(out, 0 if cls == "freq" else 1)
-        else:
-            _wu(out, val)
-        _emit_lane(out, lanes[lane_id])
+    _emit_header(out, ir)
+    _emit_pool(out, ir.pool)
+    _emit_schemas(out, schemas)
+    for track in ir.voices:
+        _emit_voice(out, track, ctx)
+    for reg in GLOBALS:
+        _emit_events(out, ir.globals[reg], ctx)
     return out
 
 
-def tracker_ids_to_program(ids):
-    """Inverse of :func:`tracker_program_to_ids` -> a tracker-lifted generic
-    program whose ``tables`` carry the reconstructed ``genfits``/``eventfits``."""
-    from preframr_tokens.bacc.generic.tracker import unlift
-
-    nframes, boot, note_table, i = _read_header(ids)
+def _ids_to_ir(ids):
+    i = 0
+    nframes, boot, note_table, i = _read_header(ids, i)
     pool, i = _read_pool(ids, i)
-    nlanes, i = _ru(ids, i)
-    lanes = {}
-    for _ in range(nlanes):
-        kind = ids[i]
-        i += 1
-        if kind == 0:
-            voice, i = _ru(ids, i)
-            cls, i = _ru(ids, i)
-            lane_id = ("g", f"{voice}:{'freq' if cls == 0 else 'pw'}")
-        else:
-            reg, i = _ru(ids, i)
-            lane_id = ("e", reg)
-        events, i = _read_lane(ids, i)
-        lanes[lane_id] = events
-    genfits, eventfits = unlift(pool, lanes, note_table)
-    return BaccProgram(
-        driver="generic",
+    schemas, i = _read_schemas(ids, i, len(pool))
+    ctx = (schemas, note_table is not None)
+    voices = []
+    for _ in range(3):
+        track, i = _read_voice(ids, i, ctx)
+        voices.append(track)
+    globals_ = {}
+    for reg in GLOBALS:
+        events, i = _read_events(ids, i, ctx)
+        globals_[reg] = events
+    return TrackerIR(
+        note_table=note_table,
+        pool=pool,
+        voices=voices,
+        globals=globals_,
         nframes=nframes,
         boot=boot,
+    )
+
+
+# --- public interface (generic_serialize delegates here) --------------------
+def _lift_program(program):
+    """Compile a ``driver="generic"`` program into the Tracker IR via its rendered
+    byte-exact state (the IR is a lossless re-expression of the cover, and the cover
+    is byte-exact against the rendered state).
+
+    The per-lane covers are computed ONCE; the IR is then built two ways -- with and
+    without a synthesized pitch table (pitch-factoring trades a note-table header +
+    pitch-invariant pool for 1-token note ``base`` indices and TRANSPOSE) -- and the
+    SMALLER serialization is kept (the prompt's "whichever is fewer tokens", applied to
+    the pitch axis).  When the tune already carries a driver note table the two builds
+    coincide, so this is a no-op there."""
+    from preframr_tokens.bacc.generic.recover import render_generic
+    from preframr_tokens.bacc.tracker_ir import build_ir, cover_all_lanes
+
+    note_table = program.tables.get("note_table")
+    state = render_generic(program)
+    covers = cover_all_lanes(state, note_table)
+    nframes, boot = program.nframes, list(program.boot)
+    ir_pf = build_ir(covers, note_table, nframes, boot, synth_pitch=True)
+    if note_table is not None:
+        return _ir_to_ids(ir_pf), ir_pf
+    ir_plain = build_ir(covers, note_table, nframes, boot, synth_pitch=False)
+    ids_pf, ids_plain = _ir_to_ids(ir_pf), _ir_to_ids(ir_plain)
+    if len(ids_pf) <= len(ids_plain):
+        return ids_pf, ir_pf
+    return ids_plain, ir_plain
+
+
+def tracker_program_to_ids(program):
+    """Serialize a tracker-lifted generic program to token ids (inverse of
+    :func:`tracker_ids_to_program`)."""
+    ids, _ir = _lift_program(program)
+    return ids
+
+
+def tracker_ids_to_program(ids):
+    """Inverse of :func:`tracker_program_to_ids` -> a ``driver="generic"`` program
+    whose ``tables`` carry the reconstructed ``genfits``/``eventfits``."""
+    from preframr_tokens.bacc.tracker_ir import unlift
+
+    ir = _ids_to_ir(ids)
+    genfits, eventfits = unlift(ir)
+    return BaccProgram(
+        driver="generic",
+        nframes=ir.nframes,
+        boot=ir.boot,
         instruments=[],
         score=[],
         seed={},
         tables={
-            "note_table": note_table,
+            "note_table": ir.note_table,
             "genfits": _wrap_genfits(genfits),
             "eventfits": _wrap_eventfits(eventfits),
         },
@@ -420,34 +812,37 @@ def _wrap_eventfits(eventfits):
 
 
 def tracker_measure(program):
-    """Return ``({block: tokens}, nframes)`` for the tracker token stream."""
-    from preframr_tokens.bacc.generic.tracker import lift
+    """Return ``({block: tokens}, nframes)`` for the tracker token stream: the
+    header / pool / per-voice row+free / globals split."""
+    _ids, ir = _lift_program(program)
+    return _measure_ir(ir, program.nframes)
 
-    pool, lanes, _ = lift(program)
+
+def _measure_ir(ir, nframes):
+    schemas = _collect_schemas(ir)
+    ctx = (schemas, ir.note_table is not None)
     out = []
-    _header(out, program)
+    _emit_header(out, ir)
     header = len(out)
     out = []
-    _emit_pool(out, pool)
+    _emit_pool(out, ir.pool)
+    _emit_schemas(out, schemas)
     instr_def = len(out)
     out = []
-    _wu(out, len(_lane_order(lanes)))
-    for lane_id in _lane_order(lanes):
-        kind, val = lane_id
-        out.append(0 if kind == "g" else 1)
-        if kind == "g":
-            voice, cls = val.split(":")
-            _wu(out, int(voice))
-            _wu(out, 0 if cls == "freq" else 1)
-        else:
-            _wu(out, val)
-        _emit_lane(out, lanes[lane_id])
-    score = len(out)
+    for track in ir.voices:
+        _emit_voice(out, track, ctx)
+    voices = len(out)
+    out = []
+    for reg in GLOBALS:
+        _emit_events(out, ir.globals[reg], ctx)
+    globals_ = len(out)
     brk = {
         "header": header,
         "instr_def": instr_def,
-        "score": score,
-        "n_instruments": len(pool),
-        "total": header + instr_def + score,
+        "score": voices + globals_,
+        "voices": voices,
+        "globals": globals_,
+        "n_instruments": len(ir.pool),
+        "total": header + instr_def + voices + globals_,
     }
-    return brk, program.nframes
+    return brk, nframes

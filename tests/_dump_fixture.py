@@ -137,8 +137,6 @@ def acquire(hvsc_rel, sid_url, subtune):
 _HVSC_BASE = "https://hvsc.brona.dk/HVSC/C64Music"
 # The tunes the gate tests need; rendered into FIXTURE_DIR by render_fixtures().
 GATE_FIXTURES = (
-    ("MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 1),
-    ("MUSICIANS/H/Hubbard_Rob/5_Title_Tunes.sid", 2),
     ("MUSICIANS/J/Jammer/Grid_Runner.sid", 1),
     # GoatTracker boot-frame alignment + recover/render regressions:
     # Need_More_NOPs -- deep-offset boot frame (dump starts ~36 frames into
@@ -187,7 +185,6 @@ GATE_FIXTURES = (
     # loads (pulsetimetbl then pulsespdtbl with no intervening high store;
     # player.s mt_setpulse, .IF SIMPLEPULSE != 0). Byte-exact only with the flag.
     ("MUSICIANS/J/Jammer/Catalyst.sid", 1),
-    ("MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 1),  # lft algorithmic RSID (white-box)
     # Hammurabi -- GoatTracker frequency-latch timing (the instrument-vibrato-only
     # packed build, NOEFFECTS!=0). At a gate-off boundary the packed player flips
     # mt_chninstr to the new note's instrument 1-2 frames before the note inits
@@ -209,11 +206,6 @@ GATE_FIXTURES = (
     # frame -- single-CPF framing drops >50% of register changes; used to prove
     # the cadence detector + sub-frame framing are lossless.
     ("MUSICIANS/G/Galway_Martin/Times_of_Lore.sid", 1),
-    # DMC (Demo Music Creator) v7.62 -- Brian/Graffity, the largest editor in HVSC
-    # (~10,700 tunes). Recovered into the common abstraction (grid notes +
-    # instrument generators + backward orderlist) and rendered byte-exact by
-    # re-running the player engine on the image rebuilt from that abstraction.
-    ("MUSICIANS/A/Ass_It/Ode_to_Music.sid", 1),
 )
 
 

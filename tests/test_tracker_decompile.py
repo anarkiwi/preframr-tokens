@@ -299,15 +299,18 @@ def test_value_codec_roundtrip():
 
 
 def test_event_transpose_delta_factoring():
-    # two events that are the same instrument/seed at a constant note-index shift
-    # factor to that shift (a tracker orderlist TRANSPOSE); incompatible events do
-    # not factor.
-    a = (4, 4, 7, 10, {"seed": 0})
-    b = (4, 4, 7, 13, {"seed": 0})
-    assert TS._event_delta(a, b) == 3
-    assert TS._event_shift(a, 3) == b
-    assert TS._event_delta(a, (4, 4, 8, 13, {"seed": 0})) is None  # diff instrument
-    assert TS._event_delta(a, (4, 4, 7, -1, {"seed": 0})) is None  # absolute body
+    # two events (dur, ref, base, seed) that are the same dur/instrument/seed at a
+    # constant note-index shift factor to that shift (a tracker orderlist TRANSPOSE);
+    # incompatible events do not factor.  The delta/shift are bound to the decode
+    # context (schemas, has_note_table) by the event codec.
+    ctx = ([("S", ("seed",))] * 9, True)  # ref 7/8 are simple bodies with a "seed"
+    _lit, _read, _cost, delta, shift = TS._make_event_codec(ctx)
+    a = (4, 7, 10, {"seed": 0})
+    b = (4, 7, 13, {"seed": 0})
+    assert delta(a, b) == 3
+    assert shift(a, 3) == b
+    assert delta(a, (4, 8, 13, {"seed": 0})) is None  # diff instrument
+    assert delta(a, (4, 7, -1, {"seed": 0})) is None  # absolute body
 
 
 def test_tracker_program_to_ids_roundtrip(rep_program):

@@ -225,14 +225,21 @@ def lift(program):
     pool = []
     pool_index = {}
 
-    def ref_of(entry):
-        key = json.dumps(entry, sort_keys=True)
+    def ref_of(entry, disc=None):
+        # ``disc`` is the seed-schema discriminator: two fits with an identical struct but a
+        # different seed-key SET (an optional residue key like ``phase`` present on one note,
+        # absent on another) MUST get distinct refs, else the per-ref seed schema collides
+        # (the serializer stores ONE schema per ref).  See tracker_ir._pool_builder.
+        key = (json.dumps(entry, sort_keys=True), disc)
         ref = pool_index.get(key)
         if ref is None:
             ref = len(pool)
             pool_index[key] = ref
             pool.append(entry)
         return ref
+
+    def _schema(seed):
+        return tuple(seed.keys()) if seed else ()
 
     def event_of(start, prev, dur, fit, is_freq):
         if fit is None:
@@ -245,9 +252,16 @@ def lift(program):
                 structs.append([pname, struct, plen])
                 seeds.append(seed)
                 bases.append(base)
-            return (start - prev, dur, ref_of(["P", structs]), bases, seeds)
+            disc = ("P", tuple(_schema(s) for s in seeds))
+            return (start - prev, dur, ref_of(["P", structs], disc), bases, seeds)
         struct, seed, base = _split_fit(name, params, is_freq, idx_of)
-        return (start - prev, dur, ref_of(["S", [name, struct]]), base, seed)
+        return (
+            start - prev,
+            dur,
+            ref_of(["S", [name, struct]], ("S", _schema(seed))),
+            base,
+            seed,
+        )
 
     lanes = {}
     genfits = program.tables["genfits"]

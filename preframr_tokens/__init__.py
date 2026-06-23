@@ -12,8 +12,9 @@ the program regenerates the .dump byte-exact, and emits an inline BACC token log
   VOCAB / PAD_ID                           -- token alphabet size + padding id
 
 The dump reader (per_frame_state / CPF / cpf_from_meta) is re-exported for framing.
-The invariant (tests/test_monty_context_budget.py): on the full Monty dump,
-verify_residual is True and measure(program)['total'] / frames < 1.0.
+The reference budget gate (tests/test_goattracker.py::test_grid_runner_context_budget):
+on the full Grid_Runner dump, verify_residual is True and
+measure(program)['total'] / frames < 1.0.
 """
 
 from preframr_tokens.bacc import (

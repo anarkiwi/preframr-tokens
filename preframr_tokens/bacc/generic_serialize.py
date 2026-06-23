@@ -70,8 +70,8 @@ def generic_ids_to_program(ids):
 
 def generic_measure(program):
     """Return ``({block: tokens}, nframes)`` for a generic program's token stream:
-    the Tracker IR breakdown (header / instr_def / score)."""
+    the Tracker IR breakdown (header / instr_def / score).  The block sizes sum to the
+    full serialized length, so no second (expensive) lift is needed for the total."""
     brk, nframes = tracker_measure(program)
     brk["fmt"] = "tracker"
-    brk["total"] = len(generic_program_to_ids(program))
     return brk, nframes

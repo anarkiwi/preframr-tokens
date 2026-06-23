@@ -18,8 +18,7 @@ def recover_program(sid_path, dump_path, cpf=CPF, subtune=0, maxframes=10**9):
 
     Most drivers are framed at the PAL/NTSC raster (the default ``cpf``); a
     backend may declare a native IRQ period (``native_cpf``) when the dump must
-    be binned at the tune's own IRQ rate instead -- e.g. lft's CIA-timer tunes
-    are framed at ~16422 cycles, not the 19656-cycle raster frame.
+    be binned at the tune's own IRQ rate instead.
     """
     psid = load_psid(sid_path)
     backend = select_backend(psid)
@@ -50,8 +49,8 @@ def verify_residual(sid_path, dump_path, cpf=CPF, subtune=0):
 
     Residual equality is taken modulo the backend's declared don't-care mask
     (``mask_state``, identity by default) -- the same documented logging masks
-    the dump validator applies (PW-high unused bits; the lft filter-external
-    bit). Drivers without a mask compare raw, exactly as before.
+    the dump validator applies (e.g. PW-high unused bits). Drivers without a mask
+    compare raw.
     """
     psid = load_psid(sid_path)
     backend = select_backend(psid)
@@ -63,21 +62,9 @@ def verify_residual(sid_path, dump_path, cpf=CPF, subtune=0):
 
 
 def _backend_for(driver):
-    from preframr_tokens.bacc.backends.dmc import DmcBackend
     from preframr_tokens.bacc.backends.goattracker import GoatTrackerBackend
-    from preframr_tokens.bacc.backends.hubbard import (
-        Hubbard5TTBackend,
-        HubbardMontyBackend,
-    )
-    from preframr_tokens.bacc.backends.lft import LftBackend
 
-    for backend in (
-        HubbardMontyBackend(),
-        Hubbard5TTBackend(),
-        LftBackend(),
-        DmcBackend(),
-        GoatTrackerBackend(),
-    ):
-        if backend.name == driver:
-            return backend
+    backend = GoatTrackerBackend()
+    if backend.name == driver:
+        return backend
     raise ValueError(f"no backend named {driver}")

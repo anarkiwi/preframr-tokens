@@ -39,7 +39,7 @@ per-note. (Free-running modulation falls out naturally: phase is generator
 Notes ride a **canonical 12-TET A440 grid**: the note token is the absolute
 semitone index on a fixed A440 reference, computed from the onset frequency the
 driver actually renders (`pitch.fn_to_grid`). So the same concert pitch is the
-**same token across drivers** — Hubbard's register write and GoatTracker's
+**same token across drivers** — a raw onset register write and GoatTracker's
 note-table lookup both resolve to one grid index. This is what unifies the token
 alphabet across engines.
 
@@ -62,11 +62,11 @@ The codec is a set of per-driver **backends**, selected by player fingerprint
 `recover_program` recovers the program; `render_program` renders it; and
 `verify_residual` requires the rendered array to equal the ground-truth dump
 **byte-exact** (modulo each backend's small declared don't-care mask, e.g. unused
-PW-high bits). Backends ship for **Hubbard** (Monty-class + 5_Title_Tunes),
-**GoatTracker** (gt2reloc), and **lft** (algorithmic RSID); a **DMC** backend is
-in progress. All of them serialize into one shared token alphabet (the base-16
-LEB digit stream + `REPEAT` / `TRANSPOSE` markers), so a single learnable
-vocabulary spans every driver.
+PW-high bits). The shipped hand backend is **GoatTracker** (gt2reloc), kept as the
+worked reference; every other tune is handled by the driver-agnostic **generic**
+path (below). Both serialize into one shared token alphabet (the base-16 LEB digit
+stream + `REPEAT` / `TRANSPOSE` markers), so a single learnable vocabulary spans
+every driver.
 
 Repeated phrases dedup via an **inline backward orderlist** — backward-reference
 only, no forward declaration, no frozen table. Any prefix cut at an event
@@ -98,8 +98,8 @@ assert sum(resid.values()) == 0   # whole-tune, all 25 registers, byte-exact
 trace (`.bus.bin`) in-process. The generic fitter recovers the program from the
 bus trace, and the render is verified residual-zero against the SAME-run dump —
 the two are internally self-consistent (same emulator, same run). Validated
-byte-exact on **Grid_Runner** (GoatTracker) and **Monty_on_the_Run** (Hubbard)
-from the `.sid` alone — two drivers, one driver-agnostic path.
+byte-exact on a range of drivers (e.g. **Grid_Runner**, GoatTracker) from the
+`.sid` alone — one driver-agnostic path.
 
 The binary is located via `SIDTRACE_BIN` (env), so the whole-tune residual-zero
 test is **skip-if-binary-absent**: the default CI gate runs the committed-dump
@@ -117,7 +117,7 @@ pip install preframr-tokens
 ```python
 import preframr_tokens as P
 
-sid, dump = "Monty_on_the_Run.sid", "Monty_on_the_Run.1.dump.parquet"
+sid, dump = "Grid_Runner.sid", "Grid_Runner.1.dump.parquet"
 
 # Recover the BACC program, verify it's byte-exact, serialize to token ids.
 assert P.verify_residual(sid, dump, P.CPF)        # residual = 0 (lossless)
@@ -163,12 +163,13 @@ Register map (`base = voice * 7`): +0/+1 freq lo/hi, +2/+3 pulse-width lo/hi,
 
 ## The gate / tests
 
-The permanent gate is `tests/test_monty_context_budget.py`: it recovers the BACC
-program from *Monty on the Run* (sub 1), asserts `verify_residual` is `True`, and
-requires both `< 1 token/frame` and the whole song `< 8192` tokens. Its fixtures
-are auto-acquired (the `.sid` is downloaded, the dump rendered) — there is no skip
-path, and the gate may never be removed or bypassed. The same dual gate applies to
-the GoatTracker and Hubbard 5TT tunes.
+The reference budget gate is
+`tests/test_goattracker.py::test_grid_runner_context_budget`: it recovers the BACC
+program from *Grid_Runner* (Jammer, GoatTracker), asserts `verify_residual` is
+`True`, and requires both `< 1 token/frame` and the whole song `< 8192` tokens. Its
+fixtures are auto-acquired (the `.sid` is downloaded, the dump rendered). The
+generic path is exercised end-to-end (whole-tune residual-zero) in
+`tests/test_generic_recovery.py` and `tests/test_sid_only_recovery.py`.
 
 Run the full gate (black, pytest, pylint, pyright, coverage) with:
 

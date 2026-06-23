@@ -113,6 +113,53 @@ def recover_from_sid(
     return program, resid, dump_state[:nf]
 
 
+def structure_ids_from_sid(
+    sid_path, subtune=1, nframes=200, sidtrace_path=None, out_prefix=None
+):
+    """Recover and serialize a structured tune's tracker source from a ``.sid`` ALONE.
+
+    The FORK of the generic recovery (the structure path).  One deterministic
+    ``preframr-sidtrace`` run emits the per-frame register state (``.sidwr.bin``) AND the
+    SMC-correct distill artifact (``.distill.bin``); :func:`structure_ir.recover_structure_ir`
+    recovers the tracker STRUCTURE -- a deduped instrument pool, the factored
+    patterns/orderlist, and the porta/vibrato accumulator generators -- DIRECTLY from the
+    artifact (no hardcoded addresses).  When a valid structure is found (``ok``) the compact
+    structure serialization is returned; otherwise the tune is unstructured (a pure-code tune
+    like A Mind Is Born, or a driver whose pattern grammar the round-trip falsifies) and the
+    caller FALLS BACK to the output-fit generator cover (:func:`generic_program_to_ids`) --
+    the additive-fix invariant.
+
+    Returns ``(ids, structure, state)`` where ``ids`` is the structure token stream (or
+    ``None`` when no structure was found), ``structure`` is the :class:`StructureIR` (or
+    ``None``), and ``state`` is the byte-exact ``(nframes, 25)`` register array.  Raises
+    :class:`FileNotFoundError` when no ``preframr-sidtrace`` binary is available."""
+    import os
+    import tempfile
+
+    from preframr_tokens.bacc.generic.sidtrace import (  # local: optional binary dep
+        run_sidtrace,
+        sidwr_state,
+    )
+    from preframr_tokens.bacc.generic.structure_ir import (
+        recover_structure_ir,
+        structure_ir_to_ids,
+    )
+
+    if out_prefix is None:
+        out_prefix = os.path.join(
+            tempfile.mkdtemp(prefix="preframr_sidtrace_"), "trace"
+        )
+    sidwr_path, distill_path = run_sidtrace(
+        sid_path, out_prefix, subtune, nframes, sidtrace_path
+    )
+    state, _ = sidwr_state(sidwr_path)
+    if state is None or len(state) < 2:
+        raise ValueError(f"sidtrace produced no frames for {sid_path}")
+    structure = recover_structure_ir(distill_path, state)
+    ids = None if structure is None else structure_ir_to_ids(structure)
+    return ids, structure, state
+
+
 def render_generic(program):
     """Render a generic :class:`BaccProgram` back to an ``(nframes, 25)`` register
     array, SELF-CONTAINED (no hand backend).  Re-runs each fitted archetype

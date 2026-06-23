@@ -22,6 +22,21 @@ SDST format (little-endian; documented in ``preframr-sidtrace/src/sidtrace.cpp``
             _pad u8[3]) -- PC-tagged SID-write summary (voice-lane attribution).
       IDXR  nentries u32, then (pc u16, base u16, stride i32, idxMin u8,
             idxMax u8, _pad u16, count u32) -- indexed-read VSA summary.
+      SDDF  nentries u32, then per-write data-flow slice summaries (design 3.1):
+            a fixed head + (slice_pcs, leaves, op_seq) variable arrays, optionally
+            followed by an SDCU mid-call value sequence (nValSeq u16 + bytes).
+      SDCU  same entry layout as SDDF, keyed by state-cell address: the per-cell
+            UPDATE DAG, carrying the mid-call value sequence (design 2.5/2.7) the
+            host feeds to Berlekamp-Massey for the LFSR-vs-not verdict.
+      STSQ  nentries u32, then (addr u16, flags u8, _pad u8, total u32,
+            firstSeen u32, nSamples u16, bytes[nSamples]) -- inter-frame
+            state-cell sample sequences (design 3.2).
+
+This reader consumes only ACMP/SNAP/SIDW/IDXR (the access map, RAM snapshot, and
+write/index summaries the SMC-correct :mod:`identity` recovery needs); the
+data-flow sections (SDDF/SDCU/STSQ) added by the current tracer are parsed past
+structurally so the reader stays byte-compatible with both pre- and post-data-flow
+artifacts -- the authoritative full reader is the decompiler-backend ``sdst.py``.
 
 The access bits are the SMC-correct classifier: ``SMC = EXEC_PLAY & WRITE_PLAY``;
 ``song-data = READ_PLAY & ~WRITE_PLAY & ~EXEC`` (code modification, not data).
@@ -44,6 +59,24 @@ ACC_WRITE_PLAY = 1 << 5
 
 _SIDW_ENTRY = struct.Struct("<HBBIB3x")  # pc, reg, pad, count, lastVal, pad[3]
 _IDXR_ENTRY = struct.Struct("<HHiBBHI")  # pc, base, stride, idxMin, idxMax, pad, count
+# SDDF/SDCU per-write data-flow slice head (design 3.1) and one slice leaf.
+_SIDDF_HEAD = struct.Struct("<HBBIBBBxHiBB")
+_SIDDF_LEAF = struct.Struct("<BxHBx")
+# STSQ per-cell inter-frame sample-sequence head (design 3.2).
+_STSQ_HEAD = struct.Struct("<HBxIIH")
+
+# Section tags a well-formed stream may begin a section with (used to
+# disambiguate the optional SDDF/SDCU val_seq field structurally -- see below).
+_SECTION_TAGS = (
+    b"ACMP",
+    b"SNAP",
+    b"SIDW",
+    b"IDXR",
+    b"SDDF",
+    b"SDCU",
+    b"STSQ",
+    b"END\x00",
+)
 
 
 @dataclass
@@ -179,6 +212,40 @@ def _unpack_snap(body):
     return ram
 
 
+def _at_section_boundary(buf, off):
+    """True iff ``off`` is EOF or points at a recognized 4-byte section tag."""
+    if off == len(buf):
+        return True
+    return buf[off : off + 4] in _SECTION_TAGS
+
+
+def _skip_siddf_section(buf, off, nent, with_val_seq):
+    """Walk past ``nent`` SDDF/SDCU entries starting at ``off`` without retaining
+    them (this reader does not consume the data-flow sections).
+
+    Returns the offset just past the section, or ``None`` if the layout does not
+    fit the buffer (so the caller can retry with the other ``with_val_seq``
+    choice). The only layout difference is the trailing per-entry val_seq
+    (nValSeq u16 + bytes), absent in pre-data-flow artifacts."""
+    try:
+        for _ in range(nent):
+            off += _SIDDF_HEAD.size
+            (npcs,) = struct.unpack_from("<H", buf, off)
+            off += 2 + 2 * npcs
+            (nleaves,) = struct.unpack_from("<H", buf, off)
+            off += 2 + _SIDDF_LEAF.size * nleaves
+            (nops,) = struct.unpack_from("<H", buf, off)
+            off += 2 + nops
+            if with_val_seq:
+                (nval,) = struct.unpack_from("<H", buf, off)
+                off += 2 + nval
+    except struct.error:
+        return None
+    if off > len(buf):
+        return None
+    return off
+
+
 def load_distill(path):
     """Parse a ``<prefix>.distill.bin`` SDST artifact into a :class:`Distill`."""
     with open(path, "rb") as handle:
@@ -237,6 +304,31 @@ def parse_distill(buf):
                 )
                 off += _IDXR_ENTRY.size
                 idx_reads.append(IdxRead(pc, base, stride, imin, imax, count))
+        elif tag in (b"SDDF", b"SDCU"):
+            # Per-write/per-cell data-flow slices (design 3.1 / 2.2). This reader
+            # does not consume them, but it must parse PAST them exactly so the
+            # following sections still land. Two on-disk layouts coexist: the
+            # current tracer appends a per-entry SDCU mid-call value sequence
+            # (nValSeq u16 + bytes); older artifacts predate that field. The
+            # header is v1 in both, so we DISAMBIGUATE structurally -- skip the
+            # section assuming val_seq is present, and only if that fails to land
+            # on a valid next section tag (or EOF) do we re-skip without it.
+            (nent,) = struct.unpack_from("<I", buf, off)
+            off += 4
+            end_off = _skip_siddf_section(buf, off, nent, with_val_seq=True)
+            if end_off is None or not _at_section_boundary(buf, end_off):
+                end_off = _skip_siddf_section(buf, off, nent, with_val_seq=False)
+            if end_off is None:
+                raise ValueError(f"could not parse {tag!r} section")
+            off = end_off
+        elif tag == b"STSQ":
+            (nent,) = struct.unpack_from("<I", buf, off)
+            off += 4
+            for _ in range(nent):
+                _addr, _flags, _total, _first_seen, nsamp = _STSQ_HEAD.unpack_from(
+                    buf, off
+                )
+                off += _STSQ_HEAD.size + nsamp
         else:
             raise ValueError(f"unknown SDST section {tag!r} at offset {off - 4}")
 

@@ -1,115 +1,24 @@
-"""Tests for the two-file BACC codec: recover -> render byte-exact, token log
-round-trip, the < 1 token/frame economy, and the driver-backend dispatch."""
+"""Driver-agnostic BACC plumbing: the PSID loader/emulator and the hand-backend
+dispatch rejection. The per-driver recover -> render byte-exact + token round-trip
++ token-economy proofs live in the backend-specific suites (GoatTracker in
+tests/test_goattracker.py; the generic path in tests/test_generic_recovery.py)."""
 
 import struct
 
-import numpy as np
 import pytest
 
-from preframr_tokens import (
-    CPF,
-    VOCAB,
-    ids_to_program,
-    measure,
-    program_to_ids,
-    render_program,
-    verify_residual,
-)
 from preframr_tokens.bacc.backends import select_backend
 from preframr_tokens.bacc.sidemu import SIDEmu, load_psid
 
 
-def test_render_is_byte_exact(monty_program, monty_state):
-    out = render_program(monty_program)
-    assert out.shape == monty_state.shape
-    assert np.array_equal(out, monty_state)
-
-
-def test_verify_residual_true(monty_paths):
-    assert verify_residual(monty_paths[0], monty_paths[1], CPF)
-
-
-def test_recovered_program_shape(monty_program):
-    assert monty_program.driver == "hubbard_monty"
-    assert monty_program.nframes > 1000
-    assert len(monty_program.score) > 0
-    assert len(monty_program.instruments) == 20
-
-
-def test_token_ids_in_vocab(monty_program):
-    ids = program_to_ids(monty_program)
-    assert ids and all(0 <= t < VOCAB for t in ids)
-
-
-def test_token_roundtrip_renders_byte_exact(monty_program, monty_state):
-    ids = program_to_ids(monty_program)
-    program2 = ids_to_program(ids)
-    assert len(program2.score) == len(monty_program.score)
-    assert np.array_equal(render_program(program2), monty_state)
-
-
-def test_porta_fold_roundtrips_byte_exact(monty_program):
-    # The porta-present flag is folded into the note token (bit1) and the porta
-    # field is emitted only when non-zero -- the full per-voice (dt, note, instr,
-    # lnth, porta) tuple stream must still decode identically, including every
-    # rare non-zero porta. This proves the fold is byte-exact lossless.
-    ids = program_to_ids(monty_program)
-    program2 = ids_to_program(ids)
-    src = sorted(
-        (e.frame, e.voice, e.note, e.instr, e.lnth, e.porta)
-        for e in monty_program.score
-    )
-    dst = sorted(
-        (e.frame, e.voice, e.note, e.instr, e.lnth, e.porta) for e in program2.score
-    )
-    assert src == dst
-    assert any(e.porta for e in monty_program.score)  # the non-zero path is exercised
-
-
-def test_note_field_porta_flag_is_an_inverse_pair():
-    # _note_field packs (escape, porta-present, value); _read_note_field inverts
-    # it for both the grid-index and the literal-escape branch, carrying porta.
-    from preframr_tokens.bacc.serialize import _note_field, _read_note_field
-
-    grid_of = {7: 3}  # note 7 resolves to grid index 3 (canonical branch)
-    index_of = {3: 7}
-    cases = ((7, 0, True), (7, 5, True), (40, 0, False), (40, 9, False))
-    for note, porta, in_grid in cases:
-        gof = grid_of if in_grid else {}
-        # a static_img whose onset Fn is positive only for the in-grid note
-        img = [0] * 256
-        if in_grid:
-            img[note * 2] = 1  # hubbard_table_fn(img, note) > 0
-        out = []
-        _note_field(out, note, porta, img, gof)
-        got_note, got_porta, j = _read_note_field(out, 0, index_of)
-        assert j == len(out)
-        assert got_note == note
-        assert got_porta == bool(porta)
-
-
-def test_under_one_token_per_frame(monty_program):
-    brk, frames = measure(monty_program)
-    block_sum = sum(brk[k] for k in ("score", "instr_def", "seed", "boot", "table"))
-    assert block_sum < brk["total"]  # remainder = the leading nframes uint
-    # < 1 token/frame AND the whole song fits the 8192-token context window.
-    assert brk["total"] / frames < 1.0
-    assert brk["total"] < 8192
-
-
-def test_5tt_context_budget(tt_program):
-    # The 2nd driver's whole song also fits both budgets: < 1 token/frame and
-    # < 8192 tokens total (the context window).
-    brk, frames = measure(tt_program)
-    assert brk["total"] / frames < 1.0
-    assert brk["total"] < 8192
-
-
 def test_select_backend_rejects_unknown_driver():
+    # No hand backend matches a PSID that is not a GoatTracker image -> raise
+    # (the generic path handles everything else; there is no silent fallback).
     class _FakePsid:
         load_addr = 0x1234
         init_addr = 0x1234
         play_addr = 0x1237
+        data = b""
 
     with pytest.raises(ValueError):
         select_backend(_FakePsid())
@@ -128,30 +37,6 @@ def _synthetic_psid(magic=b"PSID", load_addr=0):
     program = bytes([0x60, 0x00, 0x00, 0x60])  # init RTS @1000, play RTS @1003
     data = (struct.pack("<H", 0x1000) if load_addr == 0 else b"") + program
     return bytes(header) + data
-
-
-def test_load_psid_header_fields(monty_paths):
-    psid = load_psid(monty_paths[0])
-    assert psid.load_addr == 0x8000
-    assert psid.init_addr == 0x8000
-    assert psid.play_addr == 0x8012
-
-
-def test_5tt_second_driver_byte_exact(tt_program, tt_state):
-    # The backend interface generalizes: a 2nd Hubbard driver renders byte-exact
-    # on every frame py65 reproduces. The dump's final frame is a py65-vs-sidtrace
-    # emulation edge (py65 itself diverges there), not a BACC recovery failure.
-    assert tt_program.driver == "hubbard_5tt"
-    out = render_program(tt_program)
-    assert out.shape == tt_state.shape
-    assert np.array_equal(out[:-1], tt_state[:-1])
-
-
-def test_select_backend_dispatches_per_driver(monty_paths, tt_paths):
-    from preframr_tokens.bacc.sidemu import load_psid as _lp
-
-    assert select_backend(_lp(monty_paths[0])).name == "hubbard_monty"
-    assert select_backend(_lp(tt_paths[0])).name == "hubbard_5tt"
 
 
 def test_synthetic_psid_runs(tmp_path):

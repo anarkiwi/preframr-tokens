@@ -31,7 +31,7 @@ from preframr_tokens.bacc.primitive import BaccProgram
 
 _CPF = 19656  # PAL raster frame; the synthetic traces use a steady cadence
 _FIXTURES = "tests/test_fixtures"
-_SID_ONLY_TUNES = ["Grid_Runner", "Monty_on_the_Run"]
+_SID_ONLY_TUNES = ["Grid_Runner", "Need_More_NOPs"]
 
 
 # --------------------------------------------------------------------------- #
