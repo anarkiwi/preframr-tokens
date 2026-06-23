@@ -40,6 +40,28 @@ SIDWR_DT = np.dtype([("cyc", "<i8"), ("addr", "<u2"), ("reg", "u1"), ("val", "u1
 # The built binary in the sibling preframr-sidtrace checkout (REUSE; never rebuilt).
 _DEFAULT_SIDTRACE_BIN = "/scratch/anarkiwi/preframr/preframr-sidtrace/build/sidtrace"
 
+# Real C64 ROM images (KERNAL / BASIC / CHARGEN).  An RSID tune with NO play
+# address (``play == 0``) installs its OWN interrupt handler during init and the
+# REAL KERNAL/BASIC ROM runs it (a BASIC-stub tune is literally a BASIC program at
+# $0801 the BASIC ROM interprets); without the real ROMs libsidplayfp's internal
+# pseudo-ROM never reaches the player and the trace collapses to a single boot SID
+# write (the "sidtrace produced no frames" failure).  A PSID tune with an explicit
+# play address never executes ROM code, so passing the ROMs is byte-exact-identical
+# for the whole PSID corpus and ONLY rescues the self-IRQ / BASIC-stub RSID tunes.
+# The standard VICE install layout; override the directory with ``SIDTRACE_ROM_DIR``
+# (or any of the three files individually) -- absent ROMs degrade gracefully to the
+# prior no-ROM behaviour (the binary's ROM args are optional positional args).
+_VICE_ROM_DIRS = (
+    "/usr/local/share/vice/C64",
+    "/usr/share/vice/C64",
+    "/usr/lib/vice/C64",
+)
+_ROM_FILES = (
+    ("SIDTRACE_KERNAL", "kernal-901227-03.bin"),
+    ("SIDTRACE_BASIC", "basic-901226-01.bin"),
+    ("SIDTRACE_CHARGEN", "chargen-901225-01.bin"),
+)
+
 
 def sidtrace_bin():
     """The ``preframr-sidtrace`` binary path (``SIDTRACE_BIN`` env or the built
@@ -47,6 +69,70 @@ def sidtrace_bin():
     sid-only path so the default render-free CI gate stays self-contained."""
     cand = os.environ.get("SIDTRACE_BIN", _DEFAULT_SIDTRACE_BIN)
     return cand if cand and os.path.exists(cand) else None
+
+
+def _rom_dir():
+    """Directory holding the real C64 ROM images (``SIDTRACE_ROM_DIR`` env or the
+    first standard VICE install path that exists), or ``None``."""
+    env = os.environ.get("SIDTRACE_ROM_DIR")
+    cands = (env,) + _VICE_ROM_DIRS if env else _VICE_ROM_DIRS
+    for cand in cands:
+        if cand and os.path.isdir(cand):
+            return cand
+    return None
+
+
+def sidtrace_roms():
+    """The ``[kernal, basic, chargen]`` ROM-image paths to pass to the binary, or
+    ``None`` when the real ROMs are not installed.
+
+    The binary takes the three ROMs as optional positional args (5..7); a tune that
+    installs its own IRQ or is a BASIC stub (``play == 0``) only RUNS its player when
+    the real KERNAL/BASIC ROM is present.  Discovery is via ``SIDTRACE_ROM_DIR`` (or
+    per-file ``SIDTRACE_KERNAL`` / ``SIDTRACE_BASIC`` / ``SIDTRACE_CHARGEN``
+    overrides) falling back to the standard VICE layout.  All three must resolve to
+    existing files; otherwise ``None`` is returned and the binary runs with its
+    internal pseudo-ROM exactly as before."""
+    rom_dir = _rom_dir()
+    paths = []
+    for env_key, default_file in _ROM_FILES:
+        cand = os.environ.get(env_key)
+        if cand is None and rom_dir is not None:
+            cand = os.path.join(rom_dir, default_file)
+        if not cand or not os.path.exists(cand):
+            return None
+        paths.append(cand)
+    return paths
+
+
+def _tune_play_addr(sid_path):
+    """The tune's PSID/RSID play address (header bytes ``$0c..$0d``), or ``None``
+    when the header cannot be read.  ``play == 0`` is the "no play address -- run
+    from the installed IRQ vector" convention (a self-IRQ player or a BASIC stub)."""
+    try:
+        with open(sid_path, "rb") as handle:
+            head = handle.read(14)
+    except OSError:
+        return None
+    if len(head) < 14 or head[0:4] not in (b"PSID", b"RSID"):
+        return None
+    return (head[12] << 8) | head[13]
+
+
+def _tune_needs_roms(sid_path):
+    """Whether a tune requires the REAL C64 ROMs to trace (vs libsidplayfp's
+    internal pseudo-ROM).
+
+    ONLY a ``play == 0`` tune -- one with no host-called play routine, which instead
+    installs its own CIA/raster IRQ during init (or is a BASIC program the BASIC ROM
+    interprets) -- needs the real KERNAL/BASIC to run its player; without them the
+    trace collapses to a single boot SID write.  A tune with an explicit play address
+    is driven directly and must NOT be given the real ROMs: some such PSID tunes read
+    ROM/CIA cells as data (RNG seed, jump tables) and the real-ROM values perturb the
+    byte-exact per-frame state.  Gating ROM injection on ``play == 0`` rescues exactly
+    the self-IRQ / BASIC-stub tunes while leaving every play-addressed tune (the whole
+    committed corpus) byte-identical to the prior no-ROM behaviour."""
+    return _tune_play_addr(sid_path) == 0
 
 
 def sidwr_state(sidwr_path, t0=None):
@@ -98,15 +184,26 @@ def sidwr_state(sidwr_path, t0=None):
         t0 = first_play_cycle(cyc, cpf)
     boot_off = int(np.searchsorted(gstart_cyc, t0 - cpf / 2))
     nframes = len(starts) - boot_off
-    # SPARSE-WRITER DETECTION.  The play-period span (play-calls from frame 0 to the
-    # last write) is the true frame count when the player calls play every period; the
-    # blit-group count is the number of WRITE bursts.  When the bursts cover far more
-    # periods than there are bursts, the player writes the SID only occasionally while
-    # holding the chip state between writes -- so blit-group framing (one row per write)
-    # drops the held frames and under-counts.  Re-frame at the play period (cadence),
-    # forward-filling held values, exactly as the corpus dump is framed.
+    # SPARSE/DENSE-WRITER DETECTION.  The play-period span (play-calls from frame 0
+    # to the last write) is the true frame count when the player calls play every
+    # period; the blit-group count is the number of WRITE bursts.  Two ways blit-group
+    # framing miscounts a continuously-played tune, both fixed by re-framing at the
+    # play period (cadence) with forward-fill -- exactly how the corpus dump is framed:
+    #
+    #   * SPARSE writer (Master Composer: 234 bursts across ~2300 play-calls): many
+    #     bursts but covering FAR more periods than there are bursts, so blit-group
+    #     framing (one row per write) drops the held frames between writes.
+    #   * DENSE writer (Master_Blaster / MacGyver / Das_Model / James_Brown / a
+    #     self-IRQ RSID player): writes the SID CONTINUOUSLY with no inter-play gap
+    #     above BURST_GAP, so EVERY play-call coalesces into ONE blit group and
+    #     blit-group framing degenerates to a single frame even though the trace spans
+    #     thousands of cadence frames.  This is the "sidtrace produced no frames"
+    #     failure (``len(state) < 2``) -- not a tiny tune, the player just never leaves
+    #     a quiet gap.  Mirror :func:`busstate.per_frame_state_from_bus`'s same guard.
     span_frames = int(round((int(cyc[-1]) - t0) / cpf)) + 1 if cpf else 0
-    if cpf and nframes >= 2 and span_frames > nframes and nframes < 0.9 * span_frames:
+    sparse = nframes >= 2 and span_frames > nframes and nframes < 0.9 * span_frames
+    dense = nframes < 2 and span_frames >= 2
+    if cpf and (sparse or dense):
         # Cadence framing (corpus-consistent): bin on the play-period grid + forward-fill.
         # Anchored at ``t0`` so frame 0 is the first steady play-call, identical to the
         # blit-group anchor and to :func:`per_frame_state` / :func:`_cadence_state`.
@@ -144,8 +241,26 @@ def run_sidtrace(sid_path, out_prefix, subtune=1, nframes=200, sidtrace_path=Non
             "preframr-sidtrace binary not found; set SIDTRACE_BIN to the built "
             f"'sidtrace' (looked for {_DEFAULT_SIDTRACE_BIN})"
         )
+    argv = [
+        binary,
+        str(sid_path),
+        str(int(subtune)),
+        str(int(nframes)),
+        str(out_prefix),
+    ]
+    # Append the real C64 ROM images ONLY for a tune that needs them: a ``play == 0``
+    # self-IRQ / BASIC-stub tune installs its own interrupt handler during init and
+    # only RUNS its player when the real KERNAL/BASIC ROM is present (otherwise the
+    # trace is a single boot SID write -- the "produced no frames" failure).  A
+    # play-addressed tune is driven directly and is left on the internal pseudo-ROM
+    # so its byte-exact per-frame state is unchanged (some such tunes read ROM/CIA
+    # cells as data, which the real ROMs would perturb).
+    if _tune_needs_roms(sid_path):
+        roms = sidtrace_roms()
+        if roms is not None:
+            argv.extend(roms)
     subprocess.run(
-        [binary, str(sid_path), str(int(subtune)), str(int(nframes)), str(out_prefix)],
+        argv,
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
