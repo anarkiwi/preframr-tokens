@@ -14,7 +14,9 @@ import numpy as np
 import pytest
 
 from preframr_tokens.bacc.generic import _njit
+from preframr_tokens.bacc.generic import _render_njit as _rnj
 from preframr_tokens.bacc.generic import archetypes as A
+from preframr_tokens.bacc.generic import cover as C
 
 
 def _seg_lens():
@@ -641,3 +643,223 @@ def test_render_wavetable_ptr_parity(seed):
         got = _njit.render_wavetable_ptr(seg_len, table, np.int64(phase), advance)
         ref = ref_render_wavetable_ptr(seg_len, table, phase, advance)
         assert np.array_equal(got, ref)
+
+
+def _ref_prefix_ratewalk(seg, width_mask=0xFFFF, maxp=48, minrun=8):
+    """Pre-fusion pure-Python ``_prefix_ratewalk`` (the render-per-period loop)."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diff = np.diff(seg) % (width_mask + 1)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    best = None
+    for period in range(1, min(maxp, max(1, len(dsign))) + 1):
+        if len(dsign) < period:
+            continue
+        table = dsign[:period].tolist()
+        if not any(table):
+            continue
+        rend = ref_render_ratewalk(length, int(seg[0]), table, 0, width_mask)
+        match = ref_match_prefix(rend, seg)
+        if match >= max(minrun, 2 * period) and (best is None or match > best[0]):
+            best = (
+                match,
+                "ratewalk",
+                {"v0": int(seg[0]), "rate_table": table, "width": width_mask},
+            )
+        if best and best[0] == length:
+            break
+    return best
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_fused_prefix_ratewalk_matches_reference(seed):
+    # The fused njit ratewalk search is byte-identical to the pre-fusion nested
+    # render+match loop -- same winner, same params, same ascending-period order.
+    rng = np.random.RandomState(seed)
+    for _ in range(120):
+        length = rng.randint(1, 400)
+        wm = int(rng.choice([0xFF, 0xFFF, 0xFFFF]))
+        kind = rng.randint(0, 5)
+        if kind == 0:  # structureless noise
+            seg = rng.randint(0, wm + 1, size=length).astype(np.int64)
+        elif kind == 1:  # a genuine period-P signed-rate loop
+            period = rng.randint(1, 50)
+            tbl = rng.randint(-8, 9, size=period).astype(np.int64)
+            v = int(rng.randint(0, wm + 1))
+            out = []
+            for i in range(length):
+                out.append(v & wm)
+                v = (v + int(tbl[i % period])) & wm
+            seg = np.asarray(out, dtype=np.int64)
+        elif kind == 2:  # a loop that breaks to noise partway
+            period = rng.randint(1, 12)
+            tbl = rng.randint(-5, 6, size=period).astype(np.int64)
+            v = int(rng.randint(0, wm + 1))
+            out = []
+            for i in range(length):
+                out.append(v & wm)
+                v = (v + int(tbl[i % period])) & wm
+            seg = np.asarray(out, dtype=np.int64)
+            if length:
+                br = rng.randint(0, length)
+                seg[br:] = rng.randint(0, wm + 1, size=length - br)
+        elif kind == 3:  # a single-rate wrapping ramp
+            r = int(rng.randint(1, 40))
+            v = int(rng.randint(0, wm + 1))
+            seg = np.asarray([(v + r * i) & wm for i in range(length)], dtype=np.int64)
+        else:  # near-flat small amplitude
+            seg = (
+                (int(rng.randint(0, wm + 1)) + rng.randint(-2, 3, size=length)) & wm
+            ).astype(np.int64)
+        for maxp in (48, 24, 12):
+            for minrun in (8, 24):
+                assert A._prefix_ratewalk(
+                    seg, wm, maxp, minrun
+                ) == _ref_prefix_ratewalk(seg, wm, maxp, minrun)
+
+
+def _ref_prefix_maskaccum_stall(
+    seg, width_mask=0xFFFF, maxp=24, minrun=12, mincycles=3
+):
+    """Pre-fusion pure-Python ``_prefix_maskaccum_stall`` (render-per-period loop)."""
+    seg = np.asarray(seg, dtype=np.int64)
+    length = len(seg)
+    if length < minrun:
+        return None
+    diff = np.diff(seg) % (width_mask + 1)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    nonzero = dsign[dsign != 0]
+    if len(nonzero) < 3:
+        return None
+    vals, cnts = np.unique(nonzero, return_counts=True)
+    rate = int(vals[np.argmax(cnts)])
+    advance = (dsign == rate).astype(int)
+    best = None
+    for period in range(1, min(maxp, len(advance)) + 1):
+        if len(advance) < mincycles * period:
+            continue
+        mask = advance[:period].tolist()
+        steps = sum(mask)
+        if steps < 1 or (period > 1 and steps == period):
+            continue
+        rend = ref_render_maskaccum(length, int(seg[0]), rate, mask, width_mask)
+        match = ref_match_prefix(rend, seg)
+        if match >= max(minrun, mincycles * period) and (
+            best is None or match > best[0]
+        ):
+            best = (
+                match,
+                "maskaccum",
+                {"v0": int(seg[0]), "rate": rate, "mask": mask, "width": width_mask},
+            )
+        if best and best[0] == length:
+            break
+    return best
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_fused_prefix_maskaccum_stall_matches_reference(seed):
+    # The fused njit periodic-stall search is byte-identical to the pre-fusion
+    # render+match loop -- same winner, same params, same mask gate / order.
+    rng = np.random.RandomState(seed)
+    for _ in range(120):
+        length = rng.randint(1, 400)
+        wm = int(rng.choice([0xFF, 0xFFF, 0xFFFF]))
+        kind = rng.randint(0, 4)
+        if kind == 0:  # structureless noise
+            seg = rng.randint(0, wm + 1, size=length).astype(np.int64)
+        elif kind == 1:  # a genuine rate stepped on a periodic advance mask
+            period = rng.randint(2, 26)
+            mask = rng.randint(0, 2, size=period)
+            if mask.sum() == 0:
+                mask[0] = 1
+            rate = int(rng.randint(-20, 21)) or 3
+            v = int(rng.randint(0, wm + 1))
+            out = []
+            for i in range(length):
+                out.append(v & wm)
+                if mask[i % period]:
+                    v = (v + rate) & wm
+            seg = np.asarray(out, dtype=np.int64)
+        elif kind == 2:  # a plain accum (all-advance, must be rejected)
+            r = int(rng.randint(1, 25))
+            v = int(rng.randint(0, wm + 1))
+            seg = np.asarray([(v + r * i) & wm for i in range(length)], dtype=np.int64)
+        else:  # near-constant
+            seg = np.full(length, int(rng.randint(0, wm + 1)), dtype=np.int64)
+        for maxp in (24, 12):
+            for minrun in (12, 6):
+                for mincycles in (3, 2):
+                    assert A._prefix_maskaccum_stall(
+                        seg, wm, maxp, minrun, mincycles
+                    ) == _ref_prefix_maskaccum_stall(seg, wm, maxp, minrun, mincycles)
+
+
+def _ref_periodic_diff_period(diffw, pmax, mincyc):
+    """Pre-fusion pure-Python period scan (the ``np.array_equal`` loop)."""
+    m = len(diffw)
+    for period in range(2, pmax + 1):
+        need = mincyc * period
+        if need <= m and np.array_equal(diffw[period:need], diffw[: need - period]):
+            return period
+    return None
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_periodic_diff_period_matches_reference(seed):
+    # The fused njit long-period detector returns the SAME first qualifying period
+    # the per-P np.array_equal scan in cover._periodic_candidates did (-1 / None).
+    rng = np.random.RandomState(seed)
+    for _ in range(200):
+        m = rng.randint(1, 700)
+        kind = rng.randint(0, 4)
+        wm = int(rng.choice([0xFF, 0xFFF, 0xFFFF]))
+        if kind == 0:
+            diffw = rng.randint(0, wm + 1, size=m)
+        elif kind == 1:  # periodic body
+            period = rng.randint(2, 60)
+            body = rng.randint(0, wm + 1, size=period)
+            diffw = np.array([body[i % period] for i in range(m)])
+        elif kind == 2:  # periodic then breaks
+            period = rng.randint(2, 40)
+            body = rng.randint(0, wm + 1, size=period)
+            diffw = np.array([body[i % period] for i in range(m)])
+            if m:
+                br = rng.randint(0, m)
+                diffw[br:] = rng.randint(0, wm + 1, size=m - br)
+        else:
+            diffw = np.full(m, int(rng.randint(0, wm + 1)))
+        diffw = np.ascontiguousarray(diffw.astype(np.int64))
+        for mincyc in (4, 2, 8):
+            for maxp in (256, 64, 16):
+                pmax = min(maxp, m // mincyc)
+                got = _rnj.periodic_diff_period(diffw, int(pmax), int(mincyc))
+                got = None if got < 0 else got
+                assert got == _ref_periodic_diff_period(diffw, pmax, mincyc)
+
+
+def test_periodic_candidates_unchanged_by_fused_detector():
+    # cover._periodic_candidates (which now calls the fused detector) still yields the
+    # SAME candidate list a genuine macro-loop produces (one render verifies the winner).
+    rng = np.random.RandomState(99)
+    for _ in range(60):
+        wm = int(rng.choice([0xFFF, 0xFFFF]))
+        period = rng.randint(8, 64)
+        tbl = rng.randint(-6, 7, size=period).astype(np.int64)
+        if not tbl.any():
+            tbl[0] = 1
+        length = period * rng.randint(5, 12) + rng.randint(0, period)
+        v = int(rng.randint(0, wm + 1))
+        out = []
+        for i in range(length):
+            out.append(v & wm)
+            v = (v + int(tbl[i % period])) & wm
+        seg = np.asarray(out, dtype=np.int64)
+        got = C._periodic_candidates(seg, wm)
+        # Re-render any returned candidate and confirm it covers a substantial prefix.
+        for name, params in got:
+            assert name == "citg"
+            rend = A.render_citg(params, length)
+            assert A._match_prefix(rend, seg) >= 4 * len(params["table"])

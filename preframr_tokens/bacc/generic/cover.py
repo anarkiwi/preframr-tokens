@@ -32,6 +32,7 @@ import json
 import numpy as np
 
 from preframr_tokens.bacc.generic import archetypes as A
+from preframr_tokens.bacc.generic import _render_njit as _rnj
 from preframr_tokens.bacc.generic.tracker import SEED_KEYS, _PITCH_LIST, _REL
 from preframr_tokens.bacc.serialize import _wu
 from preframr_tokens.bacc.tracker_serialize import (
@@ -388,17 +389,18 @@ def _periodic_candidates(seg, width):
     # the LONG macro-loop periods this finds add anything; one render verifies the winner.
     diffw = (np.diff(sw).astype(np.int64)) % (w + 1)
     m = len(diffw)
-    best_P = None
     pmax = min(maxp, m // mincyc)
-    for P in range(2, pmax + 1):
-        # A genuine period-P loop repeats its diff body for at least ``mincyc`` cycles:
-        # diffw[i] == diffw[i-P] over the first mincyc*P diffs.  Checking only that prefix
-        # (not the whole window) admits a loop that later breaks at a note-on, exactly as
-        # the former render-and-match-prefix did, but with one array compare per period.
-        need = mincyc * P
-        if need <= m and np.array_equal(diffw[P:need], diffw[: need - P]):
-            best_P = P
-            break
+    # The smallest period whose diff body repeats for ``mincyc`` cycles (``diffw[i] ==
+    # diffw[i-P]`` over the first ``mincyc*P`` diffs).  The ``for P: np.array_equal(...)``
+    # scan -- up to ``pmax`` whole-array compares per breakpoint -- was the cover's
+    # dominant remaining ``array_equal`` cost; the fused njit detector
+    # :func:`_render_njit.periodic_diff_period` does the SAME ascending-``P`` prefix
+    # comparison element-wise with a first-mismatch short-circuit, returning the SAME
+    # first qualifying ``P`` (``-1`` when none), and one render below still verifies it.
+    diffw_c = diffw if diffw.flags["C_CONTIGUOUS"] else np.ascontiguousarray(diffw)
+    best_P = _rnj.periodic_diff_period(diffw_c, int(pmax), int(mincyc))
+    if best_P < 0:
+        best_P = None
     if best_P is not None:
         P = best_P
         rt0 = diffw[:P]

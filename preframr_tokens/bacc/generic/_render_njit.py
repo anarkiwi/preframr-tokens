@@ -166,6 +166,137 @@ def vibrato_search(seg, bases, amps, minrun):
 
 
 # ---------------------------------------------------------------------------
+# Fused vibrato + hi-byte skydive composite candidate search.
+# ---------------------------------------------------------------------------
+@njit
+def vibskydive_search(seg, lo, hi, base, cand_lo, minrun):
+    """Fused :func:`archetypes._prefix_vibskydive` inner search -- enumerate the SAME
+    ``(amp_lo, amp_hi, ph0, par)`` grid (``amp_lo`` in the precomputed ``cand_lo``
+    ascending-set order, ``amp_hi`` in ``0..0x3F``, ``ph0`` in ``0..7``, ``par`` in
+    ``0,1``) for the vibrato_exact + descending-hi-byte-overlay composite, matching each
+    candidate byte-exact in place WITHOUT a materialised :func:`render_vibrato_exact` /
+    :func:`render_vibskydive` per candidate (the pure-Python form rendered ~``cand_lo x
+    64 x 8`` full-length lanes per breakpoint -- the cover's #2 archetype hot loop after
+    CITG).
+
+    For each ``(amp_lo, amp_hi, ph0)`` the four vibrato_exact phase values are derived by
+    the repeated byte-wise 16-bit add of ``amp`` from ``base`` (the
+    ``_vibrato_exact_phase_tables`` recurrence); the candidate is GATED on the first 8
+    LO-bytes matching ``lo[:8]`` (the reference's ``vib[:8] & 0xFF == lo[:8]`` skip) before
+    the per-``par`` skydive overlay (``sfh`` starts at the hi-byte of the first frame of
+    that parity and counts down on each parity frame).  The winner is the first
+    strictly-longer match (``match >= 8`` floor) in that exact nested order, returning at
+    once on a full-length match -- byte-identical selection.  Returns ``(best_match,
+    amp, ph0, sfh0, par)`` with ``best_match == -1`` when none reaches the floor."""
+    length = len(seg)
+    b_lo = base & 0xFF
+    b_hi = (base >> 8) & 0xFF
+    best_match = -1
+    best_amp = 0
+    best_ph0 = 0
+    best_sfh0 = 0
+    best_par = 0
+    for ci in range(len(cand_lo)):
+        amp_lo = cand_lo[ci]
+        for amp_hi in range(0, 0x40):
+            amp = amp_lo | (amp_hi << 8)
+            if amp == 0:
+                continue
+            d_lo = amp & 0xFF
+            d_hi = (amp >> 8) & 0xFF
+            # The four vibrato_exact (lo, hi) phase outcomes (repeated byte-wise add).
+            clo = b_lo
+            chi = b_hi
+            elo0 = clo
+            ehi0 = chi
+            t = clo + d_lo
+            clo = t & 0xFF
+            t = chi + d_hi + (t >> 8)
+            chi = t & 0xFF
+            elo1 = clo
+            ehi1 = chi
+            t = clo + d_lo
+            clo = t & 0xFF
+            t = chi + d_hi + (t >> 8)
+            chi = t & 0xFF
+            elo2 = clo
+            ehi2 = chi
+            t = clo + d_lo
+            clo = t & 0xFF
+            t = chi + d_hi + (t >> 8)
+            chi = t & 0xFF
+            elo3 = clo
+            ehi3 = chi
+            for ph0 in range(8):
+                # Gate: the first 8 vibrato_exact LO bytes must equal lo[:8].
+                gate_ok = True
+                ng = 8 if length > 8 else length
+                for i in range(ng):
+                    osc = (ph0 + i) & 7
+                    if osc >= 4:
+                        osc ^= 7
+                    if osc == 0:
+                        vlo = elo0
+                    elif osc == 1:
+                        vlo = elo1
+                    elif osc == 2:
+                        vlo = elo2
+                    else:
+                        vlo = elo3
+                    if vlo != lo[i]:
+                        gate_ok = False
+                        break
+                if not gate_ok:
+                    continue
+                for par in range(2):
+                    # first frame index of this parity (relative to ph0 counter).
+                    first = -1
+                    for i in range(length):
+                        if ((ph0 + i) & 1) == par:
+                            first = i
+                            break
+                    if first < 0:
+                        continue
+                    sfh0 = hi[first]
+                    # Match the vibskydive render in place: vibrato_exact value with a
+                    # descending hi-byte counter overlaid on the parity frames.
+                    sfh = sfh0 & 0xFF
+                    match = 0
+                    for i in range(length):
+                        osc = (ph0 + i) & 7
+                        if osc >= 4:
+                            osc ^= 7
+                        if osc == 0:
+                            vlo = elo0
+                            vhi = ehi0
+                        elif osc == 1:
+                            vlo = elo1
+                            vhi = ehi1
+                        elif osc == 2:
+                            vlo = elo2
+                            vhi = ehi2
+                        else:
+                            vlo = elo3
+                            vhi = ehi3
+                        if ((ph0 + i) & 1) == par and sfh != 0:
+                            old = sfh
+                            sfh = (sfh - 1) & 0xFF
+                            vhi = old
+                        if (vlo | (vhi << 8)) != seg[i]:
+                            break
+                        match += 1
+                    if match >= minrun and match > best_match:
+                        best_match = match
+                        best_amp = amp
+                        best_ph0 = ph0
+                        best_sfh0 = sfh0
+                        best_par = par
+                        if match == length:
+                            return (best_match, best_amp, best_ph0, best_sfh0, best_par)
+    return (best_match, best_amp, best_ph0, best_sfh0, best_par)
+
+
+# ---------------------------------------------------------------------------
 # Fused mirror-fold triangle (pingfold) candidate search.
 # ---------------------------------------------------------------------------
 @njit
@@ -304,6 +435,128 @@ def dwellratewalk_search(seg, dsign, cand_dwells, maxp, width_mask, minrun):
                 best_dwell = dwell
                 best_period = period
     return (best_match, best_dwell, best_period)
+
+
+# ---------------------------------------------------------------------------
+# Fused signed-rate wavetable-accumulator candidate search.
+# ---------------------------------------------------------------------------
+@njit
+def ratewalk_search(seg, dsign, maxp, width_mask, minrun):
+    """Fused :func:`archetypes._prefix_ratewalk` inner search -- enumerate the SAME
+    ``period`` grid (``1..min(maxp, len(dsign))``) and return the longest byte-exact
+    period-P signed-rate accumulator prefix, in the SAME order and with the SAME
+    acceptance the Python loop used, but WITHOUT a materialised
+    :func:`render_ratewalk` + numpy ``_match_prefix`` per period (the remaining
+    pure-Python render-per-period sweep -- ``render_ratewalk`` was ~44 full-window
+    renders per ``_prefix_ratewalk`` call, the matcher's last un-fused hot loop).
+
+    ``dsign`` is the precomputed signed per-frame delta the reference builds in numpy
+    (``diff = np.diff(seg) % (wm+1)``; ``dsign = where(diff > wm//2, diff-(wm+1),
+    diff)``), so the kernel reads the SAME period-P rate table off ``dsign[:period]``.
+    A candidate period is admitted only when its table has a nonzero entry (the
+    reference's ``if not any(table): continue`` -- a constant hold is left to the
+    cheaper zoo ``hold``); its render is the ``render_ratewalk`` recurrence with
+    ``ctr0=0`` matched byte-exact in place: ``out[i] = val & wm`` then
+    ``val = (val + dsign[i % period]) & wm`` starting ``val = seg[0]``.  The winner is
+    the first STRICTLY-longer match (``match >= max(minrun, 2*period)`` floor),
+    scanning ``period`` ascending, stopping early on a full-length match (the
+    reference's ``best[0] == length`` break).  Returns ``(best_match, best_period)``
+    (``best_match == -1`` when none qualifies); the caller rebuilds
+    ``rate_table = dsign[:period]``."""
+    length = len(seg)
+    dlen = len(dsign)
+    v0 = seg[0]
+    best_match = -1
+    best_period = 0
+    pmax = maxp if maxp < dlen else dlen
+    if pmax < 1:
+        pmax = 1
+    for period in range(1, pmax + 1):
+        if dlen < period:
+            continue
+        # The rate table must have a nonzero entry (``if not any(table): continue``).
+        nonzero = False
+        for k in range(period):
+            if dsign[k] != 0:
+                nonzero = True
+                break
+        if not nonzero:
+            continue
+        floor = 2 * period
+        if floor < minrun:
+            floor = minrun
+        # render_ratewalk(ctr0=0) recurrence, matched in place.
+        val = v0
+        match = 0
+        for i in range(length):
+            if (val & width_mask) != seg[i]:
+                break
+            match += 1
+            val = (val + dsign[i % period]) & width_mask
+        if match >= floor and match > best_match:
+            best_match = match
+            best_period = period
+        if best_match == length:
+            break
+    return (best_match, best_period)
+
+
+# ---------------------------------------------------------------------------
+# Fused single-rate periodic-stall accumulator candidate search.
+# ---------------------------------------------------------------------------
+@njit
+def maskaccum_stall_search(seg, advance, rate, maxp, width_mask, minrun, mincycles):
+    """Fused :func:`archetypes._prefix_maskaccum_stall` inner search -- enumerate the
+    SAME ``period`` grid (``1..min(maxp, len(advance))``) for the dominant-rate periodic
+    advance mask and return the longest byte-exact mask-accumulator prefix, in the SAME
+    order and with the SAME acceptance the Python loop used, but WITHOUT a materialised
+    :func:`render_maskaccum` + numpy ``_match_prefix`` per period (the last per-period
+    render loop in the maskaccum family, ~``maxp`` renders per breakpoint).
+
+    ``advance`` is the precomputed 0/1 frame mask the reference builds (``advance =
+    (dsign == rate)``, ``dsign`` the signed per-frame delta), ``rate`` the dominant
+    nonzero rate.  A candidate ``period`` reads ``mask = advance[:period]`` and is gated
+    exactly as the reference (``steps = sum(mask) >= 1`` AND not ``(period > 1 and steps
+    == period)`` -- an all-advance mask is a plain accum left to the cheaper rule); its
+    render is the ``render_maskaccum`` recurrence matched byte-exact in place: ``out[i] =
+    val & wm`` then ``if mask[i % period]: val = (val + rate) & wm`` starting ``val =
+    seg[0]``.  The winner is the first STRICTLY-longer match (``match >= max(minrun,
+    mincycles*period)`` floor), scanning ``period`` ascending, stopping early on a
+    full-length match.  Returns ``(best_match, best_period)`` (``best_match == -1`` when
+    none qualifies); the caller rebuilds ``mask = advance[:period]``."""
+    length = len(seg)
+    alen = len(advance)
+    v0 = seg[0]
+    best_match = -1
+    best_period = 0
+    pmax = maxp if maxp < alen else alen
+    for period in range(1, pmax + 1):
+        if alen < mincycles * period:
+            continue
+        # steps = sum(mask); gate out an empty or all-advance (period>1) mask.
+        steps = 0
+        for k in range(period):
+            steps += advance[k]
+        if steps < 1 or (period > 1 and steps == period):
+            continue
+        floor = mincycles * period
+        if floor < minrun:
+            floor = minrun
+        # render_maskaccum recurrence, matched in place.
+        val = v0
+        match = 0
+        for i in range(length):
+            if (val & width_mask) != seg[i]:
+                break
+            match += 1
+            if advance[i % period]:
+                val = (val + rate) & width_mask
+        if match >= floor and match > best_match:
+            best_match = match
+            best_period = period
+        if best_match == length:
+            break
+    return (best_match, best_period)
 
 
 # ---------------------------------------------------------------------------
@@ -466,3 +719,37 @@ def citg_walk(
             if ptr >= period:
                 ptr = loop
     return out
+
+
+# ---------------------------------------------------------------------------
+# Fused long-period detector for the periodic-loop candidate (cover._periodic_candidates).
+# ---------------------------------------------------------------------------
+@njit
+def periodic_diff_period(diffw, pmax, mincyc):
+    """The smallest period ``P`` in ``2..pmax`` whose per-frame DIFF body repeats for
+    ``mincyc`` cycles -- ``diffw[i] == diffw[i - P]`` over the first ``mincyc*P`` diffs
+    -- or ``-1`` when none qualifies.  Fuses the ``for P: np.array_equal(diffw[P:need],
+    diffw[:need-P])`` scan in :func:`cover._periodic_candidates` (the cover's dominant
+    remaining ``array_equal`` storm: up to ``pmax`` whole-array compares per breakpoint)
+    into ONE compiled loop that compares element-wise and SHORT-CIRCUITS on the first
+    mismatch -- byte-identical selection (same ascending-``P`` order, same prefix
+    ``[P:need)`` vs ``[0:need-P)`` comparison, first qualifying ``P`` wins).
+
+    ``diffw`` is the precomputed windowed signed-diff array; the caller verifies the
+    winner with one render exactly as before, so this only locates the SAME candidate
+    period the Python scan did."""
+    m = len(diffw)
+    for P in range(2, pmax + 1):
+        need = mincyc * P
+        if need > m:
+            # A larger P only makes ``need`` larger, so once ``need > m`` no further P
+            # can satisfy the Python loop's ``need <= m`` guard -- stop scanning.
+            break
+        ok = True
+        for k in range(need - P):
+            if diffw[P + k] != diffw[k]:
+                ok = False
+                break
+        if ok:
+            return P
+    return -1

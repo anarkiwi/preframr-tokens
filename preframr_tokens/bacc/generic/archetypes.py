@@ -1330,6 +1330,17 @@ def _has_hi_countdown(seg):
 
 
 def _prefix_vibskydive(seg):
+    """Longest byte-exact vibrato_exact + descending-hi-byte (skydive) composite prefix.
+
+    The ``amp_lo`` candidate set is derived in Python (the cheap first-parity-1 deviation
+    scan, exactly as before), then the EXPENSIVE render+match sweep over ``cand_lo x
+    amp_hi(0..0x3F) x ph0(0..7) x par(0,1)`` runs in the fused njit kernel
+    :func:`_render_njit.vibskydive_search` -- it enumerates the SAME grid in the SAME
+    order (``cand_lo`` passed in its Python set-iteration order so a length TIE resolves to
+    the SAME struct) and returns the longest byte-exact prefix WITHOUT materialising a
+    :func:`render_vibrato_exact` / :func:`render_vibskydive` per candidate (the pure-Python
+    form was the cover's #2 archetype hot loop -- ~890k vibrato renders on a long lane).
+    Byte-identical selection (first strictly-longer wins, full-match early-out)."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < 8:
@@ -1337,7 +1348,6 @@ def _prefix_vibskydive(seg):
     lo = (seg & 0xFF).astype(np.int64)
     hi = ((seg >> 8) & 0xFF).astype(np.int64)
     base = int(seg[0])
-    best = None
     lo0 = base & 0xFF
     cand_lo = set()
     for ph0 in range(8):
@@ -1345,39 +1355,30 @@ def _prefix_vibskydive(seg):
             if tri_phase(ph0 + i) == 1:
                 cand_lo.add((int(lo[i]) - lo0) & 0xFF)
                 break
-    for amp_lo in cand_lo:
-        for amp_hi in range(0, 0x40):
-            amp = amp_lo | (amp_hi << 8)
-            if amp == 0:
-                continue
-            for ph0 in range(8):
-                vib, _ = render_vibrato_exact(length, base, amp, ph0)
-                if not np.array_equal((vib[:8] & 0xFF), lo[:8]):
-                    continue
-                for par in (0, 1):
-                    first = next(
-                        (i for i in range(length) if ((ph0 + i) & 1) == par), None
-                    )
-                    if first is None:
-                        continue
-                    sfh0 = int(hi[first])
-                    rend = render_vibskydive(length, base, amp, ph0, sfh0, par)
-                    match = _match_prefix(rend, seg)
-                    if match >= 8 and (best is None or match > best[0]):
-                        best = (
-                            match,
-                            "vibskydive",
-                            {
-                                "base": base,
-                                "amp": amp,
-                                "ctr0": ph0,
-                                "sfh0": sfh0,
-                                "par": par,
-                            },
-                        )
-                        if match == length:
-                            return best
-    return best
+    if not cand_lo:
+        return None
+    # Pass cand_lo in its EXACT Python set-iteration order (the reference iterated
+    # ``for amp_lo in cand_lo``), so a length tie resolves to the same (amp, ph0) struct.
+    cand_arr = np.array(list(cand_lo), dtype=np.int64)
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    lo_c = np.ascontiguousarray(lo)
+    hi_c = np.ascontiguousarray(hi)
+    match, amp, ph0, sfh0, par = _rnj.vibskydive_search(
+        seg_c, lo_c, hi_c, base, cand_arr, 8
+    )
+    if match < 8:
+        return None
+    return (
+        int(match),
+        "vibskydive",
+        {
+            "base": base,
+            "amp": int(amp),
+            "ctr0": int(ph0),
+            "sfh0": int(sfh0),
+            "par": int(par),
+        },
+    )
 
 
 def _prefix_arp_decay(seg):
@@ -1881,31 +1882,35 @@ def _prefix_maskaccum_stall(seg, width_mask=0xFFFF, maxp=24, minrun=12, mincycle
     # advance frames are those stepping by exactly the dominant rate; a frame that
     # steps by a different rate (the next table step) is NOT an advance and ends
     # the longest prefix this matcher can cover with one (rate, mask) pair.
-    advance = (dsign == rate).astype(int)
-    best = None
-    for period in range(1, min(maxp, len(advance)) + 1):
-        if len(advance) < mincycles * period:
-            continue
-        mask = advance[:period].tolist()
-        steps = sum(mask)
-        # require at least one advance AND (for period>1) at least one genuine
-        # stall: an all-advance mask is just a plain accum the proven library
-        # already covers and must not be re-described here.
-        if steps < 1 or (period > 1 and steps == period):
-            continue
-        rend = render_maskaccum(length, int(seg[0]), rate, mask, width_mask)
-        match = _match_prefix(rend, seg)
-        if match >= max(minrun, mincycles * period) and (
-            best is None or match > best[0]
-        ):
-            best = (
-                match,
-                "maskaccum",
-                {"v0": int(seg[0]), "rate": rate, "mask": mask, "width": width_mask},
-            )
-        if best and best[0] == length:
-            break
-    return best
+    advance = (dsign == rate).astype(np.int64)
+    # The expensive ``period`` render+match sweep -- the last per-period
+    # ``render_maskaccum`` loop in the maskaccum family -- runs in the fused njit kernel
+    # :func:`_render_njit.maskaccum_stall_search`: it reads the same precomputed 0/1
+    # ``advance`` mask and matches the ``render_maskaccum`` recurrence in place over the
+    # SAME ascending-period order and the SAME mask gate, returning the byte-exact
+    # winner's ``(match, period)``; the caller rebuilds ``mask = advance[:period]``.
+    # Byte-identical selection (first strictly-longer wins, full-match early-out).
+    advance_c = (
+        advance if advance.flags["C_CONTIGUOUS"] else np.ascontiguousarray(advance)
+    )
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    match, period = _rnj.maskaccum_stall_search(
+        seg_c,
+        advance_c,
+        int(rate),
+        int(maxp),
+        int(width_mask),
+        int(minrun),
+        int(mincycles),
+    )
+    if match < 0:
+        return None
+    mask = advance[:period].tolist()
+    return (
+        int(match),
+        "maskaccum",
+        {"v0": int(seg[0]), "rate": rate, "mask": mask, "width": width_mask},
+    )
 
 
 def _prefix_tablewalk(seg, maxp=48):
@@ -1943,31 +1948,36 @@ def _prefix_ratewalk(seg, width_mask=0xFFFF, maxp=48, minrun=8):
     ramp-up / apex-dwell / ramp-down reflecting triangle is a period-~45 signed-rate
     table), but a candidate is accepted only when the matched run covers at least
     TWO full periods -- so the rate table is a genuinely reused loop, never a single
-    pass over a long table that would amount to storing the per-step deltas raw."""
+    pass over a long table that would amount to storing the per-step deltas raw.
+
+    The expensive ``period`` render+match sweep runs in the fused njit kernel
+    :func:`_render_njit.ratewalk_search` -- it reads the same precomputed signed-delta
+    table ``dsign[:period]`` and matches the ``render_ratewalk`` recurrence in place
+    over the SAME ascending-period order (no materialised render + numpy
+    ``_match_prefix`` per period), returning the byte-exact winner's ``(match,
+    period)``; the caller rebuilds ``rate_table = dsign[:period]``.  Byte-identical
+    selection (first strictly-longer wins, full-match early-out)."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < minrun:
         return None
     diff = np.diff(seg) % (width_mask + 1)
-    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
-    best = None
-    for period in range(1, min(maxp, max(1, len(dsign))) + 1):
-        if len(dsign) < period:
-            continue
-        table = dsign[:period].tolist()
-        if not any(table):
-            continue
-        rend = render_ratewalk(length, int(seg[0]), table, 0, width_mask)
-        match = _match_prefix(rend, seg)
-        if match >= max(minrun, 2 * period) and (best is None or match > best[0]):
-            best = (
-                match,
-                "ratewalk",
-                {"v0": int(seg[0]), "rate_table": table, "width": width_mask},
-            )
-        if best and best[0] == length:
-            break
-    return best
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff).astype(
+        np.int64
+    )
+    dsign_c = dsign if dsign.flags["C_CONTIGUOUS"] else np.ascontiguousarray(dsign)
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    match, period = _rnj.ratewalk_search(
+        seg_c, dsign_c, int(maxp), int(width_mask), int(minrun)
+    )
+    if match < 0:
+        return None
+    table = dsign[:period].tolist()
+    return (
+        int(match),
+        "ratewalk",
+        {"v0": int(seg[0]), "rate_table": table, "width": width_mask},
+    )
 
 
 def _prefix_dwellratewalk(seg, width_mask=0xFFFF, maxp=24, maxdwell=16, minrun=24):

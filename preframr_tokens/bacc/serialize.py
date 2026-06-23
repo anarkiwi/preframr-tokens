@@ -86,6 +86,46 @@ def _transposed_run(items, i, off, delta, delta_of):
     return n
 
 
+def _best_repeat(items, i):
+    """Best (length, offset) exact backward run at ``i`` -- the longest run of items
+    equal to a prior run, ties broken to the SMALLEST offset (the reference scans
+    ``off`` ascending and keeps the first maximum)."""
+    best_len, best_off = 0, 0
+    for off in range(1, i + 1):
+        n = 0
+        while i + n < len(items) and items[i - off + n] == items[i + n]:
+            n += 1
+        if n > best_len:
+            best_len, best_off = n, off
+    return best_len, best_off
+
+
+def _best_repeat_indexed(items, i, eqkeys, posns):
+    """``_best_repeat`` accelerated by an equality-key index: an exact run can only
+    start at a prior position ``p`` with ``eqkeys[p] == eqkeys[i]`` (a necessary
+    condition for ``items[p] == items[i]``).  ``posns[key]`` is the ascending list of
+    PRIOR positions (``p < i`` -- the caller adds each position only after the cursor
+    passes it, so the index never offers a forward source) with that key; scanning it
+    DESCENDING visits offsets ascending, so the first strict maximum is the
+    smallest-offset longest run -- the SAME ``(best_len, best_off)`` the dense scan
+    returns (byte-identical), but probing only matching starts instead of all ``i``."""
+    cand = posns.get(eqkeys[i])
+    if not cand:
+        return 0, 0
+    best_len, best_off = 0, 0
+    n_items = len(items)
+    # A run may overlap its source (length > offset, e.g. a constant stream), so every
+    # same-key candidate is probed; the inner loop stops at the first divergence.
+    for k in range(len(cand) - 1, -1, -1):
+        p = cand[k]
+        n = 0
+        while i + n < n_items and items[p + n] == items[i + n]:
+            n += 1
+        if n > best_len:
+            best_len, best_off = n, i - p
+    return best_len, best_off
+
+
 def _best_transpose(items, i, delta_of):
     """Best (length, offset, delta) backward run matching a prior run up to a
     single constant non-zero grid-interval (a transposed phrase repeat)."""
@@ -100,7 +140,39 @@ def _best_transpose(items, i, delta_of):
     return best_len, best_off, best_delta
 
 
-def _lz_emit_t(out, items, lit_cost, lit_emit, delta_of=None):
+def _best_transpose_indexed(items, i, delta_of, xkeys, xposns):
+    """``_best_transpose`` accelerated by a transpose-compatibility-key index.
+
+    ``delta_of(items[p], items[i])`` is non-None only when the two items agree on
+    every non-pitch field, so a transpose source can only start at a prior ``p`` with
+    ``xkeys[p] == xkeys[i]`` (a NECESSARY condition -- ``delta_of`` is still called on
+    every probed candidate, so a false-positive key collision is simply rejected).
+    ``xposns`` holds only PRIOR positions (``p < i``); scanning them DESCENDING visits
+    offsets ascending, so the first strict maximum is the smallest-offset longest
+    transposed run -- the SAME ``(best_len, best_off, best_delta)`` the dense scan
+    returns."""
+    cand = xposns.get(xkeys[i])
+    if not cand:
+        return 0, 0, 0
+    best_len, best_off, best_delta = 0, 0, 0
+    # ``cand`` ascending; scanned DESCENDING -> offsets ascending, first strict maximum
+    # is the smallest-offset longest transposed run (the dense scan's result).  A
+    # transposed run may overlap its source, so every same-key candidate is probed.
+    for k in range(len(cand) - 1, -1, -1):
+        p = cand[k]
+        off = i - p
+        delta = delta_of(items[p], items[i])
+        if delta in (None, 0):
+            continue
+        n = _transposed_run(items, i, off, delta, delta_of)
+        if n > best_len:
+            best_len, best_off, best_delta = n, off, delta
+    return best_len, best_off, best_delta
+
+
+def _lz_emit_t(
+    out, items, lit_cost, lit_emit, delta_of=None, eq_key=None, xpose_key=None
+):
     """Inline backward-LZ over ``items`` with optional TRANSPOSE factoring.
 
     Literals are emitted via ``lit_emit(out, item)`` and costed via
@@ -110,22 +182,63 @@ def _lz_emit_t(out, items, lit_cost, lit_emit, delta_of=None):
     REPEAT, transposed REPEAT+Delta, literal} is chosen per position, weighing each
     candidate by tokens-saved so a longer plain REPEAT is not beaten by a shorter
     transposed one (and vice versa) -- so enabling TRANSPOSE never costs more than
-    REPEAT-only would have."""
+    REPEAT-only would have.
+
+    ``eq_key`` / ``xpose_key`` are OPTIONAL hashable-key functions that make the
+    backward search sub-quadratic without changing its output: ``eq_key(item)`` must
+    be EQUAL for any two ``==`` items (so an exact match never starts at a position
+    with a different key), and ``xpose_key(item)`` must be EQUAL for any two items
+    ``delta_of`` relates (so a transpose never starts at a position with a different
+    key).  When supplied, the match start is restricted to the index of matching
+    positions -- byte-identical selection (the dense reference's smallest-offset
+    longest run), but O(matches) instead of O(i) probes per position.  Absent (or one
+    key None), the dense reference scan is used."""
+    n = len(items)
+    # Precompute the per-item keys (computing a key never introduces a match), but build
+    # the position indexes INCREMENTALLY: a position ``j`` is added to the index only
+    # after the cursor passes it, so a search at ``i`` sees exactly the prior positions
+    # ``p < i`` -- the same source window the dense scan's ``off in range(1, i+1)`` walks
+    # (a forward source would spuriously match future items).  Every position the cursor
+    # advances over (including ones inside an emitted copy run) is indexed, because the
+    # dense scan can match a later position against ANY earlier one.
+    eqkeys = eqposns = None
+    if eq_key is not None:
+        eqkeys = [eq_key(it) for it in items]
+        eqposns = {}
+    xkeys = xposns = None
+    if delta_of is not None and xpose_key is not None:
+        xkeys = [xpose_key(it) for it in items]
+        xposns = {}
+
+    def _index_through(lo, hi):
+        # Add positions [lo, hi) to whichever indexes are active.
+        for j in range(lo, hi):
+            if eqposns is not None:
+                eqposns.setdefault(eqkeys[j], []).append(j)
+            if xposns is not None:
+                xposns.setdefault(xkeys[j], []).append(j)
+
+    indexed_upto = 0
     i = 0
-    while i < len(items):
-        best_len, best_off = 0, 0
-        for off in range(1, i + 1):
-            n = 0
-            while i + n < len(items) and items[i - off + n] == items[i + n]:
-                n += 1
-            if n > best_len:
-                best_len, best_off = n, off
+    while i < n:
+        if eqposns is not None or xposns is not None:
+            _index_through(indexed_upto, i)
+            indexed_upto = i
+        if eqposns is not None:
+            best_len, best_off = _best_repeat_indexed(items, i, eqkeys, eqposns)
+        else:
+            best_len, best_off = _best_repeat(items, i)
         cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
         lit_copy = sum(lit_cost(items[i + j]) for j in range(best_len))
         use_copy = best_len >= _MIN_COPY and cost_copy < lit_copy
         copy_gain = (lit_copy - cost_copy) if use_copy else 0
         if delta_of is not None:
-            tlen, toff, tdelta = _best_transpose(items, i, delta_of)
+            if xposns is not None:
+                tlen, toff, tdelta = _best_transpose_indexed(
+                    items, i, delta_of, xkeys, xposns
+                )
+            else:
+                tlen, toff, tdelta = _best_transpose(items, i, delta_of)
             cost_trans = 1 + _u_len(toff) + _u_len(tlen) + _wi_len(tdelta)
             lit_trans = sum(lit_cost(items[i + j]) for j in range(tlen))
             use_trans = tlen >= _MIN_COPY and cost_trans < lit_trans

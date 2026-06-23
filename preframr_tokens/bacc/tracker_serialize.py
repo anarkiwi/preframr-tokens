@@ -303,6 +303,28 @@ def _read_schemas(ids, i, npool):
     return schemas, i
 
 
+# --- hashable canonicalisation for the backward-LZ key index ----------------
+def _hashable(x):
+    """A hashable canonical form of a base/seed value that equals iff the originals are
+    ``==``: lists become tuples, dicts become their sorted ``(key, value)`` tuple (so
+    insertion order never matters), scalars/None pass through.  Used to derive the
+    backward-LZ equality + transpose-compatibility keys (the keys only PRUNE which
+    positions the match probes -- ``==`` / ``delta_of`` still decide -- so an exact
+    canonical form keeps the LZ byte-identical)."""
+    if isinstance(x, list):
+        return tuple(_hashable(v) for v in x)
+    if isinstance(x, dict):
+        return tuple((k, _hashable(v)) for k, v in sorted(x.items()))
+    return x
+
+
+# A sentinel standing in for a free (transposable) positive pitch base in the
+# transpose-compatibility key: two rows can only transpose-relate when their negative
+# (absolute) bases are EQUAL and every positive base is free, so positive bases all map
+# to this one token (``delta_of`` then computes/validates the shift).
+_XPOSE_FREE = object()
+
+
 # --- one (dur, ref, base, seed) free-lane event literal, schema-driven ------
 # ``ctx`` carries the decode-shared (schemas, has_note_table).  The segment START is
 # NOT stored (the cover tiles a lane contiguously from 0, so start = running sum of
@@ -354,7 +376,23 @@ def _make_event_codec(ctx):
         dur, ref, base, seed = ev
         return (dur, ref, base + d, seed)
 
-    return lit, read, cost, delta, shift
+    def eq_key(ev):
+        # Equal iff two events are ``==`` (the REPEAT match's necessary condition).
+        return (ev[0], ev[1], _hashable(ev[2]), _hashable(ev[3]))
+
+    def xpose_key(ev):
+        # Equal for any pair ``delta`` can relate: same dur/ref/seed, and a positive
+        # scalar base is FREE (folds to the sentinel); a list / negative base can never
+        # transpose, so it carries its own value and never collides with a free one.
+        base = ev[2]
+        free = (
+            _XPOSE_FREE
+            if (not isinstance(base, list) and base >= 0)
+            else _hashable(base)
+        )
+        return (ev[0], ev[1], _hashable(ev[3]), free)
+
+    return lit, read, cost, delta, shift, eq_key, xpose_key
 
 
 # --- a bundled voice row (dur, [ref...], [base...], [seed...]) ---------------
@@ -410,7 +448,28 @@ def _make_row_codec(ctx, nlane):
         nb = [b + d if (not isinstance(b, list) and b >= 0) else b for b in bases]
         return (dur, refs, nb, seeds)
 
-    return lit, read, cost, delta, shift
+    def eq_key(row):
+        # Equal iff two rows are ``==`` (the REPEAT match's necessary condition).
+        dur, refs, bases, seeds = row
+        return (
+            dur,
+            tuple(refs),
+            tuple(_hashable(b) for b in bases),
+            tuple(_hashable(s) for s in seeds),
+        )
+
+    def xpose_key(row):
+        # Equal for any pair ``delta`` can relate: same dur/refs/seeds and the same
+        # absolute (list / negative) bases at the same lanes; every positive lane base
+        # is FREE (folds to the sentinel -- ``delta`` computes the shared shift).
+        dur, refs, bases, seeds = row
+        bsig = tuple(
+            _XPOSE_FREE if (not isinstance(b, list) and b >= 0) else _hashable(b)
+            for b in bases
+        )
+        return (dur, tuple(refs), tuple(_hashable(s) for s in seeds), bsig)
+
+    return lit, read, cost, delta, shift, eq_key, xpose_key
 
 
 def _emit_lane_entry(out, ref, base, seed, ctx):
@@ -571,15 +630,16 @@ _MODE_ITEM_LZ = 0
 _MODE_TOKEN_LZ = 1
 
 
-def _emit_stream(out, items, lit, cost, delta):
+def _emit_stream(out, items, lit, cost, delta, eq_key=None, xpose_key=None):
     """Emit ``len(items)`` then the cheaper of {item-LZ (REPEAT+TRANSPOSE), token-LZ}
     of ``items`` (a 1-token selector picks the mode; ``lit``/``cost`` render/measure a
-    single item, ``delta`` is the TRANSPOSE interval test)."""
+    single item, ``delta`` is the TRANSPOSE interval test).  ``eq_key``/``xpose_key``
+    are the optional hashable-key accelerators for the backward-LZ (byte-identical)."""
     _wu(out, len(items))
     if not items:
         return
     item_body = []
-    _lz_emit_t(item_body, items, cost, lit, delta)
+    _lz_emit_t(item_body, items, cost, lit, delta, eq_key=eq_key, xpose_key=xpose_key)
     flat = []
     for it in items:
         lit(flat, it)
@@ -616,12 +676,12 @@ def _read_stream(ids, i, read, shift):
 
 def _emit_events(out, events, ctx):
     """Encode a free lane's ``(dt, dur, ref, base, seed)`` event stream."""
-    lit, _read, cost, delta, _shift = _make_event_codec(ctx)
-    _emit_stream(out, events, lit, cost, delta)
+    lit, _read, cost, delta, _shift, eq_key, xpose_key = _make_event_codec(ctx)
+    _emit_stream(out, events, lit, cost, delta, eq_key=eq_key, xpose_key=xpose_key)
 
 
 def _read_events(ids, i, ctx):
-    _lit, read, _cost, _delta, shift = _make_event_codec(ctx)
+    _lit, read, _cost, _delta, shift, _eqk, _xk = _make_event_codec(ctx)
     return _read_stream(ids, i, read, shift)
 
 
@@ -629,12 +689,12 @@ def _emit_rows(out, rows, ctx, nlane):
     """Encode a voice's BUNDLED row stream (TRANSPOSE factors a transposed bundled
     phrase -- a constant spine-pitch shift).  ``nlane`` is fixed for the voice (1 spine
     + bundled siblings) and derived from the voice header, not stored per row."""
-    lit, _read, cost, delta, _shift = _make_row_codec(ctx, nlane)
-    _emit_stream(out, rows, lit, cost, delta)
+    lit, _read, cost, delta, _shift, eq_key, xpose_key = _make_row_codec(ctx, nlane)
+    _emit_stream(out, rows, lit, cost, delta, eq_key=eq_key, xpose_key=xpose_key)
 
 
 def _read_rows(ids, i, ctx, nlane):
-    _lit, read, _cost, _delta, shift = _make_row_codec(ctx, nlane)
+    _lit, read, _cost, _delta, shift, _eqk, _xk = _make_row_codec(ctx, nlane)
     return _read_stream(ids, i, read, shift)
 
 
