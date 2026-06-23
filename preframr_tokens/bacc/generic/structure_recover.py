@@ -901,15 +901,25 @@ def _program_spans(d, struct):
     """The shared program-table spans (wave / pulse / filter / cmd) referenced once
     by the instruments, not re-derived per note.
 
-    The generic bound is the SONG-DATA MASK (bytes READ as data during play, never
-    written, never executed -- :meth:`Distill.song_data_mask`) RESTRICTED to the
-    region OUTSIDE the structures already accounted for (instrument table, pattern-
-    pointer table, pattern data, orderlists).  That residual song-data is exactly the
-    shared wave/pulse/filter/command generator tables -- the player CODE is excluded
-    by the mask (it is EXEC), so the span never includes machine code.  Returns
-    ``{name: (lo, hi)}`` contiguous runs (derived from the access map, not hardcoded).
-    """
-    mask = d.song_data_mask().copy()
+    The generic bound is the bytes the player READ AS DATA during play
+    (``ACC_READ_PLAY``, never written, never executed) RESTRICTED to the region OUTSIDE
+    the structures already accounted for (instrument table, pattern-pointer table,
+    pattern data, orderlists).  That residual READ data is exactly the shared
+    wave/pulse/filter/command generator tables the instruments actually consumed.
+
+    The read mask is the faithful program bound (HARD RULE #0: store the bytes the
+    player READ, not the gap-filled eligible run).  :meth:`Distill.song_data_mask`
+    keeps the UN-READ gaps inside an eligible run (for the player's SNAP round-trip),
+    but those gap bytes were never consumed in the capture -- and on a sparse-SDDF tune
+    whose instrument table could not be sited (so its code region is not carved out),
+    the gap-filled eligible run swallows whole spans of UNEXECUTED-in-capture machine
+    code + text, serializing thousands of bytes of non-program as "programs" (the
+    HARD RULE #0 literal-floor trap).  Bounding to the READ bytes drops both: a
+    never-read code/text gap is not part of the consumed program, and what remains is
+    the actual table data the instruments walked.  Returns ``{name: (lo, hi)}``
+    contiguous READ runs (derived from the access map, not hardcoded)."""
+    # A fresh boolean array (``&`` of two arrays) -- ``carve`` mutates it in place.
+    mask = ((d.acc & ACC_READ_PLAY) != 0) & d.eligible_mask()
 
     # carve out the structures already counted so programs are not double-charged
     def carve(a, b):
