@@ -416,15 +416,28 @@ class Distill:
         locations (EXEC & WRITE) and plain code (EXEC) are both excluded here by
         access TYPE, not by write-set subtraction."""
         in_ram = np.zeros(65536, dtype=bool)
-        in_ram[0x0002:0xD000] = True
         # Bound to the loaded program image -- the song tables live in the
         # player's own image (HVSC contract); this drops stray reads of
         # untouched high RAM. ``load_len == 0`` means "whole RAM" (unknown span).
         if self.load_len:
-            img = np.zeros(65536, dtype=bool)
+            # The image span is the authoritative RAM region. When the player
+            # loads INTO the RAM banked under I/O ($d000-$dfff) / KERNAL/BASIC
+            # ($e000-$ffff) -- e.g. MoN_Deenen @ $e800, Stephen_Ruddy @ $f000 --
+            # the tracer's SNAP captures it from the UNDERLYING 64 KiB RAM (raw
+            # ram[], banking-independent), so those bytes ARE in the artifact. We
+            # therefore extend the eligible ceiling to $ffff and let the image
+            # intersection gate the high region to exactly what was loaded. This is
+            # ADDITIVE: an image loaded entirely < $d000 never overlaps $d000-$ffff,
+            # so its eligible set is byte-identical to the old $d000-capped mask.
+            in_ram[0x0002:0x10000] = True
             end = min(self.load_addr + self.load_len, 65536)
-            img[self.load_addr : end] = True
-            in_ram = in_ram & img
+            in_ram[: max(self.load_addr, 0x0002)] = False
+            in_ram[end:] = False
+        else:
+            # Unknown span ("whole RAM"): keep the conservative $d000 ceiling so the
+            # I/O/ROM-banked region is NOT admitted without an image to bound it --
+            # preserves the prior behavior exactly for the no-load-len case.
+            in_ram[0x0002:0xD000] = True
         write_play = (self.acc & ACC_WRITE_PLAY) != 0
         return in_ram & ~write_play & ~self.exec_mask()
 

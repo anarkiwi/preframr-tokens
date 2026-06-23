@@ -510,12 +510,17 @@ def discover_orderlist(d, n_patterns, pattern_data_lo):
         for p in ptrs:
             seq = []
             for k in range(128):
+                if p + k >= len(ram):  # top-of-RAM orderlist: stop at the ceiling
+                    ok = False
+                    break
                 b = int(ram[(p + k) & 0xFFFF])
                 seq.append(b)
                 if b == 0xFF:
                     break
             else:
                 ok = False
+                break
+            if not ok:
                 break
             if len(seq) < 2 or any(not ((b < n_patterns) or (b >= 0x80)) for b in seq):
                 ok = False
@@ -595,7 +600,12 @@ def decode_patterns(d, pattern_ptrs):
         idx = 0
         rows = []
         cur_instr = cur_dur = cur_cmd = None
-        while idx < 0x400:
+        # ``base + idx < len(ram)``: a player whose patterns live in the RAM banked
+        # under KERNAL ($e000-$ffff) -- now captured by the widened SNAP -- can sit
+        # at the very top of RAM (e.g. $fa8d), so the walk must not index past the
+        # 64 KiB array.  An unterminated pattern stops at the RAM ceiling (the EOP
+        # byte normally ends it earlier); this is byte-exact for in-image patterns.
+        while idx < 0x400 and base + idx < len(ram):
             b = int(ram[(base + idx) & 0xFFFF])
             idx += 1
             if b >= 0x80:
@@ -635,7 +645,11 @@ def _decode_groups(ram, base):
     idx = 0
     groups = []
     markers = []
-    while idx < 0x400:
+    # Same ceiling guard as :func:`decode_patterns` -- a top-of-RAM pattern (a
+    # KERNAL-banked player now in the widened SNAP) must not index past 64 KiB, and
+    # this walk's ``idx`` must stay identical to ``decode_patterns`` so the
+    # ``reencode_patterns`` round-trip stays byte-exact.
+    while idx < 0x400 and base + idx < len(ram):
         b = int(ram[(base + idx) & 0xFFFF])
         idx += 1
         if b >= 0x80:
