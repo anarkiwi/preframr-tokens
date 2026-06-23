@@ -304,7 +304,9 @@ def test_event_transpose_delta_factoring():
     # incompatible events do not factor.  The delta/shift are bound to the decode
     # context (schemas, has_note_table) by the event codec.
     ctx = ([("S", ("seed",))] * 9, True)  # ref 7/8 are simple bodies with a "seed"
-    _lit, _read, _cost, delta, shift, _eq_key, _xpose_key = TS._make_event_codec(ctx)
+    _lit, _read, _cost, delta, shift, _eq_key, _xpose_key, _xpose_vec = (
+        TS._make_event_codec(ctx)
+    )
     a = (4, 7, 10, {"seed": 0})
     b = (4, 7, 13, {"seed": 0})
     assert delta(a, b) == 3

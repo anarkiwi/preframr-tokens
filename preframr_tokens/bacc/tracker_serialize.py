@@ -392,7 +392,15 @@ def _make_event_codec(ctx):
         )
         return (ev[0], ev[1], _hashable(ev[3]), free)
 
-    return lit, read, cost, delta, shift, eq_key, xpose_key
+    def xpose_vec(ev):
+        # The single transposable (positive scalar) base of this event, as a one-lane
+        # ``[value-or-None]`` vector (None when the base is a list / negative -- i.e.
+        # the lane carries no shift, matching ``delta``'s list/negative handling).  Feeds
+        # the njit LZ's numeric transpose encoding (see :mod:`bacc._lz_njit`).
+        base = ev[2]
+        return [base if (not isinstance(base, list) and base >= 0) else None]
+
+    return lit, read, cost, delta, shift, eq_key, xpose_key, xpose_vec
 
 
 # --- a bundled voice row (dur, [ref...], [base...], [seed...]) ---------------
@@ -469,7 +477,15 @@ def _make_row_codec(ctx, nlane):
         )
         return (dur, tuple(refs), tuple(_hashable(s) for s in seeds), bsig)
 
-    return lit, read, cost, delta, shift, eq_key, xpose_key
+    def xpose_vec(row):
+        # The per-lane transposable (positive scalar) bases, as a ``[value-or-None]``
+        # vector (None for a list / negative lane -- which carries no shift, matching
+        # ``delta``).  Feeds the njit LZ's numeric transpose encoding
+        # (:mod:`bacc._lz_njit`); ``nlane`` entries, the row's fixed lane count.
+        _dur, _refs, bases, _seeds = row
+        return [b if (not isinstance(b, list) and b >= 0) else None for b in bases]
+
+    return lit, read, cost, delta, shift, eq_key, xpose_key, xpose_vec
 
 
 def _emit_lane_entry(out, ref, base, seed, ctx):
@@ -540,38 +556,29 @@ def _lz_tokens(stream, min_copy=_POOL_MIN_COPY):
     """Backward-LZ a flat token ``stream`` into an output token list, escaping a copy
     with the :data:`REPEAT` marker (safe: the value stream never emits a token >=
     REPEAT).  Hash-of-3-grams accelerated greedy match (O(n)); a match is taken only
-    when strictly shorter than the literals it replaces."""
-    out = []
+    when strictly shorter than the literals it replaces.
+
+    The greedy match runs on the njit :func:`bacc._lz_njit.token_lz_plan_kernel`
+    (byte-identical to the former Python loop); the host replays the plan with the LEB
+    emitters.  When numba is absent the kernel decorator degrades to plain Python, so the
+    behaviour is unchanged either way."""
+    import numpy as np
+
+    from preframr_tokens.bacc import _lz_njit as LK
+
     n = len(stream)
-    table = {}  # 3-gram -> list of start positions (most recent last)
-    i = 0
-    while i < n:
-        best_len, best_off = 0, 0
-        if i + 3 <= n:
-            key = (stream[i], stream[i + 1], stream[i + 2])
-            for pos in reversed(table.get(key, ())):
-                off = i - pos
-                length = 0
-                while i + length < n and stream[pos + length] == stream[i + length]:
-                    length += 1
-                    if length >= 4095:
-                        break
-                if length > best_len:
-                    best_len, best_off = length, off
-                if best_len >= 512:  # good-enough cap keeps the scan bounded
-                    break
-        cost_copy = 1 + _u_len(best_off) + _u_len(best_len)
-        if best_len >= min_copy and cost_copy < best_len:
+    if n == 0:
+        return []
+    arr = np.asarray(stream, dtype=np.int64)
+    plan = LK.token_lz_plan_kernel(arr, int(min_copy))
+    out = []
+    for is_copy, off, length in plan:
+        if is_copy:
             out.append(REPEAT)
-            _wu(out, best_off)
-            _wu(out, best_len)
-            step = best_len
+            _wu(out, int(off))
+            _wu(out, int(length))
         else:
-            out.append(stream[i])
-            step = 1
-        for j in range(i, min(i + step, n - 2)):
-            table.setdefault((stream[j], stream[j + 1], stream[j + 2]), []).append(j)
-        i += step
+            out.append(int(stream[int(off)]))
     return out
 
 
@@ -630,16 +637,29 @@ _MODE_ITEM_LZ = 0
 _MODE_TOKEN_LZ = 1
 
 
-def _emit_stream(out, items, lit, cost, delta, eq_key=None, xpose_key=None):
+def _emit_stream(
+    out, items, lit, cost, delta, eq_key=None, xpose_key=None, xpose_vec=None
+):
     """Emit ``len(items)`` then the cheaper of {item-LZ (REPEAT+TRANSPOSE), token-LZ}
     of ``items`` (a 1-token selector picks the mode; ``lit``/``cost`` render/measure a
     single item, ``delta`` is the TRANSPOSE interval test).  ``eq_key``/``xpose_key``
-    are the optional hashable-key accelerators for the backward-LZ (byte-identical)."""
+    are the optional hashable-key accelerators for the backward-LZ (byte-identical);
+    ``xpose_vec`` is the optional per-item positive-base vector that lets the search run
+    on the numeric njit kernel (also byte-identical)."""
     _wu(out, len(items))
     if not items:
         return
     item_body = []
-    _lz_emit_t(item_body, items, cost, lit, delta, eq_key=eq_key, xpose_key=xpose_key)
+    _lz_emit_t(
+        item_body,
+        items,
+        cost,
+        lit,
+        delta,
+        eq_key=eq_key,
+        xpose_key=xpose_key,
+        xpose_vec=xpose_vec,
+    )
     flat = []
     for it in items:
         lit(flat, it)
@@ -676,12 +696,23 @@ def _read_stream(ids, i, read, shift):
 
 def _emit_events(out, events, ctx):
     """Encode a free lane's ``(dt, dur, ref, base, seed)`` event stream."""
-    lit, _read, cost, delta, _shift, eq_key, xpose_key = _make_event_codec(ctx)
-    _emit_stream(out, events, lit, cost, delta, eq_key=eq_key, xpose_key=xpose_key)
+    lit, _read, cost, delta, _shift, eq_key, xpose_key, xpose_vec = _make_event_codec(
+        ctx
+    )
+    _emit_stream(
+        out,
+        events,
+        lit,
+        cost,
+        delta,
+        eq_key=eq_key,
+        xpose_key=xpose_key,
+        xpose_vec=xpose_vec,
+    )
 
 
 def _read_events(ids, i, ctx):
-    _lit, read, _cost, _delta, shift, _eqk, _xk = _make_event_codec(ctx)
+    _lit, read, _cost, _delta, shift, _eqk, _xk, _xv = _make_event_codec(ctx)
     return _read_stream(ids, i, read, shift)
 
 
@@ -689,12 +720,23 @@ def _emit_rows(out, rows, ctx, nlane):
     """Encode a voice's BUNDLED row stream (TRANSPOSE factors a transposed bundled
     phrase -- a constant spine-pitch shift).  ``nlane`` is fixed for the voice (1 spine
     + bundled siblings) and derived from the voice header, not stored per row."""
-    lit, _read, cost, delta, _shift, eq_key, xpose_key = _make_row_codec(ctx, nlane)
-    _emit_stream(out, rows, lit, cost, delta, eq_key=eq_key, xpose_key=xpose_key)
+    lit, _read, cost, delta, _shift, eq_key, xpose_key, xpose_vec = _make_row_codec(
+        ctx, nlane
+    )
+    _emit_stream(
+        out,
+        rows,
+        lit,
+        cost,
+        delta,
+        eq_key=eq_key,
+        xpose_key=xpose_key,
+        xpose_vec=xpose_vec,
+    )
 
 
 def _read_rows(ids, i, ctx, nlane):
-    _lit, read, _cost, _delta, shift, _eqk, _xk = _make_row_codec(ctx, nlane)
+    _lit, read, _cost, _delta, shift, _eqk, _xk, _xv = _make_row_codec(ctx, nlane)
     return _read_stream(ids, i, read, shift)
 
 

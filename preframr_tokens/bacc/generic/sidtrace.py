@@ -259,11 +259,20 @@ def run_sidtrace(sid_path, out_prefix, subtune=1, nframes=200, sidtrace_path=Non
         roms = sidtrace_roms()
         if roms is not None:
             argv.extend(roms)
+    # Bound the trace: the deterministic binary is fast (a 9000-frame trace is ~15s),
+    # so a generous wall-clock ceiling (``SIDTRACE_TIMEOUT_S``, default 300s) NEVER
+    # affects a healthy run but turns a pathological binary hang into a clean, FAST
+    # failure (``subprocess.run`` is otherwise unbounded -- a hung emulator would spin
+    # the whole recovery forever).  ``TimeoutExpired`` is an ``OSError``-free exception,
+    # so it propagates as a clean, falsifiable failure the caller can skip on, never an
+    # unhandled crash / an unbounded spin (HARD RULE #0 robustness).
+    timeout_s = float(os.environ.get("SIDTRACE_TIMEOUT_S", "300"))
     subprocess.run(
         argv,
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        timeout=timeout_s,
     )
     return f"{out_prefix}.sidwr.bin", f"{out_prefix}.distill.bin"
 

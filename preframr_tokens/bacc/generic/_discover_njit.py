@@ -144,6 +144,70 @@ def reencode_kernel(snap, ptr, n_bytes, boundaries):
 
 
 @njit
+def split_pointer_table_kernel(ram, read_play, lo_img, hi_img):
+    """The legacy split lo/hi pointer-table scan (``structure_recover.discover_pointer_table``)
+    on typed arrays -- byte-identical to the Python double loop, just compiled.
+
+    For every ``hi_base`` in ``[lo_img, hi_img)`` and ``gap`` (table length ``n``) in
+    ``[4, 96)`` with ``lo_base = hi_base - gap`` in image and ``hi_base + n <= hi_img``,
+    the formed pointers ``ram[lo_base+i] | ram[hi_base+i]<<8`` must (a) all land in
+    ``[hi_base+n, hi_img)``, (b) strictly ascend, (c) use ``<= 6`` distinct hi-byte
+    pages, and (d) cover ``>= 1`` READ_PLAY target.  Returns ``[lo_base, hi_base, n]`` of
+    the LARGEST such table (first found at that size -- the host's ``n > best`` tiebreak),
+    or ``[-1, -1, 0]`` when none exists."""
+    best_lo = -1
+    best_hi = -1
+    best_n = 0
+    seen_pages = np.zeros(256, dtype=np.int64)
+    page_stamp = 0
+    for hi_base in range(lo_img, hi_img - 2):
+        for gap in range(4, 96):
+            n = gap
+            lo_base = hi_base - gap
+            if lo_base < lo_img:
+                continue
+            if hi_base + n > hi_img:
+                continue
+            if n <= best_n:
+                continue  # only a strictly-larger table can replace the incumbent
+            ok = True
+            ascending = True
+            read_hit = False
+            distinct_pages = 0
+            page_stamp += 1
+            prev = -1
+            floor = hi_base + n
+            for i in range(n):
+                ptr = int(ram[lo_base + i]) | (int(ram[hi_base + i]) << 8)
+                if ptr < floor or ptr >= hi_img:
+                    ok = False
+                    break
+                if prev >= 0 and ptr <= prev:
+                    ascending = False
+                    break
+                prev = ptr
+                page = int(ram[hi_base + i])
+                if seen_pages[page] != page_stamp:
+                    seen_pages[page] = page_stamp
+                    distinct_pages += 1
+                    if distinct_pages > 6:
+                        ok = False
+                        break
+                if read_play[ptr] != 0:
+                    read_hit = True
+            if not ok or not ascending or not read_hit:
+                continue
+            best_lo = lo_base
+            best_hi = hi_base
+            best_n = n
+    out = np.empty(3, dtype=np.int64)
+    out[0] = best_lo
+    out[1] = best_hi
+    out[2] = best_n
+    return out
+
+
+@njit
 def idxr_score_kernel(idxr, ram, read_play, lo_img, hi_img, reloc_delta):
     """Score every IDXR entry as a POINTER-table candidate, on typed arrays.
 

@@ -462,33 +462,25 @@ def discover_pointer_table(d):
     least one target byte was READ as data during play (a pattern was traversed).
 
     Returns ``(lo_base, hi_base, n, ptrs)`` or ``None``.  The largest such table
-    wins (the full pattern bank, not a short coincidental run)."""
-    ram = d.ram
-    read_play = (d.acc & ACC_READ_PLAY) != 0
+    wins (the full pattern bank, not a short coincidental run).
+
+    The O(image . gap) double scan runs on the njit
+    :func:`_discover_njit.split_pointer_table_kernel` (byte-identical to the former
+    Python double loop); the host only reconstructs the winning table's pointer list."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    ram = np.asarray(d.ram, dtype=np.uint8)
+    read_play = ((d.acc & ACC_READ_PLAY) != 0).astype(np.uint8)
     lo_img, hi_img = _image_bounds(d)
-    best = None
-    for hi_base in range(lo_img, hi_img - 2):
-        for gap in range(4, 96):
-            lo_base = hi_base - gap
-            if lo_base < lo_img:
-                continue
-            n = gap
-            if hi_base + n > hi_img:
-                continue
-            los = ram[lo_base : lo_base + n].astype(np.int64)
-            his = ram[hi_base : hi_base + n].astype(np.int64)
-            ptrs = los | (his << 8)
-            if not ((ptrs >= hi_base + n) & (ptrs < hi_img)).all():
-                continue
-            if not np.all(np.diff(ptrs) > 0):
-                continue
-            if len(np.unique(his)) > 6:
-                continue
-            if read_play[ptrs].sum() < 1:
-                continue
-            if best is None or n > best[2]:
-                best = (lo_base, hi_base, n, ptrs.tolist())
-    return best
+    lo_base, hi_base, n = (
+        int(x) for x in DJ.split_pointer_table_kernel(ram, read_play, lo_img, hi_img)
+    )
+    if n == 0:
+        return None
+    los = ram[lo_base : lo_base + n].astype(np.int64)
+    his = ram[hi_base : hi_base + n].astype(np.int64)
+    ptrs = los | (his << 8)
+    return (lo_base, hi_base, n, ptrs.tolist())
 
 
 def discover_orderlist(d, n_patterns, pattern_data_lo):
@@ -518,7 +510,7 @@ def discover_orderlist(d, n_patterns, pattern_data_lo):
         for p in ptrs:
             seq = []
             for k in range(128):
-                b = int(ram[p + k])
+                b = int(ram[(p + k) & 0xFFFF])
                 seq.append(b)
                 if b == 0xFF:
                     break
@@ -604,7 +596,7 @@ def decode_patterns(d, pattern_ptrs):
         rows = []
         cur_instr = cur_dur = cur_cmd = None
         while idx < 0x400:
-            b = int(ram[base + idx])
+            b = int(ram[(base + idx) & 0xFFFF])
             idx += 1
             if b >= 0x80:
                 if (b & 0xE0) == _MARK_DUR:
@@ -644,7 +636,7 @@ def _decode_groups(ram, base):
     groups = []
     markers = []
     while idx < 0x400:
-        b = int(ram[base + idx])
+        b = int(ram[(base + idx) & 0xFFFF])
         idx += 1
         if b >= 0x80:
             markers.append(b)
@@ -680,7 +672,13 @@ def reencode_patterns(ram_or_obj, pattern_ptrs):
     for base in pattern_ptrs:
         groups, idx = _decode_groups(ram, base)
         reencoded = _encode_groups(groups)
-        snap = [int(x) for x in ram[base : base + idx]]
+        # 16-bit-wrapping slice (mirrors the player's pointer arithmetic and the
+        # wrapping reads in :func:`_decode_groups`): a pattern that runs past $FFFF
+        # wraps to $0000 rather than truncating, so the SNAP reference stays
+        # byte-aligned with the decode.  Identical to ``ram[base:base+idx]`` whenever
+        # ``base + idx <= 0x10000`` (every in-image pattern), so existing recoveries
+        # are byte-unchanged.
+        snap = [int(x) for x in ram.take((base + np.arange(idx)) & 0xFFFF)]
         out.append((reencoded, snap))
     return out
 
@@ -1252,29 +1250,19 @@ def _backward_lz(tokens, min_match=3, window=4096):
     literals + match-refs.  A match (a pattern replayed, a repeated orderlist run, a
     shared program fragment) costs ~2 tokens (offset + length); a literal ~1.  This is
     the factoring the output-fit recovery cannot do because it has no shared
-    structure to point back to.  Returns ``(n_literals, n_matches)``."""
-    i, n = 0, len(tokens)
-    literals = matches = 0
-    while i < n:
-        best = 0
-        lo = max(0, i - window)
-        for j in range(lo, i):
-            length = 0
-            while (
-                i + length < n
-                and tokens[j + length] == tokens[i + length]
-                and length < 255
-            ):
-                length += 1
-            if length > best:
-                best = length
-        if best >= min_match:
-            matches += 1
-            i += best
-        else:
-            literals += 1
-            i += 1
-    return literals, matches
+    structure to point back to.  Returns ``(n_literals, n_matches)``.
+
+    The O(n . window) double scan runs on the njit
+    :func:`_discover_njit.backward_lz_counts_kernel` (byte-identical counts); on a long
+    digi-cover token stream this was a cProfile-dominant pure-Python loop."""
+    from preframr_tokens.bacc import _lz_njit as LK
+
+    n = len(tokens)
+    if n == 0:
+        return 0, 0
+    arr = np.asarray(tokens, dtype=np.int64)
+    lit, mat = LK.backward_lz_counts_kernel(arr, int(min_match), int(window))
+    return int(lit), int(mat)
 
 
 def token_budget(struct, frames=None):

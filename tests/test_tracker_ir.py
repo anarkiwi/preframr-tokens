@@ -270,7 +270,9 @@ def test_row_transpose_delta_and_shift():
     # a bundled row codec factors a constant spine-pitch shift (TRANSPOSE) and is a
     # no-op on the absolute (base -1) lanes.
     ctx = ([("S", ("seed",))] * 4, True)
-    _lit, _read, _cost, delta, shift, _eq_key, _xpose_key = TS._make_row_codec(ctx, 2)
+    _lit, _read, _cost, delta, shift, _eq_key, _xpose_key, _xpose_vec = (
+        TS._make_row_codec(ctx, 2)
+    )
     a = (8, [0, 1], [5, -1], [{"seed": 0}, {"seed": 9}])
     b = (8, [0, 1], [7, -1], [{"seed": 0}, {"seed": 9}])
     assert delta(a, b) == 2  # spine base 5 -> 7; the absolute lane (-1) unchanged

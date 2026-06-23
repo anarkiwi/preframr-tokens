@@ -170,8 +170,85 @@ def _best_transpose_indexed(items, i, delta_of, xkeys, xposns):
     return best_len, best_off, best_delta
 
 
+def _factorize(keys):
+    """Map a list of hashable keys to dense ``int64`` ids (0..K-1) preserving equality:
+    ``ids[a] == ids[b]`` iff ``keys[a] == keys[b]``.  Feeds the numeric njit LZ."""
+    import numpy as np
+
+    pool = {}
+    ids = np.empty(len(keys), dtype=np.int64)
+    for idx, k in enumerate(keys):
+        j = pool.get(k)
+        if j is None:
+            j = len(pool)
+            pool[k] = j
+        ids[idx] = j
+    return ids
+
+
+def _lz_emit_via_kernel(out, items, lit_cost, lit_emit, delta_of, eqkeys, xkeys, xvecs):
+    """Run the backward-LZ on the :mod:`bacc._lz_njit` numeric kernel (byte-identical to
+    the Python reference) and replay its plan into ``out``.  Returns False (so the caller
+    falls back to the Python path) when the encoding cannot be built numerically -- numba
+    absent, or any item carries a non-int positive base the integer matrix can't hold.
+    The kernel reproduces the EXACT same per-position copy/transpose/literal decision; we
+    only move the O(matches) inner search off Python tuples."""
+    from preframr_tokens.bacc import _lz_njit as LK
+    from preframr_tokens.bacc.generic._njit import HAVE_NUMBA
+
+    if not HAVE_NUMBA:
+        return False
+    import numpy as np
+
+    n = len(items)
+    use_xpose = 1 if (delta_of is not None and xvecs is not None) else 0
+    nlane = len(xvecs[0]) if (use_xpose and n) else 1
+    posbase = np.full((n, nlane), LK._NEG, dtype=np.int64)
+    xelig = np.zeros(n, dtype=np.int64)
+    if use_xpose:
+        for r in range(n):
+            vec = xvecs[r]
+            any_pos = False
+            for l, val in enumerate(vec):
+                if val is None:
+                    continue
+                if not isinstance(val, int) or val < 0:
+                    return False  # non-int positive base -> use the Python reference
+                posbase[r, l] = val
+                any_pos = True
+            xelig[r] = 1 if any_pos else 0
+    eqid = _factorize(eqkeys)
+    xid = _factorize(xkeys) if use_xpose else eqid
+    litcost = np.fromiter((lit_cost(it) for it in items), dtype=np.int64, count=n)
+    prefix = np.zeros(n + 1, dtype=np.int64)
+    prefix[1:] = np.cumsum(litcost)
+    plan = LK.lz_plan_kernel(
+        eqid, xid, posbase, xelig, litcost, prefix, nlane, use_xpose, _MIN_COPY
+    )
+    for op, a, length, delta in plan:
+        if op == LK.OP_TRANSPOSE:
+            out.append(TRANSPOSE)
+            _wu(out, int(a))
+            _wu(out, int(length))
+            _wi(out, int(delta))
+        elif op == LK.OP_REPEAT:
+            out.append(REPEAT)
+            _wu(out, int(a))
+            _wu(out, int(length))
+        else:
+            lit_emit(out, items[int(a)])
+    return True
+
+
 def _lz_emit_t(
-    out, items, lit_cost, lit_emit, delta_of=None, eq_key=None, xpose_key=None
+    out,
+    items,
+    lit_cost,
+    lit_emit,
+    delta_of=None,
+    eq_key=None,
+    xpose_key=None,
+    xpose_vec=None,
 ):
     """Inline backward-LZ over ``items`` with optional TRANSPOSE factoring.
 
@@ -192,8 +269,30 @@ def _lz_emit_t(
     key).  When supplied, the match start is restricted to the index of matching
     positions -- byte-identical selection (the dense reference's smallest-offset
     longest run), but O(matches) instead of O(i) probes per position.  Absent (or one
-    key None), the dense reference scan is used."""
+    key None), the dense reference scan is used.
+
+    ``xpose_vec(item)`` (the per-item positive-base vector) additionally enables the
+    numeric njit kernel (:mod:`bacc._lz_njit`): with ``eq_key`` it precomputes the
+    integer equality / transpose encoding and runs the whole search in compiled code,
+    byte-identical to the Python path -- the cover path's dominant cost on a long digi
+    row stream.  Any item the matrix can't hold (numba absent / a non-int base) falls
+    back to the Python reference below."""
     n = len(items)
+    # The numeric kernel needs both the equality key and the positive-base vector (and,
+    # for transpose, the xpose key); when present and numba is available it replaces the
+    # Python search below, byte-for-byte (the per-position decision is identical).
+    if eq_key is not None and xpose_vec is not None and n:
+        eqkeys_k = [eq_key(it) for it in items]
+        xkeys_k = (
+            [xpose_key(it) for it in items]
+            if (delta_of is not None and xpose_key is not None)
+            else eqkeys_k
+        )
+        xvecs_k = [xpose_vec(it) for it in items] if delta_of is not None else None
+        if _lz_emit_via_kernel(
+            out, items, lit_cost, lit_emit, delta_of, eqkeys_k, xkeys_k, xvecs_k
+        ):
+            return
     # Precompute the per-item keys (computing a key never introduces a match), but build
     # the position indexes INCREMENTALLY: a position ``j`` is added to the index only
     # after the cursor passes it, so a search at ``i`` sees exactly the prior positions
