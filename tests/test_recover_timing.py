@@ -63,10 +63,11 @@ def test_cover_path_encode_under_5s_cpu(tune_id, fixture):
     # coverage.py's per-line C tracer roughly triples CPU; under it the gate would
     # measure the INSTRUMENTATION, not the cover-path work it exists to bound (the
     # known-good ~4.2s is the UNinstrumented cost).  When tracing is active, scale the
-    # budget by the measured tracer overhead so the gate still catches a real
-    # regression without false-failing on instrumentation (the byte-exact check above
-    # runs unconditionally).  sys.gettrace() is set iff a tracer (coverage) is active.
-    budget = _MAX_CPU_S * (4.0 if sys.gettrace() is not None else 1.0)
+    # budget by the tracer overhead (~4x observed on a loaded CI runner with --cov) so
+    # the gate still catches a real regression -- the 32s un-optimized cover is ~130s
+    # under coverage -- without false-failing on instrumentation; the byte-exact check
+    # above runs unconditionally.  sys.gettrace() is set iff a tracer (coverage) active.
+    budget = _MAX_CPU_S * (6.0 if sys.gettrace() is not None else 1.0)
     assert cpu < budget, (
         f"{tune_id} cover-path encode regressed to {cpu:.2f}s CPU "
         f"(>= {budget}s). The njit + content-cache cover optimization "
