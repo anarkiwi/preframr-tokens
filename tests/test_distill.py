@@ -130,6 +130,128 @@ def test_build_parse_round_trip():
     assert d2.idx_reads == d.idx_reads
 
 
+def test_recovery_offload_sections_round_trip():
+    """The recovery-offload captures (IDXS/PWLK/RELO/SDAC/DIGI/TMPO) survive
+    parse(build(d)) == d, and their derived properties are correct. These are the
+    structural-capture additions; they parse additively (absent -> empty)."""
+    d = _empty_distill()
+    d.idx_supp = [
+        D.IdxSupp(
+            pc=0x1240,
+            scale_set=True,
+            scale=2,
+            base_fit=0x166D,
+            feeds_reg_mask=(1 << 0) | (1 << 1),
+            targets_in_image=False,
+            targets_read_as_data=False,
+            n_samp=2,
+            samp_idx=(2, 4),
+            samp_addr=(0x1671, 0x1675),
+        ),
+        D.IdxSupp(
+            pc=0x1250,
+            scale_set=False,
+            scale=1,
+            base_fit=0x1900,
+            feeds_reg_mask=0,
+            targets_in_image=True,
+            targets_read_as_data=True,
+            n_samp=1,
+            samp_idx=(3, 0),
+            samp_addr=(0x1903, 0),
+        ),
+    ]
+    d.ptr_walks = [
+        D.PtrWalk(
+            zp=0xFB,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=76,
+            count=5240,
+            ptr_vals=[0x1A1B, 0x1AFC, 0x19F4],
+            adv_frames=[1, 1, 2],
+        )
+    ]
+    d.relo_copies = [
+        D.ReloCopy(
+            store_pc=0x37AF,
+            src_read_pc=0x37AD,
+            src_base=0x3FC4,
+            dst_base=0xAACE,
+            src_stride=1,
+            dst_stride=1,
+            idx_min=1,
+            idx_max=255,
+            count=1020,
+        )
+    ]
+    d.sid_accum = [
+        D.SidAccum(
+            pc=0x160D, reg=0, addends=[(D.ALU_NONE, 0x1735), (D.ALU_NONE, 0x1792)]
+        )
+    ]
+    d.digi = D.DigiSig(
+        writes_per_frame_mean=17.765,
+        max_subframe_d418=1,
+        note_table_idxr_present=True,
+        n_frames=2299,
+        n_sid_writes=40843,
+    )
+    d.tempo_cands = [D.TempoCand(cell=0x1087, reload=2)]
+
+    d2 = D.parse_distill(D.build_distill(d))
+
+    assert d2.idx_supp == d.idx_supp
+    assert d2.ptr_walks == d.ptr_walks
+    assert d2.relo_copies == d.relo_copies
+    assert d2.sid_accum == d.sid_accum
+    assert d2.digi == d.digi
+    assert d2.tempo_cands == d.tempo_cands
+    # derived properties
+    assert d2.idx_supp[0].feeds_reg(0) and d2.idx_supp[0].feeds_reg(1)
+    assert not d2.idx_supp[0].feeds_reg(4)
+    # the affine fit reproduces the samples exactly.
+    s = d2.idx_supp[0]
+    assert (s.base_fit + s.scale * s.samp_idx[0]) & 0xFFFF == s.samp_addr[0]
+    assert (s.base_fit + s.scale * s.samp_idx[1]) & 0xFFFF == s.samp_addr[1]
+    assert d2.relo_copies[0].delta == 0x6B0A
+    assert d2.relo_copies[0].length == 255
+    assert d2.idx_supp_by_pc()[0x1240].scale == 2
+
+
+def test_recovery_offload_absent_parses_empty():
+    """An artifact with NO recovery-offload sections (a pre-change tracer) parses
+    with the new fields defaulting to empty -- the additions are non-breaking."""
+    d = _empty_distill()
+    d2 = D.parse_distill(D.build_distill(d))
+    assert d2.idx_supp == [] and d2.ptr_walks == [] and d2.relo_copies == []
+    assert d2.sid_accum == [] and d2.tempo_cands == []
+    # build_distill emits an (empty-ish) DIGI; a hand-built absent one is None.
+    assert d2.digi is None or isinstance(d2.digi, D.DigiSig)
+
+
+def test_digi_signature_classifies():
+    """The DIGI signature: a PCM streamer (hundreds of $D418 writes/frame, no note
+    table) is_digi; a tracker (tens of writes/frame, note table) is not."""
+    digi = D.DigiSig(
+        writes_per_frame_mean=11311.0,
+        max_subframe_d418=23465,
+        note_table_idxr_present=False,
+        n_frames=40,
+        n_sid_writes=452470,
+    )
+    assert digi.is_digi
+    tracker = D.DigiSig(
+        writes_per_frame_mean=18.0,
+        max_subframe_d418=2,
+        note_table_idxr_present=True,
+        n_frames=2300,
+        n_sid_writes=41000,
+    )
+    assert not tracker.is_digi
+
+
 def test_idx_read_length():
     ir = D.IdxRead(pc=0, base=0x2000, stride=4, idx_min=0, idx_max=15, count=64)
     assert ir.length == 16
