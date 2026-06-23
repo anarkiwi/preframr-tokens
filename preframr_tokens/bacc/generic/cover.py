@@ -51,6 +51,10 @@ _MINRUN = 3
 # decisively over a long-but-unique table.
 _ROW_OVERHEAD = 4  # ~dt+dur+ref+seed value-tokens a segment row costs in the stream
 
+# A unique sentinel for "absent from cache" so a legitimately cached ``None`` result
+# (the matcher declined this window) is distinguished from a miss without a re-run.
+_MISS = object()
+
 
 # ---------------------------------------------------------------------------
 # Struct token cost + seed stripping (mirrors tracker_serialize / tracker.lift).
@@ -431,10 +435,10 @@ _MATCH_WINDOW = 512
 
 def _citg_cached(lane, start, note_table, carry, width, cache):
     """:func:`archetypes._prefix_citg` at ``start`` (over a capped window), memoized by
-    start index (the expensive matcher -- its vibrato / glide / composite sub-searches
-    dominate the cover runtime -- is identical for a given start, so it is computed
-    once per position).  The window cap bounds the matcher's length-proportional cost;
-    a recurrence longer than the window is recovered by re-extending the candidate
+    window CONTENT (the expensive matcher -- its vibrato / glide / composite sub-searches
+    dominate the cover runtime -- is a pure function of its inputs, so it is computed
+    once per distinct window).  The window cap bounds the matcher's length-proportional
+    cost; a recurrence longer than the window is recovered by re-extending the candidate
     (:func:`_extend`).
 
     The matcher is invoked with a POSITION-INDEPENDENT phase (``ctr0=0``), not
@@ -444,18 +448,70 @@ def _citg_cached(lane, start, note_table, carry, width, cache):
     assumed phase depends on the absolute frame.  A generator whose true phase is
     non-zero still recovers byte-exact -- its phase is carried in the per-note seed,
     and ``_consider`` re-renders + ``_extend`` re-verifies, so a wrong assumed phase
-    only ever shortens a match, never corrupts one."""
-    if cache is not None and start in cache:
-        return cache[start]
+    only ever shortens a match, never corrupts one.
+
+    Because that phase is position-independent and ``note_table`` / ``width`` are
+    constant for a whole ``cover_lane`` call, the matcher's result depends ONLY on the
+    window bytes and the (additive_pw) carry-slice bytes.  An algorithmic / periodic
+    tune visits the SAME 512-frame window at many distinct positions (its lanes loop),
+    so keying the cache by the window+carry CONTENT -- not by ``start`` -- collapses
+    those duplicate positions to one matcher call (on A_Mind ~70% of the breakpoint
+    matcher calls are exact-duplicate windows).  Byte-exact and token-identical: the
+    matcher is a pure function, and every consumer (:func:`_strip_seed` /
+    :func:`_merge_rotations` / :func:`_pool_key`) copies the ``params`` dict before
+    mutating it, so a window's cached result is never aliased into a later edit.  A
+    fast ``start``-keyed alias is layered on top so the DP's refinement passes (which
+    revisit the SAME positions) skip even the content-hash."""
+    if cache is not None:
+        pos = cache.get(start, _MISS)
+        if pos is not _MISS:
+            return pos
     end = min(len(lane), start + _MATCH_WINDOW)
     cseg = carry[start:end] if carry is not None else None
-    res = A._prefix_citg(lane[start:end], note_table, width, 0, cseg)
-    if cache is not None:
-        cache[start] = res
+    if cache is None:
+        return A._prefix_citg(lane[start:end], note_table, width, 0, cseg)
+    ckey = (
+        "_citg",
+        lane[start:end].tobytes(),
+        cseg.tobytes() if cseg is not None else None,
+    )
+    res = cache.get(ckey, _MISS)
+    if res is _MISS:
+        res = A._prefix_citg(lane[start:end], note_table, width, 0, cseg)
+        cache[ckey] = res
+    cache[start] = res
     return res
 
 
 def _candidates(lane, start, note_table, carry, width, full=True, cache=None):
+    """The extended candidate list at ``start``, MEMOIZED across the DP passes.
+
+    The candidate list ``[(name, params, run), ...]`` at a position is PASS-INVARIANT:
+    it depends only on ``(lane, start, note_table, carry, width, full)`` -- NOT on the
+    DP's ``amort`` cost relaxation (which only re-weights the *cost* of an edge in
+    :func:`_cover_dp`, never which candidates exist or how far they extend).  The
+    :func:`cover_lane` DP runs up to three times (the initial cover + two refinement
+    passes); recomputing the expensive ``_extend`` / ``_prefix_citg`` /
+    ``_longdwell_accum`` / ``_periodic_candidates`` work at every position on every pass
+    is the cover's dominant redundant cost.  Keying the finished list by ``start`` in the
+    shared ``cache`` (``full`` is itself a deterministic function of ``start`` within one
+    ``cover_lane`` -- ``start in full_at`` -- so the position alone identifies the list)
+    collapses that to ONCE per position for the whole ``cover_lane`` call.  Byte-exact
+    and token-identical: the SAME candidate tuples, merely not rebuilt (the returned
+    ``params`` dicts are never mutated by the DP -- :func:`_pool_key` /
+    :func:`_merge_rotations` copy before reading)."""
+    if cache is not None:
+        ck = ("_cands", start)
+        cached = cache.get(ck)
+        if cached is not None:
+            return cached
+    out = _candidates_uncached(lane, start, note_table, carry, width, full, cache)
+    if cache is not None:
+        cache[("_cands", start)] = out
+    return out
+
+
+def _candidates_uncached(lane, start, note_table, carry, width, full=True, cache=None):
     """Yield ``(name, params, run)`` candidate generators that byte-exactly cover at
     least ``_MINRUN`` frames from ``start`` (the ``hold`` excepted), each already
     EXTENDED to its maximal byte-exact run length.
@@ -584,6 +640,29 @@ def _force_array(force_breakpoints, n):
     return nxt
 
 
+def _candidate_keys(start, cands, is_freq, idx_of, cache):
+    """The per-candidate ``(pool_key, key_tok)`` list for position ``start``, aligned
+    1:1 with ``cands`` and MEMOIZED across the DP passes (keyed ``("_keys", start)`` in
+    the shared ``cache``).
+
+    The pool key + token cost is a pure function of ``(name, params, is_freq, idx_of)``,
+    and ``is_freq`` / ``idx_of`` are constant for a whole ``cover_lane`` call, so this is
+    pass-invariant -- exactly like the candidate list itself.  Computing it once (the
+    ``json.dumps`` keying in :func:`_pool_key`, the dominant per-edge cost after the
+    renders are njit'd) and reusing it on the refinement passes removes ~2/3 of the
+    ``_pool_key`` calls.  Token-identical: the SAME ``(key, key_tok)`` the DP would
+    recompute, merely cached."""
+    if cache is not None:
+        kk = ("_keys", start)
+        cached = cache.get(kk)
+        if cached is not None:
+            return cached
+    out = [_pool_key(name, params, is_freq, idx_of) for name, params, _run in cands]
+    if cache is not None:
+        cache[("_keys", start)] = out
+    return out
+
+
 def _cover_dp(
     lane,
     width,
@@ -608,9 +687,9 @@ def _cover_dp(
     3000-frame hold follow) is chosen over a locally-longer but expensive structured
     edge -- the look-ahead a greedy per-position rule cannot do.
 
-    A TIE in total cost is broken by :func:`_edge_tiebreak` -- a POSITION-INDEPENDENT
-    key (longer run, then the compact closed-form family, then the struct JSON) -- so
-    two identical value-subsequences pick the SAME edge wherever the future cost ties,
+    A TIE in total cost is broken by a POSITION-INDEPENDENT key (longer run, then the
+    compact closed-form family ``_family_of`` / ``_FAMILY_RANK``, then the struct JSON),
+    so two identical value-subsequences pick the SAME edge wherever the future cost ties,
     which is what lets a repeated phrase tile consistently and the serializer's
     segment-level REPEAT/TRANSPOSE collapse it.
 
@@ -638,6 +717,12 @@ def _cover_dp(
         cands = _candidates(
             lane, i, note_table, carry, width, full=(i in full_at), cache=cache
         )
+        # The pool KEY + token cost of each candidate at ``i`` is pass-invariant
+        # (``is_freq`` / ``idx_of`` are constant for a ``cover_lane`` call), so it is
+        # computed ONCE per position and cached alongside the candidate list -- the DP's
+        # second/third passes reuse it instead of re-running the ``json.dumps`` keying
+        # (the dominant per-edge cost once the renders are njit'd).
+        keys = _candidate_keys(i, cands, is_freq, idx_of, cache)
         # A forced breakpoint caps how far an edge from ``i`` may reach: clamp every
         # candidate run to the next forced boundary so no segment straddles it.  A
         # clamped run is still byte-exact (a prefix of a byte-exact render), so this only
@@ -646,17 +731,16 @@ def _cover_dp(
         best = INF
         best_tb = None
         best_choice = None
-        for name, params, run in cands:
+        for (name, params, run), (key, key_tok) in zip(cands, keys):
             run = min(run, cap - i)
             if run <= 0:
                 continue
-            key, key_tok = _pool_key(name, params, is_freq, idx_of)
             pool_share = amort.get(key, key_tok)  # full cost if not yet amortized
             edge = _ROW_OVERHEAD + pool_share
             tot = edge + cost[i + run]
             # A position-independent tie-break makes the SAME value-subsequence segment
             # identically wherever its future cost ties (the REPEAT/TRANSPOSE lever).
-            tb = _edge_tiebreak(name, params, run, key)
+            tb = (-run, _FAMILY_RANK.get(_family_of(name, params), 1), key)
             if tot < best - 1e-9 or (abs(tot - best) <= 1e-9 and tb < best_tb):
                 best = tot
                 best_tb = tb
@@ -688,15 +772,6 @@ def _family_of(name, params):
     if name == "citg" and isinstance(params, dict):
         return params.get("mode", "citg")
     return name
-
-
-def _edge_tiebreak(name, params, run, key):
-    """A POSITION-INDEPENDENT total order over equal-cost DP edges: prefer the LONGER
-    run (fewest rows), then the compact closed-form family, then the struct JSON.  A
-    pure function of the candidate (never the absolute frame), so two occurrences of
-    the SAME value-subsequence break a future-cost tie the SAME way and tile
-    identically -- the consistency the segment-level REPEAT/TRANSPOSE needs."""
-    return (-run, _FAMILY_RANK.get(_family_of(name, params), 1), key)
 
 
 def _breakpoints(lane, width, note_table, carry, _idx_of, _is_freq, cache):
@@ -755,10 +830,10 @@ def cover_lane(
     re-uses); pass 2 re-runs the DP treating every recurring struct as already paid for
     in the pool, so a compact generator that appears many times wins decisively over a
     long-but-unique table even where the table covers more frames per piece.  A
-    position-independent tie-break (:func:`_edge_tiebreak`) makes the SAME
-    value-subsequence segment identically wherever it recurs, so a repeated phrase
-    collapses under the serializer's segment-level REPEAT/TRANSPOSE.  An irreducible
-    span falls to the §3.6 literal-table floor.
+    position-independent tie-break (the ``(-run, family, key)`` key in :func:`_cover_dp`)
+    makes the SAME value-subsequence segment identically wherever it recurs, so a
+    repeated phrase collapses under the serializer's segment-level REPEAT/TRANSPOSE.  An
+    irreducible span falls to the §3.6 literal-table floor.
 
     ``force_breakpoints`` is an optional set of frame indices at which a segment
     boundary is MANDATORY: no chosen segment straddles one, so every segment is

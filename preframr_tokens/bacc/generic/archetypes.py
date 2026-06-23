@@ -90,6 +90,12 @@ from collections import Counter, defaultdict
 import numpy as np
 
 from preframr_tokens.bacc.generic import _njit
+from preframr_tokens.bacc.generic import _render_njit as _rnj
+
+# A length-1 dummy int64 array for the CITG kernel's unused mask/advance argument
+# (the kernel always indexes ``arr[fired % len(arr)]``, so a non-empty placeholder
+# keeps the modulo well-formed when that clock kind is inactive).
+_DUMMY1 = np.zeros(1, dtype=np.int64)
 
 _WINDOW = 384  # max frames a single archetype-run search inspects.
 _MINRUN = 3  # minimum frames for a structured archetype run to beat hold.
@@ -879,55 +885,73 @@ def render_citg(params, seg_len, note_table=None, carry=None):
         else:
             cseq = np.zeros(seg_len, dtype=np.int64)
         return render_additive_pw(seg_len, params["p0"], params["pulsevalue"], cseq)
+    # The table-walk modes (READ / ACCUM / ACCUM-with-WRAP) -- the cover's #1 hot
+    # path -- are rendered by the fused njit kernel :func:`_render_njit.citg_walk`,
+    # which subsumes both :func:`_citg_gates` and the per-frame pointer/accumulator
+    # loop in ONE compiled pass.  The clock dict is flattened to numeric kernel args
+    # here (the only Python-level work that remains); the kernel reproduces the
+    # pure-Python loop below byte-for-byte (same explicit ``& width`` masks, same
+    # ``[lo,hi)`` wrap, same ``loop`` pointer wrap), and falls back to that loop only
+    # for a shape the kernel does not cover (currently none -- it spans every clock
+    # kind).  See the module docstring for the byte-exactness argument (HARD RULE #0).
     table = params["table"]
-    period = len(table)
-    lead = params.get("lead", 0)
-    phase = params.get("phase", 0)
-    loop = params.get("loop", 0)
-    seed = params.get("seed", 0)
-    acc_gate, ptr_step = _citg_gates(seg_len, params["clock"], lead)
-    out = np.empty(seg_len, dtype=np.int64)
-    ptr = phase % period if period else 0
-    if mode == "read":
-        for i in range(seg_len):
-            out[i] = seed if i < lead else table[ptr]
-            if ptr_step[i] and period:
-                ptr += 1
-                if ptr >= period:
-                    ptr = loop
-        return out
-    width = params.get("width", 0xFFFF)
+    lead = int(params.get("lead", 0))
+    phase = int(params.get("phase", 0))
+    loop = int(params.get("loop", 0))
+    seed = int(params.get("seed", 0))
+    clock = params["clock"]
+    width = int(params.get("width", 0xFFFF))
     wrap = params.get("wrap")
-    val = seed & width
+    if mode == "read":
+        kmode = _rnj.MODE_READ
+    elif wrap is not None:
+        kmode = _rnj.MODE_WRAP
+    else:
+        kmode = _rnj.MODE_ACCUM
+    # Flatten the clock to the kernel's (kind, dwell, fired0, mask, advance) form,
+    # mirroring :func:`_citg_gates` exactly (``fired0`` is the armed-frame phase seed;
+    # the unused mask/advance is a length-1 dummy so the kernel's modulo is well-formed).
+    kind = clock["kind"]
+    fired0 = int(clock.get("phase", 0))
+    dwell = int(clock.get("dwell", 1))
+    mask_arr = _DUMMY1
+    advance_arr = _DUMMY1
+    if kind == "every":
+        clock_kind = _rnj.CLK_EVERY
+    elif kind == "dwell":
+        clock_kind = _rnj.CLK_DWELL
+    elif kind == "dwell_ptr":
+        clock_kind = _rnj.CLK_DWELL_PTR
+    elif kind == "mask":
+        clock_kind = _rnj.CLK_MASK
+        mask_arr = np.asarray(clock["mask"], dtype=np.int64)
+    else:  # advance
+        clock_kind = _rnj.CLK_ADVANCE
+        advance_arr = np.asarray(clock.get("advance"), dtype=np.int64)
     if wrap is not None:
-        # WRAP=modulo[lo,hi): a free-running accumulator that wraps by the span
-        # (hi-lo) when an add crosses a bound -- the chip's RMW sawtooth PWM
-        # (``wrapaccum``).  The add is NOT width-masked (the wrap IS the bound), so
-        # the bounded accumulator stays in [lo,hi) exactly as the driver's variable
-        # does, never as stored data (HARD RULE #0).
-        lo_b, hi_b = wrap["lo"], wrap["hi"]
-        span = hi_b - lo_b
-        for i in range(seg_len):
-            out[i] = val
-            val += int(table[ptr])
-            if val >= hi_b:
-                val -= span
-            elif val < lo_b:
-                val += span
-            if ptr_step[i] and period:
-                ptr += 1
-                if ptr >= period:
-                    ptr = loop
-        return out
-    for i in range(seg_len):
-        out[i] = val
-        if acc_gate[i]:
-            val = (val + int(table[ptr])) & width
-        if ptr_step[i] and period:
-            ptr += 1
-            if ptr >= period:
-                ptr = loop
-    return out
+        lo_b = int(wrap["lo"])
+        span = int(wrap["hi"]) - lo_b
+    else:
+        lo_b = 0
+        span = 0
+    table_arr = np.asarray(table, dtype=np.int64)
+    return _rnj.citg_walk(
+        int(seg_len),
+        kmode,
+        table_arr,
+        seed,
+        width,
+        lead,
+        phase,
+        loop,
+        clock_kind,
+        dwell if dwell != 0 else 1,
+        fired0,
+        mask_arr,
+        advance_arr,
+        lo_b,
+        span,
+    )
 
 
 def literal_table_citg(values):
@@ -1246,6 +1270,18 @@ def _amp_divisors(pos):
 
 
 def _prefix_vibrato(seg):
+    """Longest byte-exact triangle-vibrato prefix (plain ``vibrato`` or byte-wise
+    ``vibrato_exact``), over the ``(base, amp, ph0)`` candidate grid.
+
+    The candidate ``base`` set and the phase-deviation ``amp`` set are derived in
+    Python (cheap -- a bounded scan of the first <=24 frames), then the EXPENSIVE
+    render+match sweep over ``bases x amps x ph0 x {vibrato, vibrato_exact}`` is run by
+    the fused njit kernel :func:`_render_njit.vibrato_search` (the matcher's #2 hot loop
+    after the CITG render): it enumerates the SAME grid in the SAME order and returns the
+    longest byte-exact prefix WITHOUT materialising ~one numpy render per candidate -- the
+    pure-Python form was 200k+ ``render_vibrato`` / ``render_vibrato_exact`` calls on a
+    long vibrato lane.  Byte-identical selection (strictly-longer-wins, vibrato before
+    exact)."""
     seg = np.asarray(seg, dtype=np.int64)
     length = len(seg)
     if length < _MINRUN:
@@ -1260,27 +1296,25 @@ def _prefix_vibrato(seg):
                 if ph > 0 and devs[i] > 0 and devs[i] % ph == 0:
                     cand_amp.add(int(devs[i] // ph))
     cand_amp = sorted(a for a in cand_amp if 0 < a < 0x4000)
-    best = None
-    for vib_base in bases:
-        for amp in cand_amp:
-            for ph0 in range(8):
-                rend = render_vibrato(length, vib_base, amp, ph0)
-                match = _match_prefix(rend, seg)
-                if match >= _MINRUN and (best is None or match > best[0]):
-                    best = (
-                        match,
-                        "vibrato",
-                        {"base": vib_base, "amp_step": amp, "ctr0": ph0},
-                    )
-                rex, _ = render_vibrato_exact(length, vib_base, amp, ph0)
-                mex = _match_prefix(rex, seg)
-                if mex >= _MINRUN and (best is None or mex > best[0]):
-                    best = (
-                        mex,
-                        "vibrato_exact",
-                        {"base": vib_base, "amp": amp, "ctr0": ph0},
-                    )
-    return [best] if best is not None else []
+    if not cand_amp:
+        return []
+    # Preserve the reference's exact candidate ORDER (so a length TIE resolves to the
+    # SAME (base, amp, ph0) -> the SAME struct, token-identical): ``bases`` is iterated
+    # in its set order (as the Python loop did, ``for vib_base in bases``) and ``amps``
+    # ascending (the reference's ``sorted(cand_amp)``).
+    bases_arr = np.array(list(bases), dtype=np.int64)
+    amps_arr = np.array(cand_amp, dtype=np.int64)
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    match, mode_flag, base, amp, ph0 = _rnj.vibrato_search(
+        seg_c, bases_arr, amps_arr, _MINRUN
+    )
+    if match < _MINRUN:
+        return []
+    if mode_flag == 0:
+        params = {"base": int(base), "amp_step": int(amp), "ctr0": int(ph0)}
+        return [(int(match), "vibrato", params)]
+    params = {"base": int(base), "amp": int(amp), "ctr0": int(ph0)}
+    return [(int(match), "vibrato_exact", params)]
 
 
 def _has_hi_countdown(seg):
@@ -1571,45 +1605,32 @@ def _prefix_pingfold(seg, minrun=24):
     mean_step = float(np.mean(nonzero))
     vis_lo, vis_hi = int(seg.min()), int(seg.max())
     base = int(seg[0])
-    best = None
-    for frac in range(0, 4):
-        scale = 1 << frac
-        step = int(round(mean_step * scale))
-        if step <= 0:
-            continue
-        # Two fold-bound conventions, as in _prefix_pingpong: the player either folds
-        # one past the visible extreme or exactly at it.  lo stays 0 (the register
-        # floor) plus the at-extreme variant; hi is the visible max raised into the
-        # internal precision.
-        for hi in (vis_hi << frac, (vis_hi + 1) << frac):
-            for lo in (vis_lo << frac, 0):
-                if hi <= lo:
-                    continue
-                # acc0 sub-resolution seed: the visible value occupies the high bits;
-                # try each fractional remainder so a ramp starting mid-step matches.
-                for sub in range(scale):
-                    acc0 = (base << frac) + sub
-                    if acc0 > hi or acc0 < lo:
-                        continue
-                    for dir0 in (1, -1):
-                        rend = render_pingfold(length, step, frac, lo, hi, acc0, dir0)
-                        match = _match_prefix(rend, seg)
-                        if match >= minrun and (best is None or match > best[0]):
-                            best = (
-                                match,
-                                "pingfold",
-                                {
-                                    "step": step,
-                                    "frac": frac,
-                                    "lo": lo,
-                                    "hi": hi,
-                                    "acc0": acc0,
-                                    "dir0": dir0,
-                                },
-                            )
-                            if match == length:
-                                return best
-    return best
+    # The per-frac internal increment is computed HERE (Python ``round`` is half-to-even;
+    # reproducing it in the kernel would risk a rounding mismatch), then the expensive
+    # ``(frac, hi, lo, sub, dir0)`` render+match sweep runs in the fused njit kernel,
+    # which matches the reflecting accumulator in place (no render allocation per
+    # candidate) and returns the byte-exact winner.
+    steps = np.array(
+        [int(round(mean_step * (1 << frac))) for frac in range(4)], dtype=np.int64
+    )
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    match, frac, step, lo, hi, acc0, dir0 = _rnj.pingfold_search(
+        seg_c, steps, vis_lo, vis_hi, base, minrun
+    )
+    if match < 0:
+        return None
+    return (
+        match,
+        "pingfold",
+        {
+            "step": int(step),
+            "frac": int(frac),
+            "lo": int(lo),
+            "hi": int(hi),
+            "acc0": int(acc0),
+            "dir0": int(dir0),
+        },
+    )
 
 
 def _prefix_vibreflect(seg, minrun=12):
@@ -1968,7 +1989,9 @@ def _prefix_dwellratewalk(seg, width_mask=0xFFFF, maxp=24, maxdwell=16, minrun=2
     if length < minrun:
         return None
     diff = np.diff(seg) % (width_mask + 1)
-    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff)
+    dsign = np.where(diff > width_mask // 2, diff - (width_mask + 1), diff).astype(
+        np.int64
+    )
     nonzero = dsign[dsign != 0]
     if len(nonzero) < 3:
         return None
@@ -1988,37 +2011,30 @@ def _prefix_dwellratewalk(seg, width_mask=0xFFFF, maxp=24, maxdwell=16, minrun=2
         {rl for _, rl in runs if 1 < rl <= maxdwell},
         reverse=True,
     )
-    best = None
-    for dwell in cand_dwells:
-        # The step table is one entry per dwell-segment; read it off the segment at
-        # the dwell stride from the per-frame deltas.
-        nsteps = min(maxp, (len(dsign)) // dwell)
-        if nsteps < 2:
-            continue
-        table = [int(dsign[k * dwell]) for k in range(nsteps)]
-        # smallest period whose step table replays the longest prefix
-        for period in range(2, nsteps + 1):
-            tbl = table[:period]
-            if len(set(tbl)) < 2:
-                continue
-            rend = render_dwellratewalk(length, int(seg[0]), tbl, dwell, 0, width_mask)
-            match = _match_prefix(rend, seg)
-            if match >= max(minrun, 2 * dwell * period) and (
-                best is None or match > best[0]
-            ):
-                best = (
-                    match,
-                    "dwellratewalk",
-                    {
-                        "v0": int(seg[0]),
-                        "rate_table": tbl,
-                        "dwell": dwell,
-                        "width": width_mask,
-                    },
-                )
-            if best and best[0] == length:
-                return best
-    return best
+    if not cand_dwells:
+        return None
+    # The expensive ``(dwell, period)`` step-table render+match sweep runs in the fused
+    # njit kernel (no ``render_dwellratewalk`` allocation per candidate); it matches the
+    # dwelled accumulator in place over the SAME descending-dwell, ascending-period order
+    # and returns the byte-exact winner's ``(match, dwell, period)``.
+    dsign_c = dsign if dsign.flags["C_CONTIGUOUS"] else np.ascontiguousarray(dsign)
+    cand_arr = np.array(cand_dwells, dtype=np.int64)
+    match, dwell, period = _rnj.dwellratewalk_search(
+        seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg),
+        dsign_c,
+        cand_arr,
+        int(maxp),
+        int(width_mask),
+        int(minrun),
+    )
+    if match < 0:
+        return None
+    tbl = [int(dsign[k * dwell]) for k in range(period)]
+    return (
+        match,
+        "dwellratewalk",
+        {"v0": int(seg[0]), "rate_table": tbl, "dwell": dwell, "width": width_mask},
+    )
 
 
 def _prefix_tablewalk_lead(seg, maxp=24, minrun=8):
@@ -2034,28 +2050,22 @@ def _prefix_tablewalk_lead(seg, maxp=24, minrun=8):
     lead0 = 1
     while lead0 < length and seg[lead0] == seg[0]:
         lead0 += 1
-    best = None
-    for lead in range(0, min(lead0, length - 1) + 1):
-        body = seg[lead:]
-        if len(body) < minrun:
-            continue
-        for period in range(2, min(maxp, len(body) // 2) + 1):
-            if not np.array_equal(body[:period], body[period : 2 * period]):
-                continue
-            table = body[:period].tolist()
-            if len(set(table)) < 2:
-                continue
-            rend = render_tablewalk_lead(length, lead, int(seg[0]), table)
-            match = _match_prefix(rend, seg)
-            if match >= lead + 2 * period and (best is None or match > best[0]):
-                best = (
-                    match,
-                    "tablewalk_lead",
-                    {"lead": lead, "value0": int(seg[0]), "table": table},
-                )
-        if best and best[0] == length:
-            break
-    return best
+    # The expensive ``(lead, period)`` sweep -- the matcher's #1 hot loop on a
+    # lead-heavy lane -- runs in the fused njit kernel (no ``array_equal`` per period,
+    # no materialised render per candidate); it returns the byte-exact winner's
+    # ``(match, lead, period)`` and the caller rebuilds the period table from the seg.
+    seg_c = seg if seg.flags["C_CONTIGUOUS"] else np.ascontiguousarray(seg)
+    match, lead, period = _rnj.tablewalk_lead_search(
+        seg_c, int(lead0), int(maxp), int(minrun)
+    )
+    if match < 0:
+        return None
+    table = seg[lead : lead + period].tolist()
+    return (
+        match,
+        "tablewalk_lead",
+        {"lead": lead, "value0": int(seg[0]), "table": table},
+    )
 
 
 def _walked_table(seg):
