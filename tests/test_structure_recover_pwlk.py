@@ -285,3 +285,119 @@ def test_recover_structure_end_to_end_synthetic(monkeypatch):
     # clean_pitches_residual / accumulator_generators consume the STSQ cells.
     gens = SR.accumulator_generators("x", np.zeros((64, 25), dtype=np.int64))
     assert gens is not None
+
+
+# --- read-coverage (nibble / bit-packed dialect) pattern discovery ------------
+def _nibble_pattern(seed):
+    """A GoatTracker-style nibble/bit-packed pattern: bytes carry no value-range EOP
+    marker (no 0x7F / 0xFF), so the value-range dialects cannot slice it -- only the
+    observed READ-COVERAGE run sites it.  Deterministic on ``seed``."""
+    return [(0x40 + ((seed + i * 7) & 0x3D)) for i in range(12 + (seed & 3))]
+
+
+def test_discover_patterns_pwlk_read_coverage_nibble():
+    """A nibble-grammar walk (no value-range EOP) is sited by read-coverage: the bank
+    is the in-image read-as-data pointers, lengths are the observed read extents, and a
+    phantom (non-data) pointer the walk visited is DROPPED, not fatal."""
+    d = _blank_distill()
+    bases = [0x1500, 0x1540, 0x1580]
+    pats = [_nibble_pattern(i) for i in range(3)]
+    for base, pat in zip(bases, pats):
+        _place(d, base, pat)
+    # the orderlist reuses pattern 1 and 0, and visits a PHANTOM pointer 0x1700 that
+    # was never read as data (a null/init pointer) -- it must be dropped from the bank.
+    seq = [bases[0], 0x1700, bases[1], bases[2], bases[1], bases[0]]
+    d.ptr_walks = [
+        PtrWalk(
+            zp=0x20,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=11,
+            count=200,
+            ptr_vals=seq,
+            adv_frames=list(range(len(seq))),
+        )
+    ]
+    pw = SR.discover_patterns_pwlk(d)
+    assert pw is not None
+    assert pw["grammar_name"] == "readcov" and pw["grammar"] is None
+    assert pw["pattern_src"] == bases  # the phantom 0x1700 is not in the bank
+    assert pw["pattern_lens"] == [len(p) for p in pats]  # observed read extents
+    # the orderlist indexes the bank; the phantom advance is 0xFF (no pattern).
+    assert pw["orderlist"] == [0, 0xFF, 1, 2, 1, 0]
+
+
+def test_read_coverage_rejects_streaming_cursor():
+    """A per-frame streaming pointer (a sample / wavetable cursor: ``y == 0`` always,
+    every advance a DISTINCT pointer) is NOT an orderlist->pattern walk and the read-
+    coverage path must reject it, so it never fabricates a pseudo-bank from a cursor.
+
+    Both structural tells are exercised: ``y_min == y_max`` (no within-pattern row
+    indexing) AND the ~1:1 distinct/advance ratio (no pattern reuse)."""
+    d = _blank_distill()
+    # 40 distinct, never-reused pointers into a long read-as-data region (nibble bytes,
+    # no value-range EOP so this is purely the read-coverage path's responsibility).
+    _place(d, 0x1500, [(0x40 + (i % 0x3D)) for i in range(0x200)])
+    seq = [0x1500 + 4 * i for i in range(40)]
+    # y fixed at 0 -> the y-span guard alone rejects it.
+    d.ptr_walks = [
+        PtrWalk(
+            zp=0x51,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=0,
+            count=40,
+            ptr_vals=seq,
+            adv_frames=list(range(40)),
+        )
+    ]
+    assert SR._pwlk_candidate_readcov(d, d.ptr_walks[0], 0, d.song_data_mask()) is None
+    # even WITH row indexing, the ~1:1 distinct/advance ratio (no reuse) is rejected.
+    d.ptr_walks[0] = PtrWalk(
+        zp=0x51,
+        is_load=True,
+        is_store=False,
+        y_min=0,
+        y_max=8,
+        count=40,
+        ptr_vals=seq,
+        adv_frames=list(range(40)),
+    )
+    assert SR._pwlk_candidate_readcov(d, d.ptr_walks[0], 0, d.song_data_mask()) is None
+
+
+def test_read_coverage_structure_ir_roundtrips(monkeypatch):
+    """A read-coverage (nibble) structure assembles into a StructureIR whose token
+    serialization round-trips EQUAL (the codec invariant) and whose pattern bytes are
+    exactly the observed read-coverage runs."""
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    d = _blank_distill()
+    bases = [0x1500, 0x1540, 0x1580]
+    pats = [_nibble_pattern(i) for i in range(3)]
+    for base, pat in zip(bases, pats):
+        _place(d, base, pat)
+    seq = [bases[0], bases[1], bases[2], bases[1], bases[0]]
+    d.ptr_walks = [
+        PtrWalk(
+            zp=0x20,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=11,
+            count=200,
+            ptr_vals=seq,
+            adv_frames=list(range(len(seq))),
+        )
+    ]
+    monkeypatch.setattr(SR, "load_distill", lambda _p: d)
+    monkeypatch.setattr(SR, "read_sddf_slices", lambda _p: [])
+    struct = SR.recover_structure("x")
+    assert struct.ok and struct.pattern_lens == [len(p) for p in pats]
+    ir = SI.build_structure_ir(struct, None, "x")
+    # the stored pattern bytes ARE the read-coverage runs.
+    assert ir.pattern_bytes == [list(p) for p in pats]
+    # the codec round-trips every serialized field EQUAL.
+    SI.assert_ids_roundtrip(ir)

@@ -124,8 +124,14 @@ def _decode_pattern_bytes(pb):
     return rows
 
 
-def _pattern_byte_stream(ram, base, eops=(_END_OF_PATTERN,)):
-    """The raw player byte stream for one pattern (up to and including its EOP byte)."""
+def _pattern_byte_stream(ram, base, eops=(_END_OF_PATTERN,), length=None):
+    """The raw player byte stream for one pattern.
+
+    ``length`` (the read-coverage extent, the nibble / bit-packed dialects) takes the
+    pattern to be exactly that many observed-read bytes; otherwise it runs up to and
+    including the first EOP byte (the value-range dialects)."""
+    if length is not None:
+        return [int(ram[(base + k) & 0xFFFF]) for k in range(length)]
     idx, pb = 0, []
     eops = set(eops)
     while idx < 0x400:
@@ -165,8 +171,13 @@ def build_structure_ir(struct, state, distill_path):
 
     eops = _grammar_eops(getattr(struct, "grammar", None))
     pat_src = getattr(struct, "pattern_src", None) or struct.pattern_ptrs
+    pat_lens = getattr(struct, "pattern_lens", None) or []
+    len_by_base = {int(a): int(l) for a, l in zip(pat_src, pat_lens)}
     pattern_bytes = (
-        [_pattern_byte_stream(ram, base, eops) for base in pat_src]
+        [
+            _pattern_byte_stream(ram, base, eops, length=len_by_base.get(int(base)))
+            for base in pat_src
+        ]
         if ram is not None
         else []
     )

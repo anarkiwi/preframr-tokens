@@ -146,6 +146,12 @@ class RecoveredStructure:
     # walks ``pattern_ptrs`` (runtime), we read ``pattern_src`` (image / SNAP).
     reloc_delta: int = 0
     pattern_src: list = field(default_factory=list)
+    # explicit per-pattern byte lengths (parallel to ``pattern_src``), set when the
+    # length was sited by READ-COVERAGE rather than a value-range EOP marker (the
+    # nibble / bit-packed dialects: GoatTracker, Soundmonitor, Music_Assembler).  When
+    # empty the readers fall back to the grammar-EOP walk (the value-range dialects),
+    # so the existing NewPlayer/TFX/FC behaviour is byte-identical.
+    pattern_lens: list = field(default_factory=list)
     # the grammar dialect chosen by the byte-exact round-trip (S4): the per-byte
     # field-kind table + per-kind operand width + param mask + packing mode.
     grammar: object = None
@@ -268,24 +274,160 @@ def _walk_pattern_bytes(ram, ptr, boundaries, max_bytes=0x400):
     return 0
 
 
+def _read_extent(read_play, base, lo_img, hi_img, max_bytes=0x400):
+    """The length of the contiguous run of bytes the player READ AS DATA from
+    ``base`` (``ACC_READ_PLAY``), bounded by the loaded image.
+
+    This is the byte-exact pattern length DERIVED FROM OBSERVATION -- the tracer
+    recorded exactly which bytes were consumed as data, so the read-coverage run is
+    the pattern content the player actually traversed, GRAMMAR-AGNOSTIC (no per-driver
+    EOP terminator constant).  It is the structural pattern-length signal the SURVEY's
+    "nibble / bit-packed" dialects (GoatTracker, Soundmonitor, Music_Assembler) need:
+    their rows carry no value-range EOP byte, so the 3 value-range dialects cannot
+    slice them, but the read-coverage extent sites them exactly.  ``0`` when ``base``
+    itself was not read as data (a phantom pointer -- e.g. a null/init pointer the
+    orderlist walk visited before its first real pattern)."""
+    k = 0
+    while (
+        k < max_bytes
+        and lo_img <= (base + k) < hi_img
+        and read_play[(base + k) & 0xFFFF]
+    ):
+        k += 1
+    return k
+
+
+def _pwlk_candidate_eop(d, walk, delta, sdm, dialects):
+    """The value-range-DIALECT pattern bank for one (walk, delta): the first grammar
+    whose EOP slices every resolved-in-song-data pointer cleanly (NewPlayer/TFX/FC --
+    the value-range dialects).  Returns a candidate dict or ``None``.  Byte-identical
+    to the original ``discover_patterns_pwlk`` per-grammar slice, factored out so the
+    read-coverage path (the nibble / bit-packed dialects) is a sibling, not a rewrite.
+    """
+    lo_img, hi_img = _image_bounds(d)
+    seq = walk.ptr_vals
+    resolved = [(x - delta) & 0xFFFF for x in seq]
+    uniq = sorted(set(a for a in resolved if lo_img <= a < hi_img))
+    if len(uniq) < 2:
+        return None
+    if sum(1 for a in uniq if sdm[a]) < max(2, len(uniq) // 2):
+        return None
+    for gname, gram in dialects.items():
+        bnd = gram["boundaries"]
+        ok = True
+        for a in uniq:
+            ln = _walk_pattern_bytes(d.ram, a, bnd)
+            if ln == 0 or not sdm[a]:
+                ok = False
+                break
+        if not ok:
+            continue
+        bank = uniq
+        index_of = {a: i for i, a in enumerate(bank)}
+        orderlist = [index_of.get(a, 0xFF) for a in resolved]
+        cov = len(set(o for o in orderlist if o != 0xFF))
+        return {
+            "pattern_src": bank,
+            "pattern_ptrs": [(a + delta) & 0xFFFF for a in bank],
+            "pattern_lens": [],  # EOP-walk length (the readers re-derive from grammar)
+            "orderlist": orderlist,
+            "reloc_delta": delta,
+            "grammar": gram,
+            "grammar_name": gname,
+            "zp": walk.zp,
+            "coverage": cov,
+            "n_patterns": len(bank),
+        }
+    return None
+
+
+def _pwlk_candidate_readcov(d, walk, delta, sdm):
+    """The READ-COVERAGE pattern bank for one (walk, delta), GRAMMAR-AGNOSTIC (the
+    nibble / bit-packed dialects -- GoatTracker, Soundmonitor, Music_Assembler -- whose
+    rows carry no value-range EOP byte, so :func:`_pwlk_candidate_eop` cannot slice
+    them).  A pointer is a REAL pattern iff it was READ AS DATA from its start
+    (:func:`_read_extent` > 0) and lies in the song-data region; phantom pointers (a
+    null/init pointer the walk visited before its first real pattern, read-extent 0)
+    are DROPPED from the bank rather than rejecting the whole candidate.  The pattern
+    length is the observed read-coverage run (byte-exact: the bytes the player consumed
+    as data).  Returns a candidate dict (with explicit ``pattern_lens``) or ``None``.
+
+    A genuine orderlist->pattern walk is characterised by ROW INDEXING (the player
+    indexes rows within a pattern via Y, so ``y_max > y_min``) and pattern REUSE (a few
+    distinct patterns replayed across many advances -- the REPEAT structure HARD RULE #0
+    expects).  A walk where almost every advance is a DISTINCT pointer with ``y == 0``
+    is not an orderlist but a per-frame streaming pointer (a sample / wavetable cursor,
+    e.g. a sample player walking a long PCM table one byte per frame); such a walk has
+    no reuse to collapse and is REJECTED so the read-coverage path never fabricates a
+    255-"pattern" pseudo-bank from a streaming cursor."""
+    if walk.y_max <= walk.y_min:
+        return None  # no within-pattern row indexing -> not an orderlist->pattern walk
+    lo_img, hi_img = _image_bounds(d)
+    read_play = (d.acc & ACC_READ_PLAY) != 0
+    seq = walk.ptr_vals
+    resolved = [(x - delta) & 0xFFFF for x in seq]
+    ext = {}
+    for a in sorted(set(resolved)):
+        if lo_img <= a < hi_img and sdm[a]:
+            e = _read_extent(read_play, a, lo_img, hi_img)
+            if e > 0:
+                ext[a] = e
+    if len(ext) < 2:
+        return None
+    bank = sorted(ext)
+    index_of = {a: i for i, a in enumerate(bank)}
+    orderlist = [index_of.get(a, 0xFF) for a in resolved]
+    cov = len(set(o for o in orderlist if o != 0xFF))
+    if cov < 2:
+        return None
+    # require pattern REUSE: an orderlist replays its bank, so distinct patterns are a
+    # MINORITY of the advances; a near-1:1 distinct/advance ratio (almost every advance
+    # a fresh pointer) is a streaming cursor (a sample / wavetable walked once per
+    # frame), not an orderlist -- reject only that degenerate ~no-reuse case (the y-span
+    # guard above already drops the y==0 cursor; this catches a y-indexed cursor too).
+    walked = sum(1 for o in orderlist if o != 0xFF)
+    if 5 * cov > 4 * walked:
+        return None
+    return {
+        "pattern_src": bank,
+        "pattern_ptrs": [(a + delta) & 0xFFFF for a in bank],
+        "pattern_lens": [ext[a] for a in bank],
+        "orderlist": orderlist,
+        "reloc_delta": delta,
+        "grammar": None,  # no value-range grammar; lengths are explicit (read-coverage)
+        "grammar_name": "readcov",
+        "zp": walk.zp,
+        "coverage": cov,
+        "n_patterns": len(bank),
+    }
+
+
 def discover_patterns_pwlk(d):
     """Discover the pattern bank + orderlist from the (zp),Y pointer-walk capture
     (PWLK, recovery-offload item #2) -- the RESOLVED orderlist->pattern stream the
-    player actually walked, reloc-applied and grammar-selected by the byte-exact
-    re-encode (S1+S2+S4 fused; replaces the O(image^2) brute-force scans).
+    player actually walked, reloc-applied and dialect-selected (S1+S2+S4 fused;
+    replaces the O(image^2) brute-force scans).
 
     The PWLK ``ptr_vals`` is the sequence of pattern START addresses the orderlist
-    advanced through.  We (a) pick the relocation delta under which the most distinct
-    pointers resolve into the song-data span; (b) take the distinct resolved addresses
-    as the pattern-pointer bank; (c) pick the grammar dialect whose EOP slices every
-    pattern byte-exact (a clean termination within the song data); (d) emit the
-    orderlist as the index-into-bank sequence.  Returns a dict with ``pattern_src``
-    (image addresses to read raw bytes from), ``pattern_ptrs`` (runtime addresses the
-    player walked), ``orderlist`` (index sequence), ``reloc_delta``, ``grammar``; or
-    ``None`` when no walk yields a byte-exact pattern bank."""
+    advanced through.  For each (walk, relocation delta) we form TWO candidate banks
+    and keep the higher-coverage one:
+
+      * the VALUE-RANGE-dialect bank (:func:`_pwlk_candidate_eop`) -- NewPlayer / TFX /
+        FC, sliced by the grammar EOP (byte-exact for the value-range dialects); and
+      * the READ-COVERAGE bank (:func:`_pwlk_candidate_readcov`) -- GRAMMAR-AGNOSTIC,
+        the pattern length taken from the observed read-coverage run, which sites the
+        nibble / bit-packed dialects (GoatTracker, Soundmonitor, Music_Assembler) the
+        value-range EOP cannot terminate, and DROPS phantom (non-data) pointers.
+
+    Returns a dict with ``pattern_src`` (image addresses to read raw bytes from),
+    ``pattern_ptrs`` (runtime addresses the player walked), ``pattern_lens`` (explicit
+    per-pattern lengths for the read-coverage bank, ``[]`` for the EOP bank),
+    ``orderlist`` (index sequence), ``reloc_delta``, ``grammar``; or ``None`` when no
+    walk yields a pattern bank.  Across candidates the higher (coverage, then fewer
+    patterns) wins -- the value-range dialect is preferred on a tie (it is the proven
+    NewPlayer/TFX/FC path), so those tunes recover byte-identically to before."""
     if not getattr(d, "ptr_walks", None):
         return None
-    lo_img, hi_img = _image_bounds(d)
     sdm = d.song_data_mask()
     dialects = _dialects()
     deltas = reloc_delta_candidates(d)
@@ -293,54 +435,20 @@ def discover_patterns_pwlk(d):
     for walk in d.ptr_walks:
         if not walk.is_load or len(set(walk.ptr_vals)) < 2:
             continue
-        seq = walk.ptr_vals
         for delta in deltas:
-
-            def resolve(x, dl=delta):
-                return (x - dl) & 0xFFFF
-
-            resolved = [resolve(x) for x in seq]
-            uniq = sorted(set(a for a in resolved if lo_img <= a < hi_img))
-            if len(uniq) < 2:
-                continue
-            # require the resolved targets to sit in the read song-data region
-            if sum(1 for a in uniq if sdm[a]) < max(2, len(uniq) // 2):
-                continue
-            for gname, gram in dialects.items():
-                bnd = gram["boundaries"]
-                lens = {}
-                ok = True
-                for a in uniq:
-                    ln = _walk_pattern_bytes(d.ram, a, bnd)
-                    if ln == 0 or not sdm[a]:
-                        ok = False
-                        break
-                    lens[a] = ln
-                if not ok:
+            eop = _pwlk_candidate_eop(d, walk, delta, sdm, dialects)
+            readcov = _pwlk_candidate_readcov(d, walk, delta, sdm)
+            # (coverage, value-range-preferred, more-patterns): prefer the higher
+            # orderlist coverage; on a coverage tie prefer the VALUE-RANGE dialect (so
+            # NewPlayer/TFX/FC tunes recover byte-identically to before -- the read-
+            # coverage bank only wins when no value-range dialect sliced the tune);
+            # then prefer the larger bank (the original ``len(bank)`` tiebreak).
+            for cand, vr in ((eop, 1), (readcov, 0)):
+                if cand is None:
                     continue
-                bank = uniq
-                index_of = {a: i for i, a in enumerate(bank)}
-                orderlist = [
-                    index_of[resolve(x)] if lo_img <= resolve(x) < hi_img else 0xFF
-                    for x in seq
-                ]
-                # read-coverage: distinct patterns the walk actually advanced through
-                cov = len(set(o for o in orderlist if o != 0xFF))
-                cand = {
-                    "pattern_src": bank,
-                    "pattern_ptrs": [(a + delta) & 0xFFFF for a in bank],
-                    "orderlist": orderlist,
-                    "reloc_delta": delta,
-                    "grammar": gram,
-                    "grammar_name": gname,
-                    "zp": walk.zp,
-                    "coverage": cov,
-                    "n_patterns": len(bank),
-                }
-                rank = (cov, len(bank))
+                rank = (cand["coverage"], vr, cand["n_patterns"])
                 if best is None or rank > best[0]:
                     best = (rank, cand)
-                break  # first byte-exact dialect for this (walk, delta) wins
     return best[1] if best is not None else None
 
 
@@ -764,9 +872,24 @@ def _grammar_eops(grammar):
     return {b for b in range(256) if int(bnd[b]) == 4}  # K_EOP
 
 
+def _explicit_pattern_lens(struct):
+    """``{src_addr: length}`` from the structure's explicit ``pattern_lens`` (the
+    read-coverage bank), or ``{}`` when lengths are EOP-derived (the value-range
+    dialects / legacy path)."""
+    lens = getattr(struct, "pattern_lens", None)
+    if not lens:
+        return {}
+    return {int(a): int(l) for a, l in zip(struct.pattern_src, lens)}
+
+
 def _pattern_len(ram, base, struct, max_bytes=0x400):
-    """Byte length of the pattern at ``base`` through its EOP inclusive (the grammar's
-    EOP, or 0x7F for the legacy path); ``max_bytes`` if no EOP is hit."""
+    """Byte length of the pattern at ``base``: the EXPLICIT read-coverage length when
+    the structure carries one (the nibble / bit-packed dialects), else the grammar's
+    EOP-inclusive slice (the value-range dialects / 0x7F for the legacy path);
+    ``max_bytes`` if no EOP is hit."""
+    explicit = _explicit_pattern_lens(struct)
+    if base in explicit:
+        return explicit[base]
     eops = _grammar_eops(struct.grammar)
     for k in range(max_bytes):
         if int(ram[(base + k) & 0xFFFF]) in eops:
@@ -796,7 +919,7 @@ def _program_spans(d, struct):
         struct.instr_base,
         struct.instr_base + struct.instr_stride * struct.n_instruments,
     )
-    if struct.grammar is None:
+    if struct.grammar is None and not getattr(struct, "pattern_lens", None):
         # legacy split-pointer layout: lo+hi tables then a contiguous pattern span.
         carve(struct.patptr_lo, struct.patptr_hi + struct.n_patterns)
         pat_lo = struct.patptr_hi + struct.n_patterns
@@ -805,7 +928,8 @@ def _program_spans(d, struct):
             pat_hi = last + _pattern_len(d.ram, last, struct)
             carve(pat_lo, pat_hi)
     else:
-        # PWLK layout: each pattern is its own span (scattered through song data).
+        # PWLK layout (value-range EOP slice OR explicit read-coverage length): each
+        # pattern is its own span, scattered through song data.
         for base in struct.pattern_src:
             carve(base, base + _pattern_len(d.ram, base, struct))
     for p, o in zip(struct.orderlist_ptrs, struct.orderlists):
@@ -823,11 +947,36 @@ def _program_spans(d, struct):
     return spans
 
 
-def _decode_patterns_grammar(d, pattern_src, grammar):
+def _decode_patterns_readcov(d, pattern_src, pattern_lens):
+    """The read-coverage decode (``grammar is None``): the nibble / bit-packed dialects
+    carry no value-range field partition to decode ``(note, instr, dur, cmd)`` tuples,
+    so the structured row field is left empty -- the BYTE-EXACT pattern content is the
+    raw read-coverage bytes (carried verbatim by the IR's ``pattern_bytes`` / the token
+    budget's pattern span), and ``n_bytes`` is the observed read-coverage total.  A
+    coarse ``note_table`` (the distinct low-value bytes, the plausible pitch field) is
+    surfaced for reporting; it is not load-bearing for byte-exactness."""
+    notes = set()
+    n_bytes = 0
+    for base, ln in zip(pattern_src, pattern_lens):
+        for k in range(ln):
+            b = int(d.ram[(base + k) & 0xFFFF])
+            if 0 < b < 0x80:
+                notes.add(b)
+        n_bytes += int(ln)
+    return ([], [], sorted(notes), [], [], 0, n_bytes)
+
+
+def _decode_patterns_grammar(d, pattern_src, grammar, pattern_lens=None):
     """Decode the patterns at ``pattern_src`` under a chosen ``grammar`` (the four-
     dialect skeleton, ``_discover_njit.decode_pattern_kernel``).  Returns the same
     tuple as :func:`decode_patterns`.  The ``UNSET``/``REST_NOTE`` row sentinels are
-    mapped to ``None``/``0x7E`` so the IR's tuple field matches the NewPlayer shape."""
+    mapped to ``None``/``0x7E`` so the IR's tuple field matches the NewPlayer shape.
+
+    When ``grammar is None`` (the read-coverage bank -- the nibble / bit-packed
+    dialects) the decode defers to :func:`_decode_patterns_readcov`: there is no
+    value-range partition, so the patterns serialize as raw read-coverage bytes."""
+    if grammar is None:
+        return _decode_patterns_readcov(d, pattern_src, pattern_lens or [])
     from preframr_tokens.bacc.generic import _discover_njit as DJ
 
     ram = np.asarray(d.ram, dtype=np.uint8)
@@ -914,6 +1063,7 @@ def _recover_structure_pwlk(d, struct, sddf_slices):
     struct.reloc_delta = pw["reloc_delta"]
     struct.pattern_src = pw["pattern_src"]
     struct.pattern_ptrs = pw["pattern_src"]  # read raw bytes from the image addrs
+    struct.pattern_lens = pw["pattern_lens"]  # explicit (read-coverage) or [] (EOP)
     struct.n_patterns = pw["n_patterns"]
     struct.grammar = pw["grammar"]
     struct.orderlists = [pw["orderlist"]]
@@ -921,7 +1071,7 @@ def _recover_structure_pwlk(d, struct, sddf_slices):
     struct.patptr_hi = max(pw["pattern_src"])
 
     patterns, instr_refs, notes, cmds, durs, n_rows, n_bytes = _decode_patterns_grammar(
-        d, pw["pattern_src"], pw["grammar"]
+        d, pw["pattern_src"], pw["grammar"], pw["pattern_lens"]
     )
     struct.patterns = patterns
     struct.instr_refs = instr_refs
@@ -1062,8 +1212,14 @@ def _flat_token_stream(struct, ram):
 
     n0 = len(stream)
     if ram is not None:
+        explicit = _explicit_pattern_lens(struct)
         eops = _grammar_eops(getattr(struct, "grammar", None))
         for base in struct.pattern_src or struct.pattern_ptrs:
+            if base in explicit:
+                # read-coverage bank: the pattern is exactly its observed-read run.
+                for k in range(explicit[base]):
+                    stream.append(int(ram[(base + k) & 0xFFFF]))
+                continue
             idx = 0
             while idx < 0x400:
                 b = int(ram[(base + idx) & 0xFFFF])
