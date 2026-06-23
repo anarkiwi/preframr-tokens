@@ -43,11 +43,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from preframr_tokens.bacc.generic.structure_recover import (
+    ACC_RAW,
     _END_OF_PATTERN,
     _MARK_DUR,
     _MARK_INSTR,
-    clean_pitches_residual,
-    read_stsq_cells,
+    _grammar_eops,
+    accumulator_generators,
     recover_structure,
 )
 from preframr_tokens.bacc.serialize import _u_len
@@ -75,10 +76,15 @@ class StructureIR:
     field may be ``None`` -- the player's running state before its first marker), serialized
     as the player's compact stateful byte stream via ``pattern_bytes``; ``orderlists`` are
     the per-voice pattern-index + control-marker streams that factor pattern reuse;
-    ``accgens`` carry, per voice, the porta/vibrato accumulator cell ``(lo, hi)`` address
-    pairs, and ``cells`` maps each referenced cell to ``(first_seen, samples)`` so render
-    rebuilds the accumulator grid byte-exact.  ``_state`` is the byte-exact ``(nframes, 25)``
-    register array (the M0 render anchor), NEVER serialized."""
+    ``accfits`` carry, per voice, the FITTED freq-accumulator generators -- one
+    ``(first_seen, kind, seed, p1, p2, p3, n, raw)`` per chosen accumulator (the
+    AGENTS.md accumulator-fit: porta=ramp/quadratic, vibrato=triangle; a stored ramp
+    is unrecovered structure).  ``kind`` is one of ``structure_recover.ACC_*``; a
+    ramp/quadratic/triangle fit amortises to a handful of ints, while ``ACC_RAW``
+    keeps the 16-bit ``raw`` sequence verbatim (the honest, surfaced fallback when no
+    closed-form generator reproduces the captured window byte-exact).  ``_state`` is
+    the byte-exact ``(nframes, 25)`` register array (the M0 render anchor), NEVER
+    serialized."""
 
     note_table: list = field(default_factory=list)
     instr_pool: list = field(default_factory=list)
@@ -86,8 +92,9 @@ class StructureIR:
     patterns: list = field(default_factory=list)
     pattern_bytes: list = field(default_factory=list)  # per-pattern player byte stream
     orderlists: list = field(default_factory=list)
-    accgens: list = field(default_factory=list)  # per voice: [(lo, hi), ...]
-    cells: dict = field(default_factory=dict)  # addr -> (first_seen, samples list)
+    accfits: list = field(
+        default_factory=list
+    )  # per voice: [(fs,kind,seed,p1,p2,p3,n,raw), ...]
     nframes: int = 0
     boot: list = field(default_factory=list)
     _state: object = (
@@ -117,14 +124,15 @@ def _decode_pattern_bytes(pb):
     return rows
 
 
-def _pattern_byte_stream(ram, base):
-    """The raw player byte stream for one pattern (up to and including its 0x7F)."""
+def _pattern_byte_stream(ram, base, eops=(_END_OF_PATTERN,)):
+    """The raw player byte stream for one pattern (up to and including its EOP byte)."""
     idx, pb = 0, []
+    eops = set(eops)
     while idx < 0x400:
-        b = int(ram[base + idx])
+        b = int(ram[(base + idx) & 0xFFFF])
         pb.append(b)
         idx += 1
-        if b == _END_OF_PATTERN:
+        if b in eops:
             break
     return pb
 
@@ -155,8 +163,10 @@ def build_structure_ir(struct, state, distill_path):
         for _name, (lo, hi) in struct.program_spans.items():
             shared_programs.extend(int(x) for x in ram[lo:hi])
 
+    eops = _grammar_eops(getattr(struct, "grammar", None))
+    pat_src = getattr(struct, "pattern_src", None) or struct.pattern_ptrs
     pattern_bytes = (
-        [_pattern_byte_stream(ram, base) for base in struct.pattern_ptrs]
+        [_pattern_byte_stream(ram, base, eops) for base in pat_src]
         if ram is not None
         else []
     )
@@ -167,18 +177,23 @@ def build_structure_ir(struct, state, distill_path):
 
     orderlists = [[int(b) for b in o] for o in struct.orderlists]
 
-    accgens, cells = [[] for _ in _CPR_VOICES], {}
-    cpr = clean_pitches_residual(distill_path, state) if state is not None else None
-    if cpr is not None:
-        stsq = read_stsq_cells(distill_path)
+    accfits = [[] for _ in _CPR_VOICES]
+    gens = accumulator_generators(distill_path, state) if state is not None else None
+    if gens is not None:
         for vi in range(len(_CPR_VOICES)):
-            pairs = cpr.get(vi, {}).get("accs", [])
-            accgens[vi] = [(int(lo), int(hi)) for lo, hi in pairs]
-            for lo, hi in accgens[vi]:
-                for addr in (lo, hi):
-                    if addr not in cells and addr in stsq:
-                        first_seen, samples = stsq[addr]
-                        cells[addr] = (int(first_seen), [int(s) for s in samples])
+            accfits[vi] = [
+                (
+                    int(fs),
+                    int(kind),
+                    int(seed),
+                    int(p1),
+                    int(p2),
+                    int(p3),
+                    int(n),
+                    None if raw is None else [int(v) for v in raw],
+                )
+                for (fs, kind, seed, p1, p2, p3, n, raw) in gens.get(vi, [])
+            ]
 
     return StructureIR(
         note_table=note_table,
@@ -187,8 +202,7 @@ def build_structure_ir(struct, state, distill_path):
         patterns=patterns,
         pattern_bytes=pattern_bytes,
         orderlists=orderlists,
-        accgens=accgens,
-        cells=cells,
+        accfits=accfits,
         nframes=int(struct.nframes),
         boot=([0] * NREG if state is None else [int(state[0, r]) for r in range(NREG)]),
         _state=state,
@@ -294,24 +308,20 @@ def _flat_orderlists(orderlists):
     return out
 
 
-def _flat_accgens(accgens, cells):
-    """The accumulator generators: per voice the ``(lo, hi)`` cell-address pairs, then each
-    referenced cell's 16-bit accumulator VALUE sequence (``lo | hi<<8``) with its
-    ``first_seen`` frame (so render rebuilds the grid exactly as clean_pitches_residual).
-    """
-    out = [len(accgens)]
-    for pairs in accgens:
-        out.append(len(pairs))
-        for lo, hi in pairs:
-            out.extend((lo, hi))
-    flat_pairs = [lh for pairs in accgens for lh in pairs]
-    usable = [(lo, hi) for (lo, hi) in flat_pairs if lo in cells and hi in cells]
-    out.append(len(usable))
-    for lo, hi in usable:
-        flo, fhi = cells[lo][1], cells[hi][1]
-        m = min(len(flo), len(fhi))
-        out += [lo, hi, cells[lo][0], cells[hi][0], m]
-        out.extend((flo[k] | (fhi[k] << 8)) for k in range(m))
+def _flat_accfits(accfits):
+    """The FITTED freq-accumulator generators, per voice (the accumulator-fit): each
+    is ``(first_seen, kind, seed, p1, p2, p3, n)`` -- a handful of ints for a closed-
+    form ramp/quadratic/triangle, then (for ``kind == ACC_RAW`` only) the verbatim
+    16-bit value sequence so render reproduces the captured window byte-exact."""
+    out = [len(accfits)]
+    for gens in accfits:
+        out.append(len(gens))
+        for fs, kind, seed, p1, p2, p3, n, raw in gens:
+            out += [fs, kind, seed, p1, p2, p3, n]
+            if kind == ACC_RAW:
+                rseq = raw or []
+                out.append(len(rseq))
+                out.extend(rseq)
     return out
 
 
@@ -357,27 +367,25 @@ def _parse_orderlists(flat):
     return out
 
 
-def _parse_accgens(flat):
+def _parse_accfits(flat):
     nvoice, i = flat[0], 1
-    accgens = []
+    accfits = []
     for _ in range(nvoice):
-        npair = flat[i]
+        ngen = flat[i]
         i += 1
-        pairs = []
-        for _ in range(npair):
-            pairs.append((flat[i], flat[i + 1]))
-            i += 2
-        accgens.append(pairs)
-    ncell, cells = flat[i], {}
-    i += 1
-    for _ in range(ncell):
-        lo, hi, fs_lo, fs_hi, m = flat[i : i + 5]
-        i += 5
-        acc16 = flat[i : i + m]
-        i += m
-        cells[lo] = (fs_lo, [v & 0xFF for v in acc16])
-        cells[hi] = (fs_hi, [v >> 8 for v in acc16])
-    return cells, accgens
+        gens = []
+        for _ in range(ngen):
+            fs, kind, seed, p1, p2, p3, n = flat[i : i + 7]
+            i += 7
+            raw = None
+            if kind == ACC_RAW:
+                m = flat[i]
+                i += 1
+                raw = list(flat[i : i + m])
+                i += m
+            gens.append((fs, kind, seed, p1, p2, p3, n, raw))
+        accfits.append(gens)
+    return accfits
 
 
 # --- the codec ----------------------------------------------------------------
@@ -392,7 +400,7 @@ def structure_ir_to_ids(ir):
     _emit_section(out, _flat_programs(ir.shared_programs))
     _emit_section(out, _flat_patterns(ir.pattern_bytes))
     _emit_section(out, _flat_orderlists(ir.orderlists))
-    _emit_section(out, _flat_accgens(ir.accgens, ir.cells))
+    _emit_section(out, _flat_accfits(ir.accfits))
     return out
 
 
@@ -408,7 +416,7 @@ def structure_ir_from_ids(ids):
     ol_flat, i = _read_section(ids, i)
     acc_flat, i = _read_section(ids, i)
     pattern_bytes, patterns = _parse_patterns(pat_flat)
-    cells, accgens = _parse_accgens(acc_flat)
+    accfits = _parse_accfits(acc_flat)
     return StructureIR(
         note_table=_parse_note_table(nt_flat),
         instr_pool=_parse_instr_pool(pool_flat),
@@ -416,8 +424,7 @@ def structure_ir_from_ids(ids):
         patterns=patterns,
         pattern_bytes=pattern_bytes,
         orderlists=_parse_orderlists(ol_flat),
-        accgens=accgens,
-        cells=cells,
+        accfits=accfits,
         nframes=nframes,
         boot=boot,
         _state=None,
@@ -433,7 +440,7 @@ def section_sizes(ir):
         ("shared_programs", _flat_programs(ir.shared_programs)),
         ("patterns", _flat_patterns(ir.pattern_bytes)),
         ("orderlists", _flat_orderlists(ir.orderlists)),
-        ("accgens", _flat_accgens(ir.accgens, ir.cells)),
+        ("accfits", _flat_accfits(ir.accfits)),
     ):
         out = []
         _emit_section(out, flat)
@@ -441,22 +448,37 @@ def section_sizes(ir):
     return sizes
 
 
-def _acc16_grid(ir, lo, hi, nframes, align=1):
-    """Rebuild one voice's 16-bit porta/vibrato accumulator grid from the IR's stored
-    cells, EXACTLY as :func:`structure_recover.clean_pitches_residual` does (per cell the
-    samples start at ``first_seen + align`` and hold their last value thereafter)."""
+def _accfit_grid(gen, nframes, align=1):
+    """Render one FITTED accumulator generator to its 16-bit per-frame grid.
 
-    def cell_grid(addr):
-        first_seen, samples = ir.cells[addr]
-        out = np.zeros(nframes, dtype=np.int64)
-        start = first_seen + align
-        end = min(start + len(samples), nframes)
-        out[start:end] = np.asarray(samples[: end - start], dtype=np.int64)
-        if end < nframes and samples:
-            out[end:] = samples[-1]
+    ``gen`` is ``(first_seen, kind, seed, p1, p2, p3, n, raw)``.  A ramp/quadratic/
+    triangle fit is rendered by :func:`_discover_njit.accumulator_grid_kernel` (the
+    inverse of the accumulator-fit); an ``ACC_RAW`` cell replays its stored 16-bit
+    sequence.  The grid starts at ``first_seen + align`` and holds its last value
+    thereafter -- EXACTLY as :func:`structure_recover.clean_pitches_residual` builds it
+    (so the render is byte-exact whether the accumulator was fitted or stored)."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    first_seen, kind, seed, p1, p2, p3, n, raw = gen
+    start = first_seen + align
+    out = np.zeros(nframes, dtype=np.int64)
+    if kind == ACC_RAW:
+        seq = np.asarray(raw or [], dtype=np.int64)
+        m = len(seq)
+        end = min(start + m, nframes)
+        if start < end:
+            out[start:end] = seq[: end - start]
+        if end < nframes and m:
+            out[end:] = seq[-1]
         return out
-
-    return cell_grid(lo) | (cell_grid(hi) << 8)
+    grid = DJ.accumulator_grid_kernel(
+        seed, p1, p2, p3, kind, nframes, max(start, 0), 0xFFFF
+    )
+    # hold the fitted generator's last in-window value after the captured window.
+    end = min(start + n, nframes)
+    if 0 <= start < end < nframes:
+        grid[end:] = grid[end - 1]
+    return grid
 
 
 def render_freq_from_ir(ir, seed_state):
@@ -464,23 +486,23 @@ def render_freq_from_ir(ir, seed_state):
     generators, BYTE-EXACT against the reference (proven: residual 0 full-length).
 
     The §state-machine identity ``freq = note_seed + acc_a + acc_b (mod 2^16)`` is inverted
-    HERE from the IR alone: the porta/vibrato accumulator grids are rebuilt from the stored
-    cells (:func:`_acc16_grid`), the ``note_seed`` (the piecewise-constant true grid pitch
-    per note span) is taken from ``seed_state`` -- the note timeline the structure's
-    patterns/orderlist encode (the per-frame onsets the player schedules) -- and freq is the
-    sum.  Returns ``{voice: freq_array}``.  This is the player-FREE half of the render and
-    proves the accumulator generators serialize/deserialize faithfully (the freq pipeline the
-    output-fit recovery floored on: hundreds of displaced freqs become a handful of grid
-    pitches + two compact accumulators)."""
+    HERE from the IR alone: the porta/vibrato accumulator grids are rebuilt from the FITTED
+    generators (:func:`_accfit_grid` -- ramp/quadratic/triangle, or a stored sequence for an
+    un-fit cell), the ``note_seed`` (the piecewise-constant true grid pitch per note span) is
+    taken from ``seed_state`` -- the note timeline the structure's patterns/orderlist encode
+    (the per-frame onsets the player schedules) -- and freq is the sum.  Returns
+    ``{voice: freq_array}``.  This is the player-FREE half of the render and proves the
+    accumulator generators serialize/deserialize faithfully (the freq pipeline the output-fit
+    recovery floored on: hundreds of displaced freqs become a handful of grid pitches + a few
+    compact accumulator generators)."""
     seed_state = np.asarray(seed_state, dtype=np.int64)
     nframes = seed_state.shape[0]
     out = {}
     for vi, (rlo, rhi) in enumerate(_CPR_VOICES):
         freq = seed_state[:, rlo] | (seed_state[:, rhi] << 8)
         acc = np.zeros(nframes, dtype=np.int64)
-        for lo, hi in ir.accgens[vi]:
-            if lo in ir.cells and hi in ir.cells:
-                acc = (acc + _acc16_grid(ir, lo, hi, nframes)) % 65536
+        for gen in ir.accfits[vi] if vi < len(ir.accfits) else ():
+            acc = (acc + _accfit_grid(gen, nframes)) % 65536
         seed = (freq - acc) % 65536
         # the note_seed is piecewise-constant (one grid pitch per note span); render it as
         # such + the accumulators, the inverse of the §state-machine identity.
@@ -535,14 +557,23 @@ def assert_ids_roundtrip(ir):
         "patterns",
         "pattern_bytes",
         "orderlists",
-        "accgens",
-        "cells",
+        "accfits",
         "nframes",
         "boot",
     ):
-        if getattr(ir, name) != getattr(back, name):
+        if _norm(getattr(ir, name)) != _norm(getattr(back, name)):
             raise ValueError(f"structure_ir: field {name!r} did not round-trip")
     return ids
+
+
+def _norm(value):
+    """Normalise nested tuples/lists of (possibly numpy) ints to plain Python for an
+    exact equality compare across the serialize/deserialize boundary."""
+    if isinstance(value, (list, tuple)):
+        return [_norm(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def recover_structure_ir(distill_path, state):

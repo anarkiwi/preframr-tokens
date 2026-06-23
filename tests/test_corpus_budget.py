@@ -84,25 +84,16 @@ _CORPUS = [
     ("HardTrack_Composer", "HardTrack_Composer__Acid_Runner_Remix.npz"),
 ]
 
-# Drivers the structure path does NOT yet bring under budget, each with the PRECISE,
-# falsifiable reason (never a wall).  ``no-structure`` = discovery finds no pattern/
-# instrument table (a pure-code / table-less tune) so it FALLS BACK to the generator
-# cover, which for this tune still floors >= 1; ``grammar`` = the byte-exact pattern
-# round-trip falsifies the NewPlayer grammar hypothesis (a structure-detection heuristic
-# gap -- a different driver pattern encoding); ``raw-tables`` = the structure recovers
-# byte-exact but its raw instrument/program tables still cost >= 1 token/frame pending
-# generator-FITTING of those tables (the next increment).
-# (Soundmonitor / Master_Composer / Ubik's_Musik also have no recoverable structure, but
-# their generator cover already serializes < 1 token/frame, so they are a HARD PASS via the
-# fallback -- not listed here.)
-_XFAIL = {
-    "MoN/FutureComposer": "no-structure: no pattern-pointer table (pure-code/table-less tune); generator-cover fallback still ~3.2 tok/frame (next increment)",
-    "Digitalizer_V2.x": "no-structure: no pattern-pointer table (pure-code/table-less tune); generator-cover fallback still ~1.76 tok/frame (next increment)",
-    "RoMuzak_V6.x": "no-structure: no pattern-pointer table (pure-code/table-less tune); generator-cover fallback still ~2.24 tok/frame (next increment)",
-    "TFX": "grammar: pattern decode not byte-exact (NewPlayer grammar falsified); generator-cover fallback still ~1.46 tok/frame (next increment)",
-    "20CC": "grammar: pattern decode not byte-exact (NewPlayer grammar falsified); generator-cover fallback still ~2.82 tok/frame (next increment)",
-    "DMC": "raw-tables: structure recovers byte-exact but 21 raw instrument structs floor it at ~1.16 tok/frame pending generator-fitting of the instrument tables (next increment)",
-}
+# The generic PWLK-driven structure recovery (the resolved (zp),Y orderlist->pattern
+# walk, reloc-applied, grammar-selected by the byte-exact slice -- ``structure_recover``)
+# now flips ALL six former xfails: relocation (Digitalizer +$6B0A), the interleaved /
+# scattered pattern banks (MoN-FutureComposer, RoMuzak), the stateful-prefix row grammars
+# (TFX, 20CC), and DMC's instrument floor (the PWLK pattern bank is far more compact than
+# the old split-pointer scan).  Each is byte-exact + < 1 token/frame via the structure
+# path (committed ``.sir.npz``), so there are NO xfails left -- a tune whose structure
+# discovery finds nothing (Master_Composer, Soundmonitor) or whose structure floors >= 1
+# (Electrosound) correctly falls back to the generator cover, which serializes < 1.
+_XFAIL = {}
 
 
 def _fixture_base(fixture):

@@ -160,6 +160,43 @@ def structure_ids_from_sid(
     return ids, structure, state
 
 
+def _cover_ids(state):
+    """The generator-cover token stream (the table-less fallback path): lift the
+    byte-exact state to the Tracker IR and serialize it.  Reached only when the
+    structure path returns no structure or is not the smaller byte-exact cover."""
+    from preframr_tokens.bacc.tracker_ir import lift
+    from preframr_tokens.bacc.tracker_serialize import _ir_to_ids
+
+    nframes = len(state)
+    boot = [int(v) for v in state[0]]
+    return _ir_to_ids(lift(state, None, nframes, boot))
+
+
+def recover_tune(
+    sid_path, subtune=1, nframes=2500, sidtrace_path=None, out_prefix=None
+):
+    """THE single public generic-recovery entry: ``.sid`` -> ``(ids, kind, state)``.
+
+    Runs the S0-S7 structure recovery (:func:`structure_ir.recover_structure_ir`,
+    byte-exact + value-LZ'd) and the generator cover (the table-less fallback), and
+    returns the SMALLER byte-exact token stream (the design's fewest-tokens tiebreak):
+    a structured tracker tune serializes from its recovered source (note table +
+    deduped instruments + factored patterns/orderlist + fitted freq accumulators); a
+    pure-code / table-less tune (A Mind Is Born) falls back to the generator cover.
+    ``kind`` is ``"structure"`` or ``"cover"``.  This lifts the structure-vs-cover fork
+    -- previously living only in tests/tools -- into ONE documented library entry.
+
+    Returns ``(ids, kind, state)`` with ``state`` the byte-exact ``(nframes, 25)``
+    register array.  Raises :class:`FileNotFoundError` when no ``preframr-sidtrace``
+    binary is available."""
+    ids, structure, state = structure_ids_from_sid(
+        sid_path, subtune, nframes, sidtrace_path, out_prefix
+    )
+    if structure is not None and ids is not None and len(ids) < len(state):
+        return ids, "structure", state
+    return _cover_ids(state), "cover", state
+
+
 def render_generic(program):
     """Render a generic :class:`BaccProgram` back to an ``(nframes, 25)`` register
     array, SELF-CONTAINED (no hand backend).  Re-runs each fitted archetype

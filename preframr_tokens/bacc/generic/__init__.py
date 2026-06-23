@@ -92,6 +92,7 @@ the full per-tune accounting.
 from preframr_tokens.bacc.generic.recover import (
     recover_from_sid,
     recover_generic,
+    recover_tune,
     render_generic,
     residual,
 )
@@ -108,8 +109,12 @@ __all__ = [
     "recover_generic",
     "render_generic",
     "residual",
+    # THE single public generic-recovery entry: runs the S0-S7 structure recovery and
+    # the generator cover, returns the smaller byte-exact token stream (structure for a
+    # tracker tune; the cover for a pure-code / table-less tune like A Mind Is Born).
+    "recover_tune",
     # the structure-recovery path (a structured tune's tracker source -- a deduped
-    # instrument pool + factored patterns/orderlist + the porta/vibrato accumulator
+    # instrument pool + factored patterns/orderlist + the fitted freq accumulator
     # generators -- serialized < 1 token/frame where the output-fit cover floors >= 1).
     "StructureIR",
     "recover_structure_ir",

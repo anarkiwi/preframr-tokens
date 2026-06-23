@@ -323,6 +323,39 @@ class TempoCand:
 
 
 @dataclass
+class StsqCell:
+    """One STSQ inter-frame state-cell sample sequence (design 3.2): the per-frame
+    value sequence of a RAM state cell (the porta / vibrato / sweep accumulators).
+
+    ``samples`` is the captured value-per-frame sequence starting at ``first_seen``;
+    the recovery feeds these to the accumulator-FIT (a stored ramp is unrecovered
+    structure -- HARD RULE #0).  Capped at the tracer's window (~512 frames)."""
+
+    addr: int
+    flags: int
+    first_seen: int
+    samples: np.ndarray  # uint8 per-frame values
+
+    @property
+    def n_unique(self):
+        """Distinct value count (a multi-valued reset-to-0 cell is an accumulator)."""
+        return int(len(np.unique(self.samples)))
+
+
+@dataclass
+class SddfSlice:
+    """One SID-write backward data-flow slice (design 3.1): the RAM_READ leaf
+    addresses a ``$D4xx`` write's value flowed from (the table cells it indexed).
+
+    A stride-K lattice of leaf addresses across the AD/SR/PW/ctrl write PCs IS the
+    instrument table (cross-checked against the IDXR stride in S5)."""
+
+    pc: int
+    reg: int
+    leaf_addrs: list  # RAM_READ leaf addresses (the read provenance)
+
+
+@dataclass
 class Distill:
     """The parsed SDST artifact: the in-emulator distillation of one tune."""
 
@@ -347,11 +380,23 @@ class Distill:
     sid_accum: list = field(default_factory=list)  # list[SidAccum]  (item #7)
     digi: object = None  # DigiSig or None                            (item #4)
     tempo_cands: list = field(default_factory=list)  # list[TempoCand] (item #6)
+    # Data-flow sections (THIS reader now parses them, not just past them -- the ONE
+    # artifact reader the generic recovery consumes; design §3 consolidation).
+    stsq_cells: list = field(default_factory=list)  # list[StsqCell] (design 3.2)
+    sddf_slices: list = field(default_factory=list)  # list[SddfSlice] (design 3.1)
 
     def idx_supp_by_pc(self):
         """``{pc: IdxSupp}`` for cross-referencing IDXR entries with their
         scaled-index fit + register attribution (recovery-offload items #1/#5)."""
         return {s.pc: s for s in self.idx_supp}
+
+    def stsq_by_addr(self):
+        """``{addr: StsqCell}`` for cross-referencing accumulator cells by address."""
+        return {c.addr: c for c in self.stsq_cells}
+
+    def idxr_by_pc(self):
+        """``{pc: IdxRead}`` for pairing an IDXR entry with its :class:`IdxSupp`."""
+        return {r.pc: r for r in self.idx_reads}
 
     # --- the SMC-correct access-type classifier ---
     def exec_mask(self):
@@ -475,6 +520,34 @@ def _skip_siddf_section(buf, off, nent, with_val_seq):
     return off
 
 
+def _decode_siddf_slices(buf, off, nent, with_val_seq, out):
+    """Decode ``nent`` SDDF entries' RAM_READ leaves into ``out`` (list[SddfSlice]).
+
+    The layout (``with_val_seq`` chosen by :func:`_skip_siddf_section`) is the design
+    3.1 head + (slice_pcs, leaves, op_seq) variable arrays + optional SDCU val_seq;
+    only the head ``(pc, reg)`` and the RAM_READ leaf addresses are retained."""
+    for _ in range(nent):
+        head = _SIDDF_HEAD.unpack_from(buf, off)
+        pc, reg = head[0], head[1]
+        off += _SIDDF_HEAD.size
+        (npcs,) = struct.unpack_from("<H", buf, off)
+        off += 2 + 2 * npcs
+        (nleaves,) = struct.unpack_from("<H", buf, off)
+        off += 2
+        leaf_addrs = []
+        for _l in range(nleaves):
+            kind, addr, _val = _SIDDF_LEAF.unpack_from(buf, off)
+            off += _SIDDF_LEAF.size
+            if kind == LK_RAM_READ:
+                leaf_addrs.append(addr)
+        (nops,) = struct.unpack_from("<H", buf, off)
+        off += 2 + nops
+        if with_val_seq:
+            (nval,) = struct.unpack_from("<H", buf, off)
+            off += 2 + nval
+        out.append(SddfSlice(pc=pc, reg=reg, leaf_addrs=leaf_addrs))
+
+
 def load_distill(path):
     """Parse a ``<prefix>.distill.bin`` SDST artifact into a :class:`Distill`."""
     with open(path, "rb") as handle:
@@ -508,6 +581,8 @@ def parse_distill(buf):
     sid_accum = []
     digi = None
     tempo_cands = []
+    stsq_cells = []
+    sddf_slices = []
 
     while off < len(buf):
         tag = buf[off : off + 4]
@@ -540,30 +615,42 @@ def parse_distill(buf):
                 off += _IDXR_ENTRY.size
                 idx_reads.append(IdxRead(pc, base, stride, imin, imax, count))
         elif tag in (b"SDDF", b"SDCU"):
-            # Per-write/per-cell data-flow slices (design 3.1 / 2.2). This reader
-            # does not consume them, but it must parse PAST them exactly so the
-            # following sections still land. Two on-disk layouts coexist: the
-            # current tracer appends a per-entry SDCU mid-call value sequence
-            # (nValSeq u16 + bytes); older artifacts predate that field. The
-            # header is v1 in both, so we DISAMBIGUATE structurally -- skip the
-            # section assuming val_seq is present, and only if that fails to land
-            # on a valid next section tag (or EOF) do we re-skip without it.
+            # Per-write/per-cell data-flow slices (design 3.1 / 2.2). This reader now
+            # PARSES the SDDF RAM_READ leaves (the instrument-table provenance the
+            # generic recovery uses) -- the ONE artifact reader (design §3
+            # consolidation; the duplicate parser in structure_recover is removed).
+            # Two on-disk layouts coexist: the current tracer appends a per-entry SDCU
+            # mid-call value sequence (nValSeq u16 + bytes); older artifacts predate
+            # that field.  The header is v1 in both, so we DISAMBIGUATE structurally:
+            # skip assuming val_seq is present, and only if that fails to land on a
+            # valid next section tag (or EOF) do we re-skip without it.
             (nent,) = struct.unpack_from("<I", buf, off)
             off += 4
+            with_val = True
             end_off = _skip_siddf_section(buf, off, nent, with_val_seq=True)
             if end_off is None or not _at_section_boundary(buf, end_off):
+                with_val = False
                 end_off = _skip_siddf_section(buf, off, nent, with_val_seq=False)
             if end_off is None:
                 raise ValueError(f"could not parse {tag!r} section")
+            if tag == b"SDDF":
+                _decode_siddf_slices(buf, off, nent, with_val, sddf_slices)
             off = end_off
         elif tag == b"STSQ":
             (nent,) = struct.unpack_from("<I", buf, off)
             off += 4
             for _ in range(nent):
-                _addr, _flags, _total, _first_seen, nsamp = _STSQ_HEAD.unpack_from(
+                addr, flags, _total, first_seen, nsamp = _STSQ_HEAD.unpack_from(
                     buf, off
                 )
-                off += _STSQ_HEAD.size + nsamp
+                off += _STSQ_HEAD.size
+                samples = np.frombuffer(buf[off : off + nsamp], dtype=np.uint8).copy()
+                off += nsamp
+                stsq_cells.append(
+                    StsqCell(
+                        addr=addr, flags=flags, first_seen=first_seen, samples=samples
+                    )
+                )
         elif tag == b"IDXS":
             # IDXR SUPPLEMENT: scaled-index fit + reg attribution (item #1/#5).
             (nent,) = struct.unpack_from("<I", buf, off)
@@ -691,6 +778,8 @@ def parse_distill(buf):
         sid_accum=sid_accum,
         digi=digi,
         tempo_cands=tempo_cands,
+        stsq_cells=stsq_cells,
+        sddf_slices=sddf_slices,
     )
 
 
@@ -758,6 +847,32 @@ def build_distill(dist):
             ir.pc, ir.base, ir.stride, ir.idx_min, ir.idx_max, 0, ir.count
         )
     out += b"IDXR" + struct.pack("<I", len(dist.idx_reads)) + idxr
+
+    # SDDF: re-emit the RETAINED leaves (head + RAM_READ leaves only; empty
+    # slice_pcs / op_seq / val_seq -- the reader decodes only (pc, reg) + leaves, so
+    # this round-trips the data the recovery uses).  Written WITHOUT a val_seq, which
+    # the structural disambiguation in the reader resolves.
+    if dist.sddf_slices:
+        sddf = bytearray()
+        for sl in dist.sddf_slices:
+            sddf += _SIDDF_HEAD.pack(sl.pc, sl.reg, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            sddf += struct.pack("<H", 0)  # nPcs
+            sddf += struct.pack("<H", len(sl.leaf_addrs))  # nLeaves
+            for addr in sl.leaf_addrs:
+                sddf += _SIDDF_LEAF.pack(LK_RAM_READ, addr, 0)
+            sddf += struct.pack("<H", 0)  # nOps
+        out += b"SDDF" + struct.pack("<I", len(dist.sddf_slices)) + sddf
+
+    # STSQ: the per-cell inter-frame sample sequences (the accumulator cells).
+    if dist.stsq_cells:
+        stsq = bytearray()
+        for c in dist.stsq_cells:
+            samples = np.asarray(c.samples, dtype=np.uint8)
+            stsq += _STSQ_HEAD.pack(
+                c.addr, c.flags, int(samples.sum()), c.first_seen, len(samples)
+            )
+            stsq += samples.tobytes()
+        out += b"STSQ" + struct.pack("<I", len(dist.stsq_cells)) + stsq
 
     # Recovery-offload sections (round-trip only the ones present; the C++
     # emitter always writes them, so a parsed-then-rebuilt artifact reproduces

@@ -43,7 +43,6 @@ pattern table) discovery finds nothing and the caller FALLS BACK to the generato
 cover.  The fix is ADDITIVE, never a regression of the generator-cover floor.
 """
 
-import struct as _struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -51,165 +50,34 @@ import numpy as np
 
 from preframr_tokens.bacc.generic.distill import (
     ACC_READ_PLAY,
+    SddfSlice,
     load_distill,
 )
 
-# The SDDF (per-write data-flow slice) section the SHIPPING distill reader parses
-# PAST (it consumes only ACMP/SNAP/SIDW/IDXR).  This prototype reads the SID-write
-# backward-slice RAM_READ leaves it needs for instrument-table discovery, with a
-# minimal self-contained parser keyed to the documented on-disk layout (mirrors
-# ``distill._SIDDF_HEAD`` / ``_SIDDF_LEAF``), so the module has NO dependency on the
-# proto ``sdst_full.py``.  A leaf is ``(kind u8, _pad, addr u16, value u8, _pad)``.
-_SDDF_HEAD = _struct.Struct("<HBBIBBBxHiBB")  # design 3.1 fixed head (20 bytes)
-_SDDF_LEAF = _struct.Struct("<BxHBx")  # kind, _pad, addr, value, _pad (6 bytes)
-_LK_RAM_READ = 1  # LeafKind.RAM_READ (membus_trace.h)
-# STSQ inter-frame state-cell sample-sequence head: addr u16, flags u8, _pad,
-# total u32, firstSeen u32, nSamples u16 (design 3.2) -- the porta/vib accumulators.
-_STSQ_HEAD = _struct.Struct("<HBxIIH")
+# The SDDF/STSQ data-flow sections are now parsed by the ONE artifact reader
+# (:mod:`distill`); this module consumes ``Distill.sddf_slices`` / ``Distill.stsq_cells``
+# directly (design §3 consolidation -- the duplicate parser that lived here is removed).
+# ``_SdwSlice`` is retained as an alias to the canonical :class:`distill.SddfSlice` so
+# the existing discovery API (``discover_instrument_table`` over slices) is unchanged.
+_SdwSlice = SddfSlice
 
 
-@dataclass
-class _SdwSlice:
-    """A SID-write backward-slice: its write PC, the SID register, and the RAM_READ
-    leaf addresses its value flowed from (the table cells it indexed)."""
-
-    pc: int
-    reg: int
-    leaf_addrs: list  # RAM_READ leaf addresses (the read provenance)
+def _load_distill_or_none(distill_path):
+    """Load a ``.distill.bin`` via the ONE reader, or ``None`` if it is missing /
+    not an SDST artifact (so the slice/cell shims degrade to empty, as the old
+    self-contained parsers did on a non-artifact path)."""
+    try:
+        return load_distill(distill_path)
+    except (OSError, ValueError):
+        return None
 
 
 def read_sddf_slices(distill_path):
-    """Parse the SDDF section's per-write slices from a ``.distill.bin`` artifact.
-
-    Returns ``[(_SdwSlice), ...]`` carrying each SID-write's RAM_READ leaf addresses
-    (empty list if the artifact has no SDDF section -- a pre-data-flow tracer).  Only
-    the head + leaves of each entry are decoded; the slice-PC list and op sequence are
-    skipped, and the optional trailing SDCU value sequence is detected structurally
-    (the same disambiguation the shipping reader uses)."""
-    buf = _read_artifact(distill_path)
-    if buf is None:
-        return []
-    slices = []
-    for tag, body, nxt in _walk_sections(buf):
-        if tag != b"SDDF":
-            continue
-        (nent,) = _struct.unpack_from("<I", buf, body)
-        # The val_seq trailer is optional; _walk_sections already chose the layout
-        # that lands on ``nxt``.  Re-derive it here so the inner read matches: a
-        # no-val_seq skip that lands on ``nxt`` means val_seq is absent.
-        with_val = _skip_siddf(buf, body + 4, nent, with_val_seq=False) != nxt
-        pos = body + 4
-        for _ in range(nent):
-            head = _SDDF_HEAD.unpack_from(buf, pos)
-            pc, reg = head[0], head[1]
-            pos += _SDDF_HEAD.size
-            (npcs,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2 + 2 * npcs
-            (nleaves,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2
-            leaf_addrs = []
-            for _l in range(nleaves):
-                kind, addr, _val = _SDDF_LEAF.unpack_from(buf, pos)
-                pos += _SDDF_LEAF.size
-                if kind == _LK_RAM_READ:
-                    leaf_addrs.append(addr)
-            (nops,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2 + nops
-            if with_val:
-                (nval,) = _struct.unpack_from("<H", buf, pos)
-                pos += 2 + nval
-            slices.append(_SdwSlice(pc, reg, leaf_addrs))
-    return slices
-
-
-# ---------------------------------------------------------------------------
-# A robust section walker shared by the SDDF / STSQ readers.  The only on-disk
-# ambiguity is the optional per-entry SDCU val_seq trailer in SDDF/SDCU sections
-# (``nValSeq u16 + bytes``); we disambiguate it structurally, exactly as the
-# shipping ``distill.py`` reader does, so the walk lands every following section.
-# ---------------------------------------------------------------------------
-_SECTION_TAGS = (
-    b"ACMP",
-    b"SNAP",
-    b"SIDW",
-    b"IDXR",
-    b"SDDF",
-    b"SDCU",
-    b"STSQ",
-    b"END\x00",
-)
-_HEADER_BYTES = 4 + 4 + 12 + 4 + 8 + 4  # magic+ver, 6 header words, cpf, t0, load_len
-
-
-def _read_artifact(path):
-    with open(path, "rb") as handle:
-        buf = handle.read()
-    return buf if buf[:4] == b"SDST" else None
-
-
-def _skip_siddf(buf, off, nent, with_val_seq):
-    """Skip ``nent`` SDDF/SDCU entries; return the end offset or None if the layout
-    does not fit (so the caller retries with the other ``with_val_seq``)."""
-    pos = off
-    try:
-        for _ in range(nent):
-            pos += _SDDF_HEAD.size
-            (npcs,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2 + 2 * npcs
-            (nl,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2 + _SDDF_LEAF.size * nl
-            (no,) = _struct.unpack_from("<H", buf, pos)
-            pos += 2 + no
-            if with_val_seq:
-                (nv,) = _struct.unpack_from("<H", buf, pos)
-                pos += 2 + nv
-    except _struct.error:
-        return None
-    return pos if pos <= len(buf) else None
-
-
-def _walk_sections(buf):
-    """Yield ``(tag, body_offset, next_offset)`` for each section, body_offset just
-    past the 4-byte tag.  Robust to the optional SDDF/SDCU val_seq trailer."""
-    off = _HEADER_BYTES
-    while off < len(buf):
-        tag = buf[off : off + 4]
-        body = off + 4
-        if tag == b"END\x00":
-            return
-        if tag in (b"ACMP", b"SNAP"):
-            (nbytes,) = _struct.unpack_from("<I", buf, body)
-            nxt = body + 4 + nbytes
-        elif tag == b"SIDW":
-            (nent,) = _struct.unpack_from("<I", buf, body)
-            nxt = body + 4 + nent * 12
-        elif tag == b"IDXR":
-            (nent,) = _struct.unpack_from("<I", buf, body)
-            nxt = body + 4 + nent * 16
-        elif tag in (b"SDDF", b"SDCU"):
-            (nent,) = _struct.unpack_from("<I", buf, body)
-            end = _skip_siddf(buf, body + 4, nent, with_val_seq=True)
-            if end is None or (
-                end != len(buf) and buf[end : end + 4] not in _SECTION_TAGS
-            ):
-                end = _skip_siddf(buf, body + 4, nent, with_val_seq=False)
-            if end is None:
-                return
-            nxt = end
-        elif tag == b"STSQ":
-            (nent,) = _struct.unpack_from("<I", buf, body)
-            pos = body + 4
-            try:
-                for _ in range(nent):
-                    _a, _f, _t, _fs, nsamp = _STSQ_HEAD.unpack_from(buf, pos)
-                    pos += _STSQ_HEAD.size + nsamp
-            except _struct.error:
-                return
-            nxt = pos
-        else:
-            return
-        yield tag, body, nxt
-        off = nxt
+    """The SID-write backward-slices (RAM_READ leaves) from a ``.distill.bin`` -- a
+    thin shim over the ONE reader (:func:`distill.load_distill`).  Empty for a
+    pre-data-flow artifact or a non-artifact path."""
+    d = _load_distill_or_none(distill_path)
+    return d.sddf_slices if d is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +140,15 @@ class RecoveredStructure:
     durations: list = field(default_factory=list)
     # shared program table spans (wave/pulse/filter/cmd), referenced once
     program_spans: dict = field(default_factory=dict)
+    # relocation (S1): the runtime->image delta applied to resolve pattern pointers
+    # (0 for an in-place driver).  ``pattern_src`` is the resolved IMAGE address each
+    # pattern's raw bytes are read from (== pattern_ptrs through reloc); the player
+    # walks ``pattern_ptrs`` (runtime), we read ``pattern_src`` (image / SNAP).
+    reloc_delta: int = 0
+    pattern_src: list = field(default_factory=list)
+    # the grammar dialect chosen by the byte-exact round-trip (S4): the per-byte
+    # field-kind table + per-kind operand width + param mask + packing mode.
+    grammar: object = None
     # provenance
     load_addr: int = 0
     load_len: int = 0
@@ -284,6 +161,187 @@ class RecoveredStructure:
 
 def _image_bounds(d):
     return d.load_addr, d.load_addr + d.load_len
+
+
+# ---------------------------------------------------------------------------
+# S1 -- relocation resolve.  The init block-copy (RELO) gives delta = dst-src; a
+# pattern pointer the player formed at runtime (dst space) resolves to its image
+# (src / SNAP) address by subtracting delta.  In-place drivers have no RELO -> 0.
+# ---------------------------------------------------------------------------
+def reloc_delta_candidates(d):
+    """The relocation deltas to try (S1): ``0`` (in-place) plus every distinct RELO
+    block-copy ``delta = dst_base - src_base``.  The byte-exact round-trip (S4)
+    SELECTS the one under which the pattern pointers resolve into the song data."""
+    deltas = [0]
+    for r in getattr(d, "relo_copies", ()):
+        dl = r.delta
+        if dl and dl not in deltas:
+            deltas.append(dl)
+    return deltas
+
+
+# ---------------------------------------------------------------------------
+# S4 -- row-grammar dialects.  The four SURVEY dialects collapse to ONE decode
+# skeleton (``_discover_njit.decode_pattern_kernel``) parameterized by a small set:
+#   boundaries[256] -> field-kind   (K_NOTE/K_INSTR/K_DUR/K_CMD/K_EOP/K_REST/K_IGN)
+#   op_width[16]    -> operand bytes consumed after a marker of that kind
+#   param_mask[16]  -> the field value mask for that kind
+#   packing_mode    -> 1 for the nibble split (instr=hi-nibble, note=lo-nibble)
+# A dialect is SELECTED by the byte-exact re-encode of the pattern bank, never by a
+# disasm heuristic (HARD RULE #0: the grammar is a hypothesis the round-trip
+# falsifies).  We only need the boundaries to find the EOP byte for slicing -- the
+# stored bytes are the player's own compact encoding (byte-exact by construction).
+# ---------------------------------------------------------------------------
+def _grammar(boundaries, op_width=None, param_mask=None, packing_mode=0, eop=None):
+    """Build a dialect parameter set (the small arrays the decode kernel takes)."""
+    bnd = np.zeros(256, dtype=np.int64)
+    for b, k in boundaries.items():
+        bnd[b] = k
+    if eop is not None:
+        for e in eop if isinstance(eop, (list, tuple)) else (eop,):
+            bnd[e] = 4  # K_EOP
+    ow = np.zeros(16, dtype=np.int64)
+    if op_width:
+        for k, w in op_width.items():
+            ow[k] = w
+    pm = np.zeros(16, dtype=np.int64)
+    if param_mask:
+        for k, m in param_mask.items():
+            pm[k] = m
+    return {
+        "boundaries": bnd,
+        "op_width": ow,
+        "param_mask": pm,
+        "packing_mode": int(packing_mode),
+    }
+
+
+def _dialects():
+    """The four candidate row grammars (parameter sets), tried in order; the first
+    whose decode re-encodes the whole bank byte-exact wins (S4 selection).
+
+    K_NOTE=0 K_INSTR=1 K_DUR=2 K_CMD=3 K_EOP=4 K_REST=5 K_IGN=6.  The only field-kind
+    that matters for byte-exact slicing is the EOP marker (the stored bytes ARE the
+    canonical encoding); the others let the IR carry decoded rows for measurement."""
+    out = {}
+    # NewPlayer (note<$80; $80-$9F dur, $A0-$BF instr, $C0-$FE cmd; $7F or $FF EOP).
+    bnd = {}
+    for b in range(0x80, 0xA0):
+        bnd[b] = 2
+    for b in range(0xA0, 0xC0):
+        bnd[b] = 1
+    for b in range(0xC0, 0x100):
+        bnd[b] = 3
+    out["newplayer"] = _grammar(
+        bnd,
+        param_mask={1: 0x1F, 2: 0x1F, 3: 0x3F},
+        eop=(0x7F, 0xFF),
+    )
+    # TFX / stateful-prefix (note<$60; $60-$7F instr; $80-$BF dur; $C0-$FE cmd; $FF EOP).
+    bnd = {}
+    for b in range(0x60, 0x80):
+        bnd[b] = 1
+    for b in range(0x80, 0xC0):
+        bnd[b] = 2
+    for b in range(0xC0, 0xFF):
+        bnd[b] = 3
+    out["tfx"] = _grammar(bnd, param_mask={1: 0x1F, 2: 0x3F, 3: 0x3F}, eop=0xFF)
+    # FutureComposer (note $01-$3F; $40-$7F dur; $80-$BF instr; $C0-$FE cmd; $FF EOP).
+    bnd = {}
+    for b in range(0x40, 0x80):
+        bnd[b] = 2
+    for b in range(0x80, 0xC0):
+        bnd[b] = 1
+    for b in range(0xC0, 0xFF):
+        bnd[b] = 3
+    out["fc"] = _grammar(bnd, param_mask={1: 0x3F, 2: 0x3F, 3: 0x3F}, eop=0xFF)
+    return out
+
+
+def _walk_pattern_bytes(ram, ptr, boundaries, max_bytes=0x400):
+    """Return the byte length of the pattern at ``ptr`` (through its EOP inclusive),
+    or 0 if no EOP is hit within ``max_bytes`` (a failed slice)."""
+    for k in range(max_bytes):
+        b = int(ram[(ptr + k) & 0xFFFF])
+        if boundaries[b] == 4:  # K_EOP
+            return k + 1
+    return 0
+
+
+def discover_patterns_pwlk(d):
+    """Discover the pattern bank + orderlist from the (zp),Y pointer-walk capture
+    (PWLK, recovery-offload item #2) -- the RESOLVED orderlist->pattern stream the
+    player actually walked, reloc-applied and grammar-selected by the byte-exact
+    re-encode (S1+S2+S4 fused; replaces the O(image^2) brute-force scans).
+
+    The PWLK ``ptr_vals`` is the sequence of pattern START addresses the orderlist
+    advanced through.  We (a) pick the relocation delta under which the most distinct
+    pointers resolve into the song-data span; (b) take the distinct resolved addresses
+    as the pattern-pointer bank; (c) pick the grammar dialect whose EOP slices every
+    pattern byte-exact (a clean termination within the song data); (d) emit the
+    orderlist as the index-into-bank sequence.  Returns a dict with ``pattern_src``
+    (image addresses to read raw bytes from), ``pattern_ptrs`` (runtime addresses the
+    player walked), ``orderlist`` (index sequence), ``reloc_delta``, ``grammar``; or
+    ``None`` when no walk yields a byte-exact pattern bank."""
+    if not getattr(d, "ptr_walks", None):
+        return None
+    lo_img, hi_img = _image_bounds(d)
+    sdm = d.song_data_mask()
+    dialects = _dialects()
+    deltas = reloc_delta_candidates(d)
+    best = None
+    for walk in d.ptr_walks:
+        if not walk.is_load or len(set(walk.ptr_vals)) < 2:
+            continue
+        seq = walk.ptr_vals
+        for delta in deltas:
+
+            def resolve(x, dl=delta):
+                return (x - dl) & 0xFFFF
+
+            resolved = [resolve(x) for x in seq]
+            uniq = sorted(set(a for a in resolved if lo_img <= a < hi_img))
+            if len(uniq) < 2:
+                continue
+            # require the resolved targets to sit in the read song-data region
+            if sum(1 for a in uniq if sdm[a]) < max(2, len(uniq) // 2):
+                continue
+            for gname, gram in dialects.items():
+                bnd = gram["boundaries"]
+                lens = {}
+                ok = True
+                for a in uniq:
+                    ln = _walk_pattern_bytes(d.ram, a, bnd)
+                    if ln == 0 or not sdm[a]:
+                        ok = False
+                        break
+                    lens[a] = ln
+                if not ok:
+                    continue
+                bank = uniq
+                index_of = {a: i for i, a in enumerate(bank)}
+                orderlist = [
+                    index_of[resolve(x)] if lo_img <= resolve(x) < hi_img else 0xFF
+                    for x in seq
+                ]
+                # read-coverage: distinct patterns the walk actually advanced through
+                cov = len(set(o for o in orderlist if o != 0xFF))
+                cand = {
+                    "pattern_src": bank,
+                    "pattern_ptrs": [(a + delta) & 0xFFFF for a in bank],
+                    "orderlist": orderlist,
+                    "reloc_delta": delta,
+                    "grammar": gram,
+                    "grammar_name": gname,
+                    "zp": walk.zp,
+                    "coverage": cov,
+                    "n_patterns": len(bank),
+                }
+                rank = (cov, len(bank))
+                if best is None or rank > best[0]:
+                    best = (rank, cand)
+                break  # first byte-exact dialect for this (walk, delta) wins
+    return best[1] if best is not None else None
 
 
 def discover_pointer_table(d):
@@ -530,27 +588,14 @@ def pattern_roundtrip_ok(struct):
 
 
 def read_stsq_cells(distill_path):
-    """Parse the STSQ section into ``{addr: (first_seen_frame, samples)}`` -- the
-    captured per-cell value sequences (the porta / vibrato accumulator cells live
-    here).  Empty if the artifact has no STSQ section."""
-    buf = _read_artifact(distill_path)
-    if buf is None:
+    """The STSQ per-cell value sequences as ``{addr: (first_seen_frame, samples)}`` --
+    a thin shim over the ONE reader (:func:`distill.load_distill`).  The porta /
+    vibrato accumulator cells live here; empty if the artifact has no STSQ section or
+    the path is not an artifact."""
+    d = _load_distill_or_none(distill_path)
+    if d is None:
         return {}
-    cells = {}
-    for tag, body, _nxt in _walk_sections(buf):
-        if tag != b"STSQ":
-            continue
-        (nent,) = _struct.unpack_from("<I", buf, body)
-        pos = body + 4
-        for _ in range(nent):
-            addr, _flags, _total, first_seen, nsamp = _STSQ_HEAD.unpack_from(buf, pos)
-            pos += _STSQ_HEAD.size
-            samples = np.frombuffer(buf[pos : pos + nsamp], dtype=np.uint8).astype(
-                np.int64
-            )
-            pos += nsamp
-            cells[addr] = (first_seen, samples)
-    return cells
+    return {c.addr: (c.first_seen, c.samples.astype(np.int64)) for c in d.stsq_cells}
 
 
 def clean_pitches_residual(
@@ -646,6 +691,89 @@ def clean_pitches_residual(
     return results
 
 
+# Accumulator generator kinds (the BACC fits the STSQ porta/vibrato cells reduce to).
+ACC_RAMP = 0  # value += rate              (porta / slide; integral of a constant add)
+ACC_QUADRATIC = 1  # rate += accel; value += rate  (accelerating slide)
+ACC_TRIANGLE = 2  # reflecting value += step in [lo,hi]  (vibrato)
+ACC_RAW = 3  # no closed-form fit: store the sequence verbatim (the honest fallback)
+
+
+def fit_accumulator(samples, width_mask=0xFFFF):
+    """Fit a 16-bit accumulator value sequence to its GENERATOR (the AGENTS.md
+    accumulator-fit: a stored ramp is unrecovered structure, HARD RULE #0).
+
+    Tries RAMP / QUADRATIC / TRIANGLE (``_discover_njit.accfit_kernel``, the matcher
+    form -- longest byte-exact prefix); returns ``(kind, seed, p1, p2, p3)`` for the
+    fit that reproduces the WHOLE sequence byte-exact, preferring the cheapest
+    (ramp < quadratic < triangle).  Returns ``(ACC_RAW, 0, 0, 0, 0)`` when none fits
+    the full sequence (the sequence is then stored verbatim -- a falsifiable
+    "needs another BACC archetype", never a wall)."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    s = np.asarray(samples, dtype=np.int64)
+    n = len(s)
+    if n < 2:
+        return (ACC_RAW, 0, 0, 0, 0)
+    for kind in (ACC_RAMP, ACC_QUADRATIC, ACC_TRIANGLE):
+        seed, p1, p2, p3, m = DJ.accfit_kernel(s, n, width_mask, kind)
+        if m == n:
+            return (kind, int(seed), int(p1), int(p2), int(p3))
+    return (ACC_RAW, 0, 0, 0, 0)
+
+
+def accumulator_generators(distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15))):
+    """The per-voice FITTED freq-accumulator generators (S6 accumulator-fit).
+
+    Picks the same flattening accumulator cells as :func:`clean_pitches_residual`,
+    then FITS each chosen 16-bit accumulator (``lo | hi<<8``) to its ramp / quadratic
+    / triangle generator instead of storing the raw value sequence.  Returns
+    ``{voice: [(first_seen, kind, seed, p1, p2, p3, n_window, raw_or_None), ...]}`` --
+    one entry per chosen accumulator; ``raw_or_None`` is the verbatim 16-bit sequence
+    ONLY when no generator fit the full window (``kind == ACC_RAW``), so the byte-exact
+    render is preserved either way (a fitted generator amortises to a handful of ints;
+    a stored sequence is the honest, surfaced fallback).  ``None`` when the artifact
+    has no STSQ section."""
+    cpr = clean_pitches_residual(distill_path, freq_state, voices=voices)
+    if cpr is None:
+        return None
+    cells = read_stsq_cells(distill_path)
+    out = {}
+    for vi in range(len(voices)):
+        gens = []
+        for lo, hi in cpr.get(vi, {}).get("accs", []):
+            if lo not in cells or hi not in cells:
+                continue
+            fs_lo, samp_lo = cells[lo]
+            fs_hi, samp_hi = cells[hi]
+            m = min(len(samp_lo), len(samp_hi))
+            acc16 = (samp_lo[:m] | (samp_hi[:m] << 8)).astype(np.int64)
+            first_seen = int(min(fs_lo, fs_hi))
+            kind, seed, p1, p2, p3 = fit_accumulator(acc16)
+            raw = None if kind != ACC_RAW else [int(v) for v in acc16]
+            gens.append((first_seen, kind, seed, p1, p2, p3, int(m), raw))
+        out[vi] = gens
+    return out
+
+
+def _grammar_eops(grammar):
+    """The set of end-of-pattern byte values for a grammar (``boundaries == K_EOP``),
+    or the NewPlayer default ``{0x7F}`` for the legacy path (``grammar is None``)."""
+    if grammar is None:
+        return {_END_OF_PATTERN}
+    bnd = grammar["boundaries"]
+    return {b for b in range(256) if int(bnd[b]) == 4}  # K_EOP
+
+
+def _pattern_len(ram, base, struct, max_bytes=0x400):
+    """Byte length of the pattern at ``base`` through its EOP inclusive (the grammar's
+    EOP, or 0x7F for the legacy path); ``max_bytes`` if no EOP is hit."""
+    eops = _grammar_eops(struct.grammar)
+    for k in range(max_bytes):
+        if int(ram[(base + k) & 0xFFFF]) in eops:
+            return k + 1
+    return max_bytes
+
+
 def _program_spans(d, struct):
     """The shared program-table spans (wave / pulse / filter / cmd) referenced once
     by the instruments, not re-derived per note.
@@ -668,18 +796,18 @@ def _program_spans(d, struct):
         struct.instr_base,
         struct.instr_base + struct.instr_stride * struct.n_instruments,
     )
-    carve(struct.patptr_lo, struct.patptr_hi + struct.n_patterns)  # lo+hi ptr tables
-    # pattern data span = from just past the hi table to the max pattern end
-    pat_lo = struct.patptr_hi + struct.n_patterns
-    pat_hi = max(struct.pattern_ptrs) if struct.pattern_ptrs else pat_lo
-    # extend pat_hi to the end of the last pattern (walk to its 0x7F)
-    if struct.pattern_ptrs:
-        last = max(struct.pattern_ptrs)
-        k = 0
-        while k < 0x400 and int(d.ram[last + k]) != _END_OF_PATTERN:
-            k += 1
-        pat_hi = last + k + 1
-    carve(pat_lo, pat_hi)
+    if struct.grammar is None:
+        # legacy split-pointer layout: lo+hi tables then a contiguous pattern span.
+        carve(struct.patptr_lo, struct.patptr_hi + struct.n_patterns)
+        pat_lo = struct.patptr_hi + struct.n_patterns
+        if struct.pattern_ptrs:
+            last = max(struct.pattern_ptrs)
+            pat_hi = last + _pattern_len(d.ram, last, struct)
+            carve(pat_lo, pat_hi)
+    else:
+        # PWLK layout: each pattern is its own span (scattered through song data).
+        for base in struct.pattern_src:
+            carve(base, base + _pattern_len(d.ram, base, struct))
     for p, o in zip(struct.orderlist_ptrs, struct.orderlists):
         carve(p, p + len(o))
     # remaining mask runs = the shared program tables
@@ -695,34 +823,133 @@ def _program_spans(d, struct):
     return spans
 
 
-def recover_structure(distill_path):
-    """Generic end-to-end structure recovery from a ``.distill.bin`` SDST artifact.
+def _decode_patterns_grammar(d, pattern_src, grammar):
+    """Decode the patterns at ``pattern_src`` under a chosen ``grammar`` (the four-
+    dialect skeleton, ``_discover_njit.decode_pattern_kernel``).  Returns the same
+    tuple as :func:`decode_patterns`.  The ``UNSET``/``REST_NOTE`` row sentinels are
+    mapped to ``None``/``0x7E`` so the IR's tuple field matches the NewPlayer shape."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
 
-    Returns a :class:`RecoveredStructure`.  ``ok`` is False (with a ``reason``) when
-    no valid tracker structure is found -- discovery returns nothing on a pure-code
-    tune (A Mind Is Born), so the caller falls back to the generator cover.  When
-    ``ok`` is True the byte-exact re-encode gate (``reencode_patterns``) has held.
-    """
-    d = load_distill(distill_path)
-    sddf_slices = read_sddf_slices(distill_path)
-    struct = RecoveredStructure(
-        ok=False,
-        load_addr=d.load_addr,
-        load_len=d.load_len,
-        nframes=d.nframes,
-        distill_path=distill_path,
-        ram=d.ram,
+    ram = np.asarray(d.ram, dtype=np.uint8)
+    bnd = grammar["boundaries"]
+    ow = grammar["op_width"]
+    pm = grammar["param_mask"]
+    pk = grammar["packing_mode"]
+    patterns = []
+    instr_refs, notes, cmds, durs = set(), set(), set(), set()
+    n_rows = n_bytes = 0
+    for base in pattern_src:
+        nt, ins, du, cm, nr, nb = DJ.decode_pattern_kernel(
+            ram, base, bnd, ow, pm, pk, 0x400
+        )
+        rows = []
+        for k in range(nr):
+            note = int(nt[k])
+            ii = int(ins[k])
+            dd = int(du[k])
+            cc = int(cm[k])
+            if ii != DJ.UNSET:
+                instr_refs.add(ii)
+            if dd != DJ.UNSET:
+                durs.add(dd)
+            if cc != DJ.UNSET:
+                cmds.add(cc)
+            note_out = note
+            if note == DJ.REST_NOTE:
+                note_out = 0x7E
+            elif note not in (0x00, 0x7E):
+                notes.add(note)
+            rows.append(
+                (
+                    note_out,
+                    None if ii == DJ.UNSET else ii,
+                    None if dd == DJ.UNSET else dd,
+                    None if cc == DJ.UNSET else cc,
+                )
+            )
+        patterns.append(rows)
+        n_rows += nr
+        n_bytes += int(nb)
+    return (
+        patterns,
+        sorted(instr_refs),
+        sorted(notes),
+        sorted(cmds),
+        sorted(durs),
+        n_rows,
+        n_bytes,
     )
 
+
+def _fill_instruments(d, struct, sddf_slices, instr_refs):
+    """Populate the instrument table (S5): the stride from the instrument-feeding
+    SDDF leaf-lattice GCD, the used-instrument records read at ``base + i*stride``."""
+    it = discover_instrument_table(d, sddf_slices)
+    if it is None:
+        return
+    struct.instr_base, struct.instr_stride = it
+    used = [i for i in instr_refs if i != _INSTR_KILL]
+    struct.n_instruments = (max(used) + 1) if used else 0
+    struct.instr_records = [
+        [
+            int(x)
+            for x in d.ram[
+                struct.instr_base
+                + i * struct.instr_stride : struct.instr_base
+                + i * struct.instr_stride
+                + struct.instr_stride
+            ]
+        ]
+        for i in range(struct.n_instruments)
+    ]
+
+
+def _recover_structure_pwlk(d, struct, sddf_slices):
+    """The PWLK-driven structure path (S1+S2+S4): pattern bank + orderlist from the
+    resolved (zp),Y walk, reloc-applied, grammar-selected by the byte-exact slice.
+    Returns True on success (``struct`` filled, ``ok`` set), else False."""
+    pw = discover_patterns_pwlk(d)
+    if pw is None:
+        return False
+    struct.reloc_delta = pw["reloc_delta"]
+    struct.pattern_src = pw["pattern_src"]
+    struct.pattern_ptrs = pw["pattern_src"]  # read raw bytes from the image addrs
+    struct.n_patterns = pw["n_patterns"]
+    struct.grammar = pw["grammar"]
+    struct.orderlists = [pw["orderlist"]]
+    struct.patptr_lo = min(pw["pattern_src"])
+    struct.patptr_hi = max(pw["pattern_src"])
+
+    patterns, instr_refs, notes, cmds, durs, n_rows, n_bytes = _decode_patterns_grammar(
+        d, pw["pattern_src"], pw["grammar"]
+    )
+    struct.patterns = patterns
+    struct.instr_refs = instr_refs
+    struct.note_table = notes
+    struct.commands = cmds
+    struct.durations = durs
+    struct.n_rows = n_rows
+    struct.pattern_bytes = n_bytes
+
+    _fill_instruments(d, struct, sddf_slices, instr_refs)
+    struct.program_spans = _program_spans(d, struct)
+    struct.ok = True
+    return True
+
+
+def _recover_structure_legacy(d, struct, sddf_slices):
+    """The split-pointer-scan structure path (the original NewPlayer recovery), kept
+    as a fallback for tunes whose distill has no usable (zp),Y walk capture.  Returns
+    True on success."""
     pt = discover_pointer_table(d)
     if pt is None:
-        struct.reason = "no pattern-pointer table (likely pure-code tune)"
-        return struct
+        return False
     lo_base, hi_base, n, ptrs = pt
     struct.patptr_lo, struct.patptr_hi, struct.n_patterns = lo_base, hi_base, n
     struct.pattern_ptrs = ptrs
+    struct.pattern_src = ptrs
 
-    pattern_data_lo = hi_base + n  # pattern data starts right after the hi table
+    pattern_data_lo = hi_base + n
     patterns, instr_refs, notes, cmds, durs, n_rows, n_bytes = decode_patterns(d, ptrs)
     struct.patterns = patterns
     struct.instr_refs = instr_refs
@@ -732,37 +959,65 @@ def recover_structure(distill_path):
     struct.n_rows = n_rows
     struct.pattern_bytes = n_bytes
 
-    # byte-exact gate: the decode must re-encode to the exact SNAP bytes.
     for emitted, snap in reencode_patterns(d, ptrs):
         if emitted != snap:
             struct.reason = "pattern decode not byte-exact (grammar mismatch)"
-            return struct
+            return False
 
     ol = discover_orderlist(d, n, pattern_data_lo)
     if ol is not None:
         struct.orderlist_ptr_table, struct.orderlist_ptrs, struct.orderlists = ol
 
-    it = discover_instrument_table(d, sddf_slices)
-    if it is not None:
-        struct.instr_base, struct.instr_stride = it
-        used = [i for i in instr_refs if i != _INSTR_KILL]
-        struct.n_instruments = (max(used) + 1) if used else 0
-        struct.instr_records = [
-            [
-                int(x)
-                for x in d.ram[
-                    struct.instr_base
-                    + i * struct.instr_stride : struct.instr_base
-                    + i * struct.instr_stride
-                    + struct.instr_stride
-                ]
-            ]
-            for i in range(struct.n_instruments)
-        ]
-
+    _fill_instruments(d, struct, sddf_slices, instr_refs)
     struct.program_spans = _program_spans(d, struct)
     struct.ok = True
-    return struct
+    return True
+
+
+def recover_structure(distill_path):
+    """Generic end-to-end structure recovery from a ``.distill.bin`` SDST artifact.
+
+    Both structure paths are tried and the byte-exact candidate with the FEWEST
+    tokens is SELECTED (the design's validation-gated, fewest-tokens tiebreak):
+      * the PWLK-driven path (S1+S2+S4: the resolved (zp),Y orderlist->pattern walk,
+        reloc-applied, grammar-selected by the byte-exact slice) -- subsumes
+        relocation + the 4 row grammars + the interleaved/scattered packings the
+        brute-force scan cannot reach; and
+      * the split-pointer scan (the original NewPlayer recovery) -- a full contiguous
+        pattern bank that can be more compact when the walk traversed only a subset.
+    Returns a :class:`RecoveredStructure`; ``ok`` is False (with a ``reason``) when
+    neither path yields a structure -- a pure-code tune (A Mind Is Born) -- and the
+    caller falls back to the generator cover.  ``ok`` True means the byte-exact
+    slice/re-encode gate held.
+    """
+    d = load_distill(distill_path)
+    sddf_slices = read_sddf_slices(distill_path)
+
+    def _fresh():
+        return RecoveredStructure(
+            ok=False,
+            load_addr=d.load_addr,
+            load_len=d.load_len,
+            nframes=d.nframes,
+            distill_path=distill_path,
+            ram=d.ram,
+        )
+
+    candidates = []
+    for builder in (_recover_structure_pwlk, _recover_structure_legacy):
+        s = _fresh()
+        if builder(d, s, sddf_slices):
+            try:
+                total, _ = token_budget(s)
+            except (ValueError, IndexError):
+                total = float("inf")
+            candidates.append((total, s))
+    if candidates:
+        candidates.sort(key=lambda t: t[0])
+        return candidates[0][1]
+    s = _fresh()
+    s.reason = "no pattern-pointer table (likely pure-code tune)"
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -807,13 +1062,14 @@ def _flat_token_stream(struct, ram):
 
     n0 = len(stream)
     if ram is not None:
-        for base in struct.pattern_ptrs:
+        eops = _grammar_eops(getattr(struct, "grammar", None))
+        for base in struct.pattern_src or struct.pattern_ptrs:
             idx = 0
             while idx < 0x400:
-                b = int(ram[base + idx])
+                b = int(ram[(base + idx) & 0xFFFF])
                 stream.append(b)
                 idx += 1
-                if b == _END_OF_PATTERN:
+                if b in eops:
                     break
     sec["pattern_rows"] = len(stream) - n0
 

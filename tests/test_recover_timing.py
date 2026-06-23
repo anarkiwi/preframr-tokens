@@ -13,6 +13,7 @@ is byte-exact and under-budget but slow is still a failure of the < 5s target.
 """
 
 import os
+import sys
 import time
 
 import numpy as np
@@ -59,8 +60,15 @@ def test_cover_path_encode_under_5s_cpu(tune_id, fixture):
         times.append(time.process_time() - t)
     cpu = min(times)
 
-    assert cpu < _MAX_CPU_S, (
+    # coverage.py's per-line C tracer roughly triples CPU; under it the gate would
+    # measure the INSTRUMENTATION, not the cover-path work it exists to bound (the
+    # known-good ~4.2s is the UNinstrumented cost).  When tracing is active, scale the
+    # budget by the measured tracer overhead so the gate still catches a real
+    # regression without false-failing on instrumentation (the byte-exact check above
+    # runs unconditionally).  sys.gettrace() is set iff a tracer (coverage) is active.
+    budget = _MAX_CPU_S * (4.0 if sys.gettrace() is not None else 1.0)
+    assert cpu < budget, (
         f"{tune_id} cover-path encode regressed to {cpu:.2f}s CPU "
-        f"(>= {_MAX_CPU_S}s). The njit + content-cache cover optimization "
+        f"(>= {budget}s). The njit + content-cache cover optimization "
         f"(known-good ~4.2s) has regressed -- a perf gate, never a wall."
     )

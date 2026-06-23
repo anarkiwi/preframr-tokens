@@ -33,25 +33,25 @@ def _hand_pattern_bytes():
 
 
 def _synthetic_ir(nframes=64):
-    """A synthetic :class:`StructureIR` with a known accumulator generator so the freq
-    render is byte-exact, plus a byte-exact ``_state`` anchor consistent with it."""
+    """A synthetic :class:`StructureIR` with a known FITTED accumulator generator (a
+    ramp) so the freq render is byte-exact, plus a byte-exact ``_state`` anchor."""
+    from preframr_tokens.bacc.generic.structure_recover import ACC_RAMP
+
     pattern_bytes = _hand_pattern_bytes()
     patterns = [SI._decode_pattern_bytes(pb) for pb in pattern_bytes]
 
-    # One voice-0 accumulator: a triangle that the freq render re-adds onto a held pitch.
-    samples = [(i % 8) for i in range(nframes)]  # 0..7 repeating, the acc low byte
-    cells = {
-        0x2000: (0, samples),  # lo cell, first_seen frame 0
-        0x2001: (0, [0] * nframes),  # hi cell (acc high byte = 0)
-    }
-    accgens = [[(0x2000, 0x2001)], [], []]
+    # One voice-0 accumulator: a RAMP generator (value += 3) the freq render re-adds onto
+    # a held pitch.  accfit entry = (first_seen, kind, seed, p1, p2, p3, n, raw).
+    first_seen, rate, n = 0, 3, nframes
+    accfits = [[(first_seen, ACC_RAMP, 0, rate, 0, 0, n, None)], [], []]
 
-    # Build a byte-exact state whose voice-0 freq == seed(=0x0100, held) + acc16.
+    # Build a byte-exact state whose voice-0 freq == seed(=0x0100, held) + acc16 grid.
     state = np.zeros((nframes, 25), dtype=np.int64)
     seed = 0x0100
     align = 1
     acc = np.zeros(nframes, dtype=np.int64)
-    acc[align:] = np.asarray(samples[: nframes - align], dtype=np.int64)
+    for i in range(align, nframes):
+        acc[i] = ((i - align) * rate) & 0xFFFF
     freq = (seed + acc) % 65536
     state[:, 0] = freq & 0xFF
     state[:, 1] = (freq >> 8) & 0xFF
@@ -73,8 +73,7 @@ def _synthetic_ir(nframes=64):
         patterns=patterns,
         pattern_bytes=pattern_bytes,
         orderlists=[[0, 1, 0, 0xFF], [1, 0xFF], [0, 0xFF]],  # pattern 0 reused
-        accgens=accgens,
-        cells=cells,
+        accfits=accfits,
         nframes=nframes,
         boot=[int(state[0, r]) for r in range(25)],
         _state=state,
@@ -92,8 +91,7 @@ def test_codec_field_roundtrip_exact():
     assert back.note_table == ir.note_table
     assert back.instr_pool == ir.instr_pool
     assert back.orderlists == ir.orderlists
-    assert back.accgens == ir.accgens
-    assert back.cells == ir.cells
+    assert SI._norm(back.accfits) == SI._norm(ir.accfits)
 
 
 def test_section_sizes_sum_to_total():
@@ -153,7 +151,7 @@ def test_build_structure_ir_from_synthetic_struct(tmp_path):
     ir = SI.build_structure_ir(struct, state, distill)
     assert len(ir.instr_pool) == 1  # the duplicate instrument struct deduped
     assert ir.pattern_bytes == pbs
-    assert ir.accgens == [[], [], []] and ir.cells == {}  # no STSQ in this artifact
+    assert ir.accfits == [[], [], []]  # no STSQ in this artifact -> no accumulator fits
     SI.assert_ids_roundtrip(ir)  # the assembled IR still round-trips exactly
 
 

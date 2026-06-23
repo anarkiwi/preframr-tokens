@@ -9,9 +9,7 @@ Run this; a FAIL on tok/frame means the remaining tokens are UNRECOVERED STRUCTU
     SIDTRACE_BIN=.../sidtrace PYTHONPATH=. python tools/codec_gate.py <tune.sid> [subtune] [nframes]
 """
 
-import os
 import sys
-import tempfile
 
 import numpy as np
 
@@ -26,25 +24,59 @@ def gate_state(state, max_tok_per_frame=1.0):
     nf = len(state)
     boot = [int(v) for v in state[0]]
     tokens = min(
-        len(_ir_to_ids(lift(state, None, nf, boot, synth_pitch=sp))) for sp in (True, False)
+        len(_ir_to_ids(lift(state, None, nf, boot, synth_pitch=sp)))
+        for sp in (True, False)
     )
     ir = lift(state, None, nf, boot)
     gen, ev = unlift(ir)
     resid = int(np.sum(render_from_fits(gen, ev, ir.note_table, nf) != state))
     tpf = tokens / nf if nf else float("inf")
     ok = resid == 0 and tpf < max_tok_per_frame
-    return ok, {"resid": resid, "tok_per_frame": round(tpf, 3), "nframes": nf, "tokens": tokens}
+    return ok, {
+        "resid": resid,
+        "tok_per_frame": round(tpf, 3),
+        "nframes": nf,
+        "tokens": tokens,
+    }
 
 
 def gate_sid(sid, subtune=1, nframes=2500, max_tok_per_frame=1.0):
-    from preframr_tokens.bacc.generic.sidtrace import run_sidtrace, sidwr_state
+    """Gate a ``.sid`` through the PRODUCTION recovery (:func:`recover_tune`): the
+    S0-S7 structure path (byte-exact + value-LZ'd) with the generator-cover fallback,
+    whichever is the smaller byte-exact cover.  Byte-exactness is checked by re-
+    rendering the chosen path against the ``.sidwr`` state."""
+    import numpy as _np
 
-    pre = os.path.join(tempfile.mkdtemp(), "t")
-    sw, _ = run_sidtrace(sid, pre, subtune, nframes)
-    state, _ = sidwr_state(sw)
-    if state is None or len(state) < 2:
-        return False, {"resid": -1, "tok_per_frame": float("inf"), "nframes": 0, "tokens": 0}
-    return gate_state(state, max_tok_per_frame)
+    from preframr_tokens.bacc.generic.recover import recover_tune
+    from preframr_tokens.bacc.generic.structure_ir import (
+        render_structure,
+        structure_ir_from_ids,
+    )
+
+    ids, kind, state = recover_tune(sid, subtune, nframes)
+    nf = len(state)
+    if nf < 2:
+        return False, {
+            "resid": -1,
+            "tok_per_frame": float("inf"),
+            "nframes": 0,
+            "tokens": 0,
+        }
+    if kind == "structure":
+        ir = structure_ir_from_ids(ids)
+        ir._state = state  # pylint: disable=protected-access
+        resid = int(_np.sum(render_structure(ir) != state))
+    else:
+        resid = gate_state(state, max_tok_per_frame)[1]["resid"]
+    tpf = len(ids) / nf
+    ok = resid == 0 and tpf < max_tok_per_frame
+    return ok, {
+        "resid": resid,
+        "tok_per_frame": round(tpf, 3),
+        "nframes": nf,
+        "tokens": len(ids),
+        "kind": kind,
+    }
 
 
 def main(argv):
@@ -56,7 +88,9 @@ def main(argv):
     ok, m = gate_sid(argv[1], sub, nf)
     print(("PASS" if ok else "FAIL"), m)
     if m["resid"] != 0:
-        print("  byte-exact FAILED -- a missing PARAMETER of a known generator. STOP and diagnose.")
+        print(
+            "  byte-exact FAILED -- a missing PARAMETER of a known generator. STOP and diagnose."
+        )
     if m["tok_per_frame"] >= 1.0:
         print(
             "  >= 1 tok/frame -- the remaining tokens are UNRECOVERED STRUCTURE (phrases / instruments"
