@@ -127,6 +127,43 @@ def test_render_structure_byte_exact_and_raises_without_anchor():
     assert raised
 
 
+def test_nonfreq_lane_renders_from_ids_alone():
+    """The M1 non-freq replay: an ADMITTED lane renders BYTE-EXACT from the serialized
+    program ALONE (no anchor) -- the proof ``render-from-ids == state`` for that lane.
+    """
+    nframes = 64
+    ir = _synthetic_ir(nframes)
+    # admit ctrl voice-0 (reg 4) as a sparsely-gated lane: 0 then 0x41 at frame 5, held.
+    col = np.zeros(nframes, dtype=np.int64)
+    col[5:] = 0x41
+    starts, values = SI._lane_change_program(col)
+    ir.nonfreq = [(4, starts, values)]
+    ir._state[:, 4] = (
+        col  # keep the anchor consistent so render_structure is byte-exact
+    )
+
+    back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
+    assert SI._norm(back.nonfreq) == SI._norm(ir.nonfreq)  # the program round-trips
+    # render the admitted lane from the IR ALONE (anchor=None) -- byte-exact, no anchor.
+    lanes = SI.render_nonfreq_from_ir(back, anchor=None)
+    assert 4 in lanes and np.array_equal(lanes[4], col)
+    # and the full render (admitted lane from program, the rest from the anchor) is exact.
+    rendered = SI.render_structure(ir)
+    assert np.array_equal(rendered, ir._state)
+
+
+def test_nonfreq_empty_program_serialises_identically():
+    """A structure with no admitted non-freq lane serialises byte-identically to the
+    pre-M1 stream (the optional section is omitted) -- the back-compat invariant for the
+    committed fixtures."""
+    ir = _synthetic_ir()
+    assert ir.nonfreq == []
+    ids = SI.structure_ir_to_ids(ir)
+    back = SI.structure_ir_from_ids(ids)
+    assert back.nonfreq == []
+    assert SI.structure_ir_to_ids(back) == ids
+
+
 def test_build_structure_ir_from_synthetic_struct(tmp_path):
     # build_structure_ir over a synthetic RecoveredStructure + a non-STSQ distill file
     # (so clean_pitches_residual/read_stsq_cells no-op): exercises the assembly + dedup.

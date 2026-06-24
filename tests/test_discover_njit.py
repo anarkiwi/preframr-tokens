@@ -254,6 +254,61 @@ def test_freq_integrator_kernel():
     assert np.array_equal(got, (seed + acc) & 0xFFFF)
 
 
+def _ref_change_points(col):
+    """Pure-Python reference for ``change_points_kernel``: frame 0 plus every index
+    where the value differs from the previous frame."""
+    starts = [0]
+    for i in range(1, len(col)):
+        if col[i] != col[i - 1]:
+            starts.append(i)
+    return np.asarray(starts, dtype=np.int64)
+
+
+def _ref_step_lane(starts, values, nframes):
+    """Pure-Python reference for ``step_lane_kernel``: hold ``values[k]`` over
+    ``[starts[k], starts[k+1])`` (last value to the end)."""
+    out = np.zeros(nframes, dtype=np.int64)
+    for k in range(len(starts)):
+        s = max(0, int(starts[k]))
+        e = int(starts[k + 1]) if k + 1 < len(starts) else nframes
+        e = min(e, nframes)
+        out[s:e] = values[k]
+    return out
+
+
+def test_change_points_and_step_lane_roundtrip():
+    rng = np.random.default_rng(11)
+    for _ in range(20):
+        n = int(rng.integers(1, 300))
+        # a piecewise-constant column: a few random runs (the non-freq lane shape).
+        col = np.zeros(n, dtype=np.int64)
+        i = 0
+        while i < n:
+            run = int(rng.integers(1, 40))
+            col[i : i + run] = int(rng.integers(0, 256))
+            i += run
+        starts = DJ.change_points_kernel(col)
+        assert np.array_equal(starts, _ref_change_points(col))
+        values = col[starts]
+        # step_lane(change_points(col), col[change_points], n) reproduces col byte-exact.
+        got = DJ.step_lane_kernel(starts, values, n)
+        assert np.array_equal(got, _ref_step_lane(starts, values, n))
+        assert np.array_equal(got, col)
+
+
+def test_step_lane_kernel_holds_tail_and_empty():
+    # the held tail past the last change point fills to nframes.
+    starts = np.array([0, 3], dtype=np.int64)
+    values = np.array([7, 9], dtype=np.int64)
+    got = DJ.step_lane_kernel(starts, values, 6)
+    assert np.array_equal(got, np.array([7, 7, 7, 9, 9, 9], dtype=np.int64))
+    # an empty program renders all-zero (an unused lane, never admitted).
+    empty = DJ.step_lane_kernel(
+        np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), 4
+    )
+    assert np.array_equal(empty, np.zeros(4, dtype=np.int64))
+
+
 def test_idxr_score_kernel_finds_in_image_targets():
     ram = np.zeros(65536, dtype=np.uint8)
     read_play = np.zeros(65536, dtype=np.uint8)

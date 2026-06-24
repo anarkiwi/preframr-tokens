@@ -380,6 +380,57 @@ def freq_integrator_kernel(seed_grid, acc):
 
 
 @njit
+def step_lane_kernel(starts, values, nframes):
+    """Render a piecewise-constant non-freq register lane (the M1 replay): hold
+    ``values[k]`` over ``[starts[k], starts[k+1])`` (the last value to the end).
+
+    The serialized non-freq program is the lane's CHANGE-POINT stream (``starts`` is
+    strictly ascending with ``starts[0] == 0``, ``values`` the held byte at each step);
+    this kernel re-renders it byte-exact -- the inverse of the host's change-point
+    encode.  ``starts``/``values`` are ``int64[nseg]``; the output is ``int64[nframes]``.
+    Empty (``nseg == 0``) yields all-zero (an unused lane, never admitted)."""
+    out = np.zeros(nframes, dtype=np.int64)
+    nseg = starts.shape[0]
+    if nseg == 0:
+        return out
+    for k in range(nseg):
+        s = starts[k]
+        e = starts[k + 1] if k + 1 < nseg else nframes
+        if s < 0:
+            s = 0
+        if e > nframes:
+            e = nframes
+        for i in range(s, e):
+            out[i] = values[k]
+    return out
+
+
+@njit
+def change_points_kernel(col):
+    """The change-point stream of a register column ``col`` (``int64[nframes]``): the
+    frame indices where the value changes (always including frame 0).  Returns
+    ``starts : int64[nseg]`` (strictly ascending, ``starts[0] == 0``); the host pairs
+    it with ``col[starts]`` to serialize the lane as a piecewise-constant program.  The
+    inverse of :func:`step_lane_kernel` (``step_lane_kernel(starts, col[starts], n)``
+    reproduces ``col`` byte-exact)."""
+    n = col.shape[0]
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    nseg = 1
+    for i in range(1, n):
+        if col[i] != col[i - 1]:
+            nseg += 1
+    starts = np.empty(nseg, dtype=np.int64)
+    starts[0] = 0
+    j = 1
+    for i in range(1, n):
+        if col[i] != col[i - 1]:
+            starts[j] = i
+            j += 1
+    return starts
+
+
+@njit
 def piecewise_seed_kernel(freq, acc, start, stop):
     """Recover the piecewise-constant note seed from ``(freq - acc)`` over ``[start,
     stop)`` and re-render it held per note span; return ``(seed_render, n_changes)``.

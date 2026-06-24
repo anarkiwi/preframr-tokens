@@ -172,19 +172,54 @@ def _cover_ids(state):
     return _ir_to_ids(lift(state, None, nframes, boot))
 
 
+def _structure_is_byte_exact(structure, ids, state):
+    """True iff the recovered structure renders the FULL ``(nframes, 25)`` state
+    byte-exact through the DESERIALIZED ids (the shipped artifact), with the M1
+    non-freq replay where it is byte-exact and the ``_state`` anchor for the lanes the
+    artifact cannot yet replay (the additive fallback).
+
+    The check renders from ``structure_ir_from_ids(ids)`` -- the bytes that actually
+    SHIP -- not the live ``structure`` object, so the gate proves the SHIPPED stream
+    reconstructs the tune (the freq lanes + the recovered non-freq lanes from the ids
+    alone; the un-recovered lanes via the anchor, listed as the SDDF-extension gap)."""
+    from preframr_tokens.bacc.generic.structure_ir import (
+        render_structure,
+        structure_ir_from_ids,
+    )
+
+    if structure is None or ids is None:
+        return False
+    ir = structure_ir_from_ids(ids)
+    ir._state = state  # anchor for the lanes the artifact cannot yet replay
+    try:
+        rendered = render_structure(ir)
+    except (NotImplementedError, ValueError, IndexError):
+        return False
+    return rendered.shape == state.shape and bool(np.array_equal(rendered, state))
+
+
 def recover_tune(
     sid_path, subtune=1, nframes=2500, sidtrace_path=None, out_prefix=None
 ):
     """THE single public generic-recovery entry: ``.sid`` -> ``(ids, kind, state)``.
 
     Runs the S0-S7 structure recovery (:func:`structure_ir.recover_structure_ir`,
-    byte-exact + value-LZ'd) and the generator cover (the table-less fallback), and
-    returns the SMALLER byte-exact token stream (the design's fewest-tokens tiebreak):
-    a structured tracker tune serializes from its recovered source (note table +
-    deduped instruments + factored patterns/orderlist + fitted freq accumulators); a
-    pure-code / table-less tune (A Mind Is Born) falls back to the generator cover.
-    ``kind`` is ``"structure"`` or ``"cover"``.  This lifts the structure-vs-cover fork
-    -- previously living only in tests/tools -- into ONE documented library entry.
+    byte-exact + value-LZ'd) and, ONLY when that does not render byte-exact, the
+    generator cover (the table-less fallback).  ``kind`` is ``"structure"`` or
+    ``"cover"``.  This lifts the structure-vs-cover fork -- previously living only in
+    tests/tools -- into ONE documented library entry.
+
+    THE GATE (the CPU win): when the structure assembler succeeds AND renders the full
+    25-register state byte-exact (:func:`_structure_is_byte_exact`), SHIP it and DO NOT
+    run the cover search at all -- the cover is a 30-300x slower archetype SEARCH over
+    the output state, pure waste on a tune the sub-second assembler already solved (e.g.
+    Algorithm_Frodigi: 0.3s structure vs 91s cover, BOTH byte-exact; the structure also
+    ~5x smaller).  The cover runs ONLY for tunes where the structure genuinely fails (A
+    Mind Is Born-class algorithmic tunes, unrecognized grammars) -- there it is the
+    honest fallback, never skipped.  The fewest-tokens tiebreak is SUBORDINATE to
+    byte-exactness: a byte-exact structure ships even when it is momentarily >= 1
+    token/frame (its un-replayed lanes are the falsifiable SDDF-extension gap, not a
+    reason to burn the slow cover -- which on those tunes is BOTH slower and denser).
 
     Returns ``(ids, kind, state)`` with ``state`` the byte-exact ``(nframes, 25)``
     register array.  Raises :class:`FileNotFoundError` when no ``preframr-sidtrace``
@@ -192,7 +227,7 @@ def recover_tune(
     ids, structure, state = structure_ids_from_sid(
         sid_path, subtune, nframes, sidtrace_path, out_prefix
     )
-    if structure is not None and ids is not None and len(ids) < len(state):
+    if _structure_is_byte_exact(structure, ids, state):
         return ids, "structure", state
     return _cover_ids(state), "cover", state
 

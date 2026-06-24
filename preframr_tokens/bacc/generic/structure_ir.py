@@ -26,17 +26,21 @@ the same grammar re-decodes to the EXACT tuples on read.  Each accumulator store
 VALUE sequence (``lo | hi<<8``) + cell ``first_seen`` so render rebuilds the grid exactly as
 ``clean_pitches_residual`` does; the 16-bit values recur, so value-LZ collapses them.
 
-M0 render (THIS increment).  :func:`render_freq_from_ir` renders the three FREQ register
-pairs from the DESERIALIZED IR ALONE -- byte-exact full-length (residual 0): the recovered
-porta/vibrato accumulators re-added onto each note's grid pitch, the §state-machine identity
-inverted (the player-FREE half of the render).  :func:`render_structure` uses that for freq
-and the byte-exact ``_state`` anchor for the instrument-driven ctrl/pw/filter/ad/sr lanes, so
-the full 25-register render is byte-exact NOW while the structure->register REPLAY of those
-lanes (orderlists -> patterns -> rows -> instrument-struct SID loads, paced by the recovered
-tempo) and the generator-FITTING of the raw program/instrument tables are the next increment
-(HARD RULE #0: a stored ramp is unrecovered structure, not a floor).  ``_state`` is the
-correctness anchor only and is NEVER serialized; the SHIPPED bytes are the compact, proven
-< 1 token/frame structure."""
+M0/M1 render.  :func:`render_freq_from_ir` renders the three FREQ register pairs from the
+DESERIALIZED IR ALONE -- byte-exact full-length (residual 0): the recovered porta/vibrato
+accumulators re-added onto each note's grid pitch, the §state-machine identity inverted (the
+player-FREE half of the render).  :func:`render_nonfreq_from_ir` (M1, THIS increment) renders
+the non-freq registers (pw/ctrl/ad/sr/filter/volume): each ADMITTED lane BYTE-EXACT from its
+serialized piecewise-constant program (the player's sets-and-holds for that register --
+:func:`build_nonfreq_program`, ``_discover_njit.step_lane_kernel``), so it renders from the
+ids ALONE (the proof ``render-from-ids == state`` holds for the admitted lanes), while a
+densely-modulated wavetable-walk lane (a PW sweep / ctrl arp) that the artifact cannot yet
+replay -- its free-running per-frame cursor + instrument table are not in the SDDF leaves --
+falls back to the ``_state`` anchor (the additive SDDF-extension gap: storing the output
+column would blow the budget AND be the HARD RULE #0 literal-floor trap, never shipped).
+:func:`render_structure` composes both.  ``_state`` is the correctness anchor ONLY for the
+un-admitted lanes and is NEVER serialized; the SHIPPED bytes are the compact structure.
+"""
 
 from dataclasses import dataclass, field
 
@@ -57,6 +61,19 @@ NREG = 25
 # clean_pitches_residual's three per-voice freq-register pairs; the accumulator grid is
 # rebuilt EXACTLY as it does (per cell, start = first_seen + align, held thereafter).
 _CPR_VOICES = ((0, 1), (7, 8), (14, 15))
+# The FREQ register indices the IR renders from the accumulator program; everything else
+# (pw/ctrl/ad/sr/filter/volume) is a NON-FREQ lane the M1 replay targets.
+_FREQ_REGS = frozenset(r for pair in _CPR_VOICES for r in pair)
+_NONFREQ_REGS = tuple(r for r in range(NREG) if r not in _FREQ_REGS)
+# A non-freq lane is ADMITTED into the serialized program only when its piecewise-
+# constant change-point encoding costs no more than this many tokens (so the M1 replay
+# never inflates the budget): the constant / sparsely-gated lanes (filter/volume setup,
+# the instrument's AD/SR/ctrl set once per note) round-trip from the program for a
+# handful of tokens, while a densely-modulated wavetable-walk lane (a PW sweep, a ctrl
+# arp) stays on the byte-exact anchor and is surfaced as the SDDF-extension gap (its
+# free-running per-frame cursor is not yet in the artifact -- a stored output column
+# would be the HARD RULE #0 literal-floor trap, never shipped).
+_NONFREQ_LANE_TOKEN_CAP = 96
 
 # The structure-path token alphabet is the non-negative ints; REPEAT is a reserved
 # sentinel strictly above every literal the IR emits (counts, addresses < 2^17, 16-bit
@@ -95,10 +112,18 @@ class StructureIR:
     accfits: list = field(
         default_factory=list
     )  # per voice: [(fs,kind,seed,p1,p2,p3,n,raw), ...]
+    # M1 non-freq lane replay: per ADMITTED non-freq register, the lane's piecewise-
+    # constant program as ``(reg, starts, values)`` -- the change-point stream rendered
+    # by ``_discover_njit.step_lane_kernel`` (byte-exact).  Only the cheap (constant /
+    # sparsely-gated) lanes are admitted (token cap); a densely-modulated wavetable-walk
+    # lane is OMITTED and renders from the ``_state`` anchor (the SDDF-extension gap).
+    nonfreq: list = field(
+        default_factory=list
+    )  # [(reg, [starts...], [values...]), ...]
     nframes: int = 0
     boot: list = field(default_factory=list)
     _state: object = (
-        None  # byte-exact (nframes, 25); the M0 render anchor, not serialized
+        None  # byte-exact (nframes, 25); the anchor for the un-replayed lanes, not serialized
     )
 
 
@@ -141,6 +166,61 @@ def _pattern_byte_stream(ram, base, eops=(_END_OF_PATTERN,), length=None):
         if b in eops:
             break
     return pb
+
+
+# --- M1 non-freq lane recovery (the instrument-driven ctrl/ad/sr/pw/filter lanes) --
+def _lane_change_program(col):
+    """The piecewise-constant change-point program ``(starts, values)`` of one register
+    column (``int64[nframes]``): ``starts`` are the frames the value changes (incl. 0),
+    ``values`` the held byte at each step.  ``_discover_njit.step_lane_kernel`` re-renders
+    it byte-exact -- the inverse encode.  This is the lane's REAL program (the player sets
+    the register at a note-on / sweep step and holds it), not a per-frame output dump.
+    """
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    col = np.asarray(col, dtype=np.int64)
+    starts = DJ.change_points_kernel(col)
+    values = col[starts] if len(starts) else col[:0]
+    return [int(s) for s in starts], [int(v) for v in values]
+
+
+def _lane_program_tokens(starts, values):
+    """The serialized token cost of one non-freq lane program (the admission metric):
+    ``nseg`` + the start-DELTA stream + the value stream, each value-LZ'd.  Mirrors the
+    bytes :func:`_flat_nonfreq` emits so the cap reflects the true shipped size."""
+    flat = [len(starts)]
+    prev = 0
+    for s in starts:
+        flat.append(s - prev)
+        prev = s
+    flat.extend(values)
+    out = []
+    _emit_section(out, flat)
+    return len(out)
+
+
+def build_nonfreq_program(state):
+    """The M1 non-freq lane program: per ADMITTED non-freq register, the piecewise-
+    constant ``(reg, starts, values)`` that renders it byte-exact from the IR alone.
+
+    A lane is admitted iff its change-point encoding (the player's real sets-and-holds
+    program for that register) costs no more than :data:`_NONFREQ_LANE_TOKEN_CAP` tokens,
+    so the constant / sparsely-gated lanes (filter + volume setup, the instrument's
+    AD/SR/ctrl latched per note) round-trip from the program for a handful of tokens while
+    a densely-modulated wavetable-walk lane (a PW sweep / ctrl arp -- thousands of change
+    points) is OMITTED and renders from the ``_state`` anchor instead (the SDDF-extension
+    gap: its free-running per-frame cursor + instrument table is not yet in the artifact;
+    storing the output column would blow the budget AND be the HARD RULE #0 literal-floor
+    trap).  Returns ``[(reg, starts, values), ...]`` for the admitted lanes only."""
+    if state is None:
+        return []
+    state = np.asarray(state, dtype=np.int64)
+    program = []
+    for reg in _NONFREQ_REGS:
+        starts, values = _lane_change_program(state[:, reg])
+        if _lane_program_tokens(starts, values) <= _NONFREQ_LANE_TOKEN_CAP:
+            program.append((reg, starts, values))
+    return program
 
 
 # --- assembly from a RecoveredStructure + the byte-exact state ----------------
@@ -214,7 +294,13 @@ def build_structure_ir(struct, state, distill_path):
         pattern_bytes=pattern_bytes,
         orderlists=orderlists,
         accfits=accfits,
-        nframes=int(struct.nframes),
+        nonfreq=build_nonfreq_program(state),
+        # The TRUE playback length is the ``.sidwr`` row count (``state`` rows), not the
+        # artifact's REQUESTED ``nframes`` (the capture may stop early); the M1 lane replay
+        # renders to exactly this length, and it is the metric denominator the tests use.
+        nframes=(
+            int(struct.nframes) if state is None else int(np.asarray(state).shape[0])
+        ),
         boot=([0] * NREG if state is None else [int(state[0, r]) for r in range(NREG)]),
         _state=state,
     )
@@ -336,6 +422,44 @@ def _flat_accfits(accfits):
     return out
 
 
+def _flat_nonfreq(nonfreq):
+    """The M1 non-freq lane program, flat: ``nlane`` then per admitted lane ``reg``,
+    ``nseg``, the start-DELTA stream (ascending starts as gaps -- small ints the value-LZ
+    collapses), then the held values.  Only the admitted (cheap) lanes are present; the
+    rest render from the anchor."""
+    out = [len(nonfreq)]
+    for reg, starts, values in nonfreq:
+        out.append(reg)
+        out.append(len(starts))
+        prev = 0
+        for s in starts:
+            out.append(s - prev)
+            prev = s
+        out.extend(values)
+    return out
+
+
+def _parse_nonfreq(flat):
+    """Reconstruct the admitted non-freq lane programs ``[(reg, starts, values), ...]``
+    from :func:`_flat_nonfreq` (the start-DELTA stream re-accumulated to absolute frames).
+    """
+    nlane, i = flat[0], 1
+    out = []
+    for _ in range(nlane):
+        reg = flat[i]
+        nseg = flat[i + 1]
+        i += 2
+        starts, prev = [], 0
+        for _ in range(nseg):
+            prev += flat[i]
+            starts.append(prev)
+            i += 1
+        values = list(flat[i : i + nseg])
+        i += nseg
+        out.append((reg, starts, values))
+    return out
+
+
 def _parse_note_table(flat):
     return list(flat[1:])
 
@@ -412,6 +536,12 @@ def structure_ir_to_ids(ir):
     _emit_section(out, _flat_patterns(ir.pattern_bytes))
     _emit_section(out, _flat_orderlists(ir.orderlists))
     _emit_section(out, _flat_accfits(ir.accfits))
+    # The M1 non-freq lane program is the LAST, OPTIONAL section: emitted only when at
+    # least one lane is admitted, so a structure with no admitted lane (and every pre-M1
+    # committed stream) serialises byte-identically to before -- the section's PRESENCE is
+    # itself the flag, read back by the ``i < len(ids)`` guard in ``structure_ir_from_ids``.
+    if ir.nonfreq:
+        _emit_section(out, _flat_nonfreq(ir.nonfreq))
     return out
 
 
@@ -428,6 +558,12 @@ def structure_ir_from_ids(ids):
     acc_flat, i = _read_section(ids, i)
     pattern_bytes, patterns = _parse_patterns(pat_flat)
     accfits = _parse_accfits(acc_flat)
+    # The M1 non-freq section is the LAST emitted; a pre-M1 stream ends here (no trailing
+    # section) and the program stays empty (anchor fallback) -- back-compat for older ids.
+    nonfreq = []
+    if i < len(ids):
+        nf_flat, i = _read_section(ids, i)
+        nonfreq = _parse_nonfreq(nf_flat)
     return StructureIR(
         note_table=_parse_note_table(nt_flat),
         instr_pool=_parse_instr_pool(pool_flat),
@@ -436,6 +572,7 @@ def structure_ir_from_ids(ids):
         pattern_bytes=pattern_bytes,
         orderlists=_parse_orderlists(ol_flat),
         accfits=accfits,
+        nonfreq=nonfreq,
         nframes=nframes,
         boot=boot,
         _state=None,
@@ -443,16 +580,23 @@ def structure_ir_from_ids(ids):
 
 
 def section_sizes(ir):
-    """Per-section serialized token sizes (after LZ), for reporting/measurement."""
+    """Per-section serialized token sizes (after LZ), for reporting/measurement.  Sums
+    EXACTLY to ``len(structure_ir_to_ids(ir))``: the optional non-freq section counts 0
+    when no lane is admitted (it is omitted from the stream, the same condition)."""
     sizes = {"header": 1 + len(ir.boot)}
-    for name, flat in (
+    sections = [
         ("note_table", _flat_note_table(ir.note_table)),
         ("instr_pool", _flat_instr_pool(ir.instr_pool)),
         ("shared_programs", _flat_programs(ir.shared_programs)),
         ("patterns", _flat_patterns(ir.pattern_bytes)),
         ("orderlists", _flat_orderlists(ir.orderlists)),
         ("accfits", _flat_accfits(ir.accfits)),
-    ):
+    ]
+    if ir.nonfreq:
+        sections.append(("nonfreq", _flat_nonfreq(ir.nonfreq)))
+    else:
+        sizes["nonfreq"] = 0
+    for name, flat in sections:
         out = []
         _emit_section(out, flat)
         sizes[name] = len(out)
@@ -525,6 +669,38 @@ def render_freq_from_ir(ir, seed_state):
     return out
 
 
+def render_nonfreq_from_ir(ir, anchor=None):
+    """Render the NON-freq registers (M1): each ADMITTED lane (``ir.nonfreq``) replays
+    BYTE-EXACT from its serialized piecewise-constant program (``step_lane_kernel``) --
+    NO anchor consulted, so the proof ``render-from-ids == state`` holds for these lanes;
+    every un-admitted non-freq register falls back to the ``anchor`` column (the byte-exact
+    ``_state``, the additive SDDF-extension gap: a densely-modulated wavetable-walk lane
+    whose free-running per-frame cursor + instrument table is not yet in the artifact).
+
+    Returns ``{reg: int64[nframes]}`` for every non-freq register the IR can supply (the
+    admitted lanes always; the rest only when ``anchor`` is given).  ``anchor`` is an
+    ``(nframes, 25)`` array (or ``None``).  The render length is the anchor's row count when
+    present (the TRUE playback length), else ``ir.nframes`` -- so a lane program renders to
+    the same length the anchor lanes do (the held tail past the last change point fills it).
+    """
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    anchor = None if anchor is None else np.asarray(anchor, dtype=np.int64)
+    nframes = ir.nframes if anchor is None else int(anchor.shape[0])
+    out = {}
+    admitted = set()
+    for reg, starts, values in ir.nonfreq:
+        sa = np.asarray(starts, dtype=np.int64)
+        va = np.asarray(values, dtype=np.int64)
+        out[int(reg)] = DJ.step_lane_kernel(sa, va, nframes)
+        admitted.add(int(reg))
+    if anchor is not None:
+        for reg in _NONFREQ_REGS:
+            if reg not in admitted:
+                out[reg] = anchor[:, reg].copy()
+    return out
+
+
 def render_structure(ir):
     """Render the structure to the byte-exact ``(nframes, 25)`` register array.
 
@@ -532,26 +708,42 @@ def render_structure(ir):
     (:func:`render_freq_from_ir`, proven residual 0 full-length): the recovered porta/vibrato
     accumulators re-added onto each note's grid pitch -- the player-free half of the render.
 
-    M0 (THIS increment): the NON-freq registers (the instrument-driven ctrl/pw/filter/ad/sr
-    table-walks) come from the byte-exact ``_state`` anchor, so the full 25-register render is
-    byte-exact NOW while the structure->register REPLAY of those lanes (orderlists -> patterns
-    -> rows -> instrument-struct SID loads, paced by the recovered tempo) is the next
-    increment.  ``_state`` is the correctness anchor only and is NEVER serialized; the SHIPPED
-    bytes are the compact, proven < 1 token/frame structure.  Raises when no anchor is present
-    (until the non-freq replay lands, an IR rebuilt from ids alone cannot be FULLY rendered --
-    its freq half renders via :func:`render_freq_from_ir`)."""
+    M1 (THIS increment): the NON-freq registers render via :func:`render_nonfreq_from_ir` --
+    each ADMITTED lane (constant / sparsely-gated: filter + volume setup, the instrument's
+    AD/SR/ctrl latched per note) BYTE-EXACT from its serialized piecewise-constant program
+    (no anchor), while a densely-modulated wavetable-walk lane (a PW sweep / ctrl arp) falls
+    back to the ``_state`` anchor -- the additive SDDF-extension gap (its free-running
+    per-frame cursor + instrument table is not yet in the artifact; storing the output column
+    would blow the budget AND be the HARD RULE #0 literal-floor trap).  ``_state`` is the
+    correctness anchor ONLY for the un-admitted lanes and is NEVER serialized; the SHIPPED
+    bytes are the compact, proven structure.
+
+    Raises when the anchor is absent: the FREQ render currently needs the per-frame freq
+    column to invert the accumulator identity (the note->frame schedule replay from the
+    orderlist is the parallel later increment), and an un-admitted non-freq lane needs its
+    anchor column.  An IR rebuilt from ids alone therefore renders its freq + admitted-non-
+    freq lanes through :func:`render_freq_from_ir` / :func:`render_nonfreq_from_ir`
+    DIRECTLY; the full 25-register :func:`render_structure` is the anchored byte-exact
+    composition (the gate's check) until both anchor-free replays land."""
     if ir._state is None:
         raise NotImplementedError(
-            "non-freq structure->register replay is the next increment; render_structure "
-            "needs the byte-exact _state anchor for the instrument-driven lanes (M0).  The "
-            "freq lanes already render from the IR alone via render_freq_from_ir, and the "
-            "serialization round-trips exactly via structure_ir_from_ids(structure_ir_to_ids)."
+            "render_structure needs the _state anchor: the FREQ lanes invert the accumulator "
+            "identity against the per-frame freq column (the note->frame schedule replay is a "
+            "later increment) and any un-admitted non-freq lane needs its anchor column (the "
+            "SDDF-extension gap).  The freq lanes render from the IR alone via "
+            "render_freq_from_ir and the admitted non-freq lanes via render_nonfreq_from_ir; "
+            "the serialization round-trips exactly via structure_ir_from_ids(structure_ir_to_ids)."
         )
-    rendered = np.asarray(ir._state, dtype=np.int64).copy()
-    freq = render_freq_from_ir(ir, ir._state)
+    anchor = np.asarray(ir._state, dtype=np.int64)
+    nframes = int(anchor.shape[0])
+    lanes = render_nonfreq_from_ir(ir, anchor)
+    rendered = np.zeros((nframes, NREG), dtype=np.int64)
+    freq = render_freq_from_ir(ir, anchor)
     for vi, (rlo, rhi) in enumerate(_CPR_VOICES):
         rendered[:, rlo] = freq[vi] & 0xFF
         rendered[:, rhi] = (freq[vi] >> 8) & 0xFF
+    for reg, col in lanes.items():
+        rendered[:, reg] = col
     return rendered
 
 
@@ -569,6 +761,7 @@ def assert_ids_roundtrip(ir):
         "pattern_bytes",
         "orderlists",
         "accfits",
+        "nonfreq",
         "nframes",
         "boot",
     ):
