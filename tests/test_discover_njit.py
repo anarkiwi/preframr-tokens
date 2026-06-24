@@ -418,3 +418,57 @@ def test_idxr_score_kernel_finds_in_image_targets():
     assert scores[0, 1] == 4  # read_cov
     assert scores[0, 2] == 4  # n
     assert scores[0, 3] == 1  # ascending
+
+
+# --------------------------------------------------------------------------- #
+# Bank-candidate scan kernels (the IDXR perf-gate hot loops) vs reference.
+# --------------------------------------------------------------------------- #
+def _ref_walk_pattern_bytes(ram, ptr, boundaries, max_bytes=0x400):
+    # mirrors structure_recover._walk_pattern_bytes
+    for k in range(max_bytes):
+        b = int(ram[(ptr + k) & 0xFFFF])
+        if boundaries[b] == DJ.K_EOP:
+            return k + 1
+    return 0
+
+
+def _ref_read_extent(read_play, base, lo_img, hi_img, max_bytes=0x400):
+    # mirrors structure_recover._read_extent
+    k = 0
+    while (
+        k < max_bytes
+        and lo_img <= (base + k) < hi_img
+        and read_play[(base + k) & 0xFFFF]
+    ):
+        k += 1
+    return k
+
+
+def test_bank_eop_lengths_kernel_matches_reference():
+    rng = np.random.default_rng(23)
+    bnd, _, _ = _newplayer_grammar()
+    for _ in range(40):
+        ram = rng.integers(0, 256, size=65536, dtype=np.uint8)
+        ptrs = rng.integers(0x0800, 0xF000, size=int(rng.integers(2, 30))).astype(
+            np.int64
+        )
+        # seed an EOP within range for some pointers, leave others unterminated
+        for j, p in enumerate(ptrs):
+            if j % 3 == 0:
+                ram[(int(p) + int(rng.integers(1, 60))) & 0xFFFF] = 0x7F
+        got = DJ.bank_eop_lengths_kernel(ram.astype(np.int64), ptrs, bnd, 0x400)
+        ref = [_ref_walk_pattern_bytes(ram, int(p), bnd) for p in ptrs]
+        assert list(int(x) for x in got) == ref
+
+
+def test_bank_read_extents_kernel_matches_reference():
+    rng = np.random.default_rng(29)
+    lo_img, hi_img = 0x1000, 0xC000
+    for _ in range(40):
+        read_play = rng.integers(0, 2, size=65536, dtype=np.uint8)
+        ptrs = rng.integers(0x0800, 0xF000, size=int(rng.integers(2, 30))).astype(
+            np.int64
+        )
+        got = DJ.bank_read_extents_kernel(read_play, ptrs, lo_img, hi_img, 0x400)
+        ref = [_ref_read_extent(read_play, int(p), lo_img, hi_img) for p in ptrs]
+        assert list(int(x) for x in got) == ref

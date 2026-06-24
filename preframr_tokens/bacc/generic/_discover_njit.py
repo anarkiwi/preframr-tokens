@@ -144,6 +144,57 @@ def reencode_kernel(snap, ptr, n_bytes, boundaries):
 
 
 @njit
+def bank_eop_lengths_kernel(ram, ptrs, boundaries, max_bytes):
+    """The per-pointer EOP-walk length for a whole pointer array, in ONE typed pass
+    (byte-identical to :func:`structure_recover._walk_pattern_bytes` applied to each
+    pointer): for ``ptrs[k]`` return ``out[k]`` = the byte count through the first
+    ``boundaries[b] == K_EOP`` byte inclusive (``ptr`` arithmetic 16-bit-wrapped), or
+    ``0`` if no EOP is hit within ``max_bytes``.
+
+    This is the hot per-candidate scan in :func:`structure_recover._bank_candidate_eop`
+    (3 dialects x up to ~256 pointers x up to ``max_bytes`` bytes), which on a behavior-
+    keyed digi tune the IDXR enumeration calls thousands of times -- moving it onto a
+    machine-int kernel is a PURE speedup (the lengths, hence the sliced bank and the
+    selected candidate, are identical)."""
+    n = ptrs.shape[0]
+    out = np.zeros(n, dtype=np.int64)
+    for k in range(n):
+        ptr = ptrs[k]
+        for j in range(max_bytes):
+            b = ram[(ptr + j) & 0xFFFF]
+            if boundaries[b] == K_EOP:
+                out[k] = j + 1
+                break
+    return out
+
+
+@njit
+def bank_read_extents_kernel(ram_read, ptrs, lo_img, hi_img, max_bytes):
+    """The per-pointer READ-coverage extent for a whole pointer array, in ONE typed pass
+    (byte-identical to :func:`structure_recover._read_extent` applied to each pointer):
+    for ``ptrs[k]`` return ``out[k]`` = the length of the contiguous run from ``ptr`` of
+    bytes that were READ AS DATA (``ram_read[addr] != 0``) and lie in ``[lo_img, hi_img)``,
+    capped at ``max_bytes``.  ``0`` when ``ptr`` itself was not read (a phantom pointer).
+
+    The read-coverage counterpart of :func:`bank_eop_lengths_kernel`; the grammar-agnostic
+    leg of :func:`structure_recover._bank_candidate_readcov` calls this per pointer."""
+    n = ptrs.shape[0]
+    out = np.zeros(n, dtype=np.int64)
+    for k in range(n):
+        ptr = ptrs[k]
+        j = 0
+        while j < max_bytes:
+            addr = ptr + j
+            if addr < lo_img or addr >= hi_img:
+                break
+            if ram_read[addr & 0xFFFF] == 0:
+                break
+            j += 1
+        out[k] = j
+    return out
+
+
+@njit
 def split_pointer_table_kernel(ram, read_play, lo_img, hi_img):
     """The legacy split lo/hi pointer-table scan (``structure_recover.discover_pointer_table``)
     on typed arrays -- byte-identical to the Python double loop, just compiled.

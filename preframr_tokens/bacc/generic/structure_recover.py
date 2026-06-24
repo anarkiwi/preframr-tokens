@@ -310,21 +310,27 @@ def _bank_candidate_eop(d, resolved, delta, sdm, dialects, zp=0):
     SOURCE agnostic: the (zp),Y PWLK walk and the IDXR pointer-table enumeration both
     feed their resolved pointer sequence here, so the byte-exact grammar slice is ONE
     path (the addressing mode never appears)."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
     lo_img, hi_img = _image_bounds(d)
     uniq = sorted(set(a for a in resolved if lo_img <= a < hi_img))
     if len(uniq) < 2:
         return None
     if sum(1 for a in uniq if sdm[a]) < max(2, len(uniq) // 2):
         return None
+    uniq_arr = np.asarray(uniq, dtype=np.int64)
+    # Every uniq pointer must be in song-data AND EOP-slice under the grammar; the
+    # per-pointer EOP walk runs on the njit kernel (byte-identical to the former
+    # ``_walk_pattern_bytes`` loop, just compiled -- the hot per-candidate scan).
+    sdm_uniq = sdm[uniq_arr]
+    if not bool(sdm_uniq.all()):
+        return (
+            None  # a non-song-data pointer can never slice (the loop's ``not sdm[a]``)
+        )
+    ram_arr = np.asarray(d.ram)
     for gname, gram in dialects.items():
-        bnd = gram["boundaries"]
-        ok = True
-        for a in uniq:
-            ln = _walk_pattern_bytes(d.ram, a, bnd)
-            if ln == 0 or not sdm[a]:
-                ok = False
-                break
-        if not ok:
+        lens = DJ.bank_eop_lengths_kernel(ram_arr, uniq_arr, gram["boundaries"], 0x400)
+        if not bool((lens > 0).all()):
             continue
         bank = uniq
         index_of = {a: i for i, a in enumerate(bank)}
@@ -380,14 +386,22 @@ def _bank_candidate_readcov(d, resolved, delta, sdm, zp=0):
     distinct/advance ratio is a streaming cursor (a sample / wavetable walked once per
     frame), not an orderlist, and is REJECTED so the bank is never a 255-"pattern"
     pseudo-bank fabricated from a per-frame cursor."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
     lo_img, hi_img = _image_bounds(d)
     read_play = (d.acc & ACC_READ_PLAY) != 0
-    ext = {}
-    for a in sorted(set(resolved)):
-        if lo_img <= a < hi_img and sdm[a]:
-            e = _read_extent(read_play, a, lo_img, hi_img)
-            if e > 0:
-                ext[a] = e
+    # Candidate pattern starts: distinct, in-image, song-data pointers; the per-pointer
+    # read-coverage extent runs on the njit kernel (byte-identical to the former
+    # ``_read_extent`` loop).  Phantom pointers (extent 0) are dropped, as before.
+    cand_addrs = np.asarray(
+        [a for a in sorted(set(resolved)) if lo_img <= a < hi_img and sdm[a]],
+        dtype=np.int64,
+    )
+    if cand_addrs.size < 2:
+        return None
+    read_arr = read_play.astype(np.uint8)
+    exts = DJ.bank_read_extents_kernel(read_arr, cand_addrs, lo_img, hi_img, 0x400)
+    ext = {int(a): int(e) for a, e in zip(cand_addrs.tolist(), exts.tolist()) if e > 0}
     if len(ext) < 2:
         return None
     bank = sorted(ext)
@@ -474,7 +488,20 @@ def discover_patterns_pwlk(d):
 # (an abs,Y / abs,X read in basically every driver).  This path consumes the IDXR
 # pointer-table signal directly, so the join level the (zp),Y key cannot see is found
 # WITHOUT any per-mode branch: the addressing mode never appears below.
+#
+# ``_IDXR_MAX_SLICES`` bounds the expensive byte-exact bank slices per tune (the perf
+# gate's last-resort safety net).  Proving the winner is genuinely maximal requires
+# slicing every candidate whose cheap upper bound ``(U,1,U)`` is not already dominated, so
+# a tune with thousands of equal-top-coverage candidates (e.g. Prophet64: 11,382 sliced to
+# settle a coverage-26 value-range bank) legitimately needs them all -- the njit bank-scan
+# kernels keep each slice cheap (sub-ms), so the full settle is seconds, not the 570s
+# blowup.  The cap is set FAR above the audited-corpus maximum (~11k) so it never truncates
+# a real winner; it only stops a pathological tune from unbounded slicing, and logs when hit
+# (never a silent truncation -- hitting it means optimality was surrendered, surfaced).
 # ---------------------------------------------------------------------------
+_IDXR_MAX_SLICES = 100_000
+
+
 def _idxr_pointer_seqs(d):
     """Enumerate the IDXR POINTER-TABLE candidates (behavior-keyed, addressing-mode
     agnostic): for each indexed read whose IdxSupp flags ``targets_in_image`` (the C++
@@ -571,28 +598,98 @@ def discover_patterns_idxr(d):
     # feeding the freq writes) is present.  Absent -> the grammar-agnostic read-coverage
     # bank is suppressed (a PCM streamer's sample-pointer table is not a pattern bank).
     has_note_table = bool(d.digi is not None and d.digi.note_table_idxr_present)
-    best = None
+    lo_img, hi_img = _image_bounds(d)
+
+    # --- The PERF GATE (output-preserving): a behavior-keyed digi tune can flag
+    # ``targets_in_image`` on THOUSANDS of indexed reads, each x every reloc delta, so the
+    # naive (seq x delta) loop runs the EXPENSIVE byte-exact bank slice (3 dialect EOP
+    # walks of up to 0x400 bytes per pointer, + the read-extent walk) hundreds of thousands
+    # of times -- the 570s blowup.  But the winner is the SINGLE candidate maximal under
+    # ``(coverage, value-range-preferred, n_patterns)``; the slice is wasted on every
+    # dominated candidate.  We pre-rank by a CHEAP per-candidate upper bound and slice in
+    # descending-bound order with a dominance PRUNE, so once ``best`` is found every lower-
+    # bound candidate is skipped WITHOUT slicing -- the recovered structure is byte-
+    # identical (the same maximal candidate), only the wasted slices are gone.
+    #
+    # Cheap upper bound U = count of DISTINCT in-image, song-data pointers in the resolved
+    # sequence (a pure array lookup, no byte walk).  Both bank builders need each kept
+    # pointer to be ``lo_img <= a < hi_img and sdm[a]``, and bank/coverage are both <= the
+    # distinct in-song-data pointer count, so the achievable rank is <= ``(U, 1, U)`` (the
+    # value-range leg gets vr=1, the read-coverage leg vr=0).  A candidate whose ``(U,1,U)``
+    # cannot exceed the incumbent's rank is provably dominated and never sliced.
+    #
+    # The first-wins tiebreak (the original nested ``for seq: for delta:`` loop with
+    # ``rank > best[0]`` keeps the EARLIER candidate on a tie) is made ORDER-INDEPENDENT by
+    # carrying ``-enum_order`` (the exact original ``(seq, delta)`` visit index) as the final
+    # rank key: the maximum of ``(coverage, vr, n_patterns, -enum_order)`` is the SAME
+    # candidate the original loop selects, so we may slice in any order (here descending-U)
+    # and still return byte-identical structure.
+    cands = []  # (U, enum_order, resolved, delta)
+    enum_order = 0
     for _pc, _base, _packing, ptrs in _idxr_pointer_seqs(d):
         if len(set(ptrs)) < 2:
             continue
+        pa = np.asarray(ptrs, dtype=np.int64)
         for delta in deltas:
-            resolved = [(p - delta) & 0xFFFF for p in ptrs]
-            eop = _bank_candidate_eop(d, resolved, delta, sdm, dialects)
-            readcov = (
-                _bank_candidate_readcov(d, resolved, delta, sdm)
-                if has_note_table
-                else None
-            )
-            for cand, vr in ((eop, 1), (readcov, 0)):
-                if cand is None:
-                    continue
-                # rank EXACTLY as the PWLK path: (coverage, value-range-preferred,
-                # more-patterns).  The orderlist coverage here is the count of distinct
-                # patterns the pointer table indexes -- a real pattern-pointer table
-                # spans the whole bank, a coincidental in-image run a few entries.
-                rank = (cand["coverage"], vr, cand["n_patterns"])
-                if best is None or rank > best[0]:
-                    best = (rank, cand)
+            # ``enum_order`` advances for EVERY (seq, delta) pair, reproducing the original
+            # nested-loop visit index that the first-wins tiebreak is keyed on.
+            order = enum_order
+            enum_order += 1
+            resolved = (pa - delta) & 0xFFFF
+            in_img = resolved[(resolved >= lo_img) & (resolved < hi_img)]
+            if in_img.size:
+                in_img = in_img[sdm[in_img]]
+            u = int(np.unique(in_img).size) if in_img.size else 0
+            if u < 2:
+                continue  # bank builders need >= 2 in-song-data pointers
+            cands.append((u, order, resolved, int(delta)))
+    # Descending U (then ascending enum_order for a deterministic, prune-friendly order).
+    cands.sort(key=lambda c: (-c[0], c[1]))
+
+    best = None  # (rank4, cand) where rank4 = (coverage, vr, n_patterns, -enum_order)
+    sliced = 0
+    capped = False
+    for u, order, resolved, delta in cands:
+        # Dominance PRUNE: the most this candidate can rank is ``(u, 1, u, 0)`` (vr<=1,
+        # bank/coverage<=u, -enum_order<=0).  If that cannot beat the incumbent, no slice
+        # can change the winner -- skip the expensive byte walk entirely.
+        if best is not None and (u, 1, u, 0) <= best[0]:
+            continue
+        # Safety CAP on the expensive byte-exact slices per tune (set FAR above the audited
+        # corpus maximum, so it never truncates a real winner -- the njit bank-scan kernels
+        # keep the full settle cheap; it only stops a pathological tune from unbounded
+        # slicing, and is LOGGED, not silent, so a hit surfaces the surrendered optimality).
+        if sliced >= _IDXR_MAX_SLICES:
+            capped = True
+            break
+        resolved_list = resolved.tolist()
+        eop = _bank_candidate_eop(d, resolved_list, delta, sdm, dialects)
+        readcov = (
+            _bank_candidate_readcov(d, resolved_list, delta, sdm)
+            if has_note_table
+            else None
+        )
+        sliced += 1
+        for cand, vr in ((eop, 1), (readcov, 0)):
+            if cand is None:
+                continue
+            # rank EXACTLY as the PWLK path: (coverage, value-range-preferred,
+            # more-patterns) -- extended with ``-enum_order`` so the original first-wins
+            # tiebreak is reproduced regardless of slice order.
+            rank = (cand["coverage"], vr, cand["n_patterns"], -order)
+            if best is None or rank > best[0]:
+                best = (rank, cand)
+    if capped:  # pragma: no cover - safety net, not hit on the audited corpus
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "discover_patterns_idxr: slice cap %d reached (%d candidates) for "
+            "load_addr=%#06x nframes=%d; keeping best-so-far (not a silent truncation)",
+            _IDXR_MAX_SLICES,
+            len(cands),
+            d.load_addr,
+            d.nframes,
+        )
     return best[1] if best is not None else None
 
 
