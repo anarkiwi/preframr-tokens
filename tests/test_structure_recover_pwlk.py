@@ -20,7 +20,10 @@ import numpy as np
 from preframr_tokens.bacc.generic import structure_recover as SR
 from preframr_tokens.bacc.generic.distill import (
     ACC_READ_PLAY,
+    DigiSig,
     Distill,
+    IdxRead,
+    IdxSupp,
     PtrWalk,
     ReloCopy,
     StsqCell,
@@ -401,3 +404,163 @@ def test_read_coverage_structure_ir_roundtrips(monkeypatch):
     assert ir.pattern_bytes == [list(p) for p in pats]
     # the codec round-trips every serialized field EQUAL.
     SI.assert_ids_roundtrip(ir)
+
+
+# ---------------------------------------------------------------------------
+# IDXR-driven discovery (S2, behavior-keyed): the orderlist->pattern JOIN found via the
+# IdxSupp ``targets_in_image`` signal in ANY addressing mode, the level the (zp),Y PWLK
+# key is structurally blind to.  These synthetic tests pin that the addressing mode never
+# enters the code (the pointer table is a plain split lo/hi block keyed only by the IDXR
+# entry + its IdxSupp flags), the packing is read off ``scale`` / the sibling base, and the
+# grammar-agnostic read-coverage leg is gated on the S0 note-table (digi-carve) signal.
+# ---------------------------------------------------------------------------
+def _place_split_ptr_table(d, tbl, ptrs, read=False):
+    """A SPLIT-contiguous pointer table: lo bytes at ``tbl``, hi bytes at ``tbl+n``
+    (the dominant pattern-pointer layout).  ``ptrs`` are the 16-bit pointer values."""
+    n = len(ptrs)
+    for i, p in enumerate(ptrs):
+        d.ram[tbl + i] = p & 0xFF
+        d.ram[tbl + n + i] = (p >> 8) & 0xFF
+        if read:
+            d.acc[tbl + i] |= ACC_READ_PLAY
+            d.acc[tbl + n + i] |= ACC_READ_PLAY
+
+
+def _idxr_ptr_table(d, pc, tbl, n, note_table=True):
+    """Attach an IDXR entry + its IdxSupp marking a SPLIT pointer table at ``tbl`` of
+    ``n`` entries (``targets_in_image`` set: the C++ saw the formed pointers land in the
+    image), and a DigiSig carrying the note-table-present (tracker) signal."""
+    d.idx_reads = [
+        IdxRead(pc=pc, base=tbl, stride=1, idx_min=0, idx_max=n - 1, count=99)
+    ]
+    d.idx_supp = [
+        IdxSupp(
+            pc=pc,
+            scale_set=True,
+            scale=1,
+            base_fit=tbl,
+            feeds_reg_mask=0,
+            targets_in_image=True,
+            targets_read_as_data=False,
+            n_samp=2,
+            samp_idx=(0, 1),
+            samp_addr=(tbl, tbl + 1),
+        )
+    ]
+    d.digi = DigiSig(
+        writes_per_frame_mean=20.0,
+        max_subframe_d418=0,
+        note_table_idxr_present=note_table,
+        n_frames=d.nframes,
+        n_sid_writes=1000,
+    )
+
+
+def test_discover_patterns_idxr_split_pointer_table():
+    """A split lo/hi pointer table (an abs,Y / abs,X JOIN -- the addressing mode is NOT
+    in the artifact) is discovered from the IdxSupp ``targets_in_image`` signal alone, and
+    its targets slice byte-exact under the value-range grammar EOP."""
+    d = _blank_distill()
+    bases = [0x1500, 0x1520, 0x1540]
+    for i, base in enumerate(bases):
+        _place(d, base, _newplayer_pattern(0x10 + i))
+    _place_split_ptr_table(d, 0x1400, bases, read=True)
+    _idxr_ptr_table(d, pc=0x10F0, tbl=0x1400, n=len(bases))
+    ix = SR.discover_patterns_idxr(d)
+    assert ix is not None
+    assert ix["pattern_src"] == bases
+    assert ix["grammar_name"] == "newplayer"
+    assert ix["reloc_delta"] == 0
+    # the full byte-exact recovery selects this candidate (no PWLK present).
+    struct = SR.RecoveredStructure(
+        ok=False, load_addr=d.load_addr, load_len=d.load_len, ram=d.ram
+    )
+    assert SR._recover_structure_from_bank(d, struct, [], ix)
+    assert SR.pattern_roundtrip_ok(struct)
+
+
+def test_discover_patterns_idxr_interleaved_stride2():
+    """An INTERLEAVED stride-2 pointer table (lo,hi,lo,hi; the 77% packing) is read off
+    the IdxSupp ``scale == 2`` provenance -- ``ptr = ram[base+2i] | ram[base+2i+1]<<8`` --
+    with no per-mode code; the packing is a hypothesis the byte-exact slice confirms."""
+    d = _blank_distill()
+    bases = [0x1500, 0x1520]
+    for i, base in enumerate(bases):
+        _place(d, base, _newplayer_pattern(0x10 + i))
+    # interleaved lo/hi at the table base.
+    tbl = 0x1400
+    for i, p in enumerate(bases):
+        d.ram[tbl + 2 * i] = p & 0xFF
+        d.ram[tbl + 2 * i + 1] = (p >> 8) & 0xFF
+    d.idx_reads = [
+        IdxRead(pc=0x10F0, base=tbl, stride=2, idx_min=0, idx_max=1, count=99)
+    ]
+    d.idx_supp = [
+        IdxSupp(
+            pc=0x10F0,
+            scale_set=True,
+            scale=2,
+            base_fit=tbl,
+            feeds_reg_mask=0,
+            targets_in_image=True,
+            targets_read_as_data=False,
+            n_samp=2,
+            samp_idx=(0, 1),
+            samp_addr=(tbl, tbl + 2),
+        )
+    ]
+    d.digi = DigiSig(20.0, 0, True, d.nframes, 1000)
+    ix = SR.discover_patterns_idxr(d)
+    assert ix is not None
+    assert ix["pattern_src"] == bases  # the interleaved packing recovered both pointers
+    assert ix["grammar_name"] == "newplayer"
+
+
+def test_discover_patterns_idxr_digi_carve_suppresses_readcov():
+    """The grammar-agnostic READ-COVERAGE bank (no falsifiable EOP) is admitted only for
+    a structural TRACKER (a note-table IDXR present).  A PCM digi (no note table) whose
+    sample-pointer table would slice byte-exact must NOT fabricate a dense pattern bank --
+    the S0 digi-carve (``DigiSig.note_table_idxr_present``) suppresses it."""
+    d = _blank_distill()
+    # nibble (no value-range EOP) "patterns" -> only the read-coverage leg could slice.
+    bases = [0x1500, 0x1540, 0x1580]
+    for base in bases:
+        _place(d, base, [(0x40 + (i % 0x3D)) for i in range(0x20)])
+    # the pointer-table stream REUSES patterns (an orderlist replays its bank): pattern 0
+    # and 1 recur, so the read-coverage reuse guard (distinct a minority of advances) is
+    # satisfied and the only remaining gate is the digi-carve signal.
+    table = [bases[0], bases[1], bases[2], bases[1], bases[0], bases[0]]
+    _place_split_ptr_table(d, 0x1400, table, read=True)
+    # note table PRESENT -> the read-coverage bank IS admitted (a tracker).
+    _idxr_ptr_table(d, pc=0x10F0, tbl=0x1400, n=len(table), note_table=True)
+    ix = SR.discover_patterns_idxr(d)
+    assert ix is not None and ix["grammar_name"] == "readcov"
+    assert ix["pattern_src"] == bases
+    # note table ABSENT (a PCM digi) -> the read-coverage bank is suppressed.
+    _idxr_ptr_table(d, pc=0x10F0, tbl=0x1400, n=len(table), note_table=False)
+    assert SR.discover_patterns_idxr(d) is None
+
+
+def test_discover_patterns_idxr_none_without_pointer_table():
+    """The negative control: a tune with no IDXR pointer table (A_Mind-class pure code)
+    yields no IDXR candidate, so the caller falls back to the generator cover."""
+    d = _blank_distill()
+    # an IDXR entry whose IdxSupp does NOT flag targets_in_image (not a pointer table).
+    d.idx_reads = [
+        IdxRead(pc=0x10F0, base=0x1400, stride=1, idx_min=0, idx_max=7, count=9)
+    ]
+    d.idx_supp = [
+        IdxSupp(
+            pc=0x10F0,
+            scale_set=True,
+            scale=1,
+            base_fit=0x1400,
+            feeds_reg_mask=0,
+            targets_in_image=False,
+            targets_read_as_data=False,
+            n_samp=0,
+            samp_idx=(0, 0),
+            samp_addr=(0, 0),
+        )
+    ]
+    assert SR.discover_patterns_idxr(d) is None

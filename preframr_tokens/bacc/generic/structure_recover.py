@@ -297,16 +297,20 @@ def _read_extent(read_play, base, lo_img, hi_img, max_bytes=0x400):
     return k
 
 
-def _pwlk_candidate_eop(d, walk, delta, sdm, dialects):
-    """The value-range-DIALECT pattern bank for one (walk, delta): the first grammar
-    whose EOP slices every resolved-in-song-data pointer cleanly (NewPlayer/TFX/FC --
-    the value-range dialects).  Returns a candidate dict or ``None``.  Byte-identical
-    to the original ``discover_patterns_pwlk`` per-grammar slice, factored out so the
-    read-coverage path (the nibble / bit-packed dialects) is a sibling, not a rewrite.
-    """
+def _bank_candidate_eop(d, resolved, delta, sdm, dialects, zp=0):
+    """The value-range-DIALECT pattern bank for a RESOLVED pointer sequence (the
+    image-relative pattern start addresses the player formed, reloc already applied):
+    the first grammar whose EOP slices every in-song-data pointer cleanly
+    (NewPlayer/TFX/FC -- the value-range dialects).  Returns a candidate dict or
+    ``None``.
+
+    ``resolved`` is the SEQUENCE of image addresses (the orderlist advance stream --
+    duplicates carry the replay order); the bank is its sorted distinct in-image set and
+    ``orderlist`` is the index sequence into that bank.  This is grammar / packing /
+    SOURCE agnostic: the (zp),Y PWLK walk and the IDXR pointer-table enumeration both
+    feed their resolved pointer sequence here, so the byte-exact grammar slice is ONE
+    path (the addressing mode never appears)."""
     lo_img, hi_img = _image_bounds(d)
-    seq = walk.ptr_vals
-    resolved = [(x - delta) & 0xFFFF for x in seq]
     uniq = sorted(set(a for a in resolved if lo_img <= a < hi_img))
     if len(uniq) < 2:
         return None
@@ -334,38 +338,50 @@ def _pwlk_candidate_eop(d, walk, delta, sdm, dialects):
             "reloc_delta": delta,
             "grammar": gram,
             "grammar_name": gname,
-            "zp": walk.zp,
+            "zp": zp,
             "coverage": cov,
             "n_patterns": len(bank),
         }
     return None
 
 
-def _pwlk_candidate_readcov(d, walk, delta, sdm):
-    """The READ-COVERAGE pattern bank for one (walk, delta), GRAMMAR-AGNOSTIC (the
-    nibble / bit-packed dialects -- GoatTracker, Soundmonitor, Music_Assembler -- whose
-    rows carry no value-range EOP byte, so :func:`_pwlk_candidate_eop` cannot slice
-    them).  A pointer is a REAL pattern iff it was READ AS DATA from its start
-    (:func:`_read_extent` > 0) and lies in the song-data region; phantom pointers (a
-    null/init pointer the walk visited before its first real pattern, read-extent 0)
-    are DROPPED from the bank rather than rejecting the whole candidate.  The pattern
-    length is the observed read-coverage run (byte-exact: the bytes the player consumed
-    as data).  Returns a candidate dict (with explicit ``pattern_lens``) or ``None``.
+def _pwlk_candidate_eop(d, walk, delta, sdm, dialects):
+    """The value-range-DIALECT pattern bank for one (walk, delta) -- a thin adapter over
+    :func:`_bank_candidate_eop` (the source-agnostic grammar slice) on the PWLK walk's
+    resolved pointer sequence.  Byte-identical to the original per-grammar slice."""
+    resolved = [(x - delta) & 0xFFFF for x in walk.ptr_vals]
+    return _bank_candidate_eop(d, resolved, delta, sdm, dialects, zp=walk.zp)
 
-    A genuine orderlist->pattern walk is characterised by ROW INDEXING (the player
-    indexes rows within a pattern via Y, so ``y_max > y_min``) and pattern REUSE (a few
-    distinct patterns replayed across many advances -- the REPEAT structure HARD RULE #0
-    expects).  A walk where almost every advance is a DISTINCT pointer with ``y == 0``
-    is not an orderlist but a per-frame streaming pointer (a sample / wavetable cursor,
-    e.g. a sample player walking a long PCM table one byte per frame); such a walk has
-    no reuse to collapse and is REJECTED so the read-coverage path never fabricates a
-    255-"pattern" pseudo-bank from a streaming cursor."""
+
+def _pwlk_candidate_readcov(d, walk, delta, sdm):
+    """The READ-COVERAGE pattern bank for one (walk, delta) -- a thin adapter over
+    :func:`_bank_candidate_readcov` on the PWLK walk's resolved pointer sequence, gated
+    on the walk having WITHIN-pattern row indexing (``y_max > y_min``; a y==0 cursor is a
+    per-frame streaming pointer, not an orderlist->pattern walk).  Byte-identical to the
+    original read-coverage slice."""
     if walk.y_max <= walk.y_min:
         return None  # no within-pattern row indexing -> not an orderlist->pattern walk
+    resolved = [(x - delta) & 0xFFFF for x in walk.ptr_vals]
+    return _bank_candidate_readcov(d, resolved, delta, sdm, zp=walk.zp)
+
+
+def _bank_candidate_readcov(d, resolved, delta, sdm, zp=0):
+    """The READ-COVERAGE pattern bank for a RESOLVED pointer sequence, GRAMMAR-AGNOSTIC
+    (the nibble / bit-packed dialects -- GoatTracker, Soundmonitor, Music_Assembler --
+    whose rows carry no value-range EOP byte).  A pointer is a REAL pattern iff it was
+    READ AS DATA from its start (:func:`_read_extent` > 0) and lies in song data; the
+    pattern length is that observed read-coverage run (byte-exact: the bytes the player
+    consumed).  Phantom pointers (read-extent 0) are DROPPED from the bank.  Returns a
+    candidate dict (with explicit ``pattern_lens``) or ``None``.
+
+    ``resolved`` is the advance SEQUENCE (the PWLK walk's or the IDXR pointer table's),
+    so the read-coverage slice is one SOURCE-agnostic path.  A genuine orderlist replays
+    its bank, so the distinct patterns are a MINORITY of the advances; a near-1:1
+    distinct/advance ratio is a streaming cursor (a sample / wavetable walked once per
+    frame), not an orderlist, and is REJECTED so the bank is never a 255-"pattern"
+    pseudo-bank fabricated from a per-frame cursor."""
     lo_img, hi_img = _image_bounds(d)
     read_play = (d.acc & ACC_READ_PLAY) != 0
-    seq = walk.ptr_vals
-    resolved = [(x - delta) & 0xFFFF for x in seq]
     ext = {}
     for a in sorted(set(resolved)):
         if lo_img <= a < hi_img and sdm[a]:
@@ -380,11 +396,6 @@ def _pwlk_candidate_readcov(d, walk, delta, sdm):
     cov = len(set(o for o in orderlist if o != 0xFF))
     if cov < 2:
         return None
-    # require pattern REUSE: an orderlist replays its bank, so distinct patterns are a
-    # MINORITY of the advances; a near-1:1 distinct/advance ratio (almost every advance
-    # a fresh pointer) is a streaming cursor (a sample / wavetable walked once per
-    # frame), not an orderlist -- reject only that degenerate ~no-reuse case (the y-span
-    # guard above already drops the y==0 cursor; this catches a y-indexed cursor too).
     walked = sum(1 for o in orderlist if o != 0xFF)
     if 5 * cov > 4 * walked:
         return None
@@ -396,7 +407,7 @@ def _pwlk_candidate_readcov(d, walk, delta, sdm):
         "reloc_delta": delta,
         "grammar": None,  # no value-range grammar; lengths are explicit (read-coverage)
         "grammar_name": "readcov",
-        "zp": walk.zp,
+        "zp": zp,
         "coverage": cov,
         "n_patterns": len(bank),
     }
@@ -446,6 +457,139 @@ def discover_patterns_pwlk(d):
             for cand, vr in ((eop, 1), (readcov, 0)):
                 if cand is None:
                     continue
+                rank = (cand["coverage"], vr, cand["n_patterns"])
+                if best is None or rank > best[0]:
+                    best = (rank, cand)
+    return best[1] if best is not None else None
+
+
+# ---------------------------------------------------------------------------
+# S2 -- IDXR-driven pattern discovery (the behavior-keyed pointer-table lever).
+#
+# The tracer computes IDXR for EVERY indexed read in EVERY addressing mode (abs,X /
+# abs,Y / zp,X / (zp),Y / SMC); the IdxSupp ``targets_in_image`` flag IS the generic
+# "a value is dereferenced to index a table whose entries are in-image addresses"
+# signal -- the SAME signal regardless of opcode.  ``discover_patterns_pwlk`` consumes
+# only the (zp),Y row-walk, which is structurally blind to the orderlist->pattern JOIN
+# (an abs,Y / abs,X read in basically every driver).  This path consumes the IDXR
+# pointer-table signal directly, so the join level the (zp),Y key cannot see is found
+# WITHOUT any per-mode branch: the addressing mode never appears below.
+# ---------------------------------------------------------------------------
+def _idxr_pointer_seqs(d):
+    """Enumerate the IDXR POINTER-TABLE candidates (behavior-keyed, addressing-mode
+    agnostic): for each indexed read whose IdxSupp flags ``targets_in_image`` (the C++
+    already formed the 16-bit values at ``base+idx`` and saw them land in the image),
+    yield ``(pc, base, packing, resolved_ptrs)`` for each plausible PACKING read off the
+    ``scale`` / sibling-base provenance -- NOT an O(image^2) scan, just the handful of
+    indexed reads.
+
+    Packing (read off the IDXR ``scale`` + the affine ``base_fit``, no per-driver code):
+      * ``scale == 2`` (or the affine fit halved a ``note*2`` index) -> INTERLEAVED
+        stride-2: ``ptr = ram[b+2i] | ram[b+2i+1] << 8``.
+      * else a base/base+N SPLIT pair (lo block at ``b``, hi block at ``b+n``):
+        ``ptr = ram[b+i] | ram[b+n+i] << 8`` -- the dominant pattern-pointer layout, and
+      * a CONTIGUOUS lo|hi pair fallback (``ptr = ram[b+i] | ram[b+i+1] << 8``).
+    ``b`` is the affine ``base_fit`` (the index-corrected table base) when the two-sample
+    fit set it, else the raw ``IdxRead.base``.  The byte-exact round-trip (S4) SELECTS
+    among the packings + the reloc deltas; a wrong packing forms garbage pointers that
+    do not resolve into song data, so it is filtered by ``_bank_candidate_*`` and never
+    reaches the gate."""
+    supp = d.idx_supp_by_pc()
+    lo_img, hi_img = _image_bounds(d)
+    ram = d.ram
+    for ir in d.idx_reads:
+        s = supp.get(ir.pc)
+        if s is None or not s.targets_in_image:
+            continue
+        n = ir.length
+        if n < 2 or n > 0x200:
+            continue
+        base = s.base_fit if s.scale_set else ir.base
+        scale = s.scale if s.scale_set else ir.stride
+        if not (lo_img <= base < hi_img):
+            continue
+        packings = []
+        if scale == 2:
+            packings.append(("interleave", 2, 1))
+        # split (base/base+n) is the dominant pattern-pointer layout; the contiguous
+        # lo|hi pair is the stride-1 interleave fallback.  Both are tried; the round-trip
+        # discards the one whose pointers do not slice as patterns.
+        packings.append(("split", 1, n))
+        packings.append(("contig", 1, 1))
+        for pname, st, hioff in packings:
+            ptrs = []
+            ok = True
+            for i in range(ir.idx_min, ir.idx_max + 1):
+                lo_addr = (base + st * i) & 0xFFFF
+                hi_addr = (lo_addr + hioff) & 0xFFFF
+                if not (lo_img <= lo_addr < hi_img and lo_img <= hi_addr < hi_img):
+                    ok = False
+                    break
+                ptrs.append(int(ram[lo_addr]) | (int(ram[hi_addr]) << 8))
+            if ok and len(ptrs) >= 2:
+                yield (ir.pc, base, pname, ptrs)
+
+
+def discover_patterns_idxr(d):
+    """Discover the pattern bank + orderlist from the IDXR pointer-table signal
+    (S2, behavior-keyed) -- the orderlist->pattern JOIN the (zp),Y PWLK key is blind to,
+    found in ANY addressing mode via ``IdxSupp.targets_in_image`` (the C++ computes it
+    for abs,X / abs,Y / zp,X / (zp),Y / SMC alike; the addressing mode NEVER appears in
+    this code).
+
+    For each IDXR pointer-table candidate (:func:`_idxr_pointer_seqs`: a handful of
+    indexed reads, NOT an image scan) and each relocation delta, the resolved pointer
+    sequence is sliced into a pattern bank by the SAME source-agnostic builders the PWLK
+    path uses -- the value-range grammar EOP (:func:`_bank_candidate_eop`) or the
+    read-coverage extent (:func:`_bank_candidate_readcov`).  The packing / grammar /
+    reloc is a HYPOTHESIS the byte-exact round-trip (S4, in ``recover_structure``)
+    falsifies; here we keep the highest-coverage / largest byte-sliceable bank per the
+    SAME ranking as the PWLK path, leaving the final byte-exact select + fewest-token
+    tiebreak to ``recover_structure``.
+
+    Returns a candidate dict in the SAME shape as :func:`discover_patterns_pwlk` (so the
+    shared :func:`_recover_structure_from_bank` builder consumes it unchanged), or
+    ``None`` when no IDXR pointer table yields a pattern bank (the negative control:
+    A_Mind has no pointer-table IDXR, so this returns ``None`` and the caller falls back
+    to the cover).
+
+    The GRAMMAR-AGNOSTIC read-coverage bank (no value-range EOP to round-trip against) is
+    the speculative leg of this more-aggressive enumeration, so it is admitted only for a
+    tune the artifact says is structurally a TRACKER -- one carrying a note-table IDXR
+    (the S0 digi carve, the artifact's own ``DigiSig.note_table_idxr_present`` structural
+    signal).  A PCM digi streamer (no 12-TET note-table indexed read) has a pointer table
+    over SAMPLE data whose read-coverage bank would slice byte-exact but is not a tracker
+    pattern bank -- without this gate it serializes the sample dump as dense "patterns"
+    (the HARD RULE #0 literal-floor trap: byte-exact but many tok/frame).  The value-range
+    grammar bank is self-falsifying (its EOP round-trip), so it needs no such gate."""
+    if not getattr(d, "idx_reads", None):
+        return None
+    sdm = d.song_data_mask()
+    dialects = _dialects()
+    deltas = reloc_delta_candidates(d)
+    # The S0 structural digi signal: a note-table IDXR (a ~96-entry 12-TET indexed read
+    # feeding the freq writes) is present.  Absent -> the grammar-agnostic read-coverage
+    # bank is suppressed (a PCM streamer's sample-pointer table is not a pattern bank).
+    has_note_table = bool(d.digi is not None and d.digi.note_table_idxr_present)
+    best = None
+    for _pc, _base, _packing, ptrs in _idxr_pointer_seqs(d):
+        if len(set(ptrs)) < 2:
+            continue
+        for delta in deltas:
+            resolved = [(p - delta) & 0xFFFF for p in ptrs]
+            eop = _bank_candidate_eop(d, resolved, delta, sdm, dialects)
+            readcov = (
+                _bank_candidate_readcov(d, resolved, delta, sdm)
+                if has_note_table
+                else None
+            )
+            for cand, vr in ((eop, 1), (readcov, 0)):
+                if cand is None:
+                    continue
+                # rank EXACTLY as the PWLK path: (coverage, value-range-preferred,
+                # more-patterns).  The orderlist coverage here is the count of distinct
+                # patterns the pointer table indexes -- a real pattern-pointer table
+                # spans the whole bank, a coincidental in-image run a few entries.
                 rank = (cand["coverage"], vr, cand["n_patterns"])
                 if best is None or rank > best[0]:
                     best = (rank, cand)
@@ -1075,25 +1219,24 @@ def _fill_instruments(d, struct, sddf_slices, instr_refs):
     ]
 
 
-def _recover_structure_pwlk(d, struct, sddf_slices):
-    """The PWLK-driven structure path (S1+S2+S4): pattern bank + orderlist from the
-    resolved (zp),Y walk, reloc-applied, grammar-selected by the byte-exact slice.
-    Returns True on success (``struct`` filled, ``ok`` set), else False."""
-    pw = discover_patterns_pwlk(d)
-    if pw is None:
-        return False
-    struct.reloc_delta = pw["reloc_delta"]
-    struct.pattern_src = pw["pattern_src"]
-    struct.pattern_ptrs = pw["pattern_src"]  # read raw bytes from the image addrs
-    struct.pattern_lens = pw["pattern_lens"]  # explicit (read-coverage) or [] (EOP)
-    struct.n_patterns = pw["n_patterns"]
-    struct.grammar = pw["grammar"]
-    struct.orderlists = [pw["orderlist"]]
-    struct.patptr_lo = min(pw["pattern_src"])
-    struct.patptr_hi = max(pw["pattern_src"])
+def _recover_structure_from_bank(d, struct, sddf_slices, cand):
+    """Fill ``struct`` from a pattern-bank candidate dict (the SOURCE-agnostic builder
+    shared by the PWLK and IDXR discovery paths): decode the rows under the candidate's
+    grammar / explicit lengths, site the instruments + program spans.  ``cand`` is the
+    dict :func:`discover_patterns_pwlk` / :func:`discover_patterns_idxr` return.  Returns
+    True (``struct`` filled, ``ok`` set)."""
+    struct.reloc_delta = cand["reloc_delta"]
+    struct.pattern_src = cand["pattern_src"]
+    struct.pattern_ptrs = cand["pattern_src"]  # read raw bytes from the image addrs
+    struct.pattern_lens = cand["pattern_lens"]  # explicit (read-coverage) or [] (EOP)
+    struct.n_patterns = cand["n_patterns"]
+    struct.grammar = cand["grammar"]
+    struct.orderlists = [cand["orderlist"]]
+    struct.patptr_lo = min(cand["pattern_src"])
+    struct.patptr_hi = max(cand["pattern_src"])
 
     patterns, instr_refs, notes, cmds, durs, n_rows, n_bytes = _decode_patterns_grammar(
-        d, pw["pattern_src"], pw["grammar"], pw["pattern_lens"]
+        d, cand["pattern_src"], cand["grammar"], cand["pattern_lens"]
     )
     struct.patterns = patterns
     struct.instr_refs = instr_refs
@@ -1107,6 +1250,28 @@ def _recover_structure_pwlk(d, struct, sddf_slices):
     struct.program_spans = _program_spans(d, struct)
     struct.ok = True
     return True
+
+
+def _recover_structure_pwlk(d, struct, sddf_slices):
+    """The PWLK-driven structure path (S1+S2+S4): pattern bank + orderlist from the
+    resolved (zp),Y walk, reloc-applied, grammar-selected by the byte-exact slice.
+    Returns True on success (``struct`` filled, ``ok`` set), else False."""
+    pw = discover_patterns_pwlk(d)
+    if pw is None:
+        return False
+    return _recover_structure_from_bank(d, struct, sddf_slices, pw)
+
+
+def _recover_structure_idxr(d, struct, sddf_slices):
+    """The IDXR-driven structure path (S2, behavior-keyed): pattern bank + orderlist from
+    an IDXR pointer table (the orderlist->pattern JOIN, found in ANY addressing mode via
+    ``IdxSupp.targets_in_image``), reloc-applied, grammar / read-coverage sliced.  This
+    is the level the (zp),Y PWLK key is structurally blind to.  Returns True on success
+    (``struct`` filled, ``ok`` set), else False."""
+    ix = discover_patterns_idxr(d)
+    if ix is None:
+        return False
+    return _recover_structure_from_bank(d, struct, sddf_slices, ix)
 
 
 def _recover_structure_legacy(d, struct, sddf_slices):
@@ -1149,18 +1314,23 @@ def _recover_structure_legacy(d, struct, sddf_slices):
 def recover_structure(distill_path):
     """Generic end-to-end structure recovery from a ``.distill.bin`` SDST artifact.
 
-    Both structure paths are tried and the byte-exact candidate with the FEWEST
-    tokens is SELECTED (the design's validation-gated, fewest-tokens tiebreak):
+    THREE structure paths are tried and the byte-exact candidate with the FEWEST tokens
+    is SELECTED (the design's validation-gated, fewest-tokens tiebreak):
       * the PWLK-driven path (S1+S2+S4: the resolved (zp),Y orderlist->pattern walk,
-        reloc-applied, grammar-selected by the byte-exact slice) -- subsumes
-        relocation + the 4 row grammars + the interleaved/scattered packings the
-        brute-force scan cannot reach; and
+        reloc-applied, grammar-selected by the byte-exact slice) -- the final ROW walk;
+      * the IDXR-driven path (S2, behavior-keyed: an IDXR pointer table -- the
+        orderlist->pattern JOIN, found in ANY addressing mode via
+        ``IdxSupp.targets_in_image``, the level the (zp),Y key is structurally blind to);
+        and
       * the split-pointer scan (the original NewPlayer recovery) -- a full contiguous
         pattern bank that can be more compact when the walk traversed only a subset.
-    Returns a :class:`RecoveredStructure`; ``ok`` is False (with a ``reason``) when
-    neither path yields a structure -- a pure-code tune (A Mind Is Born) -- and the
-    caller falls back to the generator cover.  ``ok`` True means the byte-exact
-    slice/re-encode gate held.
+    Every candidate must pass the byte-exact re-encode gate (:func:`pattern_roundtrip_ok`
+    for the value-range dialects; the explicit read-coverage bank carries its bytes
+    verbatim, byte-exact by construction) -- HARD RULE #0: the packing / grammar / reloc
+    is a HYPOTHESIS the round-trip falsifies, never assumed.  Returns a
+    :class:`RecoveredStructure`; ``ok`` is False (with a ``reason``) when no path yields a
+    byte-exact structure -- a pure-code tune (A Mind Is Born) -- and the caller falls back
+    to the generator cover.
     """
     d = load_distill(distill_path)
     sddf_slices = read_sddf_slices(distill_path)
@@ -1176,14 +1346,26 @@ def recover_structure(distill_path):
         )
 
     candidates = []
-    for builder in (_recover_structure_pwlk, _recover_structure_legacy):
+    for builder in (
+        _recover_structure_pwlk,
+        _recover_structure_idxr,
+        _recover_structure_legacy,
+    ):
         s = _fresh()
-        if builder(d, s, sddf_slices):
-            try:
-                total, _ = token_budget(s)
-            except (ValueError, IndexError):
-                total = float("inf")
-            candidates.append((total, s))
+        if not builder(d, s, sddf_slices):
+            continue
+        # The byte-exact re-encode GATE (HARD RULE #0): a value-range-dialect bank must
+        # re-encode every pattern's SNAP bytes byte-exact, or the grammar / packing
+        # hypothesis is FALSIFIED and the candidate is dropped.  The read-coverage bank
+        # (``grammar is None``) carries the observed-read bytes verbatim (byte-exact by
+        # construction), so it is admitted directly.
+        if s.grammar is not None and not pattern_roundtrip_ok(s):
+            continue
+        try:
+            total, _ = token_budget(s)
+        except (ValueError, IndexError):
+            total = float("inf")
+        candidates.append((total, s))
     if candidates:
         candidates.sort(key=lambda t: t[0])
         return candidates[0][1]
