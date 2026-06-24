@@ -29,17 +29,22 @@ VALUE sequence (``lo | hi<<8``) + cell ``first_seen`` so render rebuilds the gri
 M0/M1 render.  :func:`render_freq_from_ir` renders the three FREQ register pairs from the
 DESERIALIZED IR ALONE -- byte-exact full-length (residual 0): the recovered porta/vibrato
 accumulators re-added onto each note's grid pitch, the §state-machine identity inverted (the
-player-FREE half of the render).  :func:`render_nonfreq_from_ir` (M1, THIS increment) renders
-the non-freq registers (pw/ctrl/ad/sr/filter/volume): each ADMITTED lane BYTE-EXACT from its
-serialized piecewise-constant program (the player's sets-and-holds for that register --
-:func:`build_nonfreq_program`, ``_discover_njit.step_lane_kernel``), so it renders from the
-ids ALONE (the proof ``render-from-ids == state`` holds for the admitted lanes), while a
-densely-modulated wavetable-walk lane (a PW sweep / ctrl arp) that the artifact cannot yet
-replay -- its free-running per-frame cursor + instrument table are not in the SDDF leaves --
-falls back to the ``_state`` anchor (the additive SDDF-extension gap: storing the output
-column would blow the budget AND be the HARD RULE #0 literal-floor trap, never shipped).
+player-FREE half of the render).  :func:`render_nonfreq_from_ir` (M1) renders the non-freq
+registers (pw/ctrl/ad/sr/filter/volume) by the CHEAPEST byte-exact DERIVATION per lane, NOT
+by dumping the output column (the HARD RULE #0 literal-floor trap):
+:func:`build_nonfreq_program` picks, in derivation order, a 16-bit PW-sweep GENERATOR (a
+constant-step wrapping-ramp accumulator -- ``ramp_segments_kernel`` -- collapsing a
+thousands-frame sweep on BOTH byte lanes to a handful of per-segment ints) before the
+piecewise-constant change-point program (the player's sets-and-holds, ``step_lane_kernel``),
+and admits each only under its kind's token cap (a generator earns a generous cap, a
+change-point a tight one -- a DENSE change-point dump is the literal-floor trap and is
+rejected).  Each admitted lane renders from the ids ALONE (the proof ``render-from-ids ==
+state`` holds), while a lane neither generator- nor sparsely-change-point-derivable (a
+per-frame ctrl arp -- its free-running cursor + instrument table are not in the SDDF leaves)
+falls back to the ``_state`` anchor (the additive, falsifiable SDDF-extension gap: storing
+the output column would blow the budget AND be the literal-floor trap, never shipped).
 :func:`render_structure` composes both.  ``_state`` is the correctness anchor ONLY for the
-un-admitted lanes and is NEVER serialized; the SHIPPED bytes are the compact structure.
+un-derived lanes and is NEVER serialized; the SHIPPED bytes are the compact structure.
 """
 
 from dataclasses import dataclass, field
@@ -65,15 +70,44 @@ _CPR_VOICES = ((0, 1), (7, 8), (14, 15))
 # (pw/ctrl/ad/sr/filter/volume) is a NON-FREQ lane the M1 replay targets.
 _FREQ_REGS = frozenset(r for pair in _CPR_VOICES for r in pair)
 _NONFREQ_REGS = tuple(r for r in range(NREG) if r not in _FREQ_REGS)
-# A non-freq lane is ADMITTED into the serialized program only when its piecewise-
-# constant change-point encoding costs no more than this many tokens (so the M1 replay
-# never inflates the budget): the constant / sparsely-gated lanes (filter/volume setup,
-# the instrument's AD/SR/ctrl set once per note) round-trip from the program for a
-# handful of tokens, while a densely-modulated wavetable-walk lane (a PW sweep, a ctrl
-# arp) stays on the byte-exact anchor and is surfaced as the SDDF-extension gap (its
-# free-running per-frame cursor is not yet in the artifact -- a stored output column
-# would be the HARD RULE #0 literal-floor trap, never shipped).
-_NONFREQ_LANE_TOKEN_CAP = 96
+# The three per-voice PW register pairs (lo, hi): a PW SWEEP is a free-running 16-bit
+# accumulator the player advances per frame (``value += step``, reset/reparametrised at a
+# note-gated boundary), so the two byte lanes are ONE generator, not two output dumps.
+# Combining lo|hi<<8 and fitting a constant-step wrapping ramp (``ramp_segments_kernel``)
+# DERIVES the sweep from a handful of per-segment ints -- never the dense change-point
+# dump (the HARD RULE #0 literal-floor trap).
+_PW_PAIRS = ((2, 3), (9, 10), (16, 17))
+# Two admission caps -- DERIVING a generator vs STORING a change-point column are not the
+# same act (HARD RULE #0), so they earn different budgets:
+#
+#  * a GENERATOR (a fitted 16-bit PW-sweep ramp) is a genuine derivation -- a thousands-
+#    frame sweep collapses to a handful of per-segment ints -- so it earns a GENEROUS cap;
+#    it is shipped whenever it is cheaper than the dense change-point dump it replaces.
+#  * a CHANGE-POINT program is the player's literal sets-and-holds; a SPARSE one (a couple
+#    of segments: filter/volume setup, an AD/SR latched once and held) is the real program
+#    and is admitted under a TIGHT cap, but a DENSE one (hundreds of change points) is the
+#    HARD RULE #0 literal-floor trap (storing the output column) and is REJECTED -- that
+#    lane stays on the byte-exact anchor (the falsifiable SDDF-extension gap: its free-
+#    running per-frame cursor + instrument table is not yet in the artifact).
+#
+# This keeps the budget at the pre-M1 structured floor (a dense un-derivable lane ships
+# NOTHING) while the generator-fit DERIVES the PW sweeps the change-point dump bloated.
+_NONFREQ_GEN_TOKEN_CAP = 48
+_NONFREQ_CP_TOKEN_CAP = 4
+
+# The typed non-freq lane RECORD kinds (the serialized ``nonfreq`` section is a list of
+# these, each self-describing so the codec round-trips and the renderer dispatches on the
+# tag): a change-point program (the player's sets-and-holds) or a 16-bit ramp-segment
+# generator (a PW sweep, covering BOTH the lo and hi byte lanes from one generator).
+_LANE_CP = (
+    0  # ("cp", reg, starts, values)            -- piecewise-constant lane program
+)
+_LANE_RAMP16 = (
+    1  # ("ramp16", lo, hi, starts, seeds, steps) -- 16-bit PW sweep generator
+)
+_PW_MODULUS = (
+    1 << 16
+)  # the PW accumulator wrap (the lo|hi<<8 combine is a 16-bit value)
 
 # The structure-path token alphabet is the non-negative ints; REPEAT is a reserved
 # sentinel strictly above every literal the IR emits (counts, addresses < 2^17, 16-bit
@@ -112,14 +146,18 @@ class StructureIR:
     accfits: list = field(
         default_factory=list
     )  # per voice: [(fs,kind,seed,p1,p2,p3,n,raw), ...]
-    # M1 non-freq lane replay: per ADMITTED non-freq register, the lane's piecewise-
-    # constant program as ``(reg, starts, values)`` -- the change-point stream rendered
-    # by ``_discover_njit.step_lane_kernel`` (byte-exact).  Only the cheap (constant /
-    # sparsely-gated) lanes are admitted (token cap); a densely-modulated wavetable-walk
-    # lane is OMITTED and renders from the ``_state`` anchor (the SDDF-extension gap).
+    # M1 non-freq lane recovery: per ADMITTED non-freq register, the CHEAPEST byte-exact
+    # encoding as a TYPED record -- either a change-point program
+    # ``(_LANE_CP, reg, starts, values)`` (the player's sets-and-holds, rendered by
+    # ``_discover_njit.step_lane_kernel``) or a 16-bit PW-sweep GENERATOR
+    # ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)`` (the constant-step wrapping-ramp
+    # accumulator, ``ramp_render_kernel``, covering BOTH byte lanes).  Only lanes under the
+    # token cap are admitted (the literal-floor guard); a lane neither generator- nor
+    # cheaply-change-point-derivable is OMITTED and renders from the ``_state`` anchor (the
+    # SDDF-extension gap).  An empty list serialises byte-identically to the pre-M1 stream.
     nonfreq: list = field(
         default_factory=list
-    )  # [(reg, [starts...], [values...]), ...]
+    )  # typed lane records (see build_nonfreq_program)
     nframes: int = 0
     boot: list = field(default_factory=list)
     _state: object = (
@@ -185,9 +223,10 @@ def _lane_change_program(col):
 
 
 def _lane_program_tokens(starts, values):
-    """The serialized token cost of one non-freq lane program (the admission metric):
-    ``nseg`` + the start-DELTA stream + the value stream, each value-LZ'd.  Mirrors the
-    bytes :func:`_flat_nonfreq` emits so the cap reflects the true shipped size."""
+    """The serialized token cost of one CHANGE-POINT lane program (the cp admission
+    metric): ``nseg`` + the start-DELTA stream + the value stream, each value-LZ'd.
+    Mirrors the bytes a ``_LANE_CP`` record emits so the cap reflects the true shipped
+    size (the cheapest-encoding pick and the budget gate read the same number)."""
     flat = [len(starts)]
     prev = 0
     for s in starts:
@@ -199,27 +238,87 @@ def _lane_program_tokens(starts, values):
     return len(out)
 
 
-def build_nonfreq_program(state):
-    """The M1 non-freq lane program: per ADMITTED non-freq register, the piecewise-
-    constant ``(reg, starts, values)`` that renders it byte-exact from the IR alone.
+def _ramp16_fit(lo_col, hi_col):
+    """Fit the 16-bit PW pair ``lo | hi<<8`` to a constant-step WRAPPING-RAMP generator
+    (``_discover_njit.ramp_segments_kernel``): the per-segment ``(start, seed, step)`` of
+    the free-running accumulator the player advances per frame.  Returns
+    ``(starts, seeds, steps)`` (Python int lists).  The sweep is DERIVED from these few
+    ints; :func:`_ramp16_render` (``ramp_render_kernel``) is the byte-exact inverse."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
 
-    A lane is admitted iff its change-point encoding (the player's real sets-and-holds
-    program for that register) costs no more than :data:`_NONFREQ_LANE_TOKEN_CAP` tokens,
-    so the constant / sparsely-gated lanes (filter + volume setup, the instrument's
-    AD/SR/ctrl latched per note) round-trip from the program for a handful of tokens while
-    a densely-modulated wavetable-walk lane (a PW sweep / ctrl arp -- thousands of change
-    points) is OMITTED and renders from the ``_state`` anchor instead (the SDDF-extension
-    gap: its free-running per-frame cursor + instrument table is not yet in the artifact;
-    storing the output column would blow the budget AND be the HARD RULE #0 literal-floor
-    trap).  Returns ``[(reg, starts, values), ...]`` for the admitted lanes only."""
+    pw = np.asarray(lo_col, dtype=np.int64) | (np.asarray(hi_col, dtype=np.int64) << 8)
+    starts, seeds, steps, _n = DJ.ramp_segments_kernel(pw, _PW_MODULUS)
+    return (
+        [int(s) for s in starts],
+        [int(s) for s in seeds],
+        [int(s) for s in steps],
+    )
+
+
+def _ramp16_tokens(starts, seeds, steps):
+    """The serialized token cost of one ``_LANE_RAMP16`` generator record (the ramp
+    admission metric): ``nseg`` + the start-DELTA stream + the seed stream + the step
+    stream, each value-LZ'd.  Mirrors the bytes :func:`_flat_nonfreq` emits for a
+    ``_LANE_RAMP16`` so the cheapest-encoding pick and the budget gate agree."""
+    bd = [len(starts)]
+    prev = 0
+    for s in starts:
+        bd.append(s - prev)
+        prev = s
+    flat = bd + list(seeds) + list(steps)
+    out = []
+    _emit_section(out, flat)
+    return len(out)
+
+
+def build_nonfreq_program(state):
+    """The M1 non-freq lane recovery: per non-freq register the CHEAPEST byte-exact
+    encoding, in derivation order (replay/generator before the output-storing change-point
+    fallback), each ADMITTED only under the kind's token cap (the literal-floor guard).
+    Returns a typed lane-record list:
+
+      * ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)`` -- a PW sweep DERIVED as a 16-bit
+        constant-step wrapping-ramp GENERATOR (covering BOTH byte lanes from one
+        generator), admitted when the ramp fit is cheaper than the two change-point lanes
+        AND under :data:`_NONFREQ_GEN_TOKEN_CAP` (a sweep is an accumulator, not two output
+        columns -- HARD RULE #0); else
+      * ``(_LANE_CP, reg, starts, values)`` -- the lane's piecewise-constant change-point
+        program (the player's real sets-and-holds), admitted ONLY when it is SPARSE
+        (under :data:`_NONFREQ_CP_TOKEN_CAP`: filter/volume setup, an AD/SR latched once
+        and held).
+
+    A lane neither generator- nor SPARSELY-change-point-derivable (a per-frame ctrl arp /
+    a generator-resistant sweep, hundreds of change points) is OMITTED -- it renders from
+    the ``_state`` anchor (the falsifiable gap: its free-running cursor + instrument table
+    is not yet in the artifact; storing its dense output column would inflate the budget
+    AND be the literal-floor trap)."""
     if state is None:
         return []
     state = np.asarray(state, dtype=np.int64)
     program = []
+    covered = set()
+    # (b) GENERATOR-FIT the PW sweeps first: when the 16-bit ramp generator beats the two
+    # byte lanes' change-point cost and is under the generous generator cap, ship ONE
+    # generator for the pair (a derivation, not an output dump -- earns the generous cap).
+    for lo, hi in _PW_PAIRS:
+        starts, seeds, steps = _ramp16_fit(state[:, lo], state[:, hi])
+        gen_cost = _ramp16_tokens(starts, seeds, steps)
+        cp_cost = _lane_program_tokens(
+            *_lane_change_program(state[:, lo])
+        ) + _lane_program_tokens(*_lane_change_program(state[:, hi]))
+        if gen_cost < cp_cost and gen_cost <= _NONFREQ_GEN_TOKEN_CAP:
+            program.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
+            covered.add(lo)
+            covered.add(hi)
+    # (c) CHANGE-POINT the remaining lanes (and any PW lane the generator did not win),
+    # admitted ONLY when the player's sets-and-holds program is SPARSE (the tight cp cap);
+    # a dense column is the literal-floor trap and stays on the anchor (omitted).
     for reg in _NONFREQ_REGS:
+        if reg in covered:
+            continue
         starts, values = _lane_change_program(state[:, reg])
-        if _lane_program_tokens(starts, values) <= _NONFREQ_LANE_TOKEN_CAP:
-            program.append((reg, starts, values))
+        if _lane_program_tokens(starts, values) <= _NONFREQ_CP_TOKEN_CAP:
+            program.append((_LANE_CP, reg, starts, values))
     return program
 
 
@@ -422,41 +521,75 @@ def _flat_accfits(accfits):
     return out
 
 
+def _emit_start_deltas(out, starts):
+    """Append a segment-boundary stream as its frame DELTAS (ascending starts as gaps --
+    small ints the value-LZ collapses).  Shared by both lane-record kinds."""
+    prev = 0
+    for s in starts:
+        out.append(s - prev)
+        prev = s
+
+
+def _read_start_deltas(flat, i, nseg):
+    """Re-accumulate ``nseg`` frame deltas to absolute ascending start frames; returns
+    ``(starts, i)``.  Inverse of :func:`_emit_start_deltas`."""
+    starts, prev = [], 0
+    for _ in range(nseg):
+        prev += flat[i]
+        starts.append(prev)
+        i += 1
+    return starts, i
+
+
 def _flat_nonfreq(nonfreq):
-    """The M1 non-freq lane program, flat: ``nlane`` then per admitted lane ``reg``,
-    ``nseg``, the start-DELTA stream (ascending starts as gaps -- small ints the value-LZ
-    collapses), then the held values.  Only the admitted (cheap) lanes are present; the
-    rest render from the anchor."""
+    """The M1 non-freq lane section, flat: ``nrec`` then per TYPED record a kind tag and
+    its fields (the start-DELTA streams + value/seed/step streams -- small ints the
+    value-LZ collapses).  A ``_LANE_CP`` is ``(kind, reg, nseg, start-deltas, values)``;
+    a ``_LANE_RAMP16`` is ``(kind, lo, hi, nseg, start-deltas, seeds, steps)``.  Only the
+    admitted (cheap) lanes are present; the rest render from the anchor."""
     out = [len(nonfreq)]
-    for reg, starts, values in nonfreq:
-        out.append(reg)
-        out.append(len(starts))
-        prev = 0
-        for s in starts:
-            out.append(s - prev)
-            prev = s
-        out.extend(values)
+    for rec in nonfreq:
+        kind = rec[0]
+        if kind == _LANE_RAMP16:
+            _kind, lo, hi, starts, seeds, steps = rec
+            out += [kind, lo, hi, len(starts)]
+            _emit_start_deltas(out, starts)
+            out.extend(seeds)
+            out.extend(steps)
+        else:  # _LANE_CP
+            _kind, reg, starts, values = rec
+            out += [kind, reg, len(starts)]
+            _emit_start_deltas(out, starts)
+            out.extend(values)
     return out
 
 
 def _parse_nonfreq(flat):
-    """Reconstruct the admitted non-freq lane programs ``[(reg, starts, values), ...]``
-    from :func:`_flat_nonfreq` (the start-DELTA stream re-accumulated to absolute frames).
+    """Reconstruct the TYPED non-freq lane records from :func:`_flat_nonfreq` (the
+    start-DELTA streams re-accumulated to absolute frames): a list of
+    ``(_LANE_CP, reg, starts, values)`` / ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)``.
     """
-    nlane, i = flat[0], 1
+    nrec, i = flat[0], 1
     out = []
-    for _ in range(nlane):
-        reg = flat[i]
-        nseg = flat[i + 1]
-        i += 2
-        starts, prev = [], 0
-        for _ in range(nseg):
-            prev += flat[i]
-            starts.append(prev)
-            i += 1
-        values = list(flat[i : i + nseg])
-        i += nseg
-        out.append((reg, starts, values))
+    for _ in range(nrec):
+        kind = flat[i]
+        i += 1
+        if kind == _LANE_RAMP16:
+            lo, hi, nseg = flat[i], flat[i + 1], flat[i + 2]
+            i += 3
+            starts, i = _read_start_deltas(flat, i, nseg)
+            seeds = list(flat[i : i + nseg])
+            i += nseg
+            steps = list(flat[i : i + nseg])
+            i += nseg
+            out.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
+        else:  # _LANE_CP
+            reg, nseg = flat[i], flat[i + 1]
+            i += 2
+            starts, i = _read_start_deltas(flat, i, nseg)
+            values = list(flat[i : i + nseg])
+            i += nseg
+            out.append((_LANE_CP, reg, starts, values))
     return out
 
 
@@ -670,11 +803,13 @@ def render_freq_from_ir(ir, seed_state):
 
 
 def render_nonfreq_from_ir(ir, anchor=None):
-    """Render the NON-freq registers (M1): each ADMITTED lane (``ir.nonfreq``) replays
-    BYTE-EXACT from its serialized piecewise-constant program (``step_lane_kernel``) --
-    NO anchor consulted, so the proof ``render-from-ids == state`` holds for these lanes;
-    every un-admitted non-freq register falls back to the ``anchor`` column (the byte-exact
-    ``_state``, the additive SDDF-extension gap: a densely-modulated wavetable-walk lane
+    """Render the NON-freq registers (M1): each ADMITTED lane record (``ir.nonfreq``)
+    replays BYTE-EXACT from its serialized form -- a change-point program via
+    ``step_lane_kernel`` (the player's sets-and-holds) or a 16-bit PW-sweep GENERATOR via
+    ``ramp_render_kernel`` (the constant-step wrapping-ramp accumulator, split back to its
+    lo/hi byte lanes) -- with NO anchor consulted, so the proof ``render-from-ids ==
+    state`` holds for these lanes; every un-admitted non-freq register falls back to the
+    ``anchor`` column (the byte-exact ``_state``, the additive SDDF-extension gap: a lane
     whose free-running per-frame cursor + instrument table is not yet in the artifact).
 
     Returns ``{reg: int64[nframes]}`` for every non-freq register the IR can supply (the
@@ -689,11 +824,29 @@ def render_nonfreq_from_ir(ir, anchor=None):
     nframes = ir.nframes if anchor is None else int(anchor.shape[0])
     out = {}
     admitted = set()
-    for reg, starts, values in ir.nonfreq:
-        sa = np.asarray(starts, dtype=np.int64)
-        va = np.asarray(values, dtype=np.int64)
-        out[int(reg)] = DJ.step_lane_kernel(sa, va, nframes)
-        admitted.add(int(reg))
+    for rec in ir.nonfreq:
+        kind = rec[0]
+        if kind == _LANE_RAMP16:
+            _kind, lo, hi, starts, seeds, steps = rec
+            pw = DJ.ramp_render_kernel(
+                np.asarray(starts, dtype=np.int64),
+                np.asarray(seeds, dtype=np.int64),
+                np.asarray(steps, dtype=np.int64),
+                nframes,
+                _PW_MODULUS,
+            )
+            out[int(lo)] = pw & 0xFF
+            out[int(hi)] = (pw >> 8) & 0xFF
+            admitted.add(int(lo))
+            admitted.add(int(hi))
+        else:  # _LANE_CP
+            _kind, reg, starts, values = rec
+            out[int(reg)] = DJ.step_lane_kernel(
+                np.asarray(starts, dtype=np.int64),
+                np.asarray(values, dtype=np.int64),
+                nframes,
+            )
+            admitted.add(int(reg))
     if anchor is not None:
         for reg in _NONFREQ_REGS:
             if reg not in admitted:
@@ -708,15 +861,15 @@ def render_structure(ir):
     (:func:`render_freq_from_ir`, proven residual 0 full-length): the recovered porta/vibrato
     accumulators re-added onto each note's grid pitch -- the player-free half of the render.
 
-    M1 (THIS increment): the NON-freq registers render via :func:`render_nonfreq_from_ir` --
-    each ADMITTED lane (constant / sparsely-gated: filter + volume setup, the instrument's
-    AD/SR/ctrl latched per note) BYTE-EXACT from its serialized piecewise-constant program
-    (no anchor), while a densely-modulated wavetable-walk lane (a PW sweep / ctrl arp) falls
-    back to the ``_state`` anchor -- the additive SDDF-extension gap (its free-running
-    per-frame cursor + instrument table is not yet in the artifact; storing the output column
-    would blow the budget AND be the HARD RULE #0 literal-floor trap).  ``_state`` is the
-    correctness anchor ONLY for the un-admitted lanes and is NEVER serialized; the SHIPPED
-    bytes are the compact, proven structure.
+    M1: the NON-freq registers render via :func:`render_nonfreq_from_ir` -- each ADMITTED
+    lane BYTE-EXACT from its cheapest DERIVATION (a 16-bit PW-sweep ramp GENERATOR, or the
+    player's piecewise-constant sets-and-holds program; no anchor), while a lane neither
+    generator- nor sparsely-change-point-derivable (a per-frame ctrl arp) falls back to the
+    ``_state`` anchor -- the additive SDDF-extension gap (its free-running per-frame cursor +
+    instrument table is not yet in the artifact; storing its dense output column would blow
+    the budget AND be the HARD RULE #0 literal-floor trap).  ``_state`` is the correctness
+    anchor ONLY for the un-derived lanes and is NEVER serialized; the SHIPPED bytes are the
+    compact, proven structure.
 
     Raises when the anchor is absent: the FREQ render currently needs the per-frame freq
     column to invert the accumulator identity (the note->frame schedule replay from the

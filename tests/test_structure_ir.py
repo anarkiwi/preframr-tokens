@@ -128,8 +128,9 @@ def test_render_structure_byte_exact_and_raises_without_anchor():
 
 
 def test_nonfreq_lane_renders_from_ids_alone():
-    """The M1 non-freq replay: an ADMITTED lane renders BYTE-EXACT from the serialized
-    program ALONE (no anchor) -- the proof ``render-from-ids == state`` for that lane.
+    """The M1 non-freq replay: an ADMITTED change-point lane renders BYTE-EXACT from the
+    serialized program ALONE (no anchor) -- the proof ``render-from-ids == state`` for that
+    lane.
     """
     nframes = 64
     ir = _synthetic_ir(nframes)
@@ -137,7 +138,7 @@ def test_nonfreq_lane_renders_from_ids_alone():
     col = np.zeros(nframes, dtype=np.int64)
     col[5:] = 0x41
     starts, values = SI._lane_change_program(col)
-    ir.nonfreq = [(4, starts, values)]
+    ir.nonfreq = [(SI._LANE_CP, 4, starts, values)]
     ir._state[:, 4] = (
         col  # keep the anchor consistent so render_structure is byte-exact
     )
@@ -150,6 +151,61 @@ def test_nonfreq_lane_renders_from_ids_alone():
     # and the full render (admitted lane from program, the rest from the anchor) is exact.
     rendered = SI.render_structure(ir)
     assert np.array_equal(rendered, ir._state)
+
+
+def test_nonfreq_ramp16_generator_renders_from_ids_alone():
+    """The M1 generator-fit: a PW sweep (voice-0 ``lo|hi<<8`` = a constant-step wrapping
+    ramp) is DERIVED as a 16-bit ramp GENERATOR -- ONE record covering BOTH byte lanes --
+    and renders byte-exact from the ids ALONE (no anchor).  This is the derive-don't-store
+    win: a thousands-frame sweep collapses to a handful of per-segment ints."""
+    nframes = 80
+    ir = _synthetic_ir(nframes)
+    # a clean +88 (mod 2^16) PW ramp on voice-0 (regs 2 lo, 3 hi), seeded at 0x0040.
+    pw = np.zeros(nframes, dtype=np.int64)
+    val = 0x0040
+    for i in range(nframes):
+        pw[i] = val
+        val = (val + 88) % (1 << 16)
+    lo, hi = pw & 0xFF, (pw >> 8) & 0xFF
+    starts, seeds, steps = SI._ramp16_fit(lo, hi)
+    assert len(starts) == 1 and seeds == [0x0040] and steps == [88]  # one clean segment
+    ir.nonfreq = [(SI._LANE_RAMP16, 2, 3, starts, seeds, steps)]
+    ir._state[:, 2] = lo
+    ir._state[:, 3] = hi
+
+    back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
+    assert SI._norm(back.nonfreq) == SI._norm(ir.nonfreq)  # the generator round-trips
+    lanes = SI.render_nonfreq_from_ir(back, anchor=None)  # both byte lanes from the ids
+    assert np.array_equal(lanes[2], lo) and np.array_equal(lanes[3], hi)
+    rendered = SI.render_structure(ir)
+    assert np.array_equal(rendered, ir._state)
+
+
+def test_build_nonfreq_picks_ramp16_over_changepoints_for_a_sweep():
+    """``build_nonfreq_program`` picks the CHEAPEST byte-exact encoding: a dense PW sweep
+    (a wrapping ramp, ~every frame a change point) is admitted as ONE ``_LANE_RAMP16``
+    generator, not two dense change-point lanes (the literal-floor trap)."""
+    nframes = 400
+    state = np.zeros((nframes, 25), dtype=np.int64)
+    val = 0x0123
+    for i in range(nframes):
+        state[i, 2] = val & 0xFF
+        state[i, 3] = (val >> 8) & 0xFF
+        val = (val + 217) % (
+            1 << 16
+        )  # a steep ramp -> a change point almost every frame
+    prog = SI.build_nonfreq_program(state)
+    ramp = [r for r in prog if r[0] == SI._LANE_RAMP16 and r[1] == 2 and r[2] == 3]
+    assert ramp, "the dense PW sweep must be admitted as a 16-bit ramp generator"
+    # neither byte lane is ALSO emitted as a change-point record (the generator covers both).
+    cp_regs = {r[1] for r in prog if r[0] == SI._LANE_CP}
+    assert 2 not in cp_regs and 3 not in cp_regs
+    # and it renders the two byte lanes byte-exact from the program alone.
+    ir = SI.StructureIR(nonfreq=prog, nframes=nframes)
+    lanes = SI.render_nonfreq_from_ir(ir, anchor=None)
+    assert np.array_equal(lanes[2], state[:, 2]) and np.array_equal(
+        lanes[3], state[:, 3]
+    )
 
 
 def test_nonfreq_empty_program_serialises_identically():

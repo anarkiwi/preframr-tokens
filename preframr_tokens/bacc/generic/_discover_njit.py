@@ -406,6 +406,92 @@ def step_lane_kernel(starts, values, nframes):
 
 
 @njit
+def ramp_segments_kernel(col, modulus):
+    """Segment a register column into maximal CONSTANT-STEP WRAPPING-RAMP runs (the
+    M1 generator-fit for a sweep lane): the lane's per-frame value is a free-running
+    accumulator ``value += step (mod modulus)``, reset/reparametrised only at note-gated
+    boundaries.  A segment is the longest run from ``i`` reproducible by stepping the
+    recurrence from ``col[i]`` with the fixed step ``col[i+1]-col[i] (mod modulus)``.
+
+    Returns ``(starts, seeds, steps, nseg)`` -- per segment the start frame, the seed
+    value ``col[start]``, and the per-frame step; the host serialises the (small) segment
+    boundaries + per-segment ``(seed, step)`` (value-LZ'd) instead of the dense change-
+    point dump (storing the OUTPUT is the HARD RULE #0 literal-floor trap -- a ramp's
+    GENERATOR is a handful of ints).  :func:`ramp_render_kernel` is the exact inverse.
+    ``col`` is ``int64[nframes]`` (the 16-bit ``lo | hi<<8`` PW value, or an 8-bit lane);
+    ``modulus`` is the wrap (``65536`` for a 16-bit PW combine, ``256`` for a byte lane).
+    """
+    n = col.shape[0]
+    if n == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), 0
+    # first pass: count segments (so the output arrays are exactly sized, njit-friendly).
+    nseg = 0
+    i = 0
+    while i < n:
+        if i + 1 >= n:
+            nseg += 1
+            break
+        step = (col[i + 1] - col[i]) % modulus
+        val = col[i]
+        j = i
+        while j < n and (val % modulus) == (col[j] % modulus):
+            val = (val + step) % modulus
+            j += 1
+        nseg += 1
+        i = j
+    starts = np.empty(nseg, dtype=np.int64)
+    seeds = np.empty(nseg, dtype=np.int64)
+    steps = np.empty(nseg, dtype=np.int64)
+    s = 0
+    i = 0
+    while i < n:
+        starts[s] = i
+        seeds[s] = col[i] % modulus
+        if i + 1 >= n:
+            steps[s] = 0
+            s += 1
+            break
+        step = (col[i + 1] - col[i]) % modulus
+        steps[s] = step
+        val = col[i]
+        j = i
+        while j < n and (val % modulus) == (col[j] % modulus):
+            val = (val + step) % modulus
+            j += 1
+        s += 1
+        i = j
+    return starts, seeds, steps, nseg
+
+
+@njit
+def ramp_render_kernel(starts, seeds, steps, nframes, modulus):
+    """Render a ramp-segment generator to its per-frame value column (the inverse of
+    :func:`ramp_segments_kernel`): over ``[starts[k], starts[k+1])`` step the recurrence
+    ``value = (seeds[k] + (i - starts[k]) * steps[k]) mod modulus`` (the last segment
+    runs to ``nframes``).  Byte-exact: stepping the same recurrence the fit verified
+    reproduces ``col`` exactly.  ``starts``/``seeds``/``steps`` are ``int64[nseg]``; the
+    output is ``int64[nframes]`` (the 16-bit PW value the host splits back to lo/hi)."""
+    out = np.zeros(nframes, dtype=np.int64)
+    nseg = starts.shape[0]
+    if nseg == 0:
+        return out
+    for k in range(nseg):
+        a = starts[k]
+        b = starts[k + 1] if k + 1 < nseg else nframes
+        if a < 0:
+            a = 0
+        if b > nframes:
+            b = nframes
+        val = seeds[k] % modulus
+        step = steps[k] % modulus
+        for i in range(a, b):
+            out[i] = val
+            val = (val + step) % modulus
+    return out
+
+
+@njit
 def change_points_kernel(col):
     """The change-point stream of a register column ``col`` (``int64[nframes]``): the
     frame indices where the value changes (always including frame 0).  Returns

@@ -309,6 +309,98 @@ def test_step_lane_kernel_holds_tail_and_empty():
     assert np.array_equal(empty, np.zeros(4, dtype=np.int64))
 
 
+def _ref_ramp_segments(col, modulus):
+    """Pure-Python reference for ``ramp_segments_kernel``: greedy maximal constant-step
+    wrapping-ramp runs.  A segment from ``i`` steps ``col[i]`` by the fixed step
+    ``col[i+1]-col[i] (mod modulus)`` as long as it reproduces ``col``."""
+    n = len(col)
+    starts, seeds, steps = [], [], []
+    i = 0
+    while i < n:
+        starts.append(i)
+        seeds.append(int(col[i]) % modulus)
+        if i + 1 >= n:
+            steps.append(0)
+            break
+        step = (int(col[i + 1]) - int(col[i])) % modulus
+        steps.append(step)
+        val = int(col[i])
+        j = i
+        while j < n and (val % modulus) == (int(col[j]) % modulus):
+            val = (val + step) % modulus
+            j += 1
+        i = j
+    return (
+        np.asarray(starts, dtype=np.int64),
+        np.asarray(seeds, dtype=np.int64),
+        np.asarray(steps, dtype=np.int64),
+    )
+
+
+def _ref_ramp_render(starts, seeds, steps, nframes, modulus):
+    """Pure-Python reference for ``ramp_render_kernel``: step the recurrence per segment."""
+    out = np.zeros(nframes, dtype=np.int64)
+    for k in range(len(starts)):
+        a = max(0, int(starts[k]))
+        b = int(starts[k + 1]) if k + 1 < len(starts) else nframes
+        b = min(b, nframes)
+        val = int(seeds[k]) % modulus
+        step = int(steps[k]) % modulus
+        for i in range(a, b):
+            out[i] = val
+            val = (val + step) % modulus
+    return out
+
+
+def test_ramp_segments_and_render_roundtrip_byte_exact():
+    rng = np.random.default_rng(23)
+    for modulus in (256, 1 << 16):
+        for _ in range(20):
+            n = int(rng.integers(1, 400))
+            # a sweep column: a few constant-step wrapping ramps with note-gated resets
+            # (the PW-sweep shape -- ramps that wrap at the modulus and restart).
+            col = np.zeros(n, dtype=np.int64)
+            i = 0
+            val = int(rng.integers(0, modulus))
+            while i < n:
+                run = int(rng.integers(1, 60))
+                step = int(rng.integers(0, modulus))
+                for _k in range(run):
+                    if i >= n:
+                        break
+                    col[i] = val
+                    val = (val + step) % modulus
+                    i += 1
+                val = int(rng.integers(0, modulus))  # a reset at the segment boundary
+            starts, seeds, steps, nseg = DJ.ramp_segments_kernel(col, modulus)
+            r_starts, r_seeds, r_steps = _ref_ramp_segments(col, modulus)
+            assert nseg == len(r_starts)
+            assert np.array_equal(starts, r_starts)
+            assert np.array_equal(seeds, r_seeds)
+            assert np.array_equal(steps, r_steps)
+            # the generator renders the column byte-exact (the fit/render are inverses).
+            got = DJ.ramp_render_kernel(starts, seeds, steps, n, modulus)
+            assert np.array_equal(
+                got, _ref_ramp_render(starts, seeds, steps, n, modulus)
+            )
+            assert np.array_equal(got, col)
+
+
+def test_ramp_segments_single_clean_ramp_is_one_segment():
+    # a clean +88 (mod 2^16) ramp with no reset is ONE segment (seed, step) -- the
+    # derive-don't-store win: a long sweep collapses to two ints.
+    n = 100
+    col = np.zeros(n, dtype=np.int64)
+    val = 0x0040
+    for i in range(n):
+        col[i] = val
+        val = (val + 88) % (1 << 16)
+    starts, seeds, steps, nseg = DJ.ramp_segments_kernel(col, 1 << 16)
+    assert nseg == 1 and int(seeds[0]) == 0x0040 and int(steps[0]) == 88
+    got = DJ.ramp_render_kernel(starts, seeds, steps, n, 1 << 16)
+    assert np.array_equal(got, col)
+
+
 def test_idxr_score_kernel_finds_in_image_targets():
     ram = np.zeros(65536, dtype=np.uint8)
     read_play = np.zeros(65536, dtype=np.uint8)
