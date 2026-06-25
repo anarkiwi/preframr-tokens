@@ -1015,6 +1015,98 @@ def recover_schedule(distill_path, nframes=None):
     }
 
 
+def _acc_grid_builders(cells, n, align):
+    """The two closures the §state-machine identity needs to rebuild an accumulator
+    GRID from STSQ cells (shared by :func:`clean_pitches_residual` and
+    :func:`_voice_seeds` so the accumulator-grid logic lives in ONE place):
+
+      * ``grid(addr)``     -- forward-fill one STSQ byte cell across the ``n`` frames
+        (placed at ``first_seen + align``, held to the end), and
+      * ``acc16(lo, hi)``  -- combine a ``(lo, hi)`` cell pair into its 16-bit value.
+    """
+
+    def grid(addr):
+        first_seen, samples = cells[addr]
+        out = np.zeros(n, dtype=np.int64)
+        start = first_seen + align
+        end = min(start + len(samples), n)
+        out[start:end] = samples[: end - start]
+        if end < n and len(samples):
+            out[end:] = samples[-1]
+        return out
+
+    def acc16(lo, hi):
+        return grid(lo) | (grid(hi) << 8)
+
+    return grid, acc16
+
+
+def _flatten_accs(freq, acc16, acc_cells, cells, a, b):
+    """Pick the 1-2 accumulator ``(lo, hi)`` pairs that flatten ``freq`` to the fewest
+    piecewise-constant runs over ``[a, b)`` (the porta/vibrato integrators), GENERICALLY
+    (the same selection :func:`clean_pitches_residual` always made -- factored out so the
+    note-base recovery shares it).  Returns the chosen list of ``(lo, hi)`` pairs."""
+
+    def n_changes(seq):
+        return int(np.sum(np.diff(seq[a:b]) != 0))
+
+    best = (n_changes(freq), [])
+    for lo1 in acc_cells:
+        for dh1 in (1, 2, 3):
+            if lo1 + dh1 not in cells:
+                continue
+            a1 = acc16(lo1, lo1 + dh1)
+            c1 = n_changes((freq - a1) % 65536)
+            if c1 < best[0]:
+                best = (c1, [(lo1, lo1 + dh1)])
+            for lo2 in acc_cells:
+                if lo2 <= lo1:
+                    continue
+                for dh2 in (1, 2, 3):
+                    if lo2 + dh2 not in cells:
+                        continue
+                    a2 = acc16(lo2, lo2 + dh2)
+                    c2 = n_changes((freq - a1 - a2) % 65536)
+                    if c2 < best[0]:
+                        best = (c2, [(lo1, lo1 + dh1), (lo2, lo2 + dh2)])
+    return best[1]
+
+
+def _voice_seeds(distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15)), align=1):
+    """Per-voice ``(freq, seed, accs, total_acc)`` -- the §state-machine identity
+    inversion shared by :func:`clean_pitches_residual` and :func:`note_base_recover`.
+
+    ``freq`` is the voice's 16-bit ``lo | hi<<8`` column; ``accs`` is the chosen
+    flattening accumulator-cell pair list (:func:`_flatten_accs`); ``total_acc`` is their
+    summed 16-bit grid; ``seed = (freq - total_acc) % 65536`` is the recovered NOTE-PITCH
+    BASE (piecewise-constant true grid pitch per note span).  Returns
+    ``(n, a, {voice: (freq, seed, accs, total_acc)})`` where ``[a, n)`` is the analysed
+    window, or ``None`` if the artifact has no STSQ section.  This is the ONE place the
+    accumulator grid + selection logic lives (no duplication)."""
+    cells = read_stsq_cells(distill_path)
+    if not cells:
+        return None
+    state = np.asarray(freq_state, dtype=np.int64)
+    n = state.shape[0]
+    _grid, acc16 = _acc_grid_builders(cells, n, align)
+    acc_cells = [
+        a
+        for a, (_fs, s) in cells.items()
+        if len(np.unique(s)) >= 5 and bool((s[:4] == 0).any())
+    ]
+    a, b = 3, n
+    out = {}
+    for vi, (rlo, rhi) in enumerate(voices):
+        freq = state[:, rlo] | (state[:, rhi] << 8)
+        accs = _flatten_accs(freq, acc16, acc_cells, cells, a, b)
+        total_acc = np.zeros(n, dtype=np.int64)
+        for lo, hi in accs:
+            total_acc = (total_acc + acc16(lo, hi)) % 65536
+        seed = (freq - total_acc) % 65536
+        out[vi] = (freq, seed, accs, total_acc)
+    return n, a, out
+
+
 def clean_pitches_residual(
     distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15)), align=1
 ):
@@ -1034,69 +1126,17 @@ def clean_pitches_residual(
     ``{voice: {"displaced": int, "pitches": int, "residual": int, "accs": [(lo,hi),...]}}``
     or ``None`` if the artifact has no STSQ section.  This is the in-tree port of the
     proven ``statemachine-proto/PROOF.py``."""
-    cells = read_stsq_cells(distill_path)
-    if not cells:
+    vs = _voice_seeds(distill_path, freq_state, voices=voices, align=align)
+    if vs is None:
         return None
-    state = np.asarray(freq_state, dtype=np.int64)
-    n = state.shape[0]
-
-    def grid(addr):
-        first_seen, samples = cells[addr]
-        out = np.zeros(n, dtype=np.int64)
-        start = first_seen + align
-        end = min(start + len(samples), n)
-        out[start:end] = samples[: end - start]
-        if end < n and len(samples):
-            out[end:] = samples[-1]
-        return out
-
-    def acc16(lo, hi):
-        return grid(lo) | (grid(hi) << 8)
-
-    def n_changes(seq, a, b):
-        return int(np.sum(np.diff(seq[a:b]) != 0))
-
-    # accumulator-cell candidates: reset-to-0, multi-valued (the porta/vib integrators)
-    acc_cells = [
-        a
-        for a, (_fs, s) in cells.items()
-        if len(np.unique(s)) >= 5 and bool((s[:4] == 0).any())
-    ]
+    n, a, per_voice = vs
+    b = n
 
     results = {}
-    for vi, (rlo, rhi) in enumerate(voices):
-        freq = state[:, rlo] | (state[:, rhi] << 8)
-        # Analyze the WHOLE tune: PR0 lifted the distill capture caps, so the STSQ
-        # accumulator cells now span the full run.  The legacy ``min(n, 514)`` window
-        # truncated accumulator selection + residual to the first ~512 frames (a stale
-        # capture-cap mirror); over the full tune the chosen acc pairs flatten freq to
-        # the true grid pitches across the ENTIRE playback (residual measured to ``n``).
-        a, b = 3, n
-        # generically pick the 1-2 acc16 pairs minimizing piecewise-const breaks
-        best = (n_changes(freq, a, b), [])
-        for lo1 in acc_cells:
-            for dh1 in (1, 2, 3):
-                if lo1 + dh1 not in cells:
-                    continue
-                a1 = acc16(lo1, lo1 + dh1)
-                c1 = n_changes((freq - a1) % 65536, a, b)
-                if c1 < best[0]:
-                    best = (c1, [(lo1, lo1 + dh1)])
-                for lo2 in acc_cells:
-                    if lo2 <= lo1:
-                        continue
-                    for dh2 in (1, 2, 3):
-                        if lo2 + dh2 not in cells:
-                            continue
-                        a2 = acc16(lo2, lo2 + dh2)
-                        c2 = n_changes((freq - a1 - a2) % 65536, a, b)
-                        if c2 < best[0]:
-                            best = (c2, [(lo1, lo1 + dh1), (lo2, lo2 + dh2)])
-        accs = best[1]
-        total_acc = np.zeros(n, dtype=np.int64)
-        for lo, hi in accs:
-            total_acc = (total_acc + acc16(lo, hi)) % 65536
-        seed = (freq - total_acc) % 65536
+    for vi, (freq, seed, accs, total_acc) in per_voice.items():
+        # The WHOLE tune is analysed in ``_voice_seeds`` (PR0 lifted the distill capture
+        # caps; the chosen acc pairs flatten freq to the true grid pitches across the
+        # ENTIRE playback, residual measured to ``n`` over ``[a, b)``).
         # render seed as piecewise-const + accumulators, compare byte-exact over [a,b)
         onsets = [a] + [a + 1 + i for i in np.nonzero(np.diff(seed[a:b]) != 0)[0]] + [b]
         seed_r = np.zeros(n, dtype=np.int64)
@@ -1111,6 +1151,129 @@ def clean_pitches_residual(
             "accs": [(int(lo), int(hi)) for lo, hi in accs],
         }
     return results
+
+
+def _tok_int(v):
+    """Token cost of a small unsigned int under the codec's nibble/byte alphabet
+    (1 nibble < 16, 1 byte < 256, else 3) -- the per-segment generator budget unit."""
+    v = int(v)
+    return 1 if v < 16 else (2 if v < 256 else 3)
+
+
+def _fit_idx_ramp(idx):
+    """Fit a NOTE-TABLE-INDEX walk ``idx`` (small non-negative ints) with constant-step
+    wrapping-ramp SEGMENTS (the existing :func:`_discover_njit.ramp_segments_kernel`),
+    choosing a modulus LARGER than ``max(idx)`` so the small idx values NEVER wrap -- the
+    ramp is then a plain constant-step segmenter over the integers (note-level glides are
+    constant-step ramps; an arp's repeating table walks as a chain of short ramp runs).
+
+    Returns ``(starts, seeds, steps, modulus, rendered, residual, seg_tokens)`` where
+    ``rendered`` is :func:`ramp_render_kernel`'s reproduction of ``idx`` and ``residual``
+    is the byte-exact mismatch count (MUST be 0 -- the generator is the recovered
+    structure, not a stored output).  ``seg_tokens`` is the generator's token cost: per
+    segment a start-delta + the seed + the step (each value-costed), the structured floor
+    the note-base render serializes instead of the dense per-frame note dump."""
+    from preframr_tokens.bacc.generic import _discover_njit as DJ
+
+    idx = np.asarray(idx, dtype=np.int64)
+    if idx.size == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), 1, empty.copy(), 0, 0
+    modulus = int(idx.max()) + 2  # strictly above max idx -> the small ints never wrap
+    starts, seeds, steps, nseg = DJ.ramp_segments_kernel(idx, modulus)
+    rendered = DJ.ramp_render_kernel(starts, seeds, steps, idx.size, modulus)
+    residual = int(np.sum(rendered != idx))
+    seg_tokens = (
+        int(nseg)
+        + sum(_tok_int(s) for s in seeds.tolist())
+        + sum(_tok_int(s) for s in steps.tolist())
+    )
+    return starts, seeds, steps, modulus, rendered, residual, seg_tokens
+
+
+def note_base_recover(
+    distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15)), align=1
+):
+    """Recover the per-voice NOTE-PITCH BASE freq FROM TOKENS (no ``_state`` read for the
+    base) -- the PR3 lift of :func:`render_freq_from_ir`'s ``_state``-derived ``note_seed``
+    to a token-derived GENERATOR.
+
+    Per voice, using the SHARED accumulator machinery (:func:`_voice_seeds`):
+      * ``seed = (freq - total_acc) % 65536`` is the note-pitch base (porta/vibrato
+        subtracted; piecewise-constant true grid pitch per note span);
+      * ``note_table`` is the DISTINCT seed Fn values (the player's OWN note table, NOT
+        12-TET -- a 12-TET integer-Hz table does not reproduce them; SILENCE seed 0 is a
+        real player state and is kept in the table so the idx walk is always a valid
+        non-negative index and the base reproduces ``freq == 0`` rests byte-exact);
+      * ``idx_walk[f] = note_table.index(seed[f])`` is the per-frame note-table-index walk
+        -- HIGHLY compressible (the recovered structure, proving it is NOT entropy): a
+        downward index ramp is a note-level glide, a small repeating run is an arp;
+      * the idx walk is fitted with the CHEAPEST byte-exact GENERATOR
+        (:func:`_fit_idx_ramp`, constant-step wrapping-ramp segments, modulus chosen so the
+        idx values never wrap).  The generator MUST render the idx walk BYTE-EXACT
+        (``residual == 0``) -- this is verified and reported; a non-zero residual is a
+        FAILURE (a missing generator), never accepted.
+      * ``base_freq = note_table[idx_rendered]`` placed piecewise-const is the recovered
+        base; ``covered`` is how many frames of the actual freq column the base ALONE
+        reproduces (the rest is the IWLK overlay, the additive remaining gap).
+
+    ``freq_state`` is the ``(nframes, 25)`` register array.  Returns
+    ``{voice: {"note_table", "idx_walk", "idx_rendered", "idx_residual", "ramp"
+    (starts, seeds, steps, modulus), "covered", "nframes", "tok_per_frame",
+    "base_freq"}}`` or ``None`` if the artifact has no STSQ section.  The base is now
+    token-derived; only the residual the base does not cover (IWLK) still leans on
+    ``_state`` in the existing :func:`render_freq_from_ir` overlay."""
+    vs = _voice_seeds(distill_path, freq_state, voices=voices, align=align)
+    if vs is None:
+        return None
+    n, a, per_voice = vs
+    out = {}
+    for vi, (freq, seed, _accs, _total_acc) in per_voice.items():
+        # the note table is the DISTINCT seed values over [a, n) -- KEEP 0 (silence) so the
+        # idx walk is always a valid non-negative table index (a -1 rest sentinel would
+        # wrap under the ramp modulus and break byte-exactness).
+        seed_win = seed[a:n].astype(np.int64)
+        tbl = sorted(set(int(x) for x in seed_win.tolist()))
+        idx_of = {f: i for i, f in enumerate(tbl)}
+        idx_walk = np.array([idx_of[int(v)] for v in seed_win.tolist()], dtype=np.int64)
+        starts, seeds, steps, modulus, rendered, idx_resid, seg_toks = _fit_idx_ramp(
+            idx_walk
+        )
+        tbl_arr = np.asarray(tbl, dtype=np.int64)
+        base_freq = np.zeros(n, dtype=np.int64)
+        if rendered.size:
+            base_freq[a:n] = tbl_arr[rendered]
+        covered = int(np.sum(base_freq[a:n] == freq[a:n]))
+        out[vi] = {
+            "note_table": tbl,
+            "idx_walk": idx_walk,
+            "idx_rendered": rendered,
+            "idx_residual": idx_resid,
+            "ramp": (starts, seeds, steps, modulus),
+            "covered": covered,
+            "nframes": n - a,
+            "tok_per_frame": (seg_toks / n) if n else 0.0,
+            "base_freq": base_freq,
+        }
+    return out
+
+
+def render_note_base_from_tokens(
+    distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15)), align=1
+):
+    """Render the per-voice NOTE-PITCH BASE freq FROM THE GENERATOR ALONE -- no ``_state``
+    read for the base (the base is rebuilt from the recovered note table + the byte-exact
+    idx-walk ramp generator, :func:`note_base_recover`).
+
+    Returns ``{voice: base_freq_array(int64[nframes])}``.  This is the token-derived half
+    of the freq render; the IWLK overlay (the residual the base does not cover) is the
+    additive remaining gap supplied separately (still via ``_state`` in
+    :func:`render_freq_from_ir` for now).  ``None`` if the artifact has no STSQ section.
+    """
+    rec = note_base_recover(distill_path, freq_state, voices=voices, align=align)
+    if rec is None:
+        return None
+    return {vi: info["base_freq"] for vi, info in rec.items()}
 
 
 # Accumulator generator kinds (the BACC fits the STSQ porta/vibrato cells reduce to).
