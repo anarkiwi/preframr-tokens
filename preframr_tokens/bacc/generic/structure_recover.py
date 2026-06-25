@@ -959,6 +959,62 @@ def read_stsq_cells(distill_path):
     return {c.addr: (c.first_seen, c.samples.astype(np.int64)) for c in d.stsq_cells}
 
 
+def recover_schedule(distill_path, nframes=None):
+    """Recover the note->frame SCHEDULE + tempo from the PWLK orderlist advances.
+
+    Each ``PtrWalk.adv_frames`` entry is the frame (play-call) index at which the
+    orderlist pointer advanced -- the per-row NOTE ONSET (design item #6, the tempo
+    events).  PR0 lifted the distill capture cap, so ``adv_frames`` now spans the WHOLE
+    run (was truncated at ~256 advances); this collapses the advance stream into the
+    canonical schedule the player walked:
+
+      * ``onsets``    -- the DISTINCT frame indices a row advanced (folded so the first
+        onset is frame 0, the player's row-0 onset);
+      * ``durations`` -- the inter-onset frame gaps, with the final row extended to
+        ``nframes`` so ``sum(durations) == nframes`` (a tempo-event partition of the
+        full playback, NOT a stored per-frame dump -- HARD RULE #0);
+      * ``tempo``     -- the modal onset gap (the row resolution: the player's base
+        ticks-per-row; a tune that double-times some rows shows the modal gap here and
+        the off-tempo rows as the larger durations).
+
+    Picks the orderlist-advancing walk (``is_load`` with >=2 distinct pointer values --
+    the same selector :func:`discover_patterns_pwlk` uses) with the most onsets.  Returns
+    ``{"onsets", "durations", "tempo", "n_onsets", "span", "nframes"}`` or ``None`` when
+    the artifact has no orderlist walk."""
+    d = _load_distill_or_none(distill_path)
+    if d is None or not getattr(d, "ptr_walks", None):
+        return None
+    nf = int(d.nframes if nframes is None else nframes)
+    best = None
+    for walk in d.ptr_walks:
+        if not walk.is_load or len(set(walk.ptr_vals)) < 2 or not walk.adv_frames:
+            continue
+        onsets = sorted({int(f) for f in walk.adv_frames if 0 <= int(f) < nf})
+        if len(onsets) < 2:
+            continue
+        if best is None or len(onsets) > len(best):
+            best = onsets
+    if best is None:
+        return None
+    # fold the first onset to frame 0 (the row-0 onset) and partition the full run.
+    onsets = [0] + best[1:]
+    durations = [b - a for a, b in zip(onsets, onsets[1:] + [nf])]
+    gaps = [b - a for a, b in zip(onsets, onsets[1:])]
+    if gaps:
+        vals, counts = np.unique(np.asarray(gaps), return_counts=True)
+        tempo = int(vals[int(np.argmax(counts))])
+    else:
+        tempo = nf
+    return {
+        "onsets": onsets,
+        "durations": durations,
+        "tempo": tempo,
+        "n_onsets": len(onsets),
+        "span": (int(best[0]), int(best[-1])),
+        "nframes": nf,
+    }
+
+
 def clean_pitches_residual(
     distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15)), align=1
 ):
@@ -1010,7 +1066,12 @@ def clean_pitches_residual(
     results = {}
     for vi, (rlo, rhi) in enumerate(voices):
         freq = state[:, rlo] | (state[:, rhi] << 8)
-        a, b = 3, min(n, 514)
+        # Analyze the WHOLE tune: PR0 lifted the distill capture caps, so the STSQ
+        # accumulator cells now span the full run.  The legacy ``min(n, 514)`` window
+        # truncated accumulator selection + residual to the first ~512 frames (a stale
+        # capture-cap mirror); over the full tune the chosen acc pairs flatten freq to
+        # the true grid pitches across the ENTIRE playback (residual measured to ``n``).
+        a, b = 3, n
         # generically pick the 1-2 acc16 pairs minimizing piecewise-const breaks
         best = (n_changes(freq, a, b), [])
         for lo1 in acc_cells:
