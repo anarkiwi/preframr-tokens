@@ -94,30 +94,41 @@ _PW_PAIRS = ((2, 3), (9, 10), (16, 17))
 # NOTHING) while the generator-fit DERIVES the PW sweeps the change-point dump bloated.
 #
 # PR4a admission (render-from-tokens-alone): a non-freq lane is the player's INSTRUMENT
-# PROGRAM -- it fires a sets-and-holds (or a PW sweep) from each note-onset, so its
-# change-point program RECURS across the song (the instrument is shared, the phrase
-# repeats).  That recurrence is the HARD RULE #0 structure: the shared backward-LZ
-# (``_struct_lz``, over the whole concatenated non-freq section) COLLAPSES it (measured:
-# a 567-change-point ctrl lane -> 102 tokens, a 1027-change-point lane -> 36 tokens).  A
-# lane is admitted only when its LZ'd program is a genuine COLLAPSE of its raw
-# change-point stream (``_lz_collapses``): the LZ shrank it well below the raw
-# ``nseg``-pair floor, proving recovered recurrence, NOT a per-frame literal dump.  A lane
-# the LZ does NOT collapse (a truly non-recurrent per-frame column) is rejected and stays
-# on the anchor (the falsifiable gap) -- never serialized as its dense output.
-_LZ_COLLAPSE_RATIO = 0.6  # a DENSE CP lane is admitted when LZ < ratio * its raw cost
+# PROGRAM -- it fires a sets-and-holds (or a PW sweep) from each note-onset, so the same
+# instrument segment RECURS across the song (the instrument is shared, the phrase repeats).
+# That recurrence is the HARD RULE #0 structure, but it is recovered as the AUTHORED-LEVEL
+# REF -- a content-addressed PER-ONSET SEGMENT dictionary keyed to the recovered schedule
+# (:func:`_lane_seg_program`): each DISTINCT per-onset segment is defined ONCE and the lane
+# emits a REF per onset (an instrument shared across notes -- measured: a 911-change-point
+# ctrl lane -> 24 distinct per-onset segments).  This is NEVER value-LZ over the output
+# column: a lane that does NOT collapse to a small per-onset dictionary (and is not a sparse
+# sets-and-holds) is rejected and stays on the ``_state`` anchor (the falsifiable gap),
+# never serialized as its dense output.
 _NONFREQ_SPARSE_SEG = 32  # a SPARSE CP lane (<= this many change points) is the real
 # player program (filter / volume / cutoff setup, an AD/SR latched a handful of times) and
 # is always admitted -- it is sets-and-holds, never a per-frame dump.
+# A DENSE lane is admitted as a per-onset SEGMENT dictionary only when its DISTINCT-segment
+# pool is small relative to the onset count (the segments RECUR -- the shared instrument
+# across notes is REF'd per onset, not dumped); else it is rejected (the anchor gap).
+_NONFREQ_SEG_RATIO = (
+    0.5  # admit SEG when distinct segments <= ratio * onsets (recurrence)
+)
 
 # The typed non-freq lane RECORD kinds (the serialized ``nonfreq`` section is a list of
 # these, each self-describing so the codec round-trips and the renderer dispatches on the
-# tag): a change-point program (the player's sets-and-holds) or a 16-bit ramp-segment
-# generator (a PW sweep, covering BOTH the lo and hi byte lanes from one generator).
+# tag): a SPARSE change-point program (the player's sets-and-holds), a 16-bit ramp-segment
+# generator (a PW sweep, covering BOTH the lo and hi byte lanes from one generator), or a
+# content-addressed PER-ONSET SEGMENT lane (a dense instrument lane whose per-onset value
+# segment RECURS -- a small distinct-segment pool the lane REFs per onset, the shared
+# instrument across notes; NEVER a value-LZ over the output column -- HARD RULE #0).
 _LANE_CP = (
     0  # ("cp", reg, starts, values)            -- piecewise-constant lane program
 )
 _LANE_RAMP16 = (
     1  # ("ramp16", lo, hi, starts, seeds, steps) -- 16-bit PW sweep generator
+)
+_LANE_SEG = (
+    2  # ("seg", reg, a, warmup, onsets, refs, seg_dict) -- per-onset segment dictionary
 )
 _PW_MODULUS = (
     1 << 16
@@ -136,18 +147,18 @@ _PW_MODULUS = (
 #    cheaper when the voice plays a small set of held grid pitches (no per-frame glide), so
 #    the distinct pitches factor into a short table the idx walk indexes; the accfit
 #    porta/vibrato overlay is summed on top.
-#  * _NB_RAWLZ -- the voice's 16-bit freq column as a VALUE stream collapsed by the shared
-#    backward-LZ (``_struct_lz``).  This is the backward-REPEAT recovery the encoder must
-#    collapse (HARD RULE #0 (b)): a periodic VIBRATO cycle (the 8-frame triangle around a
-#    carrier) and a repeated note PHRASE recur as identical value blocks the LZ folds to one
-#    stored copy + copies -- the recovery the constant-step ramp misses when the vibrato
-#    amplitude varies per note (so the ramp seeds do not factor, but the value cycle does).
-#    NOT a literal-floor dump: it is admitted only when the LZ collapse beats the ramp /
-#    table generators, i.e. the recurrence genuinely compressed it.  Carries the whole base.
+#  * _NB_ARP -- the player's own note table + a PERIODIC ARP recovered as a per-onset
+#    note-index walk: a per-onset BASE index + a REF into a small distinct OFFSET-PATTERN
+#    dictionary, keyed to the recovered schedule onsets (HARD RULE #0: an arp is NOTES --
+#    a base pitch plus a small repeating index-offset shape -- not entropy and not a
+#    value-LZ over the output).  ``idx_walk[onset+k] == base[onset] + offset_dict[ref][k]``;
+#    ``freq == note_table[idx_walk]``.  The offset dictionary is O(distinct shapes) (measured
+#    25 / 23 distinct shapes over 984 / 592 onsets); each shape is defined ONCE and REF'd.
+#    Carries the whole base; no accfit overlay (the accumulators are subtracted in the seed).
 _NB_RAMP16 = 0  # (kind, starts, seeds, steps) -- direct 16-bit freq ramp generator
 _NB_TABLE = 1  # (kind, note_table, starts, seeds, steps, modulus, a, warmup)
-_NB_RAWLZ = (
-    2  # (kind, freq) -- the 16-bit freq value stream, value-LZ'd (REPEAT collapse)
+_NB_ARP = (
+    2  # (kind, note_table, a, warmup, onsets, bases, refs, offset_dict) -- periodic arp
 )
 
 # The structure-path token alphabet is the non-negative ints; REPEAT is a reserved
@@ -341,48 +352,87 @@ def _ramp16_tokens(starts, seeds, steps):
     return len(out)
 
 
-def _lane_admissible(starts, values):
-    """True iff the LANE's change-point program is RECOVERED STRUCTURE -- either SPARSE (a
-    handful of change points: filter/volume/cutoff setup, an AD/SR latched and held -- the
-    player's real sets-and-holds, never a dump), or LZ-COLLAPSING (a denser program whose
-    value-LZ'd cost falls well below its raw ``nseg``-pair floor: the same instrument
-    sets-and-holds fired from each note-onset RECURS, the shared backward-LZ folds it).
-    This is the HARD RULE #0 falsification: a recurrent / sparse program is admitted; a
-    truly non-recurrent dense per-frame column collapses NEITHER way and is rejected
-    (stays on the anchor, never serialized as its dense output)."""
-    nseg = len(starts)
-    if nseg <= _NONFREQ_SPARSE_SEG:
-        return True  # sparse sets-and-holds (the real program), always admitted
-    raw = 1 + 2 * nseg  # nseg + the start-deltas + the values (the un-LZ'd floor)
-    return _lane_program_tokens(starts, values) < _LZ_COLLAPSE_RATIO * raw
+def _lane_seg_decompose(col, a, n, onsets):
+    """Decompose one register column over the window ``[a, n)`` into a content-addressed
+    PER-ONSET SEGMENT dictionary: per onset segment the raw VALUE tuple ``col[o:next_o]``,
+    a REF into a distinct-segment pool (define-at-first-use).  Returns
+    ``(wons, refs, seg_dict)`` -- ``seg_dict`` an ordered list of distinct segment tuples.
+    HARD RULE #0: the instrument segment fired at each note-onset RECURS (the shared
+    instrument across notes), so the pool is small -- never a value-LZ over the output.
+    """
+    wons = _window_onsets(onsets, a, n)
+    refs, pool, pos = [], [], {}
+    for k, o in enumerate(wons):
+        nxt = wons[k + 1] if k + 1 < len(wons) else n
+        seg = tuple(int(x) for x in col[o:nxt])
+        if seg not in pos:
+            pos[seg] = len(pool)
+            pool.append(seg)
+        refs.append(pos[seg])
+    return wons, refs, pool
 
 
-def build_nonfreq_program(state):
+def _lane_seg_render(a, n, warmup, onsets, refs, seg_dict):
+    """Reconstruct one register column over ``[0, n)`` from a SEG lane: the warm-up
+    ``[0, a)`` verbatim, then per onset segment the REF'd value tuple placed at the onset.
+    Inverse of :func:`_lane_seg_decompose`; the byte-exact lane replay."""
+    out = np.zeros(n, dtype=np.int64)
+    m = min(a, len(warmup), n)
+    if m:
+        out[:m] = np.asarray(warmup[:m], dtype=np.int64)
+    for k, o in enumerate(onsets):
+        nxt = onsets[k + 1] if k + 1 < len(onsets) else n
+        seg = seg_dict[refs[k]]
+        if nxt > o:
+            out[o:nxt] = np.asarray(seg, dtype=np.int64)
+    return out
+
+
+def _lane_seg_tokens(a, warmup, onsets, refs, seg_dict):
+    """The serialized token cost of one ``_LANE_SEG`` record (the seg-dict admission
+    metric): mirrors the bytes :func:`_flat_nonfreq` emits, so the cheapest-encoding pick
+    and the budget gate read the same number."""
+    flat = []
+    _flat_seg_record(flat, 0, a, warmup, onsets, refs, seg_dict)
+    out = []
+    _emit_section(out, flat)
+    return len(out)
+
+
+def build_nonfreq_program(state, schedule):
     """The M1 non-freq lane recovery (PR4a: render-from-tokens-alone): per non-freq
-    register the CHEAPEST byte-exact encoding, in derivation order (the PW-sweep generator
-    before the change-point program).  Every non-constant lane that recovers as a genuine
-    structure -- a generator or an LZ-COLLAPSING change-point program -- is admitted, so the
-    full 25-register trace renders from the ids alone (no ``_state`` anchor).  Returns a
-    typed lane-record list:
+    register the CHEAPEST byte-exact RECOVERED encoding.  Every non-constant lane that
+    recovers as genuine structure -- a PW-sweep generator, a SPARSE sets-and-holds, or a
+    small per-onset SEGMENT dictionary -- is admitted, so the full 25-register trace renders
+    from the ids alone (no ``_state`` anchor).  Returns a typed lane-record list:
 
       * ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)`` -- a PW sweep DERIVED as a 16-bit
         constant-step wrapping-ramp GENERATOR (covering BOTH byte lanes from one generator),
         admitted when the ramp fit is cheaper than the two byte lanes' change-point cost (a
         sweep is an accumulator, not two output columns -- HARD RULE #0); else
       * ``(_LANE_CP, reg, starts, values)`` -- the lane's piecewise-constant change-point
-        program (the player's real sets-and-holds), admitted when it is RECOVERED STRUCTURE
-        (:func:`_lane_admissible`: SPARSE sets-and-holds, or a denser program that
-        LZ-COLLAPSES because the instrument program RECURS -- the shared backward-LZ folds
-        it well below the raw change-point floor; not a per-frame literal dump).
+        program, admitted when it is SPARSE (``nseg <= _NONFREQ_SPARSE_SEG``: the player's
+        real sets-and-holds, filter / volume / cutoff setup latched a handful of times --
+        NOT LZ, never a dump); else
+      * ``(_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict)`` -- a DENSE instrument lane
+        recovered as a content-addressed per-onset SEGMENT dictionary (each DISTINCT segment
+        defined once, REF'd per onset), admitted when its seg-dict cost beats its
+        change-point cost (the per-onset segments RECUR -- the shared instrument across
+        notes -- HARD RULE #0); never a value-LZ over the output column.
 
-    A constant lane is omitted (``boot`` supplies it).  A lane whose change-point program
-    does NOT LZ-collapse (a truly non-recurrent per-frame column) is rejected and stays on
-    the ``_state`` anchor -- the falsifiable gap, never its dense output (the literal-floor
-    trap).  On the corpus EVERY non-constant lane collapses, so the trace is fully
-    token-rendered."""
+    A constant lane is omitted (``boot`` supplies it).  A dense lane whose seg-dict does NOT
+    collapse below the change-point cost is rejected and stays on the ``_state`` anchor --
+    the falsifiable gap, never its dense output (the literal-floor trap).  On the corpus
+    EVERY non-constant lane recovers, so the trace is fully token-rendered."""
     if state is None:
         return []
     state = np.asarray(state, dtype=np.int64)
+    n = state.shape[0]
+    onsets = schedule["onsets"] if schedule is not None else None
+    # the warm-up boundary is the first scheduled onset (the frames before the player's
+    # first note-gated fire are carried verbatim); the schedule starts at frame 0 so the
+    # segments tile [a, n) exactly.
+    a = 0 if not onsets else min(onsets)
     program = []
     covered = set()
     # (b) GENERATOR-FIT the PW sweeps first: when the 16-bit ramp generator beats the two
@@ -398,17 +448,34 @@ def build_nonfreq_program(state):
             program.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
             covered.add(lo)
             covered.add(hi)
-    # (c) CHANGE-POINT the remaining lanes (and any PW lane the generator did not win),
-    # admitted when the sets-and-holds program LZ-COLLAPSES (the recurrence is recovered
-    # structure); a constant lane needs nothing (boot), a non-collapsing one stays anchored.
+    # (c) the remaining lanes: a SPARSE sets-and-holds is the player's real program (CP, not
+    # LZ -- it stays); a DENSE lane recovers as a per-onset SEGMENT dictionary when the
+    # distinct-segment pool is SMALL relative to the onsets (the instrument segment fired at
+    # each note RECURS -- a genuine recurrence, NOT a per-frame dump).  A constant lane needs
+    # nothing (boot); a dense lane whose segments do NOT recur (a large pool ~ the onset
+    # count) stays anchored (the falsifiable gap, never a value-LZ over the output).
     for reg in _NONFREQ_REGS:
         if reg in covered:
             continue
         starts, values = _lane_change_program(state[:, reg])
         if len(values) <= 1:
             continue  # constant lane -- boot supplies it
-        if _lane_admissible(starts, values):
+        if len(starts) <= _NONFREQ_SPARSE_SEG:
             program.append((_LANE_CP, reg, starts, values))
+            continue
+        if onsets is None:
+            continue  # no schedule -> cannot key the per-onset segments; stays anchored
+        col = state[:, reg]
+        warmup = [int(v) for v in col[:a]]
+        wons, refs, seg_dict = _lane_seg_decompose(col, a, n, onsets)
+        rendered = _lane_seg_render(a, n, warmup, wons, refs, seg_dict)
+        if int(np.sum(rendered != col)) != 0:
+            raise ValueError(
+                f"structure_ir: non-freq lane {reg} SEG residual != 0 "
+                "(a missing per-onset segment, HARD RULE #0)"
+            )
+        if len(seg_dict) <= _NONFREQ_SEG_RATIO * len(wons):
+            program.append((_LANE_SEG, reg, a, warmup, wons, refs, seg_dict))
     return program
 
 
@@ -435,17 +502,58 @@ def _nb_ramp16_tokens(starts, seeds, steps):
     return len(out)
 
 
-def _nb_rawlz_tokens(freq):
-    """The serialized token cost of one ``_NB_RAWLZ`` note-base record (the value-LZ'd freq
-    value stream), the cheaper-encoding metric mirrored from :func:`_flat_note_bases`.
-    """
-    flat = [_NB_RAWLZ, len(freq), *freq]
+def _nb_arp_tokens(tbl, a, warmup, onsets, bases, refs, offset_dict):
+    """The serialized token cost of one ``_NB_ARP`` note-base record (note table + the
+    per-onset base-index + REF into the distinct OFFSET-shape pool), the cheaper-encoding
+    metric mirrored from :func:`_flat_note_bases`.  Every field is small ints / recurring
+    values the existing pattern-bank ``_struct_lz`` folds across the structure stream -- NO
+    value-LZ over a per-frame freq column (HARD RULE #0)."""
+    flat = []
+    _flat_arp_record(flat, tbl, a, warmup, onsets, bases, refs, offset_dict)
     out = []
     _emit_section(out, flat)
     return len(out)
 
 
-def _build_note_bases(distill_path, state):
+def _arp_decompose(idx_walk, a, n, onsets):
+    """Decompose the per-frame note-index walk over ``[a, n)`` into a PERIODIC ARP: per
+    onset segment a BASE index (the segment's first idx) + a REF into a distinct
+    OFFSET-shape pool (the idx minus the base over the segment).  Returns
+    ``(wons, bases, refs, offset_dict)`` -- ``offset_dict`` an ordered list of distinct
+    shape tuples (define-at-first-use).  HARD RULE #0: an arp is NOTES (a base pitch plus a
+    small repeating index-offset shape), recovered here -- not entropy, not a value-LZ.
+    """
+    wons = _window_onsets(onsets, a, n)
+    bases, refs, pool, pos = [], [], [], {}
+    for k, o in enumerate(wons):
+        nxt = wons[k + 1] if k + 1 < len(wons) else n
+        seg = idx_walk[o - a : nxt - a]
+        base = int(seg[0])
+        shape = tuple(int(x) - base for x in seg)
+        if shape not in pos:
+            pos[shape] = len(pool)
+            pool.append(shape)
+        bases.append(base)
+        refs.append(pos[shape])
+    return wons, bases, refs, pool
+
+
+def _arp_render_idx(a, n, onsets, bases, refs, offset_dict):
+    """Reconstruct the per-frame note-index walk over ``[a, n)`` from the ARP record:
+    ``idx[onset+k] == bases[i] + offset_dict[refs[i]][k]`` per onset segment.  Inverse of
+    :func:`_arp_decompose`; the byte-exact replay :func:`_note_base_grid` indexes the note
+    table with."""
+    idx = np.zeros(max(n - a, 0), dtype=np.int64)
+    for k, o in enumerate(onsets):
+        nxt = onsets[k + 1] if k + 1 < len(onsets) else n
+        shape = offset_dict[refs[k]]
+        base = bases[k]
+        for j in range(nxt - o):
+            idx[o - a + j] = base + shape[j]
+    return idx
+
+
+def _build_note_bases(distill_path, state, schedule):
     """The per-voice TOKEN-DERIVED FREQ BASE (PR4a) so the FREQ lanes render WITHOUT reading
     ``_state``.  Per voice the CHEAPER byte-exact encoding is chosen (HARD RULE #0: the
     structured floor, not whichever path the artifact happened to seed):
@@ -503,17 +611,48 @@ def _build_note_bases(distill_path, state):
         )
         table_rec = (_NB_TABLE, tbl, ts, tse, tst, int(modulus), int(a), warmup)
         table_cost = _nb_table_tokens(tbl, ts, tse, tst, int(modulus), int(a), warmup)
-        # (c) the raw freq VALUE stream, value-LZ'd (the vibrato/phrase REPEAT collapse).
-        freq_list = [int(v) for v in freq]
-        rawlz_rec = (_NB_RAWLZ, freq_list)
-        rawlz_cost = _nb_rawlz_tokens(freq_list)
+        # (c) the player's note table + a PERIODIC ARP -- per-onset base index + a REF into
+        # a small distinct OFFSET-shape pool, keyed to the recovered schedule onsets (an arp
+        # is NOTES, not a value-LZ over the output: HARD RULE #0).
+        candidates = [(ramp_cost, ramp_rec), (table_cost, table_rec)]
+        if schedule is not None:
+            idx_walk = np.asarray(info["idx_walk"], dtype=np.int64)
+            onsets = schedule["onsets"]
+            wons, bases, refs, offset_dict = _arp_decompose(idx_walk, a, n, onsets)
+            idx_r = _arp_render_idx(a, n, wons, bases, refs, offset_dict)
+            if not (
+                idx_r.size and 0 <= int(idx_r.min()) and int(idx_r.max()) < len(tbl)
+            ):
+                raise ValueError(
+                    f"structure_ir: voice {vi} ARP idx out of note-table range "
+                    "(a missing note-base generator, HARD RULE #0)"
+                )
+            arp_freq = np.zeros(n, dtype=np.int64)
+            arp_freq[:a] = freq[:a]
+            arp_freq[a:] = np.asarray(tbl, dtype=np.int64)[idx_r]
+            arp_resid = int(np.sum(arp_freq != freq))
+            if arp_resid != 0:
+                raise ValueError(
+                    f"structure_ir: voice {vi} ARP freq residual {arp_resid} != 0 "
+                    "(a missing note-base generator, HARD RULE #0)"
+                )
+            warm_arp = [int(v) for v in freq[:a]]
+            arp_rec = (
+                _NB_ARP,
+                tbl,
+                int(a),
+                warm_arp,
+                wons,
+                bases,
+                refs,
+                offset_dict,
+            )
+            arp_cost = _nb_arp_tokens(
+                tbl, int(a), warm_arp, wons, bases, refs, offset_dict
+            )
+            candidates.append((arp_cost, arp_rec))
         # pick the CHEAPEST byte-exact encoding (the structured floor, HARD RULE #0).
-        choice = min(
-            (ramp_cost, ramp_rec),
-            (table_cost, table_rec),
-            (rawlz_cost, rawlz_rec),
-            key=lambda c: c[0],
-        )
+        choice = min(candidates, key=lambda c: c[0])
         out.append(choice[1])
     return out
 
@@ -581,10 +720,10 @@ def build_structure_ir(struct, state, distill_path):
                 for (fs, kind, seed, p1, p2, p3, n, raw) in gens.get(vi, [])
             ]
 
-    note_bases = _build_note_bases(distill_path, state)
-
     nframes = int(struct.nframes) if state is None else int(np.asarray(state).shape[0])
     schedule = recover_schedule(distill_path, nframes=nframes)
+
+    note_bases = _build_note_bases(distill_path, state, schedule)
 
     ir = StructureIR(
         note_bases=note_bases,
@@ -596,7 +735,7 @@ def build_structure_ir(struct, state, distill_path):
         orderlists=orderlists,
         accfits=accfits,
         schedule=schedule,
-        nonfreq=build_nonfreq_program(state),
+        nonfreq=build_nonfreq_program(state, schedule),
         # The TRUE playback length is the ``.sidwr`` row count (``state`` rows), not the
         # artifact's REQUESTED ``nframes`` (the capture may stop early); the M1 lane replay
         # renders to exactly this length, and it is the metric denominator the tests use.
@@ -805,7 +944,10 @@ def _flat_note_bases(note_bases):
     tag and its fields -- a ``_NB_RAMP16`` is ``(kind, nseg, start-deltas, seeds, steps)``
     (a direct 16-bit freq ramp), a ``_NB_TABLE`` is ``(kind, ntbl, table, nseg,
     start-deltas, seeds, steps, modulus, a, nwarm, warmup)`` (the note table + idx-walk
-    ramp).  All small ints / recurring segments the value-LZ collapses."""
+    ramp), a ``_NB_ARP`` is ``(kind, ntbl, table, a, nwarm, warmup, nons, onset-deltas,
+    bases, refs, offset-pool)`` (the note table + per-onset base index + REF into the
+    distinct offset-shape pool).  All small ints / recurring segments the existing
+    pattern-bank ``_struct_lz`` folds across the structure stream -- no value-LZ."""
     out = [len(note_bases)]
     for rec in note_bases:
         kind = rec[0]
@@ -815,10 +957,10 @@ def _flat_note_bases(note_bases):
             _emit_start_deltas(out, starts)
             out.extend(seeds)
             out.extend(steps)
-        elif kind == _NB_RAWLZ:
-            _kind, freq = rec
-            out += [kind, len(freq)]
-            out.extend(freq)
+        elif kind == _NB_ARP:
+            _kind, tbl, a, warmup, onsets, bases, refs, offset_dict = rec
+            out.append(kind)
+            _flat_arp_record(out, tbl, a, warmup, onsets, bases, refs, offset_dict)
         else:  # _NB_TABLE
             _kind, tbl, starts, seeds, steps, modulus, a, warmup = rec
             out += [kind, len(tbl), *tbl, len(starts)]
@@ -846,12 +988,11 @@ def _parse_note_bases(flat):
             steps = list(flat[i : i + nseg])
             i += nseg
             out.append((_NB_RAMP16, starts, seeds, steps))
-        elif kind == _NB_RAWLZ:
-            nfreq = flat[i]
-            i += 1
-            freq = list(flat[i : i + nfreq])
-            i += nfreq
-            out.append((_NB_RAWLZ, freq))
+        elif kind == _NB_ARP:
+            (tbl, a, warmup, onsets, bases, refs, offset_dict), i = _read_arp_record(
+                flat, i
+            )
+            out.append((_NB_ARP, tbl, a, warmup, onsets, bases, refs, offset_dict))
         else:  # _NB_TABLE
             ntbl = flat[i]
             i += 1
@@ -892,12 +1033,161 @@ def _read_start_deltas(flat, i, nseg):
     return starts, i
 
 
+def _window_onsets(onsets, a, n):
+    """The per-onset SEGMENT boundaries over the window ``[a, n)``: the recovered schedule
+    onsets clamped to ``>= a`` and ``< n``, with ``a`` itself always the first boundary
+    (the warm-up frames ``[0, a)`` are carried verbatim).  Each boundary ``o`` owns the
+    segment ``[o, next_o)`` (the value held PAST the last change in a note span continues
+    into that span -- the player's note-gated instrument fire).  Shared by the ARP freq
+    base and the SEG non-freq lane, both keyed to the SAME authored schedule."""
+    wons = sorted({o for o in onsets if a <= o < n} | {a})
+    return [o for o in wons if o < n]
+
+
+def _emit_shape_pool(out, pool):
+    """Append a DISTINCT-shape pool (the content-addressed offset dictionary, the ARP idx
+    offsets): ``ndict`` then per shape ``len`` + its values.  Each shape is defined ONCE;
+    the lane emits a small REF per onset (define-at-first-use, an INSTR_REF-style pool) --
+    never a per-frame value stream.  The ARP offset shapes are tiny ((0,), (0,0), ...), so
+    they are stored verbatim; the SEG value pool uses :func:`_emit_seg_pool` (within-segment
+    change-points), the same set-and-hold the lane itself is."""
+    out.append(len(pool))
+    for shape in pool:
+        out.append(len(shape))
+        out.extend(int(v) for v in shape)
+
+
+def _read_shape_pool(flat, i):
+    """Reconstruct the DISTINCT-shape pool from :func:`_emit_shape_pool`; returns
+    ``(pool, i)`` where ``pool`` is a list of value tuples."""
+    ndict = flat[i]
+    i += 1
+    pool = []
+    for _ in range(ndict):
+        slen = flat[i]
+        i += 1
+        pool.append(tuple(int(v) for v in flat[i : i + slen]))
+        i += slen
+    return pool, i
+
+
+def _emit_seg_pool(out, pool):
+    """Append a DISTINCT SEGMENT pool (the per-onset instrument-segment dictionary), each
+    segment stored as its WITHIN-segment CHANGE-POINTS (the set-and-hold the player fires,
+    not a per-frame value dump): ``ndict`` then per segment ``seglen``, ``ncp``, the
+    change-point start-DELTAS + the held values.  The segment recurs across onsets (the
+    shared instrument), so the pool is small; the change-point form collapses the held runs
+    inside each segment too -- HARD RULE #0, never a value-LZ over the output column."""
+    out.append(len(pool))
+    for seg in pool:
+        arr = np.asarray(seg, dtype=np.int64)
+        cps = (
+            np.flatnonzero(np.r_[True, np.diff(arr) != 0])
+            if arr.size
+            else np.zeros(0, dtype=np.int64)
+        )
+        out += [len(seg), len(cps)]
+        _emit_start_deltas(out, [int(c) for c in cps])
+        out.extend(int(arr[c]) for c in cps)
+
+
+def _read_seg_pool(flat, i):
+    """Reconstruct the DISTINCT SEGMENT pool from :func:`_emit_seg_pool` (the within-segment
+    change-points re-expanded to the held per-frame value tuple); returns ``(pool, i)``.
+    """
+    ndict = flat[i]
+    i += 1
+    pool = []
+    for _ in range(ndict):
+        seglen, ncp = flat[i], flat[i + 1]
+        i += 2
+        starts, i = _read_start_deltas(flat, i, ncp)
+        values = list(flat[i : i + ncp])
+        i += ncp
+        seg = [0] * seglen
+        for k in range(ncp):
+            end = starts[k + 1] if k + 1 < ncp else seglen
+            for j in range(starts[k], end):
+                seg[j] = values[k]
+        pool.append(tuple(seg))
+    return pool, i
+
+
+def _flat_arp_record(out, tbl, a, warmup, onsets, bases, refs, offset_dict):
+    """Append one ``_NB_ARP`` record body (no kind tag): the note table, warm-up, the
+    per-onset BASE-index + onset-DELTA stream + REF stream, then the distinct OFFSET-shape
+    pool.  ``offset_dict[ref]`` placed at ``base`` reconstructs each onset's idx segment
+    (``idx[onset+k] == base + offset_dict[ref][k]``) -- an arp is a base pitch plus a small
+    repeating index-offset SHAPE, not a value-LZ over the output (HARD RULE #0)."""
+    out += [len(tbl), *tbl, a, len(warmup), *warmup, len(onsets)]
+    _emit_start_deltas(out, onsets)
+    out.extend(int(b) for b in bases)
+    out.extend(int(r) for r in refs)
+    _emit_shape_pool(out, offset_dict)
+
+
+def _read_arp_record(flat, i):
+    """Reconstruct one ``_NB_ARP`` record body from :func:`_flat_arp_record`; returns
+    ``((tbl, a, warmup, onsets, bases, refs, offset_dict), i)``."""
+    ntbl = flat[i]
+    i += 1
+    tbl = list(flat[i : i + ntbl])
+    i += ntbl
+    a = flat[i]
+    i += 1
+    nwarm = flat[i]
+    i += 1
+    warmup = list(flat[i : i + nwarm])
+    i += nwarm
+    nons = flat[i]
+    i += 1
+    onsets, i = _read_start_deltas(flat, i, nons)
+    bases = list(flat[i : i + nons])
+    i += nons
+    refs = list(flat[i : i + nons])
+    i += nons
+    offset_dict, i = _read_shape_pool(flat, i)
+    return (tbl, a, warmup, onsets, bases, refs, offset_dict), i
+
+
+def _flat_seg_record(out, reg, a, warmup, onsets, refs, seg_dict):
+    """Append one ``_LANE_SEG`` record body (no kind tag): the register, warm-up, the
+    onset-DELTA stream + REF stream, then the distinct per-onset SEGMENT pool.
+    ``seg_dict[ref]`` placed at each onset reconstructs the lane (the shared instrument
+    segment across notes) -- never a value-LZ over the output column (HARD RULE #0)."""
+    out += [reg, a, len(warmup), *warmup, len(onsets)]
+    _emit_start_deltas(out, onsets)
+    out.extend(int(r) for r in refs)
+    _emit_seg_pool(out, seg_dict)
+
+
+def _read_seg_record(flat, i):
+    """Reconstruct one ``_LANE_SEG`` record body from :func:`_flat_seg_record`; returns
+    ``((reg, a, warmup, onsets, refs, seg_dict), i)``."""
+    reg = flat[i]
+    i += 1
+    a = flat[i]
+    i += 1
+    nwarm = flat[i]
+    i += 1
+    warmup = list(flat[i : i + nwarm])
+    i += nwarm
+    nons = flat[i]
+    i += 1
+    onsets, i = _read_start_deltas(flat, i, nons)
+    refs = list(flat[i : i + nons])
+    i += nons
+    seg_dict, i = _read_seg_pool(flat, i)
+    return (reg, a, warmup, onsets, refs, seg_dict), i
+
+
 def _flat_nonfreq(nonfreq):
     """The M1 non-freq lane section, flat: ``nrec`` then per TYPED record a kind tag and
-    its fields (the start-DELTA streams + value/seed/step streams -- small ints the
-    value-LZ collapses).  A ``_LANE_CP`` is ``(kind, reg, nseg, start-deltas, values)``;
-    a ``_LANE_RAMP16`` is ``(kind, lo, hi, nseg, start-deltas, seeds, steps)``.  Only the
-    admitted (cheap) lanes are present; the rest render from the anchor."""
+    its fields (the start-DELTA streams + value/seed/step/ref streams -- small ints the
+    pattern-bank ``_struct_lz`` folds).  A ``_LANE_CP`` is ``(kind, reg, nseg, start-deltas,
+    values)``; a ``_LANE_RAMP16`` is ``(kind, lo, hi, nseg, start-deltas, seeds, steps)``; a
+    ``_LANE_SEG`` is ``(kind, reg, a, nwarm, warmup, nons, onset-deltas, refs, seg-pool)``.
+    Only the admitted (recovered) lanes are present; the rest render from the anchor."""
     out = [len(nonfreq)]
     for rec in nonfreq:
         kind = rec[0]
@@ -907,6 +1197,10 @@ def _flat_nonfreq(nonfreq):
             _emit_start_deltas(out, starts)
             out.extend(seeds)
             out.extend(steps)
+        elif kind == _LANE_SEG:
+            _kind, reg, a, warmup, onsets, refs, seg_dict = rec
+            out.append(kind)
+            _flat_seg_record(out, reg, a, warmup, onsets, refs, seg_dict)
         else:  # _LANE_CP
             _kind, reg, starts, values = rec
             out += [kind, reg, len(starts)]
@@ -918,7 +1212,8 @@ def _flat_nonfreq(nonfreq):
 def _parse_nonfreq(flat):
     """Reconstruct the TYPED non-freq lane records from :func:`_flat_nonfreq` (the
     start-DELTA streams re-accumulated to absolute frames): a list of
-    ``(_LANE_CP, reg, starts, values)`` / ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)``.
+    ``(_LANE_CP, reg, starts, values)`` / ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)`` /
+    ``(_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict)``.
     """
     nrec, i = flat[0], 1
     out = []
@@ -934,6 +1229,9 @@ def _parse_nonfreq(flat):
             steps = list(flat[i : i + nseg])
             i += nseg
             out.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
+        elif kind == _LANE_SEG:
+            (reg, a, warmup, onsets, refs, seg_dict), i = _read_seg_record(flat, i)
+            out.append((_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict))
         else:  # _LANE_CP
             reg, nseg = flat[i], flat[i + 1]
             i += 2
@@ -1161,11 +1459,15 @@ def _note_base_grid(rec, nframes):
                 _PW_MODULUS,
             )
         return out, True
-    if rec[0] == _NB_RAWLZ:
-        _kind, freq = rec
-        m = min(len(freq), nframes)
+    if rec[0] == _NB_ARP:
+        _kind, tbl, a, warmup, onsets, bases, refs, offset_dict = rec
+        idx = _arp_render_idx(a, nframes, onsets, bases, refs, offset_dict)
+        tbl_arr = np.asarray(tbl, dtype=np.int64)
+        if idx.size and tbl_arr.size:
+            out[a : a + idx.size] = tbl_arr[idx]
+        m = min(a, len(warmup), nframes)
         if m:
-            out[:m] = np.asarray(freq[:m], dtype=np.int64)
+            out[:m] = np.asarray(warmup[:m], dtype=np.int64)
         return out, True
     _kind, tbl, starts, seeds, steps, modulus, a, warmup = rec
     tbl_arr = np.asarray(tbl, dtype=np.int64)
@@ -1278,6 +1580,10 @@ def render_nonfreq_from_ir(ir, anchor=None):
             out[int(hi)] = (pw >> 8) & 0xFF
             admitted.add(int(lo))
             admitted.add(int(hi))
+        elif kind == _LANE_SEG:
+            _kind, reg, a, warmup, onsets, refs, seg_dict = rec
+            out[int(reg)] = _lane_seg_render(a, nframes, warmup, onsets, refs, seg_dict)
+            admitted.add(int(reg))
         else:  # _LANE_CP
             _kind, reg, starts, values = rec
             out[int(reg)] = DJ.step_lane_kernel(

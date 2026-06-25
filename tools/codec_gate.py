@@ -43,6 +43,70 @@ def c3_no_lz_offset_tokens():
     return True
 
 
+def c3_no_raw_value_stream(ir, nframes):
+    """C3 (generic render path) -- no raw per-frame VALUE stream: inspect the recovered
+    ``note_bases`` / ``nonfreq`` REPRESENTATION TAGS and FAIL on any record that stores a
+    raw per-frame freq/register value stream of length ~nframes (a relabeled literal-floor
+    dump), rather than a GENERATOR / TABLE / content-addressed REF / sparse change-point
+    program.  HARD RULE #0: the recovered structure is the player's program, never its
+    output column.
+
+    A note base must be a known kind (RAMP16 ramp generator / TABLE+idx-walk / ARP per-onset
+    ref pool); a non-freq lane a known kind (RAMP16 / sparse CP / per-onset SEG ref pool).
+    A per-frame dump is exactly ``nframes`` long (the banned ``_NB_RAWLZ`` / value-LZ /
+    register-log reproduction); the authored-level streams (per-onset bases / refs / a small
+    distinct-shape pool, the sparse change-points) are all STRICTLY shorter than the frame
+    count by construction (fewer notes than frames), so the threshold is ``nframes``."""
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    limit = max(8, int(nframes))
+
+    def _dump_field(rec):
+        # any list/tuple field as long as the frame count is a raw per-frame value stream
+        # (the authored-level base/ref/pool streams are all shorter -- one per note, not
+        # per frame).  Nested pools (a list of shape tuples) are judged by their OUTER
+        # length (the distinct-shape count, bounded small), not the per-frame extent.
+        for fld in rec:
+            if isinstance(fld, (list, tuple)) and len(fld) >= limit:
+                return len(fld)
+        return 0
+
+    nb_kinds = {SI._NB_RAMP16, SI._NB_TABLE, SI._NB_ARP}
+    for vi, rec in enumerate(ir.note_bases):
+        if not rec or rec[0] not in nb_kinds:
+            raise CheckFailure(
+                f"C3: note_base voice {vi} kind {rec[0] if rec else None!r} is not a "
+                "generator/table/ref representation (a raw per-frame freq stream)"
+            )
+        big = _dump_field(rec)
+        if big:
+            raise CheckFailure(
+                f"C3: note_base voice {vi} stores a raw per-frame value stream "
+                f"(field len {big} >= {limit}) -- the banned literal-floor dump"
+            )
+    lane_kinds = {SI._LANE_CP, SI._LANE_RAMP16, SI._LANE_SEG}
+    for rec in ir.nonfreq:
+        if not rec or rec[0] not in lane_kinds:
+            raise CheckFailure(
+                f"C3: non-freq lane kind {rec[0] if rec else None!r} is not a "
+                "generator/sparse-CP/ref representation (a raw per-frame register stream)"
+            )
+        # a SPARSE _LANE_CP is the player's real sets-and-holds (bounded by the cap); a CP
+        # whose change-point stream spans ~nframes is a per-frame dump.
+        if rec[0] == SI._LANE_CP and len(rec[2]) >= limit:
+            raise CheckFailure(
+                f"C3: non-freq lane {rec[1]} CP has {len(rec[2])} change points "
+                f">= {limit} -- a per-frame dump, not a sparse sets-and-holds"
+            )
+        big = _dump_field(rec)
+        if big:
+            raise CheckFailure(
+                f"C3: non-freq lane {rec[1]} stores a raw per-frame value stream "
+                f"(field len {big} >= {limit}) -- the banned literal-floor dump"
+            )
+    return True
+
+
 def c8_no_escape_tokens():
     """C8 -- no wide values, no escapes: the flat alphabet has no u16-escape /
     raw-Fn / DUR_LONG / NOTE_RAWFN / nframes-wide token. A 16-bit field is a fixed
@@ -152,6 +216,9 @@ def gate_sid(sid, subtune=1, nframes=2500, max_tok_per_frame=1.0):
         }
     if kind == "structure":
         ir = structure_ir_from_ids(ids)
+        # C3 (generic render path): the recovered representation must be a
+        # generator/table/ref/sparse-CP, never a raw per-frame value stream (HARD RULE #0).
+        c3_no_raw_value_stream(ir, nf)
         ir._state = state  # pylint: disable=protected-access
         resid = int(_np.sum(render_structure(ir) != state))
     else:
