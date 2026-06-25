@@ -176,6 +176,12 @@ _MIN_COPY = 3  # a copy costs REPEAT + off + len (>= 3 tokens); break even at 3
 _SEC_END = (1 << 24) + 1
 _SEC_NOTE_BASES = (1 << 24) + 2
 _SEC_NONFREQ = (1 << 24) + 3
+# The SHARED per-onset SCHEDULE grid (``schedule["onsets"]``): every ARP / SEG record keys
+# its per-onset phrase to the SAME authored schedule (the orderlist walk), so the onset
+# boundaries are stored ONCE here (LZ-free, as frame DELTAS) and each record re-derives its
+# windowed onsets from this grid + its own warm-up ``a`` (:func:`_window_onsets`) -- never a
+# per-record copy of the 592-onset grid (that redundancy bloated nonfreq ~6500 tokens).
+_SEC_ONSETS = (1 << 24) + 4
 
 
 @dataclass
@@ -231,6 +237,11 @@ class StructureIR:
     nonfreq: list = field(
         default_factory=list
     )  # typed lane records (see build_nonfreq_program)
+    # The SHARED per-onset SCHEDULE grid (``schedule["onsets"]``) the ARP / SEG records key
+    # their per-onset phrases to -- serialized ONCE (``_SEC_ONSETS``, LZ-free frame deltas) so
+    # each record re-derives its windowed onsets from this grid + its ``a`` instead of carrying
+    # a redundant 592-onset copy.  Empty when no measured ARP / SEG record is present.
+    onset_grid: list = field(default_factory=list)
     nframes: int = 0
     boot: list = field(default_factory=list)
     # The recovered note->frame SCHEDULE + tempo (PWLK orderlist advances over the FULL
@@ -305,9 +316,10 @@ def _lane_change_program(col):
 
 def _lane_program_tokens(starts, values):
     """The serialized token cost of one CHANGE-POINT lane program (the cp admission
-    metric): ``nseg`` + the start-DELTA stream + the value stream, each value-LZ'd.
-    Mirrors the bytes a ``_LANE_CP`` record emits so the cap reflects the true shipped
-    size (the cheapest-encoding pick and the budget gate read the same number)."""
+    metric): ``nseg`` + the start-DELTA stream + the value stream, LZ-FREE.  Mirrors the
+    bytes a ``_LANE_CP`` record emits in the (LZ-free) MEASURED nonfreq section so the cap
+    reflects the true shipped size (the cheapest-encoding pick and the budget gate read the
+    same number)."""
     flat = [len(starts)]
     prev = 0
     for s in starts:
@@ -315,7 +327,7 @@ def _lane_program_tokens(starts, values):
         prev = s
     flat.extend(values)
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
 
 
@@ -339,8 +351,9 @@ def _ramp16_fit(lo_col, hi_col):
 def _ramp16_tokens(starts, seeds, steps):
     """The serialized token cost of one ``_LANE_RAMP16`` generator record (the ramp
     admission metric): ``nseg`` + the start-DELTA stream + the seed stream + the step
-    stream, each value-LZ'd.  Mirrors the bytes :func:`_flat_nonfreq` emits for a
-    ``_LANE_RAMP16`` so the cheapest-encoding pick and the budget gate agree."""
+    stream, LZ-FREE.  Mirrors the bytes :func:`_flat_nonfreq` emits for a ``_LANE_RAMP16``
+    in the (LZ-free) MEASURED nonfreq section so the cheapest-encoding pick and the budget
+    gate agree."""
     bd = [len(starts)]
     prev = 0
     for s in starts:
@@ -348,7 +361,7 @@ def _ramp16_tokens(starts, seeds, steps):
         prev = s
     flat = bd + list(seeds) + list(steps)
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
 
 
@@ -395,8 +408,20 @@ def _lane_seg_tokens(a, warmup, onsets, refs, seg_dict):
     flat = []
     _flat_seg_record(flat, 0, a, warmup, onsets, refs, seg_dict)
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
+
+
+def _pw_seg_cost(state, reg, a, n, onsets):
+    """The per-onset SEGMENT cost of one PW byte lane (for the PW RAMP16-vs-SEG compare): the
+    serialized ``_LANE_SEG`` token cost, or ``inf`` when no schedule keys the segments.
+    """
+    if onsets is None:
+        return float("inf")
+    col = state[:, reg]
+    warmup = [int(v) for v in col[:a]]
+    wons, refs, seg_dict = _lane_seg_decompose(col, a, n, onsets)
+    return _lane_seg_tokens(a, warmup, wons, refs, seg_dict)
 
 
 def build_nonfreq_program(state, schedule):
@@ -435,16 +460,22 @@ def build_nonfreq_program(state, schedule):
     a = 0 if not onsets else min(onsets)
     program = []
     covered = set()
-    # (b) GENERATOR-FIT the PW sweeps first: when the 16-bit ramp generator beats the two
-    # byte lanes' change-point cost, ship ONE generator for the pair (a derivation, the
-    # sweep is an accumulator -- not two output columns).
+    # (b) GENERATOR-FIT the PW sweeps first: ship ONE 16-bit ramp generator for the pair only
+    # when it beats BOTH the two byte lanes' change-point cost AND their per-onset SEGMENT cost
+    # (a genuine free-running sweep IS an accumulator; a NOTE-GATED PW -- few distinct values
+    # set per onset -- is an instrument fire, far cheaper as a per-onset SEG REF than a
+    # hundreds-segment ramp, HARD RULE #0).  When RAMP16 is not the cheapest, the byte lanes
+    # fall through to loop (c) (CP if sparse, else the SEG phrase-REF dictionary).
     for lo, hi in _PW_PAIRS:
         starts, seeds, steps = _ramp16_fit(state[:, lo], state[:, hi])
         gen_cost = _ramp16_tokens(starts, seeds, steps)
         cp_cost = _lane_program_tokens(
             *_lane_change_program(state[:, lo])
         ) + _lane_program_tokens(*_lane_change_program(state[:, hi]))
-        if gen_cost < cp_cost:
+        seg_cost = _pw_seg_cost(state, lo, a, n, onsets) + _pw_seg_cost(
+            state, hi, a, n, onsets
+        )
+        if gen_cost < cp_cost and gen_cost < seg_cost:
             program.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
             covered.add(lo)
             covered.add(hi)
@@ -487,7 +518,7 @@ def _nb_table_tokens(tbl, starts, seeds, steps, modulus, a, warmup):
     _emit_start_deltas(flat, starts)
     flat += list(seeds) + list(steps) + [modulus, a, len(warmup), *warmup]
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
 
 
@@ -498,7 +529,7 @@ def _nb_ramp16_tokens(starts, seeds, steps):
     _emit_start_deltas(flat, starts)
     flat += list(seeds) + list(steps)
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
 
 
@@ -511,7 +542,7 @@ def _nb_arp_tokens(tbl, a, warmup, onsets, bases, refs, offset_dict):
     flat = []
     _flat_arp_record(flat, tbl, a, warmup, onsets, bases, refs, offset_dict)
     out = []
-    _emit_section(out, flat)
+    _emit_section_raw(out, flat)
     return len(out)
 
 
@@ -735,6 +766,11 @@ def build_structure_ir(struct, state, distill_path):
         orderlists=orderlists,
         accfits=accfits,
         schedule=schedule,
+        # the SHARED onset grid every ARP / SEG record keys to (serialized once), so a
+        # measured note-base / nonfreq record carries no per-record onset copy.
+        onset_grid=(
+            [int(o) for o in schedule["onsets"]] if schedule is not None else []
+        ),
         nonfreq=build_nonfreq_program(state, schedule),
         # The TRUE playback length is the ``.sidwr`` row count (``state`` rows), not the
         # artifact's REQUESTED ``nframes`` (the capture may stop early); the M1 lane replay
@@ -807,6 +843,7 @@ def _pick_representation(ir, state):
         note_bases=ir.note_bases,
         accfits=ir.accfits,
         nonfreq=ir.nonfreq,
+        onset_grid=ir.onset_grid,
         nframes=ir.nframes,
         boot=ir.boot,
     )
@@ -886,6 +923,188 @@ def _read_section(ids, i):
     return _struct_unlz(ids, i + 1, ids[i])
 
 
+def _emit_section_raw(out, values):
+    """Append a MEASURED-stream section LZ-FREE: its value count, then the values VERBATIM.
+
+    The campaign mandate (HARD RULE #0) is NO backward-LZ in the gate-measured note_bases /
+    nonfreq sections -- the per-onset note / instrument streams must collapse as
+    content-addressed forward PHRASE GRAMMAR refs (:func:`_repair_encode`, a Re-Pair grammar
+    whose non-terminals are NAMES, never a back-offset), never the ``_struct_lz``
+    (``_REPEAT, off, len``) the pattern-bank sections may keep.  The framing (count, then
+    body) matches :func:`_read_section` so the section reader / the C3 walker step it the
+    same way; the body simply carries no ``_REPEAT`` triple."""
+    out.append(len(values))
+    out.extend(int(v) for v in values)
+
+
+def _read_section_raw(ids, i):
+    """Inverse of :func:`_emit_section_raw`: read ``count`` verbatim values (no LZ expand);
+    returns ``(values, i)``."""
+    ncount = ids[i]
+    i += 1
+    return list(ids[i : i + ncount]), i + ncount
+
+
+# --- the forward PHRASE GRAMMAR (Re-Pair), over an onset-stream alphabet -------
+# The per-onset note / instrument-fire / shape-ref streams are flattened tracker patterns:
+# the same phrase RECURS across the song (the orderlist reuses patterns).  That recurrence is
+# the HARD RULE #0 structure and it collapses as a CONTENT-ADDRESSED forward grammar -- a
+# Re-Pair (recursive-pairing) grammar whose every rule names two earlier symbols, so a
+# repeated phrase is one rule REF (a NAME), never a backward (off, len) copy (the banned
+# ``_struct_lz`` _REPEAT).  A terminal symbol is a literal onset value; a non-terminal
+# ``nterm + r`` expands to rule ``r``'s ``(a, b)`` pair (both earlier symbols), bottoming out
+# at terminals.  This is the authored orderlist/pattern factoring lifted to the onset grid.
+
+
+def _repair_encode(seq):
+    """Re-Pair a list of int atoms into ``(terminals, rules, stream)``: ``terminals`` the
+    ordered distinct atom values (a terminal id is its index), ``rules`` an ordered list of
+    ``(a, b)`` symbol-id pairs (a non-terminal id is ``len(terminals) + rule_index``,
+    expanding to two EARLIER symbols), ``stream`` the top-level symbol-id sequence.  Greedy:
+    repeatedly replace the most frequent adjacent symbol pair by a fresh non-terminal until no
+    pair repeats.  Forward-defined (content-addressed), so :func:`_repair_decode` rebuilds
+    ``seq`` with NO back-offset -- the LZ-free phrase collapse (HARD RULE #0)."""
+    from collections import Counter
+
+    terms, term_of = [], {}
+    for x in seq:
+        x = int(x)
+        if x not in term_of:
+            term_of[x] = len(terms)
+            terms.append(x)
+    s = [term_of[int(x)] for x in seq]
+    nterm = len(terms)
+    next_id = nterm
+    rules = []
+    while len(s) > 1:
+        pairs = Counter()
+        for k in range(len(s) - 1):
+            pairs[(s[k], s[k + 1])] += 1
+        (best, count) = max(pairs.items(), key=lambda kv: (kv[1], kv[0]))
+        if count < 2:
+            break
+        a, b = best
+        rid = next_id
+        next_id += 1
+        rules.append((a, b))
+        out, k = [], 0
+        ls = len(s)
+        while k < ls:
+            if k + 1 < ls and s[k] == a and s[k + 1] == b:
+                out.append(rid)
+                k += 2
+            else:
+                out.append(s[k])
+                k += 1
+        s = out
+    return _repair_prune(terms, rules, s)
+
+
+def _repair_prune(terms, rules, stream):
+    """OPTIMIZE pass: inline every grammar rule whose ONLY use is a single TOP-LEVEL STREAM ref
+    (a 2-token rule def + 1 stream ref encodes what 2 inline stream tokens would, so inlining
+    is strictly smaller) and renumber the survivors contiguously.  Only stream-only single-use
+    rules are inlined (a rule referenced inside ANOTHER rule must stay binary, so it is left
+    alone); iterated to a fixpoint.  The forward-reference invariant is preserved, so the
+    decode is unchanged -- a pure size win, byte-exact output."""
+    nterm = len(terms)
+    while rules:
+        stream_uses = [0] * len(rules)
+        for sym in stream:
+            if sym >= nterm:
+                stream_uses[sym - nterm] += 1
+        rule_uses = [0] * len(rules)
+        for a, b in rules:
+            if a >= nterm:
+                rule_uses[a - nterm] += 1
+            if b >= nterm:
+                rule_uses[b - nterm] += 1
+        victim = next(
+            (r for r in range(len(rules)) if stream_uses[r] == 1 and rule_uses[r] == 0),
+            None,
+        )
+        if victim is None:
+            break
+        vid = nterm + victim
+        va, vb = rules[victim]
+        stream = [x for sym in stream for x in ((va, vb) if sym == vid else (sym,))]
+        del rules[victim]
+
+        def _renum(sym, cut=victim):
+            return sym - 1 if (sym >= nterm and sym - nterm > cut) else sym
+
+        rules = [(_renum(a), _renum(b)) for a, b in rules]
+        stream = [_renum(s) for s in stream]
+    return terms, rules, stream
+
+
+def _repair_decode(terms, rules, stream):
+    """Inverse of :func:`_repair_encode`: expand the grammar (terminals + forward rules) back
+    to the original int list.  Each non-terminal ``len(terms) + r`` expands to rule ``r``'s
+    two earlier symbols; an iterative stack expansion (no recursion-depth limit)."""
+    nterm = len(terms)
+
+    def expand(sym, acc):
+        stack = [sym]
+        while stack:
+            t = stack.pop()
+            if t < nterm:
+                acc.append(terms[t])
+            else:
+                a, b = rules[t - nterm]
+                stack.append(b)
+                stack.append(a)
+
+    out = []
+    for sym in stream:
+        expand(sym, out)
+    return out
+
+
+def _flat_grammar(out, seq):
+    """Append a Re-Pair grammar for an onset int-stream LZ-FREE: ``nterm``, the terminal
+    values, ``nrule``, the rule ``(a, b)`` pairs, ``nstream``, the top-level stream.  A
+    repeated phrase is one rule REF (a forward NAME), never a backward copy -- the
+    content-addressed phrase collapse the C3 measured-stream gate requires (HARD RULE #0).
+    """
+    terms, rules, stream = _repair_encode(seq)
+    out.append(len(terms))
+    out.extend(int(t) for t in terms)
+    out.append(len(rules))
+    for a, b in rules:
+        out.append(int(a))
+        out.append(int(b))
+    out.append(len(stream))
+    out.extend(int(s) for s in stream)
+
+
+def _read_grammar(flat, i):
+    """Reconstruct the int-stream from a :func:`_flat_grammar` body; returns ``(seq, i)``."""
+    nterm = flat[i]
+    i += 1
+    terms = list(flat[i : i + nterm])
+    i += nterm
+    nrule = flat[i]
+    i += 1
+    rules = []
+    for _ in range(nrule):
+        rules.append((flat[i], flat[i + 1]))
+        i += 2
+    nstream = flat[i]
+    i += 1
+    stream = list(flat[i : i + nstream])
+    i += nstream
+    return _repair_decode(terms, rules, stream), i
+
+
+def _grammar_tokens(seq):
+    """The serialized token cost of a :func:`_flat_grammar` body (LZ-free), the cheapest-
+    encoding metric for a phrase-grammar onset stream."""
+    out = []
+    _flat_grammar(out, seq)
+    return len(out)
+
+
 # --- per-section flatten / parse (each section is a flat VALUE list) -----------
 def _flat_note_table(note_table):
     return [len(note_table), *note_table]
@@ -944,10 +1163,12 @@ def _flat_note_bases(note_bases):
     tag and its fields -- a ``_NB_RAMP16`` is ``(kind, nseg, start-deltas, seeds, steps)``
     (a direct 16-bit freq ramp), a ``_NB_TABLE`` is ``(kind, ntbl, table, nseg,
     start-deltas, seeds, steps, modulus, a, nwarm, warmup)`` (the note table + idx-walk
-    ramp), a ``_NB_ARP`` is ``(kind, ntbl, table, a, nwarm, warmup, nons, onset-deltas,
-    bases, refs, offset-pool)`` (the note table + per-onset base index + REF into the
-    distinct offset-shape pool).  All small ints / recurring segments the existing
-    pattern-bank ``_struct_lz`` folds across the structure stream -- no value-LZ."""
+    ramp), a ``_NB_ARP`` is ``(kind, ntbl, table, a, nwarm, warmup, base-GRAMMAR,
+    ref-GRAMMAR, offset-pool)`` (the note table + the per-onset base index and offset-shape
+    REF, each a forward PHRASE GRAMMAR; the onsets come from the SHARED ``_SEC_ONSETS`` grid,
+    not stored per-record).  This section ships LZ-FREE: its recurrence collapses as those
+    forward grammar NAMES (a repeated phrase = one rule ref), NEVER ``_struct_lz`` -- HARD
+    RULE #0."""
     out = [len(note_bases)]
     for rec in note_bases:
         kind = rec[0]
@@ -971,9 +1192,10 @@ def _flat_note_bases(note_bases):
     return out
 
 
-def _parse_note_bases(flat):
+def _parse_note_bases(flat, onset_grid, nframes):
     """Reconstruct the per-voice TYPED note-base records from :func:`_flat_note_bases`
-    (the start-DELTA stream re-accumulated to absolute frames)."""
+    (the start-DELTA stream re-accumulated to absolute frames).  An ``_NB_ARP`` record
+    re-derives its per-onset schedule from the SHARED ``onset_grid`` + ``nframes``."""
     nvoice, i = flat[0], 1
     out = []
     for _ in range(nvoice):
@@ -990,7 +1212,7 @@ def _parse_note_bases(flat):
             out.append((_NB_RAMP16, starts, seeds, steps))
         elif kind == _NB_ARP:
             (tbl, a, warmup, onsets, bases, refs, offset_dict), i = _read_arp_record(
-                flat, i
+                flat, i, onset_grid, nframes
             )
             out.append((_NB_ARP, tbl, a, warmup, onsets, bases, refs, offset_dict))
         else:  # _NB_TABLE
@@ -1020,6 +1242,15 @@ def _emit_start_deltas(out, starts):
     for s in starts:
         out.append(s - prev)
         prev = s
+
+
+def _start_deltas(starts):
+    """The frame-DELTA list of an ascending start sequence (the value :func:`_emit_start_deltas`
+    appends), returned as a fresh list -- used by :func:`section_sizes` to size the shared
+    onset-grid section without mutating a caller buffer."""
+    out = []
+    _emit_start_deltas(out, starts)
+    return out
 
 
 def _read_start_deltas(flat, i, nseg):
@@ -1118,17 +1349,26 @@ def _flat_arp_record(out, tbl, a, warmup, onsets, bases, refs, offset_dict):
     per-onset BASE-index + onset-DELTA stream + REF stream, then the distinct OFFSET-shape
     pool.  ``offset_dict[ref]`` placed at ``base`` reconstructs each onset's idx segment
     (``idx[onset+k] == base + offset_dict[ref][k]``) -- an arp is a base pitch plus a small
-    repeating index-offset SHAPE, not a value-LZ over the output (HARD RULE #0)."""
-    out += [len(tbl), *tbl, a, len(warmup), *warmup, len(onsets)]
-    _emit_start_deltas(out, onsets)
-    out.extend(int(b) for b in bases)
-    out.extend(int(r) for r in refs)
+    repeating index-offset SHAPE, not a value-LZ over the output (HARD RULE #0).
+
+    The per-onset BASE and REF streams (the recurring phrases -- the orderlist reuses
+    patterns) are emitted as forward PHRASE GRAMMARS (:func:`_flat_grammar`, Re-Pair, a
+    repeated phrase is one rule NAME), NOT a raw value run and NOT a backward ``_struct_lz``
+    copy -- the content-addressed onset-phrase collapse the measured-stream C3 gate mandates.
+    The per-onset SCHEDULE (``onsets``) is NOT stored here -- it is the SHARED ``_SEC_ONSETS``
+    grid every record re-derives its windowed onsets from (via ``a``), never a per-record copy.
+    """
+    out += [len(tbl), *tbl, a, len(warmup), *warmup]
+    _flat_grammar(out, bases)
+    _flat_grammar(out, refs)
     _emit_shape_pool(out, offset_dict)
 
 
-def _read_arp_record(flat, i):
+def _read_arp_record(flat, i, onset_grid, nframes):
     """Reconstruct one ``_NB_ARP`` record body from :func:`_flat_arp_record`; returns
-    ``((tbl, a, warmup, onsets, bases, refs, offset_dict), i)``."""
+    ``((tbl, a, warmup, onsets, bases, refs, offset_dict), i)``.  The per-onset ``onsets`` are
+    re-derived from the SHARED ``onset_grid`` + this record's ``a`` (:func:`_window_onsets`),
+    not read from the stream (they were not stored per-record)."""
     ntbl = flat[i]
     i += 1
     tbl = list(flat[i : i + ntbl])
@@ -1139,14 +1379,10 @@ def _read_arp_record(flat, i):
     i += 1
     warmup = list(flat[i : i + nwarm])
     i += nwarm
-    nons = flat[i]
-    i += 1
-    onsets, i = _read_start_deltas(flat, i, nons)
-    bases = list(flat[i : i + nons])
-    i += nons
-    refs = list(flat[i : i + nons])
-    i += nons
+    bases, i = _read_grammar(flat, i)
+    refs, i = _read_grammar(flat, i)
     offset_dict, i = _read_shape_pool(flat, i)
+    onsets = _window_onsets(onset_grid, a, nframes)
     return (tbl, a, warmup, onsets, bases, refs, offset_dict), i
 
 
@@ -1154,16 +1390,25 @@ def _flat_seg_record(out, reg, a, warmup, onsets, refs, seg_dict):
     """Append one ``_LANE_SEG`` record body (no kind tag): the register, warm-up, the
     onset-DELTA stream + REF stream, then the distinct per-onset SEGMENT pool.
     ``seg_dict[ref]`` placed at each onset reconstructs the lane (the shared instrument
-    segment across notes) -- never a value-LZ over the output column (HARD RULE #0)."""
-    out += [reg, a, len(warmup), *warmup, len(onsets)]
-    _emit_start_deltas(out, onsets)
-    out.extend(int(r) for r in refs)
+    segment across notes) -- never a value-LZ over the output column (HARD RULE #0).
+
+    The per-onset REF stream (the recurring instrument-fire phrase -- the orderlist reuses
+    patterns) is emitted as a forward PHRASE GRAMMAR (:func:`_flat_grammar`, Re-Pair: a
+    repeated phrase is one rule NAME), NOT a raw value run and NOT a backward ``_struct_lz``
+    copy -- the content-addressed onset-phrase collapse the measured-stream C3 gate mandates.
+    The per-onset SCHEDULE (``onsets``) is NOT stored here -- it is the SHARED ``_SEC_ONSETS``
+    grid every record re-derives its windowed onsets from (via ``a``), never a per-record copy.
+    """
+    out += [reg, a, len(warmup), *warmup]
+    _flat_grammar(out, refs)
     _emit_seg_pool(out, seg_dict)
 
 
-def _read_seg_record(flat, i):
+def _read_seg_record(flat, i, onset_grid, nframes):
     """Reconstruct one ``_LANE_SEG`` record body from :func:`_flat_seg_record`; returns
-    ``((reg, a, warmup, onsets, refs, seg_dict), i)``."""
+    ``((reg, a, warmup, onsets, refs, seg_dict), i)``.  The per-onset ``onsets`` are
+    re-derived from the SHARED ``onset_grid`` + this record's ``a`` (:func:`_window_onsets`),
+    not read from the stream (they were not stored per-record)."""
     reg = flat[i]
     i += 1
     a = flat[i]
@@ -1172,22 +1417,21 @@ def _read_seg_record(flat, i):
     i += 1
     warmup = list(flat[i : i + nwarm])
     i += nwarm
-    nons = flat[i]
-    i += 1
-    onsets, i = _read_start_deltas(flat, i, nons)
-    refs = list(flat[i : i + nons])
-    i += nons
+    refs, i = _read_grammar(flat, i)
     seg_dict, i = _read_seg_pool(flat, i)
+    onsets = _window_onsets(onset_grid, a, nframes)
     return (reg, a, warmup, onsets, refs, seg_dict), i
 
 
 def _flat_nonfreq(nonfreq):
-    """The M1 non-freq lane section, flat: ``nrec`` then per TYPED record a kind tag and
-    its fields (the start-DELTA streams + value/seed/step/ref streams -- small ints the
-    pattern-bank ``_struct_lz`` folds).  A ``_LANE_CP`` is ``(kind, reg, nseg, start-deltas,
-    values)``; a ``_LANE_RAMP16`` is ``(kind, lo, hi, nseg, start-deltas, seeds, steps)``; a
-    ``_LANE_SEG`` is ``(kind, reg, a, nwarm, warmup, nons, onset-deltas, refs, seg-pool)``.
-    Only the admitted (recovered) lanes are present; the rest render from the anchor."""
+    """The M1 non-freq lane section, flat: ``nrec`` then per TYPED record a kind tag and its
+    fields.  A ``_LANE_CP`` is ``(kind, reg, nseg, start-deltas, values)``; a ``_LANE_RAMP16``
+    is ``(kind, lo, hi, nseg, start-deltas, seeds, steps)``; a ``_LANE_SEG`` is
+    ``(kind, reg, a, nwarm, warmup, ref-GRAMMAR, seg-pool)`` -- the per-onset instrument-fire
+    refs as a forward PHRASE GRAMMAR, the onsets from the SHARED ``_SEC_ONSETS`` grid (not
+    per-record).  This section ships LZ-FREE: the recurrence collapses as those forward grammar
+    NAMES (a repeated phrase = one rule ref), NEVER ``_struct_lz`` (HARD RULE #0).  Only the
+    admitted (recovered) lanes are present; the rest render from the anchor."""
     out = [len(nonfreq)]
     for rec in nonfreq:
         kind = rec[0]
@@ -1209,11 +1453,12 @@ def _flat_nonfreq(nonfreq):
     return out
 
 
-def _parse_nonfreq(flat):
+def _parse_nonfreq(flat, onset_grid, nframes):
     """Reconstruct the TYPED non-freq lane records from :func:`_flat_nonfreq` (the
     start-DELTA streams re-accumulated to absolute frames): a list of
     ``(_LANE_CP, reg, starts, values)`` / ``(_LANE_RAMP16, lo, hi, starts, seeds, steps)`` /
-    ``(_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict)``.
+    ``(_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict)``.  A ``_LANE_SEG`` record
+    re-derives its per-onset schedule from the SHARED ``onset_grid`` + ``nframes``.
     """
     nrec, i = flat[0], 1
     out = []
@@ -1230,7 +1475,9 @@ def _parse_nonfreq(flat):
             i += nseg
             out.append((_LANE_RAMP16, lo, hi, starts, seeds, steps))
         elif kind == _LANE_SEG:
-            (reg, a, warmup, onsets, refs, seg_dict), i = _read_seg_record(flat, i)
+            (reg, a, warmup, onsets, refs, seg_dict), i = _read_seg_record(
+                flat, i, onset_grid, nframes
+            )
             out.append((_LANE_SEG, reg, a, warmup, onsets, refs, seg_dict))
         else:  # _LANE_CP
             reg, nseg = flat[i], flat[i + 1]
@@ -1323,12 +1570,24 @@ def structure_ir_to_ids(ir):
     # pre-PR4a stream ends after ``accfits`` and parses byte-identically (the tag loop sees
     # EOF), while a newer stream prepends the tag so the reader dispatches each section
     # regardless of which others are present.
+    # MEASURED sections (note_bases / nonfreq) emit LZ-FREE (:func:`_emit_section_raw`): the
+    # campaign mandate (HARD RULE #0) bans ``_struct_lz`` here -- their recurrence already
+    # collapses as forward PHRASE GRAMMAR refs inside the records (:func:`_flat_grammar`), a
+    # content-addressed NAME, never a backward (off, len) copy.  C3
+    # (``c3_no_lz_in_measured_stream``) scans these bodies and FAILS on any ``_REPEAT``.
+    # The SHARED onset grid (the schedule every ARP / SEG record keys to) is emitted ONCE
+    # before them (LZ-free frame deltas), so each record carries no per-record onset copy.
+    if ir.onset_grid and (ir.note_bases or ir.nonfreq):
+        out.append(_SEC_ONSETS)
+        grid = []
+        _emit_start_deltas(grid, ir.onset_grid)
+        _emit_section_raw(out, [len(ir.onset_grid), *grid])
     if ir.note_bases:
         out.append(_SEC_NOTE_BASES)
-        _emit_section(out, _flat_note_bases(ir.note_bases))
+        _emit_section_raw(out, _flat_note_bases(ir.note_bases))
     if ir.nonfreq:
         out.append(_SEC_NONFREQ)
-        _emit_section(out, _flat_nonfreq(ir.nonfreq))
+        _emit_section_raw(out, _flat_nonfreq(ir.nonfreq))
     return out
 
 
@@ -1348,16 +1607,20 @@ def structure_ir_from_ids(ids):
     # The OPTIONAL TAGGED trailing sections (PR4a note-base, M1 non-freq): loop on the
     # one-token tag until EOF / ``_SEC_END``.  A pre-PR4a stream ends here (no tag) and both
     # default empty (the anchor fallback) -- back-compat for older ids / committed fixtures.
-    note_bases, nonfreq = [], []
+    note_bases, nonfreq, onset_grid = [], [], []
     while i < len(ids) and ids[i] != _SEC_END:
         tag = ids[i]
         i += 1
-        if tag == _SEC_NOTE_BASES:
-            nb_flat, i = _read_section(ids, i)
-            note_bases = _parse_note_bases(nb_flat)
+        if tag == _SEC_ONSETS:
+            og_flat, i = _read_section_raw(ids, i)
+            nons = og_flat[0]
+            onset_grid, _j = _read_start_deltas(og_flat, 1, nons)
+        elif tag == _SEC_NOTE_BASES:
+            nb_flat, i = _read_section_raw(ids, i)
+            note_bases = _parse_note_bases(nb_flat, onset_grid, nframes)
         elif tag == _SEC_NONFREQ:
-            nf_flat, i = _read_section(ids, i)
-            nonfreq = _parse_nonfreq(nf_flat)
+            nf_flat, i = _read_section_raw(ids, i)
+            nonfreq = _parse_nonfreq(nf_flat, onset_grid, nframes)
         else:
             break
     return StructureIR(
@@ -1370,6 +1633,7 @@ def structure_ir_from_ids(ids):
         accfits=accfits,
         note_bases=note_bases,
         nonfreq=nonfreq,
+        onset_grid=onset_grid,
         nframes=nframes,
         boot=boot,
         _state=None,
@@ -1377,10 +1641,11 @@ def structure_ir_from_ids(ids):
 
 
 def section_sizes(ir):
-    """Per-section serialized token sizes (after LZ), for reporting/measurement.  Sums
-    EXACTLY to ``len(structure_ir_to_ids(ir))``: an optional tagged trailing section
-    (note_bases / nonfreq) counts its one-token tag + its LZ'd body, or 0 when empty (it is
-    omitted from the stream, the same condition the serializer uses)."""
+    """Per-section serialized token sizes, for reporting/measurement.  Sums EXACTLY to
+    ``len(structure_ir_to_ids(ir))``: the pattern-bank sections after ``_struct_lz``, the
+    MEASURED tagged trailing sections (shared onset_grid / note_bases / nonfreq) LZ-FREE.
+    Each tagged section counts its one-token tag + its body, or 0 when absent (the same
+    condition the serializer uses)."""
     sizes = {"header": 1 + len(ir.boot)}
     sections = [
         ("note_table", _flat_note_table(ir.note_table), False),
@@ -1389,6 +1654,15 @@ def section_sizes(ir):
         ("patterns", _flat_patterns(ir.pattern_bytes), False),
         ("orderlists", _flat_orderlists(ir.orderlists), False),
         ("accfits", _flat_accfits(ir.accfits), False),
+        (
+            "onset_grid",
+            (
+                [len(ir.onset_grid)] + _start_deltas(ir.onset_grid)
+                if (ir.onset_grid and (ir.note_bases or ir.nonfreq))
+                else None
+            ),
+            True,
+        ),
         (
             "note_bases",
             _flat_note_bases(ir.note_bases) if ir.note_bases else None,
@@ -1401,7 +1675,9 @@ def section_sizes(ir):
             sizes[name] = 0
             continue
         out = []
-        _emit_section(out, flat)
+        # the MEASURED tagged sections (note_bases / nonfreq) ship LZ-FREE; the pattern-bank
+        # sections keep ``_struct_lz`` (C3 allows LZ there).
+        (_emit_section_raw if tagged else _emit_section)(out, flat)
         sizes[name] = len(out) + (1 if tagged else 0)  # +1 for the section tag
     return sizes
 
@@ -1646,7 +1922,7 @@ def assert_ids_roundtrip(ir):
     Returns the token ids on success; raises ``ValueError`` on any field mismatch."""
     ids = structure_ir_to_ids(ir)
     back = structure_ir_from_ids(ids)
-    for name in (
+    fields = [
         "note_table",
         "instr_pool",
         "shared_programs",
@@ -1658,7 +1934,13 @@ def assert_ids_roundtrip(ir):
         "nonfreq",
         "nframes",
         "boot",
-    ):
+    ]
+    # the SHARED onset grid is serialized (``_SEC_ONSETS``) ONLY when a measured note-base /
+    # nonfreq record keys to it; with no such record it is not shipped (and not needed), so it
+    # round-trips to ``[]`` -- check it only under the condition the serializer emits it.
+    if ir.onset_grid and (ir.note_bases or ir.nonfreq):
+        fields.append("onset_grid")
+    for name in fields:
         if _norm(getattr(ir, name)) != _norm(getattr(back, name)):
             raise ValueError(f"structure_ir: field {name!r} did not round-trip")
     return ids

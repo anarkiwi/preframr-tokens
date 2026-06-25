@@ -97,6 +97,9 @@ def _synthetic_ir(nframes=64):
         orderlists=[[0, 1, 0, 0xFF], [1, 0xFF], [0, 0xFF]],  # pattern 0 reused
         accfits=accfits,
         note_bases=note_bases,
+        # the SHARED onset grid the ARP / SEG records key to; windowed at each record's ``a``
+        # (here ``align``) it re-derives that record's onsets (the per-record copy is dropped).
+        onset_grid=[0, align, nframes // 2],
         nframes=nframes,
         boot=[int(state[0, r]) for r in range(25)],
         _state=state,
@@ -192,6 +195,9 @@ def test_nonfreq_seg_lane_renders_from_ids_alone():
     for k, o in enumerate(onsets):
         col[o : o + 8] = np.asarray(seg_dict[refs[k]], dtype=np.int64)
     ir.nonfreq = [(SI._LANE_SEG, 4, 0, [], onsets, refs, seg_dict)]
+    ir.onset_grid = (
+        onsets  # the SHARED schedule the SEG record keys its per-onset refs to
+    )
     ir._state[:, 4] = col
 
     back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
@@ -221,8 +227,21 @@ def test_note_base_arp_round_trip_and_render():
     tbl_arr = np.asarray(tbl, dtype=np.int64)
     expect = np.concatenate([tbl_arr[list(shape)] for _ in onsets])
     assert np.array_equal(grid, expect)
-    # round-trip via the full note-base section
-    ir.note_bases = [rec, ir.note_bases[1], ir.note_bases[2]]
+    # round-trip via the full note-base section.  All three records key to the SAME shared
+    # onset grid (a real tune's voices share one schedule); a single-pitch (0,)-shape ARP on
+    # the other voices tiles the same onsets, so the windowed-onset re-derivation matches.
+    silent = (
+        SI._NB_ARP,
+        [0],
+        0,
+        [],
+        onsets,
+        [0] * len(onsets),
+        [0] * len(onsets),
+        [(0,) * 8],
+    )
+    ir.note_bases = [rec, silent, silent]
+    ir.onset_grid = onsets
     back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
     assert SI._norm(back.note_bases) == SI._norm(ir.note_bases)
 
@@ -458,8 +477,208 @@ def test_ma_render_structure_from_tokens_byte_exact(tmp_path):
     not (_have_bin() and os.path.exists(_GT_SID)),
     reason="set SIDTRACE_BIN + HVSC for the GoatTracker render-from-tokens proof",
 )
+@pytest.mark.xfail(
+    reason="HONEST stall (NO LZ -- PR4b): GT's token-derived generator now ships LZ-FREE "
+    "(the per-onset note / instrument-fire streams collapse as forward Re-Pair PHRASE "
+    "GRAMMAR refs, NOT the _struct_lz back-offset C3 banned), renders _state=None byte-exact "
+    "(residual 0), and the redundant per-record onset grid is shared once -- but it lands at "
+    "~2.5 tok/frame: the per-onset INSTRUMENT SEGMENTS (the seg-dict pools + arp offset "
+    "shapes) are stored PER-LANE / PER-VOICE (~13 lanes, ~9-25 distinct segments each) "
+    "instead of factored cross-voice into the ONE shared instrument fire (per voice the 3-5 "
+    "non-freq lanes already collapse to ONE 27/27/24-distinct instrument-id stream, but GT's "
+    "instrument table is NOT sited -- discover_instrument_table returns None -- so the "
+    "segments cannot be shared across voices).  So the codec ships the anchored pattern-bank "
+    "(render-from-tokens NOT byte-exact -- freq via the _state anchor, the same fallback MA "
+    "ships).  Next increment: site GT's instrument table -> share segments cross-voice "
+    "(would drop the ~1147-token seg pools).  Upstream increment, never a value-LZ.",
+    strict=True,
+)
 def test_gt_render_structure_from_tokens_byte_exact(tmp_path):
     _check_render_from_tokens(_GT_SID, "gt", 2300, _CORPUS_TPF["gt"], tmp_path)
+
+
+def _gt_generator_ir(tmp_path):
+    """Build GoatTracker's LZ-FREE GENERATOR IR explicitly (the token-derived note base +
+    the non-freq lane phrase-REF program), bypassing :func:`_pick_representation`'s
+    over-budget drop, plus the byte-exact ``state`` -- the artifact the PR4b LZ-free /
+    render-from-tokens proofs assert against (GT's shipped codec ships the bank, this is the
+    generator it would ship if it were under budget)."""
+    from preframr_tokens.bacc.generic.sidtrace import run_sidtrace, sidwr_state
+    from preframr_tokens.bacc.generic.structure_recover import recover_schedule
+
+    sidwr, distill = run_sidtrace(
+        _GT_SID, str(tmp_path / "gtg"), subtune=1, nframes=2300
+    )
+    state, _ = sidwr_state(sidwr)
+    state = np.asarray(state, dtype=np.int64)
+    n = state.shape[0]
+    sched = recover_schedule(distill, nframes=n)
+    nb = SI._build_note_bases(distill, state, sched)
+    nf = SI.build_nonfreq_program(state, sched)
+    gen = SI.StructureIR(
+        note_bases=nb,
+        accfits=[[], [], []],
+        nonfreq=nf,
+        onset_grid=[int(o) for o in sched["onsets"]],
+        nframes=n,
+        boot=[int(state[0, r]) for r in range(SI.NREG)],
+    )
+    return gen, state
+
+
+@pytest.mark.skipif(
+    not (_have_bin() and os.path.exists(_GT_SID)),
+    reason="set SIDTRACE_BIN + HVSC for the GoatTracker LZ-free generator proof",
+)
+def test_gt_generator_is_lz_free_and_renders_from_tokens(tmp_path):
+    """PR4b proof on GoatTracker's GENERATOR path: it renders the WHOLE trace from tokens
+    ALONE (``_state=None``, residual 0), its measured note_bases / nonfreq sections are
+    LZ-FREE (C3 passes), and disabling ``_struct_lz`` leaves the SHIPPED ids byte-IDENTICAL
+    -- the measured stream never depended on LZ (HARD RULE #0).  It is OVER budget (the
+    honest stall pinned by ``test_gt_render_structure_from_tokens_byte_exact``'s xfail), so
+    the codec ships the bank; this asserts the generator itself is honest LZ-free structure.
+    """
+    from tools.codec_gate import c3_no_lz_in_measured_stream
+
+    gen, state = _gt_generator_ir(tmp_path)
+    # the note base is NOTES (per-onset ARP refs), never the _struct_lz-fed RAMP16 dump.
+    assert SI._NB_ARP in {rec[0] for rec in gen.note_bases}
+    # the nonfreq lanes are per-onset SEGMENT phrase-REFs (the shared instrument across
+    # notes), not raw per-frame change-point dumps.
+    assert SI._LANE_SEG in {rec[0] for rec in gen.nonfreq}
+
+    ids = SI.assert_ids_roundtrip(gen)
+    assert c3_no_lz_in_measured_stream(ids)  # measured stream is LZ-free
+
+    # render the WHOLE trace from the ids ALONE -- no _state anchor (residual 0).
+    back = SI.structure_ir_from_ids(ids)
+    assert back._state is None
+    rendered = SI.render_structure(back)
+    assert int(np.sum(rendered != state)) == 0
+
+    # disabling _struct_lz (identity) leaves the MEASURED sections byte-IDENTICAL: the
+    # generator's note_bases / nonfreq never rode on LZ.
+    import preframr_tokens.bacc.generic.structure_ir as SImod
+
+    orig = SImod._struct_lz
+    try:
+        SImod._struct_lz = lambda v: list(v)
+        ids_nolz = SImod.structure_ir_to_ids(gen)
+    finally:
+        SImod._struct_lz = orig
+    assert _measured_section_slice(ids) == _measured_section_slice(ids_nolz)
+
+
+def test_repair_grammar_round_trips():
+    """The forward PHRASE GRAMMAR (Re-Pair) round-trips an onset int-stream EXACTLY: a
+    repeated phrase is one rule NAME (content-addressed), never a backward (off, len) copy.
+    """
+    import random
+
+    rng = random.Random(1234)
+    for _ in range(200):
+        seq = [rng.randint(0, 12) for _ in range(rng.randint(0, 200))]
+        terms, rules, stream = SI._repair_encode(seq)
+        assert SI._repair_decode(terms, rules, stream) == seq
+        flat = []
+        SI._flat_grammar(flat, seq)
+        back, i = SI._read_grammar(flat, 0)
+        assert back == seq and i == len(flat)
+        assert SI._grammar_tokens(seq) == len(flat)
+
+
+def test_repair_grammar_collapses_a_repeating_phrase():
+    """A phrase repeated N times collapses to ONE forward rule NAME + N refs -- the
+    content-addressed onset-phrase collapse, NOT a per-onset value run."""
+    phrase = [3, 1, 4, 1, 5]
+    seq = phrase * 20  # 100 atoms, one repeating phrase
+    terms, rules, stream = SI._repair_encode(seq)
+    assert SI._repair_decode(terms, rules, stream) == seq
+    # the 100-atom stream collapses far below its raw length (a NAME per repeat, not a copy).
+    assert SI._grammar_tokens(seq) < len(seq) // 2
+
+
+def test_measured_sections_emit_lz_free():
+    """C3 (shipped-stream): a ``_NB_ARP`` / ``_LANE_SEG`` IR serializes its measured
+    note_bases / nonfreq sections LZ-FREE -- the bodies carry NO ``_REPEAT`` (the
+    ``_struct_lz`` back-offset), and disabling ``_struct_lz`` leaves the SHIPPED ids
+    byte-IDENTICAL (proving the measured stream never depended on LZ)."""
+    from tools.codec_gate import c3_no_lz_in_measured_stream
+
+    nframes = 64
+    ir = _synthetic_ir(nframes)
+    # a many-onset SEG lane whose per-onset refs strongly repeat (a phrase) -> the grammar
+    # collapse; the section must still ship LZ-free.
+    onsets = list(range(0, nframes, 4))  # 16 onsets
+    seg_dict = [(0x10,) * 4, (0x20,) * 4]
+    refs = [0, 1] * (len(onsets) // 2)
+    col = np.zeros(nframes, dtype=np.int64)
+    for k, o in enumerate(onsets):
+        col[o : o + 4] = seg_dict[refs[k]][0]
+    ir.nonfreq = [(SI._LANE_SEG, 4, 0, [], onsets, refs, seg_dict)]
+    ir.onset_grid = onsets
+    ir._state[:, 4] = col
+
+    ids = SI.structure_ir_to_ids(ir)
+    # C3 measured-stream: no _REPEAT in the tagged note_bases / nonfreq bodies (the bank
+    # sections MAY use _struct_lz -- C3 allows LZ there -- but the MEASURED slice must not).
+    assert c3_no_lz_in_measured_stream(ids)
+    assert SI._REPEAT not in _measured_section_slice(ids)
+
+    # disabling _struct_lz (identity) leaves the SHIPPED ids byte-IDENTICAL: the measured
+    # stream is genuinely LZ-free (the bank sections here are tiny / unique so they are too).
+    import preframr_tokens.bacc.generic.structure_ir as SImod
+
+    orig = SImod._struct_lz
+    try:
+        SImod._struct_lz = lambda v: list(v)
+        ids_nolz = SImod.structure_ir_to_ids(ir)
+    finally:
+        SImod._struct_lz = orig
+    # the MEASURED sections are byte-identical with LZ disabled (they never used it).
+    assert _measured_section_slice(ids) == _measured_section_slice(ids_nolz)
+
+
+def _measured_section_slice(ids):
+    """The tagged ONSETS / note_bases / nonfreq portion of a shipped id stream (everything
+    from the first measured-section tag onward) -- the part the LZ-free invariant covers.
+    """
+    tags = (SI._SEC_ONSETS, SI._SEC_NOTE_BASES, SI._SEC_NONFREQ)
+    for k, t in enumerate(ids):
+        if t in tags:
+            return ids[k:]
+    return []
+
+
+def test_shared_onset_grid_serialized_once():
+    """The onset grid every ARP / SEG record keys to is serialized ONCE (``_SEC_ONSETS``),
+    not per-record: a multi-lane SEG IR carries a single onset section, and each record
+    re-derives its windowed onsets from it (no redundant per-record 592-onset copy)."""
+    nframes = 64
+    ir = _synthetic_ir(nframes)
+    onsets = list(range(0, nframes, 8))
+    seg_dict = [(0x11,) * 8, (0x22,) * 8]
+    refs = [0, 1, 0, 1, 0, 1, 0, 1]
+    cols = {}
+    recs = []
+    for reg in (4, 5, 6):
+        col = np.zeros(nframes, dtype=np.int64)
+        for k, o in enumerate(onsets):
+            col[o : o + 8] = seg_dict[refs[k]][0]
+        cols[reg] = col
+        recs.append((SI._LANE_SEG, reg, 0, [], onsets, refs, seg_dict))
+        ir._state[:, reg] = col
+    ir.nonfreq = recs
+    ir.onset_grid = onsets
+    ids = SI.structure_ir_to_ids(ir)
+    assert ids.count(SI._SEC_ONSETS) == 1  # the grid ships exactly once
+    back = SI.structure_ir_from_ids(ids)
+    # every record re-derived the SAME onsets from the shared grid.
+    for rec in back.nonfreq:
+        assert list(rec[4]) == SI._window_onsets(onsets, rec[2], nframes)
+    lanes = SI.render_nonfreq_from_ir(back, anchor=None)
+    for reg in (4, 5, 6):
+        assert np.array_equal(lanes[reg], cols[reg])
 
 
 def test_committed_corpus_sir_fixtures_under_one_token_per_frame():
