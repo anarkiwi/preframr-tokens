@@ -13,6 +13,94 @@ import sys
 
 import numpy as np
 
+# --- C1-C8 anti-Goodhart structural constraints (flat alphabet) -------------
+# FLAT_VOCAB_MIGRATION.md Sec "Anti-Goodhart structural constraints (C1-C7)" + C8.
+# These are the REAL gate: each closes one degenerate solution (a dumped lane, an
+# LZ offset, a raw-value escape, a stored generator). tok/frame is a REPORTED
+# metric, never a pass/fail. The checks below are the ones that are well-defined on
+# the flat id stream / alphabet TODAY (C3, C7, C8-no-escape); the render-from-tokens
+# per-lane checks (C1/C2/C5/C6) attach to the generic flat path as it lands.
+
+
+class CheckFailure(AssertionError):
+    """A C-check rejected the stream; the message names the offending atom/lane."""
+
+
+def c3_no_lz_offset_tokens():
+    """C3 -- no LZ: the flat alphabet contains NO offset / REPEAT / TRANSPOSE token.
+    Repetition is content-addressed (REF / INSTR_REF NAMES), never a back-offset.
+    This is a structural invariant on the VOCAB, not a per-stream test."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    # EXACT names: the v1 LZ markers were `REPEAT` / `TRANSPOSE`; an offset/copy/
+    # backref token would be `OFFSET` / `COPY` / `BACKREF`. (ORDER_REPEAT is an
+    # orderlist loop COUNT and ORDER_TRANSPOSE a semitone shift -- content, not a
+    # back-offset -- so they are NOT forbidden; REF is a content-addressed NAME.)
+    forbidden = {"REPEAT", "TRANSPOSE", "OFFSET", "COPY", "BACKREF", "LZ"}
+    for name in dir(F):
+        if name in forbidden and isinstance(getattr(F, name), int):
+            raise CheckFailure(f"C3: LZ/offset token {name} present in flat VOCAB")
+    return True
+
+
+def c8_no_escape_tokens():
+    """C8 -- no wide values, no escapes: the flat alphabet has no u16-escape /
+    raw-Fn / DUR_LONG / NOTE_RAWFN / nframes-wide token. A 16-bit field is a fixed
+    (lo, hi) BYTE pair (positional, not a varint); there is no length-prefixed
+    escape. Structural invariant on the VOCAB."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    # EXACT names: an escape/wide field would be ESCAPE / NOTE_RAWFN / DUR_LONG /
+    # a varint/LEB digit token. (NOTE_RAW is a raw-note KIND marker -- a single
+    # note byte, bounded 0..255 -- not a wide value, so it is allowed.)
+    forbidden = {"ESCAPE", "NOTE_RAWFN", "DUR_LONG", "WIDE", "VARINT", "LEB"}
+    for name in dir(F):
+        if name in forbidden and isinstance(getattr(F, name), int):
+            raise CheckFailure(f"C8: escape/wide token {name} present in flat VOCAB")
+    return True
+
+
+def c7_byte_atom_fraction(ids, cap=0.5):
+    """C7 -- BYTE-atom fraction cap (cheap canary). A genuine stream is mostly
+    NOTE/INSTR_REF/CMD/GEN_*/structural atoms; a relabeled dump is mostly raw BYTE.
+    Returns (ok, fraction)."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    if not ids:
+        return True, 0.0
+    n_byte = sum(1 for t in ids if F.BYTE_BASE <= t < F.BYTE_BASE + F.BYTE_SPAN)
+    frac = n_byte / len(ids)
+    return frac < cap, frac
+
+
+def c8_field_tail(values, top_k=8, cover=0.95):
+    """C8 per-field tail check: a numeric field's top-K atoms must cover >= ``cover``
+    of its occurrences (a fat head / short tail). A wide or long-tailed field is a
+    MISSING generator, never an escape. Returns (ok, coverage, distinct)."""
+    if not values:
+        return True, 1.0, 0
+    from collections import Counter
+
+    counts = Counter(values)
+    total = len(values)
+    top = sum(c for _, c in counts.most_common(top_k))
+    return top / total >= cover, top / total, len(counts)
+
+
+def flat_structural_checks(ids):
+    """Run the alphabet-level C-checks (C3, C7, C8-no-escape) on a flat id stream.
+    Returns a metrics dict; raises CheckFailure on a hard structural violation
+    (C3/C8 escape). C7 is reported (a soft canary on small in-process streams)."""
+    c3_no_lz_offset_tokens()
+    c8_no_escape_tokens()
+    c7_ok, byte_frac = c7_byte_atom_fraction(ids)
+    return {
+        "c3_no_lz": True,
+        "c8_no_escape": True,
+        "c7_byte_fraction": round(byte_frac, 3),
+        "c7_ok": c7_ok,
+    }
+
 
 def gate_state(state, max_tok_per_frame=1.0):
     """Gate a per-frame (nframes, 25) state: (ok, metrics).  Byte-exact via the
@@ -85,6 +173,14 @@ def main(argv):
         return 2
     sub = int(argv[2]) if len(argv) > 2 else 1
     nf = int(argv[3]) if len(argv) > 3 else 2500
+    # C3 / C8 are alphabet invariants (no stream needed); fail hard if violated.
+    try:
+        c3_no_lz_offset_tokens()
+        c8_no_escape_tokens()
+        print("C3 (no LZ/offset tokens): PASS   C8 (no escape/wide tokens): PASS")
+    except CheckFailure as exc:
+        print("STRUCTURAL CHECK FAILED:", exc)
+        return 1
     ok, m = gate_sid(argv[1], sub, nf)
     print(("PASS" if ok else "FAIL"), m)
     if m["resid"] != 0:
