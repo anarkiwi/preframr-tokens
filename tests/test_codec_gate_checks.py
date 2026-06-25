@@ -93,3 +93,53 @@ def test_flat_structural_checks_pass_on_real_gt_stream():
     assert metrics["c3_no_lz"] and metrics["c8_no_escape"]
     # A note-dense multi-pattern song is structural, not a relabeled byte dump.
     assert metrics["c7_byte_fraction"] < 0.5, metrics["c7_byte_fraction"]
+
+
+def _lz_free_struct_ids():
+    """A minimal byte-exact StructureIR serialized to ids with NO repetition (so the
+    codec's `_struct_lz` finds no copy and emits no `_REPEAT`)."""
+    from preframr_tokens.bacc.generic.structure_ir import (
+        StructureIR,
+        structure_ir_to_ids,
+    )
+
+    # Distinct boot bytes + an empty IR -> a short, copy-free stream.
+    ir = StructureIR(nframes=4, boot=list(range(25)))
+    return structure_ir_to_ids(ir)
+
+
+def test_c3_measured_stream_passes_when_lz_free():
+    """An LZ-free shipped stream (no `_REPEAT`, no reserved compression sentinel) passes
+    the shipped-stream C3 -- the recovered-structure case the gate must certify."""
+    ids = _lz_free_struct_ids()
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    assert SI._REPEAT not in ids  # the fixture is genuinely copy-free
+    assert G.c3_no_lz_in_measured_stream(ids) is True
+
+
+def test_c3_measured_stream_fails_on_repeat_anywhere():
+    """C3 (loophole closed): a `_REPEAT` (the `_struct_lz` back-offset) ANYWHERE in the
+    shipped stream -- including a leading pattern-bank section, not just note_bases/nonfreq
+    -- FAILS. The no-LZ ban applies to whatever ships (HARD RULE #0)."""
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    base = _lz_free_struct_ids()
+    # Splice a _REPEAT triple into a LEADING (pattern-bank) section position: the old
+    # check skipped these, the closed check must reject it.
+    spliced = base[:5] + [SI._REPEAT, 0, 0] + base[5:]
+    with pytest.raises(G.CheckFailure, match="_REPEAT"):
+        G.c3_no_lz_in_measured_stream(spliced)
+
+
+def test_c3_measured_stream_fails_on_grammar_sentinel():
+    """C3 bans the MECHANISM, not a token id: a reserved high sentinel that is NOT a
+    section frame marker (a Re-Pair / learned-dictionary non-terminal) is rejected too.
+    """
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    base = _lz_free_struct_ids()
+    grammar_symbol = SI._REPEAT + 17  # above the literal range, not a frame marker
+    spliced = base[:5] + [grammar_symbol] + base[5:]
+    with pytest.raises(G.CheckFailure, match="compression sentinel"):
+        G.c3_no_lz_in_measured_stream(spliced)
