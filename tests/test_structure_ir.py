@@ -18,6 +18,7 @@ The invariants pinned here:
 import os
 
 import numpy as np
+import pytest
 
 from preframr_tokens.bacc.generic import structure_ir as SI
 from preframr_tokens.bacc.generic.structure_recover import RecoveredStructure
@@ -56,6 +57,14 @@ def _synthetic_ir(nframes=64):
     state[:, 0] = freq & 0xFF
     state[:, 1] = (freq >> 8) & 0xFF
 
+    # The PR4a token-derived note base: voice 0 carries the FITTED accumulator (above);
+    # store it as a _NB_TABLE with a single held pitch + a flat idx walk so the freq render
+    # from tokens is base(held seed) + the accumulator overlay = freq, byte-exact.  Voices
+    # 1/2 are silent (freq 0) -> a _NB_RAWLZ of zeros.
+    nb_v0 = (SI._NB_TABLE, [seed], [0], [0], [0], 2, align, [seed] * align)
+    zeros = [0] * nframes
+    note_bases = [nb_v0, (SI._NB_RAWLZ, zeros), (SI._NB_RAWLZ, zeros)]
+
     return SI.StructureIR(
         note_table=[0x0100, 0x0120, 0x0140],
         instr_pool=[[1, 2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12, 13, 14, 15, 16]],
@@ -74,6 +83,7 @@ def _synthetic_ir(nframes=64):
         pattern_bytes=pattern_bytes,
         orderlists=[[0, 1, 0, 0xFF], [1, 0xFF], [0, 0xFF]],  # pattern 0 reused
         accfits=accfits,
+        note_bases=note_bases,
         nframes=nframes,
         boot=[int(state[0, r]) for r in range(25)],
         _state=state,
@@ -111,20 +121,18 @@ def test_freq_renders_from_deserialized_ir_byte_exact():
     ), "voice-0 freq must render from the IR byte-exact"
 
 
-def test_render_structure_byte_exact_and_raises_without_anchor():
+def test_render_structure_byte_exact_from_tokens_alone():
+    """PR4a: ``render_structure`` reproduces the full 25-register state BYTE-EXACT from the
+    DESERIALIZED IR ALONE (``_state is None``) -- the freq from the token-derived note base
+    + accumulators, the non-freq from boot (all lanes constant here)."""
     ir = _synthetic_ir()
     rendered = SI.render_structure(ir)
     assert np.array_equal(rendered, ir._state)
-    # an IR rebuilt from ids alone has no anchor -> the non-freq replay is the next
-    # increment, so render_structure surfaces it rather than faking a render.
+    # rebuilt from ids alone (no anchor): still byte-exact -- the token render is anchor-free.
     back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
     assert back._state is None
-    try:
-        SI.render_structure(back)
-        raised = False
-    except NotImplementedError:
-        raised = True
-    assert raised
+    rendered_tok = SI.render_structure(back)
+    assert np.array_equal(rendered_tok, ir._state)
 
 
 def test_nonfreq_lane_renders_from_ids_alone():
@@ -284,6 +292,64 @@ def test_recover_structure_ir_returns_none_when_not_ok(monkeypatch, tmp_path):
     distill = str(tmp_path / "x.distill.bin")
     open(distill, "wb").close()
     assert SI.recover_structure_ir(distill, np.zeros((4, 25), dtype=np.int64)) is None
+
+
+# --------------------------------------------------------------------------- #
+# PR4a corpus proof (env-gated on SIDTRACE_BIN + HVSC, like test_note_base.py):
+# render_structure(ir) with ir._state = None reproduces the FULL 25-register trace
+# BYTE-EXACT (residual 0) from the SHIPPED tokens ALONE, and the gate stays < 1 tok/frame.
+# --------------------------------------------------------------------------- #
+_HVSC = os.environ.get("HVSC", "/scratch/preframr/hvsc/C64Music")
+
+
+def _have_bin():
+    from preframr_tokens.bacc.generic.sidtrace import sidtrace_bin
+
+    return sidtrace_bin() is not None
+
+
+_MA_SID = os.path.join(_HVSC, "MUSICIANS/C/Compod/House.sid")
+_GT_SID = os.path.join(_HVSC, "DEMOS/M-R/Regurgitated_Meatloaf.sid")
+# the MEASURED render-from-tokens floor (residual 0 always; tok/frame must stay < 1).
+_CORPUS_TPF = {"ma": 0.97, "gt": 0.50}
+
+
+def _check_render_from_tokens(sid, prefix, nframes, max_tpf, tmp_path):
+    from preframr_tokens.bacc.generic.sidtrace import run_sidtrace, sidwr_state
+
+    sidwr, distill = run_sidtrace(
+        sid, str(tmp_path / prefix), subtune=1, nframes=nframes
+    )
+    state, _ = sidwr_state(sidwr)
+    state = np.asarray(state, dtype=np.int64)
+    ir = SI.recover_structure_ir(distill, state)
+    assert ir is not None
+    # the codec round-trips every shipped field, and the SHIPPED ids deserialize and render
+    # the WHOLE trace byte-exact with NO _state anchor (the token-alone render proof).
+    ids = SI.assert_ids_roundtrip(ir)
+    back = SI.structure_ir_from_ids(ids)
+    assert back._state is None
+    rendered = SI.render_structure(back)
+    resid = int(np.sum(rendered != state))
+    assert resid == 0, (prefix, "render_structure(_state=None) residual", resid)
+    tpf = len(ids) / state.shape[0]
+    assert tpf < max_tpf, (prefix, "tok/frame", tpf)
+
+
+@pytest.mark.skipif(
+    not (_have_bin() and os.path.exists(_MA_SID)),
+    reason="set SIDTRACE_BIN + HVSC for the Music_Assembler render-from-tokens proof",
+)
+def test_ma_render_structure_from_tokens_byte_exact(tmp_path):
+    _check_render_from_tokens(_MA_SID, "ma", 2270, _CORPUS_TPF["ma"], tmp_path)
+
+
+@pytest.mark.skipif(
+    not (_have_bin() and os.path.exists(_GT_SID)),
+    reason="set SIDTRACE_BIN + HVSC for the GoatTracker render-from-tokens proof",
+)
+def test_gt_render_structure_from_tokens_byte_exact(tmp_path):
+    _check_render_from_tokens(_GT_SID, "gt", 2300, _CORPUS_TPF["gt"], tmp_path)
 
 
 def test_committed_corpus_sir_fixtures_under_one_token_per_frame():
