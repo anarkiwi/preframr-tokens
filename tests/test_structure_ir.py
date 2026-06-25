@@ -18,6 +18,7 @@ The invariants pinned here:
 import os
 
 import numpy as np
+import pytest
 
 from preframr_tokens.bacc.generic import structure_ir as SI
 from preframr_tokens.bacc.generic.structure_recover import RecoveredStructure
@@ -56,6 +57,27 @@ def _synthetic_ir(nframes=64):
     state[:, 0] = freq & 0xFF
     state[:, 1] = (freq >> 8) & 0xFF
 
+    # The PR4a token-derived note base: voice 0 carries the FITTED accumulator (above);
+    # store it as a _NB_TABLE with a single held pitch + a flat idx walk so the freq render
+    # from tokens is base(held seed) + the accumulator overlay = freq, byte-exact.  Voices
+    # 1/2 are silent (freq 0) -> a _NB_ARP with a single-pitch table and one (0,)-offset
+    # shape per onset (a content-addressed ref pool, NOT a per-frame value stream).
+    nb_v0 = (SI._NB_TABLE, [seed], [0], [0], [0], 2, align, [seed] * align)
+    onsets = [align, nframes // 2]
+    shape0 = (0,) * (onsets[1] - onsets[0])
+    shape1 = (0,) * (nframes - onsets[1])
+    silent_arp = (
+        SI._NB_ARP,
+        [0],  # one-entry note table (silence)
+        align,
+        [0] * align,  # warm-up
+        onsets,  # two per-onset segments tiling [align, nframes)
+        [0, 0],  # base index 0 at each onset
+        [0, 1],  # ref the length-matched (0,...)-offset shapes
+        [shape0, shape1],  # distinct (0,...)-offset shapes (a content-addressed pool)
+    )
+    note_bases = [nb_v0, silent_arp, silent_arp]
+
     return SI.StructureIR(
         note_table=[0x0100, 0x0120, 0x0140],
         instr_pool=[[1, 2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12, 13, 14, 15, 16]],
@@ -74,6 +96,7 @@ def _synthetic_ir(nframes=64):
         pattern_bytes=pattern_bytes,
         orderlists=[[0, 1, 0, 0xFF], [1, 0xFF], [0, 0xFF]],  # pattern 0 reused
         accfits=accfits,
+        note_bases=note_bases,
         nframes=nframes,
         boot=[int(state[0, r]) for r in range(25)],
         _state=state,
@@ -111,20 +134,18 @@ def test_freq_renders_from_deserialized_ir_byte_exact():
     ), "voice-0 freq must render from the IR byte-exact"
 
 
-def test_render_structure_byte_exact_and_raises_without_anchor():
+def test_render_structure_byte_exact_from_tokens_alone():
+    """PR4a: ``render_structure`` reproduces the full 25-register state BYTE-EXACT from the
+    DESERIALIZED IR ALONE (``_state is None``) -- the freq from the token-derived note base
+    + accumulators, the non-freq from boot (all lanes constant here)."""
     ir = _synthetic_ir()
     rendered = SI.render_structure(ir)
     assert np.array_equal(rendered, ir._state)
-    # an IR rebuilt from ids alone has no anchor -> the non-freq replay is the next
-    # increment, so render_structure surfaces it rather than faking a render.
+    # rebuilt from ids alone (no anchor): still byte-exact -- the token render is anchor-free.
     back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
     assert back._state is None
-    try:
-        SI.render_structure(back)
-        raised = False
-    except NotImplementedError:
-        raised = True
-    assert raised
+    rendered_tok = SI.render_structure(back)
+    assert np.array_equal(rendered_tok, ir._state)
 
 
 def test_nonfreq_lane_renders_from_ids_alone():
@@ -151,6 +172,89 @@ def test_nonfreq_lane_renders_from_ids_alone():
     # and the full render (admitted lane from program, the rest from the anchor) is exact.
     rendered = SI.render_structure(ir)
     assert np.array_equal(rendered, ir._state)
+
+
+def test_nonfreq_seg_lane_renders_from_ids_alone():
+    """A DENSE non-freq lane admitted as a content-addressed PER-ONSET SEGMENT dictionary
+    (``_LANE_SEG``): a small distinct-segment pool REF'd per onset (the shared instrument
+    across notes) renders BYTE-EXACT from the serialized record ALONE -- never a per-frame
+    value dump (HARD RULE #0)."""
+    nframes = 64
+    ir = _synthetic_ir(nframes)
+    # a two-shape instrument lane: every onset fires shape A (a 4-frame attack then hold) or
+    # shape B (a constant), so the per-onset dictionary collapses to TWO distinct segments.
+    onsets = list(range(0, nframes, 8))  # 8 onsets, each an 8-frame note
+    seg_a = (0x10, 0x10, 0x20, 0x20, 0x40, 0x40, 0x40, 0x40)
+    seg_b = (0x80,) * 8
+    seg_dict = [seg_a, seg_b]
+    refs = [0, 1, 0, 1, 0, 1, 0, 1]
+    col = np.zeros(nframes, dtype=np.int64)
+    for k, o in enumerate(onsets):
+        col[o : o + 8] = np.asarray(seg_dict[refs[k]], dtype=np.int64)
+    ir.nonfreq = [(SI._LANE_SEG, 4, 0, [], onsets, refs, seg_dict)]
+    ir._state[:, 4] = col
+
+    back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
+    assert SI._norm(back.nonfreq) == SI._norm(ir.nonfreq)  # the record round-trips
+    lanes = SI.render_nonfreq_from_ir(back, anchor=None)
+    assert 4 in lanes and np.array_equal(lanes[4], col)
+    rendered = SI.render_structure(ir)
+    assert np.array_equal(rendered, ir._state)
+
+
+def test_note_base_arp_round_trip_and_render():
+    """A ``_NB_ARP`` note base (per-onset base index + REF into a distinct offset-shape pool)
+    round-trips through the codec and renders its freq byte-exact -- an arp is a base pitch
+    plus a small repeating index-offset shape (NOTES), not a per-frame value stream."""
+    nframes = 32
+    ir = _synthetic_ir(nframes)
+    # a 3-pitch table, an arp that cycles base 0 -> +1 -> +2 over each onset segment.
+    tbl = [0x0100, 0x0110, 0x0120]
+    onsets = [0, 8, 16, 24]
+    shape = (0, 1, 2, 1, 0, 1, 2, 1)  # an 8-frame arp wiggle
+    bases = [0, 0, 0, 0]
+    refs = [0, 0, 0, 0]
+    rec = (SI._NB_ARP, tbl, 0, [], onsets, bases, refs, [shape])
+    grid, is_full = SI._note_base_grid(rec, nframes)
+    assert is_full
+    # verify against the explicit idx walk
+    tbl_arr = np.asarray(tbl, dtype=np.int64)
+    expect = np.concatenate([tbl_arr[list(shape)] for _ in onsets])
+    assert np.array_equal(grid, expect)
+    # round-trip via the full note-base section
+    ir.note_bases = [rec, ir.note_bases[1], ir.note_bases[2]]
+    back = SI.structure_ir_from_ids(SI.structure_ir_to_ids(ir))
+    assert SI._norm(back.note_bases) == SI._norm(ir.note_bases)
+
+
+def test_c3_gate_fails_on_raw_per_frame_note_base():
+    """C3 hardening (``codec_gate.c3_no_raw_value_stream``): a synthetic IR carrying a raw
+    per-frame note_base VALUE stream (length ~nframes) MUST be REJECTED -- the banned
+    literal-floor / register-log reproduction, not a generator/table/ref representation
+    (HARD RULE #0)."""
+    from tools.codec_gate import CheckFailure, c3_no_raw_value_stream
+
+    nframes = 64
+    # a fake note base that smuggles a per-frame freq VALUE stream in as the warm-up field
+    # (a relabeled dump): a _NB_TABLE whose warm-up is the whole nframes-long freq column.
+    raw_stream = list(range(nframes))
+    bad = SI.StructureIR(
+        note_bases=[(SI._NB_TABLE, [0], [0], [0], [0], 2, 0, raw_stream)],
+        nonfreq=[],
+        nframes=nframes,
+    )
+    with pytest.raises(CheckFailure):
+        c3_no_raw_value_stream(bad, nframes)
+
+    # an UNKNOWN note-base kind (not a generator/table/ref) is also rejected.
+    bad_kind = SI.StructureIR(
+        note_bases=[(99, raw_stream)], nonfreq=[], nframes=nframes
+    )
+    with pytest.raises(CheckFailure):
+        c3_no_raw_value_stream(bad_kind, nframes)
+
+    # a clean generator IR passes (the _synthetic_ir representations are all generators).
+    c3_no_raw_value_stream(_synthetic_ir(nframes), nframes)
 
 
 def test_nonfreq_ramp16_generator_renders_from_ids_alone():
@@ -194,7 +298,7 @@ def test_build_nonfreq_picks_ramp16_over_changepoints_for_a_sweep():
         val = (val + 217) % (
             1 << 16
         )  # a steep ramp -> a change point almost every frame
-    prog = SI.build_nonfreq_program(state)
+    prog = SI.build_nonfreq_program(state, None)
     ramp = [r for r in prog if r[0] == SI._LANE_RAMP16 and r[1] == 2 and r[2] == 3]
     assert ramp, "the dense PW sweep must be admitted as a 16-bit ramp generator"
     # neither byte lane is ALSO emitted as a change-point record (the generator covers both).
@@ -284,6 +388,78 @@ def test_recover_structure_ir_returns_none_when_not_ok(monkeypatch, tmp_path):
     distill = str(tmp_path / "x.distill.bin")
     open(distill, "wb").close()
     assert SI.recover_structure_ir(distill, np.zeros((4, 25), dtype=np.int64)) is None
+
+
+# --------------------------------------------------------------------------- #
+# PR4a corpus proof (env-gated on SIDTRACE_BIN + HVSC, like test_note_base.py):
+# render_structure(ir) with ir._state = None reproduces the FULL 25-register trace
+# BYTE-EXACT (residual 0) from the SHIPPED tokens ALONE, and the gate stays < 1 tok/frame.
+# --------------------------------------------------------------------------- #
+_HVSC = os.environ.get("HVSC", "/scratch/preframr/hvsc/C64Music")
+
+
+def _have_bin():
+    from preframr_tokens.bacc.generic.sidtrace import sidtrace_bin
+
+    return sidtrace_bin() is not None
+
+
+_MA_SID = os.path.join(_HVSC, "MUSICIANS/C/Compod/House.sid")
+_GT_SID = os.path.join(_HVSC, "DEMOS/M-R/Regurgitated_Meatloaf.sid")
+# the MEASURED render-from-tokens floor: GT renders the WHOLE trace from tokens alone
+# (residual 0) under the structured floor; MA's GENERATOR is byte-exact (residual 0 when
+# forced) but lands at ~1.5 tok/frame -- the per-onset INSTRUMENT SEGMENTS are stored
+# per-lane (6 lanes x ~25 distinct segments) instead of factored cross-lane into the ONE
+# shared instrument (the orderlist/pattern REF not yet wired into the freq/lane path), so
+# the codec ships the anchored pattern-bank instead.  An HONEST stall (NO value-LZ), not a
+# wall (see test_ma_render_structure_from_tokens_byte_exact's xfail).
+_CORPUS_TPF = {"gt": 0.995}
+
+
+def _check_render_from_tokens(sid, prefix, nframes, max_tpf, tmp_path):
+    from preframr_tokens.bacc.generic.sidtrace import run_sidtrace, sidwr_state
+
+    sidwr, distill = run_sidtrace(
+        sid, str(tmp_path / prefix), subtune=1, nframes=nframes
+    )
+    state, _ = sidwr_state(sidwr)
+    state = np.asarray(state, dtype=np.int64)
+    ir = SI.recover_structure_ir(distill, state)
+    assert ir is not None
+    # the codec round-trips every shipped field, and the SHIPPED ids deserialize and render
+    # the WHOLE trace byte-exact with NO _state anchor (the token-alone render proof).
+    ids = SI.assert_ids_roundtrip(ir)
+    back = SI.structure_ir_from_ids(ids)
+    assert back._state is None
+    rendered = SI.render_structure(back)
+    resid = int(np.sum(rendered != state))
+    assert resid == 0, (prefix, "render_structure(_state=None) residual", resid)
+    tpf = len(ids) / state.shape[0]
+    assert tpf < max_tpf, (prefix, "tok/frame", tpf)
+
+
+@pytest.mark.skipif(
+    not (_have_bin() and os.path.exists(_MA_SID)),
+    reason="set SIDTRACE_BIN + HVSC for the Music_Assembler render-from-tokens proof",
+)
+@pytest.mark.xfail(
+    reason="HONEST stall (NO LZ): MA's token-derived generator is byte-exact (residual 0) "
+    "but ~1.5 tok/frame, so the codec ships the anchored pattern-bank (render-from-tokens "
+    "NOT byte-exact).  The excess is the per-onset INSTRUMENT SEGMENTS stored per-lane "
+    "rather than factored cross-lane into the ONE shared instrument (the orderlist/pattern "
+    "REF not yet wired into the freq/lane path).  Upstream increment, never a value-LZ.",
+    strict=True,
+)
+def test_ma_render_structure_from_tokens_byte_exact(tmp_path):
+    _check_render_from_tokens(_MA_SID, "ma", 2270, 1.0, tmp_path)
+
+
+@pytest.mark.skipif(
+    not (_have_bin() and os.path.exists(_GT_SID)),
+    reason="set SIDTRACE_BIN + HVSC for the GoatTracker render-from-tokens proof",
+)
+def test_gt_render_structure_from_tokens_byte_exact(tmp_path):
+    _check_render_from_tokens(_GT_SID, "gt", 2300, _CORPUS_TPF["gt"], tmp_path)
 
 
 def test_committed_corpus_sir_fixtures_under_one_token_per_frame():
