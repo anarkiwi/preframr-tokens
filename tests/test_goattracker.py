@@ -71,6 +71,37 @@ def _demo_sng():
     return build_sng(song)
 
 
+def test_vocab_matches_flat_alphabet():
+    """The exported VOCAB/PAD_ID must equal the flat v2 alphabet's size (the
+    model-facing alphabet)."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    assert VOCAB == F.VOCAB
+    from preframr_tokens import PAD_ID
+
+    assert PAD_ID == F.PAD_ID == F.VOCAB
+
+
+def test_flat_tokens_are_typed_and_self_delimiting():
+    """A flat-encoded program begins with BOS, ends with EOS, and every token id
+    falls inside the declared typed ranges (no v1 LEB digits / LZ markers)."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    program = make_program(_demo_sng(), _DEMO_SEED, 128)
+    ids = program_to_ids(program)
+    assert ids[0] == F.BOS and ids[-1] == F.EOS
+    assert all(0 <= t < F.VOCAB for t in ids)
+    # structural section markers appear in order
+    for sec in (
+        F.SEC_HEADER,
+        F.SEC_TABLES,
+        F.SEC_INSTRUMENTS,
+        F.SEC_PATTERNS,
+        F.SEC_ORDERLISTS,
+    ):
+        assert sec in ids
+
+
 def test_render_song_shape_and_masking():
     state = render_song(_demo_sng(), _DEMO_SEED, 128)
     assert state.shape == (128, 25)
@@ -254,21 +285,20 @@ def test_grid_runner_context_budget(grid_runner_paths):
     program = recover_program(sid, dump, CPF, subtune=0)
     assert program.driver == "goattracker"
     brk, frames = measure(program)
-    # The global cross-pattern row-LZ (one backward window over ALL patterns
-    # concatenated instead of a fresh window per pattern) brings Grid_Runner to
-    # ~2,817 tokens (was 4,132 with per-pattern windows). It still must fit
-    # < 1 token/frame AND the 8192-token context window, and now also under 4096.
+    # FLAT v2 alphabet (learnability-first): typed atoms + self-delimiting
+    # structure, NO inline LZ and NO base-16 LEB place-value. Streams are longer
+    # than the v1 LEB+LZ scheme (Grid_Runner ~9,480 vs ~2,817) -- the deliberate
+    # compression-for-predictability trade -- but still well under 1 token/frame
+    # and inside a 16k context window. The hard gate (residual-0) is unchanged
+    # and covered by test_grid_runner_byte_exact.
+    assert brk["fmt"] == "flat_v2"
     assert brk["total"] / frames < 1.0, (
         f"Grid_Runner: {brk['total']} tokens / {frames} frames = "
         f"{brk['total'] / frames:.3f} tok/frame (must be < 1)"
     )
-    assert brk["total"] < 8192, (
-        f"Grid_Runner: {brk['total']} tokens for the whole song >= 8192 "
-        f"(must fit the 8192-token context window)"
-    )
-    assert brk["total"] < 4096, (
-        f"Grid_Runner: {brk['total']} tokens >= 4096 -- the global "
-        f"cross-pattern row-LZ should keep it well under 4096 (~2,817)"
+    assert brk["total"] < 16384, (
+        f"Grid_Runner: {brk['total']} flat tokens for the whole song >= 16384 "
+        f"(must fit a 16k context window)"
     )
 
 
