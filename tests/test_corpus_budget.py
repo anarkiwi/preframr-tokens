@@ -84,16 +84,27 @@ _CORPUS = [
     ("HardTrack_Composer", "HardTrack_Composer__Acid_Runner_Remix.npz"),
 ]
 
-# The generic PWLK-driven structure recovery (the resolved (zp),Y orderlist->pattern
-# walk, reloc-applied, grammar-selected by the byte-exact slice -- ``structure_recover``)
-# now flips ALL six former xfails: relocation (Digitalizer +$6B0A), the interleaved /
-# scattered pattern banks (MoN-FutureComposer, RoMuzak), the stateful-prefix row grammars
-# (TFX, 20CC), and DMC's instrument floor (the PWLK pattern bank is far more compact than
-# the old split-pointer scan).  Each is byte-exact + < 1 token/frame via the structure
-# path (committed ``.sir.npz``), so there are NO xfails left -- a tune whose structure
-# discovery finds nothing (Master_Composer, Soundmonitor) or whose structure floors >= 1
-# (Electrosound) correctly falls back to the generator cover, which serializes < 1.
-_XFAIL = {}
+# HONEST-RED (the C3 loophole-close gate PR): the structure-path budget now requires the
+# shipped stream to be LZ-FREE (``c3_no_lz_in_measured_stream`` over the WHOLE stream,
+# pattern-bank sections included).  Every committed ``.sir.npz`` still rides on the codec's
+# backward-LZ (``_struct_lz``, the ``_REPEAT`` sentinel) -- so the certified sub-1 tok/frame
+# was riding on LZ, not on recovered structure (HARD RULE #0).  Closing that loophole flips
+# all 18 STRUCTURE-PATH drivers to honest xfail; they are byte-exact (that still holds) but
+# NOT under-budget without LZ.  The fix is the instrument-program execution recovery (the
+# next PR) so the shipped stream needs no ``_struct_lz`` -- NOT relaxing the gate.  The two
+# COVER-PATH drivers (Soundmonitor, Master_Composer; no ``.sir.npz``) are not affected by
+# this structure-path check and stay HARD PASS.
+_LZ_XFAIL_REASON = (
+    "structure shipped stream rides _struct_lz (_REPEAT) -- certified <1 tok/frame was "
+    "LZ-dependent, not recovered structure (HARD RULE #0); pending instrument-program "
+    "execution recovery so the shipped stream needs no LZ"
+)
+_COVER_DRIVERS = {"Soundmonitor", "Master_Composer"}
+_XFAIL = {
+    driver: _LZ_XFAIL_REASON
+    for driver, _fixture in _CORPUS
+    if driver not in _COVER_DRIVERS
+}
 
 
 def _fixture_base(fixture):
@@ -165,8 +176,17 @@ def _structure_under_budget(driver, fixture, state, nframes):
         rendered, state
     ), f"{driver}: structure render is not byte-exact"
 
-    # Token budget: < 1 token/frame, the recovered structured floor (vs the output-fit
-    # cover's >= 1 on these structured tunes).
+    # Token budget: < 1 token/frame AND the shipped stream must be LZ-FREE.  HARD RULE #0:
+    # the certified tok/frame must come from RECOVERED STRUCTURE, not from compressing the
+    # serialized stream.  The committed structure ids still ride on the codec's backward-LZ
+    # (`_struct_lz`, the `_REPEAT` sentinel) across the pattern-bank sections, so this no-LZ
+    # requirement currently FAILS for every structure-path tune (the honest red the gate
+    # PR surfaces): a sub-1 that rides on `_struct_lz` is not a recovered floor.  The fix is
+    # the instrument-program execution recovery (so the shipped stream needs no `_struct_lz`),
+    # NOT relaxing this check.
+    from tools.codec_gate import c3_no_lz_in_measured_stream
+
+    c3_no_lz_in_measured_stream(ids)  # raises CheckFailure while the stream rides on LZ
     tok_per_frame = len(ids) / nframes
     assert (
         tok_per_frame < 1.0

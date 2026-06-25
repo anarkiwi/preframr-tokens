@@ -44,66 +44,56 @@ def c3_no_lz_offset_tokens():
 
 
 def c3_no_lz_in_measured_stream(ids):
-    """C3 (shipped-stream invariant) -- the GATE-MEASURED note_bases / nonfreq sections
-    carry NO back-reference / LZ token.
+    """C3 (shipped-stream invariant) -- the ENTIRE gate-measured shipped stream carries NO
+    general-compression / back-reference token, in ANY section regardless of the path that
+    produced it.
 
-    The campaign mandate is NO LZ in the measured path: the per-onset ref / note-base
-    streams must collapse as content-addressed ONSET-PHRASE REFs (a phrase dictionary keyed
-    to the onset grid, define-at-first-use), NEVER as the backward-LZ ``_struct_lz``
-    (``_REPEAT, off, len``) the pattern-bank sections may still use.  This scans the SHIPPED
-    ids -- the bytes that actually ship -- re-walking the section framing exactly as
-    :func:`structure_ir.structure_ir_from_ids` does, and FAILS if the tagged
-    ``note_bases`` / ``nonfreq`` section bodies contain ``_REPEAT`` (the ``_struct_lz``
-    back-offset) or any reserved wide sentinel a relabeled dictionary-LZ would emit.
+    The campaign mandate is NO LZ (or any equivalent general repetition-compression of the
+    output symbol stream) in the MEASURED path -- the tok/frame the gate certifies must come
+    from RECOVERED STRUCTURE, never from compressing the serialized stream.  The codec's
+    backward-LZ ``_struct_lz`` emits the reserved sentinel ``_REPEAT`` (``_REPEAT, off,
+    len``) for every copy; an equivalent learned-dictionary / grammar scheme (Re-Pair, LZ,
+    any back-reference) likewise introduces reserved high sentinels above the codec's literal
+    range.  The ban is on the MECHANISM (general compression of the stream), not a single
+    token id: a bounded AUTHORED-vocabulary reference (an INSTR_REF, an orderlist
+    ``ORDER_REPEAT`` loop-count, a content-addressed pattern REF) is a literal in the codec's
+    own value range and is allowed; an unbounded compression sentinel is not.
 
-    A FAIL here means the sub-1 tok/frame result RODE ON LZ -- the structure was not
-    recovered, only compressed (HARD RULE #0).  Returns True when the measured sections are
-    LZ-free."""
+    Earlier this ban applied ONLY to the tagged ``note_bases`` / ``nonfreq`` sections, while
+    the pattern-bank sections were permitted to use ``_struct_lz``.  But the gate measures the
+    SHIPPED representation -- and when a tune ships the pattern-bank path its sub-1 tok/frame
+    rode entirely on ``_struct_lz`` there (the loophole: the ban sat on a path that did not
+    ship).  This now scans the WHOLE shipped id stream and FAILS on ANY occurrence of a
+    reserved compression sentinel (``_REPEAT`` or any token at/above ``_REPEAT`` that is not a
+    section frame marker), so the no-LZ ban applies to whatever actually ships.
+
+    A FAIL here means the certified tok/frame RODE ON compression -- the structure was not
+    recovered (HARD RULE #0).  Returns True when the shipped stream is compression-free.  Do
+    NOT relax this by re-permitting a section; the fix is to RECOVER the structure so the
+    shipped stream needs no ``_struct_lz``."""
     from preframr_tokens.bacc.generic import structure_ir as SI
 
     if not ids:
         return True
-
-    def _skip_section(i):
-        # mirror _read_section framing: count, then count VALUES (a _REPEAT triple expands
-        # to many values), so we walk token-by-token and report any _REPEAT we step over.
-        ncount = ids[i]
-        i += 1
-        produced, saw_repeat = 0, False
-        while produced < ncount:
-            tok = ids[i]
-            if tok == SI._REPEAT:
-                saw_repeat = True
-                length = ids[i + 2]
-                i += 3
-                produced += length
-            else:
-                i += 1
-                produced += 1
-        return i, saw_repeat
-
-    # walk the fixed leading sections (pattern-bank: _struct_lz ALLOWED), then the optional
-    # tagged trailing sections (note_bases / nonfreq: _struct_lz BANNED).
-    i = 1 + 25  # nframes + boot (NREG)
-    for _ in range(
-        6
-    ):  # note_table, instr_pool, programs, patterns, orderlists, accfits
-        i, _ = _skip_section(i)
-    while i < len(ids) and ids[i] != SI._SEC_END:
-        tag = ids[i]
-        i += 1
-        if tag in (SI._SEC_NOTE_BASES, SI._SEC_NONFREQ):
-            i, saw_repeat = _skip_section(i)
-            if saw_repeat:
-                sec = "note_bases" if tag == SI._SEC_NOTE_BASES else "nonfreq"
-                raise CheckFailure(
-                    f"C3: measured section {sec!r} contains _REPEAT (LZ back-offset) "
-                    "-- the sub-1 result rides on LZ, the structure was not recovered "
-                    "(HARD RULE #0). Collapse the ref streams as content-addressed "
-                    "onset-phrase REFs, not _struct_lz."
-                )
-        else:
-            break
+    # Section frame markers are reserved high sentinels but are STRUCTURE, not compression;
+    # everything else at/above _REPEAT is a back-reference / learned-dictionary symbol.
+    frame_markers = {SI._SEC_END, SI._SEC_NOTE_BASES, SI._SEC_NONFREQ}
+    for tok in ids:
+        if tok == SI._REPEAT:
+            raise CheckFailure(
+                "C3: shipped stream contains _REPEAT (the _struct_lz back-offset) -- the "
+                "certified tok/frame rides on LZ in SOME shipped section (pattern-bank "
+                "included), the structure was not recovered (HARD RULE #0). Recover the "
+                "structure (instrument-program execution / content-addressed authored REFs) "
+                "so the shipped stream needs no _struct_lz; do NOT re-permit a section."
+            )
+        if tok >= SI._REPEAT and tok not in frame_markers:
+            raise CheckFailure(
+                f"C3: shipped stream contains reserved compression sentinel {tok} -- a "
+                "general learned-dictionary / grammar / back-reference over the symbol "
+                "stream (Re-Pair / LZ), banned regardless of token id (the MECHANISM is "
+                "what is forbidden, HARD RULE #0)."
+            )
     return True
 
 
@@ -278,19 +268,34 @@ def gate_sid(sid, subtune=1, nframes=2500, max_tok_per_frame=1.0):
             "nframes": 0,
             "tokens": 0,
         }
+    tpf = len(ids) / nf
     if kind == "structure":
         ir = structure_ir_from_ids(ids)
-        # C3 (generic render path): the recovered representation must be a
-        # generator/table/ref/sparse-CP, never a raw per-frame value stream (HARD RULE #0).
-        c3_no_raw_value_stream(ir, nf)
-        # C3 (shipped-stream): the gate-MEASURED note_bases / nonfreq sections must be
-        # LZ-free -- a sub-1 result that rides on _struct_lz back-offsets is rejected.
-        c3_no_lz_in_measured_stream(ids)
+        # The C3 structural checks are HARD gate failures (HARD RULE #0): a violation means
+        # the certified tok/frame is not backed by recovered structure.  A CheckFailure is
+        # surfaced as a clean FAIL result (not an uncaught exception) so the gate is a usable
+        # red/green signal -- the message names the offending mechanism.
+        try:
+            # C3 (generic render path): the recovered representation must be a
+            # generator/table/ref/sparse-CP, never a raw per-frame value stream.
+            c3_no_raw_value_stream(ir, nf)
+            # C3 (shipped-stream): the WHOLE shipped stream must be LZ-free -- a tok/frame
+            # that rides on _struct_lz in ANY shipped section (pattern-bank included) is
+            # rejected.
+            c3_no_lz_in_measured_stream(ids)
+        except CheckFailure as exc:
+            return False, {
+                "resid": -1,
+                "tok_per_frame": round(tpf, 3),
+                "nframes": nf,
+                "tokens": len(ids),
+                "kind": kind,
+                "c3": str(exc),
+            }
         ir._state = state  # pylint: disable=protected-access
         resid = int(_np.sum(render_structure(ir) != state))
     else:
         resid = gate_state(state, max_tok_per_frame)[1]["resid"]
-    tpf = len(ids) / nf
     ok = resid == 0 and tpf < max_tok_per_frame
     return ok, {
         "resid": resid,
