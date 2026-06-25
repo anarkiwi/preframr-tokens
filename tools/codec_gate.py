@@ -43,6 +43,70 @@ def c3_no_lz_offset_tokens():
     return True
 
 
+def c3_no_lz_in_measured_stream(ids):
+    """C3 (shipped-stream invariant) -- the GATE-MEASURED note_bases / nonfreq sections
+    carry NO back-reference / LZ token.
+
+    The campaign mandate is NO LZ in the measured path: the per-onset ref / note-base
+    streams must collapse as content-addressed ONSET-PHRASE REFs (a phrase dictionary keyed
+    to the onset grid, define-at-first-use), NEVER as the backward-LZ ``_struct_lz``
+    (``_REPEAT, off, len``) the pattern-bank sections may still use.  This scans the SHIPPED
+    ids -- the bytes that actually ship -- re-walking the section framing exactly as
+    :func:`structure_ir.structure_ir_from_ids` does, and FAILS if the tagged
+    ``note_bases`` / ``nonfreq`` section bodies contain ``_REPEAT`` (the ``_struct_lz``
+    back-offset) or any reserved wide sentinel a relabeled dictionary-LZ would emit.
+
+    A FAIL here means the sub-1 tok/frame result RODE ON LZ -- the structure was not
+    recovered, only compressed (HARD RULE #0).  Returns True when the measured sections are
+    LZ-free."""
+    from preframr_tokens.bacc.generic import structure_ir as SI
+
+    if not ids:
+        return True
+
+    def _skip_section(i):
+        # mirror _read_section framing: count, then count VALUES (a _REPEAT triple expands
+        # to many values), so we walk token-by-token and report any _REPEAT we step over.
+        ncount = ids[i]
+        i += 1
+        produced, saw_repeat = 0, False
+        while produced < ncount:
+            tok = ids[i]
+            if tok == SI._REPEAT:
+                saw_repeat = True
+                length = ids[i + 2]
+                i += 3
+                produced += length
+            else:
+                i += 1
+                produced += 1
+        return i, saw_repeat
+
+    # walk the fixed leading sections (pattern-bank: _struct_lz ALLOWED), then the optional
+    # tagged trailing sections (note_bases / nonfreq: _struct_lz BANNED).
+    i = 1 + 25  # nframes + boot (NREG)
+    for _ in range(
+        6
+    ):  # note_table, instr_pool, programs, patterns, orderlists, accfits
+        i, _ = _skip_section(i)
+    while i < len(ids) and ids[i] != SI._SEC_END:
+        tag = ids[i]
+        i += 1
+        if tag in (SI._SEC_NOTE_BASES, SI._SEC_NONFREQ):
+            i, saw_repeat = _skip_section(i)
+            if saw_repeat:
+                sec = "note_bases" if tag == SI._SEC_NOTE_BASES else "nonfreq"
+                raise CheckFailure(
+                    f"C3: measured section {sec!r} contains _REPEAT (LZ back-offset) "
+                    "-- the sub-1 result rides on LZ, the structure was not recovered "
+                    "(HARD RULE #0). Collapse the ref streams as content-addressed "
+                    "onset-phrase REFs, not _struct_lz."
+                )
+        else:
+            break
+    return True
+
+
 def c3_no_raw_value_stream(ir, nframes):
     """C3 (generic render path) -- no raw per-frame VALUE stream: inspect the recovered
     ``note_bases`` / ``nonfreq`` REPRESENTATION TAGS and FAIL on any record that stores a
@@ -219,6 +283,9 @@ def gate_sid(sid, subtune=1, nframes=2500, max_tok_per_frame=1.0):
         # C3 (generic render path): the recovered representation must be a
         # generator/table/ref/sparse-CP, never a raw per-frame value stream (HARD RULE #0).
         c3_no_raw_value_stream(ir, nf)
+        # C3 (shipped-stream): the gate-MEASURED note_bases / nonfreq sections must be
+        # LZ-free -- a sub-1 result that rides on _struct_lz back-offsets is rejected.
+        c3_no_lz_in_measured_stream(ids)
         ir._state = state  # pylint: disable=protected-access
         resid = int(_np.sum(render_structure(ir) != state))
     else:
