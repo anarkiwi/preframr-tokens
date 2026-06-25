@@ -83,23 +83,44 @@ def test_vocab_matches_flat_alphabet():
 
 
 def test_flat_tokens_are_typed_and_self_delimiting():
-    """A flat-encoded program begins with BOS, ends with EOS, and every token id
-    falls inside the declared typed ranges (no v1 LEB digits / LZ markers)."""
+    """A flat-encoded program begins with BOS, ends with EOS, every token id falls
+    inside the declared typed ranges (no v1 LEB digits / LZ markers), and uses the
+    INLINE (define-at-first-use) framing: a small front block (header + the four
+    generator-parameter tables), then patterns/instruments defined IN PLAY ORDER
+    inside the orderlist walk -- NO upfront SEC_INSTRUMENTS / SEC_PATTERNS section
+    block."""
     from preframr_tokens.bacc import flat_serialize as F
 
     program = make_program(_demo_sng(), _DEMO_SEED, 128)
     ids = program_to_ids(program)
     assert ids[0] == F.BOS and ids[-1] == F.EOS
     assert all(0 <= t < F.VOCAB for t in ids)
-    # structural section markers appear in order
-    for sec in (
-        F.SEC_HEADER,
-        F.SEC_TABLES,
-        F.SEC_INSTRUMENTS,
-        F.SEC_PATTERNS,
-        F.SEC_ORDERLISTS,
-    ):
-        assert sec in ids
+    # The retired front-loaded section markers are GONE (no preamble).
+    assert F.SEC_INSTRUMENTS not in ids
+    assert F.SEC_PATTERNS not in ids
+    # The kept front block (header + tables) precedes the inline orderlist walk.
+    assert (
+        ids.index(F.SEC_HEADER) < ids.index(F.SEC_TABLES) < ids.index(F.SEC_ORDERLISTS)
+    )
+    # Patterns/instruments are defined INLINE, after SEC_ORDERLISTS (in play order),
+    # not in a front section: the first PATTERN_BEGIN / INSTR_BEGIN follows it.
+    sec_ol = ids.index(F.SEC_ORDERLISTS)
+    assert ids.index(F.PATTERN_BEGIN) > sec_ol
+    assert ids.index(F.INSTR_BEGIN) > sec_ol
+    # A pattern def carries its original number then self-delimits with PATTERN_END;
+    # an instrument def self-delimits with INSTR_END (BEGIN/END bracketing, no
+    # length prefix).
+    assert F.PATTERN_END in ids and F.INSTR_END in ids
+    # Prefix-validity: truncating right after any PATTERN_END / REF (+ EOS) still
+    # decodes to a partial, continuable Song (any prefix is a decodable song).
+    cuts = []
+    for j, t in enumerate(ids):
+        if t == F.PATTERN_END:
+            cuts.append(j + 1)
+        elif t == F.REF:
+            cuts.append(j + 2)  # REF + its ordinal byte
+    for c in cuts:
+        F.flat_gt_ids_to_program(ids[:c] + [F.EOS])  # no IndexError / desync
 
 
 def test_render_song_shape_and_masking():

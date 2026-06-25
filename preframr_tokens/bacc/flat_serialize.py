@@ -9,7 +9,7 @@ copies). Three principles:
      decode place value or infer type from grammar position:
        - NOTE_*      one token per canonical A440 grid index (pitch proximity ->
                      embedding proximity); plus REST/KEYOFF/KEYON/RAW markers.
-       - INSTR_REF_* one token per instrument slot.
+       - INSTR_REF_* one token per instrument ORDINAL (first-appearance name).
        - CMD_*       one token per effect/command.
        - BYTE_*      one token per 0..255 byte value (data, params, regs); 16-bit
                      values are a fixed-width (lo, hi) BYTE pair -- positional, not
@@ -21,6 +21,47 @@ copies). Three principles:
   3. NO LZ.  Repetition is left to the model's attention (and, at the musical
      level, to the orderlist's pattern references) rather than emitted as
      REPEAT/TRANSPOSE numeric back-offsets the model cannot compute reliably.
+
+INLINE / DEFINE-AT-FIRST-USE LAYOUT (Sec 2e).  There is NO upfront section block
+of all instruments / all patterns / all orderlists.  Only the header and the four
+generator-parameter TABLES (global param columns, not per-play definitions) stay
+as a small front block.  Everything else is emitted in PLAY ORDER, defined the
+first time it is reached:
+
+  BOS
+  SEC_HEADER <nframes u16> <subtune> <adparam u16> <opt_pulse> <opt_realtime>
+             <boot[NREG]> <boot1[NREG]>
+  SEC_TABLES (TABLE_BEGIN (<left> <right>)* TABLE_END){4}
+  SEC_ORDERLISTS
+    ( SUBTUNE_BEGIN
+        ( CHANNEL <restart>
+            ( -- per orderlist entry, IN ORDER:
+              ORDER_PLAY first reach of pattern p:
+                  PATTERN_BEGIN <orig_pat# byte>
+                    ( ROW <note>
+                          [ INSTR_BEGIN <orig_instr# byte> <fields> INSTR_END ]
+                          <INSTR_REF = INSTR_REF_BASE + instr_ordinal>
+                          <CMD> <data> )*
+                  PATTERN_END                         -- interns p -> pat_ordinal
+              ORDER_PLAY later reach of pattern p:
+                  REF <pat_ordinal byte>
+              ORDER_REPEAT  <count>
+              ORDER_TRANSPOSE <int8>
+            )*
+        )*                                            -- channels
+      SUBTUNE_END )*                                  -- subtunes
+    ( PATTERN_BEGIN <orig_pat# byte> rows... PATTERN_END )*  -- never-played pats,
+                                                      -- appended so song.patterns
+                                                      -- survives round-trip
+  EOS
+
+A definition's ordinal is interned at first appearance and is always emitted
+STRICTLY to the LEFT of any REF / INSTR_REF to it (prefix-valid: any prefix that
+ends after a PATTERN_END / REF decodes to a partial, continuable Song).  REF /
+INSTR_REF ids are small dense content-addressed NAMES, never numeric back-offsets.
+The inline def carries the ORIGINAL pattern/instrument index as a byte so the
+decoder rebuilds the exact original ``song.patterns`` / ``song.instruments``
+numbering (the abstract Song the renderer needs), independent of play order.
 
 Losslessness is unchanged: this is a pure re-serialization of the same recovered
 ``BaccProgram``; the gate stays render-equality (``verify_residual``) plus the
@@ -222,43 +263,77 @@ def _emit_tables(out, song):
         out.append(TABLE_END)
 
 
-def _emit_instruments(out, song):
-    out.append(SEC_INSTRUMENTS)
-    for instr in song.instruments:
-        out.append(INSTR_BEGIN)
-        for f in _INSTR_FIELDS:
-            _byte(out, getattr(instr, f))
-        out.append(INSTR_END)
+def _emit_instr_def(out, instr, slot):
+    """Inline instrument definition: INSTR_BEGIN <slot> <fields> INSTR_END.
+
+    ``slot`` is the row's 1-based instrument REFERENCE value; the definition it
+    carries is ``song.instruments[slot - 1]`` (GoatTracker rows reference the
+    instrument list 1-based; value 0 means "no instrument change" and has no
+    definition, so it is never passed here)."""
+    out.append(INSTR_BEGIN)
+    _byte(out, slot)
+    for f in _INSTR_FIELDS:
+        _byte(out, getattr(instr, f))
+    out.append(INSTR_END)
 
 
-def _emit_patterns(out, song):
-    out.append(SEC_PATTERNS)
-    for pat in song.patterns:
-        out.append(PATTERN_BEGIN)
-        for r in pat.rows:
-            out.append(ROW)
-            _emit_note(out, r.note)
-            if not 0 <= r.instrument < INSTR_REF_SPAN:
-                raise ValueError(f"instr ref {r.instrument} outside range")
-            out.append(INSTR_REF_BASE + r.instrument)
-            if not 0 <= r.command < CMD_SPAN:
-                raise ValueError(f"command {r.command} outside range")
-            out.append(CMD_BASE + r.command)
-            _byte(out, r.data)
-        out.append(PATTERN_END)
+def _emit_row(out, row, song, instr_ord):
+    """Emit one ROW, defining its instrument inline on first use.
+
+    ``instr_ord`` maps a row instrument REFERENCE value -> its first-appearance
+    ordinal (mutated here). The first time a value is seen its inline def is
+    emitted strictly LEFT of the INSTR_REF (value 0 = "no change" has no def);
+    later uses emit only the INSTR_REF ordinal token."""
+    out.append(ROW)
+    _emit_note(out, row.note)
+    ref = row.instrument
+    if ref not in instr_ord:
+        ordinal = len(instr_ord)
+        if not 0 <= ordinal < INSTR_REF_SPAN:
+            raise ValueError(f"instrument ordinal {ordinal} outside range")
+        if not 0 <= ref <= 0xFF:
+            raise ValueError(f"instrument ref {ref} outside byte range")
+        instr_ord[ref] = ordinal
+        if ref != 0:
+            _emit_instr_def(out, song.instruments[ref - 1], ref)
+    out.append(INSTR_REF_BASE + instr_ord[ref])
+    if not 0 <= row.command < CMD_SPAN:
+        raise ValueError(f"command {row.command} outside range")
+    out.append(CMD_BASE + row.command)
+    _byte(out, row.data)
+
+
+def _emit_pattern_def(out, song, orig_pat, instr_ord):
+    """Inline pattern definition: PATTERN_BEGIN <orig_pat#> rows... PATTERN_END."""
+    out.append(PATTERN_BEGIN)
+    _byte(out, orig_pat)
+    for row in song.patterns[orig_pat].rows:
+        _emit_row(out, row, song, instr_ord)
+    out.append(PATTERN_END)
 
 
 def _emit_orderlists(out, song):
+    """Walk the orderlist in PLAY ORDER, defining patterns (and the instruments
+    their rows use) at first reach and emitting a REF on later reaches."""
     out.append(SEC_ORDERLISTS)
+    pat_ord = {}  # original pattern# -> first-appearance ordinal
+    instr_ord = {}  # original instrument# -> first-appearance ordinal
     for sub in song.subtunes:
         out.append(SUBTUNE_BEGIN)
         for ol in sub.channels:
             out.append(CHANNEL)
             _byte(out, ol.restart)
             for op, val in _orderlist_entries(ol):
-                if op == 0:
-                    out.append(ORDER_PLAY)
-                    _byte(out, val)
+                if op == 0:  # play pattern
+                    if val in pat_ord:
+                        out.append(REF)
+                        _byte(out, pat_ord[val])
+                    else:
+                        ordinal = len(pat_ord)
+                        if not 0 <= ordinal <= 0xFF:
+                            raise ValueError(f"pattern ordinal {ordinal} > byte")
+                        pat_ord[val] = ordinal
+                        _emit_pattern_def(out, song, val, instr_ord)
                 elif op == 1:
                     out.append(ORDER_REPEAT)
                     _byte(out, val)
@@ -266,6 +341,23 @@ def _emit_orderlists(out, song):
                     out.append(ORDER_TRANSPOSE)
                     _byte(out, int(val) & 0xFF)
         out.append(SUBTUNE_END)
+    # Patterns never reached by any orderlist still ride song.patterns and must
+    # survive the round-trip; append their defs (in original-pat# order) after the
+    # play walk so the decoder rebuilds the full pattern list. (A trailing pattern
+    # def is just a definition with no play entry -- its rows may still introduce
+    # never-played instruments, defined inline as usual.)
+    for pat in range(len(song.patterns)):
+        if pat not in pat_ord:
+            pat_ord[pat] = len(pat_ord)
+            _emit_pattern_def(out, song, pat, instr_ord)
+    # Instruments never referenced by any row still ride song.instruments; emit a
+    # bare INSTR_BEGIN def (no INSTR_REF) for each missing slot so the decoder
+    # rebuilds the full instrument list at the correct slot.
+    for slot in range(1, len(song.instruments) + 1):
+        if slot not in instr_ord:
+            instr_ord[slot] = None  # defined but never referenced (no ordinal)
+            _emit_instr_def(out, song.instruments[slot - 1], slot)
+    return pat_ord, instr_ord
 
 
 def flat_gt_program_to_ids(program):
@@ -273,8 +365,6 @@ def flat_gt_program_to_ids(program):
     out = [BOS]
     _emit_header(out, program)
     _emit_tables(out, song)
-    _emit_instruments(out, song)
-    _emit_patterns(out, song)
     _emit_orderlists(out, song)
     out.append(EOS)
     return out
@@ -323,51 +413,81 @@ def _read_tables(ids, i):
     return tables, i
 
 
-def _read_instruments(ids, i):
+def _read_instr_def(ids, i, instr_state):
+    """Read an inline INSTR_BEGIN <slot> <fields> INSTR_END and intern it.
+
+    ``instr_state`` is ({slot: Instrument}, [ref-value by ordinal]); ``slot`` is
+    the row's 1-based reference value and the Instrument is stored at
+    ``song.instruments[slot - 1]`` on rebuild. (Called only for the inline def,
+    i.e. a nonzero ref; ref 0 is interned by :func:`_read_row` with no def.)"""
     from pygoattracker.model import Instrument
 
-    i = _expect(ids, i, SEC_INSTRUMENTS, "SEC_INSTRUMENTS")
-    instruments = []
-    while ids[i] == INSTR_BEGIN:
-        i += 1
-        vals = []
-        for _ in _INSTR_FIELDS:
-            v, i = _read_byte(ids, i)
-            vals.append(v)
-        i = _expect(ids, i, INSTR_END, "INSTR_END")
-        instruments.append(Instrument(*vals, name=f"i{len(instruments):02d}"))
-    return instruments, i
+    by_slot, _order = instr_state
+    i += 1  # INSTR_BEGIN
+    slot, i = _read_byte(ids, i)
+    vals = []
+    for _ in _INSTR_FIELDS:
+        v, i = _read_byte(ids, i)
+        vals.append(v)
+    i = _expect(ids, i, INSTR_END, "INSTR_END")
+    by_slot[slot] = Instrument(*vals, name=f"i{slot:02d}")
+    return slot, i
 
 
-def _read_patterns(ids, i):
-    from pygoattracker.model import Pattern, Row
+def _read_row(ids, i, instr_state):
+    from pygoattracker.model import Row
 
-    i = _expect(ids, i, SEC_PATTERNS, "SEC_PATTERNS")
-    patterns = []
-    while ids[i] == PATTERN_BEGIN:
-        i += 1
-        rows = []
-        while ids[i] == ROW:
-            i += 1
-            note, i = _read_note(ids, i)
-            tr = ids[i]
-            if not INSTR_REF_BASE <= tr < INSTR_REF_BASE + INSTR_REF_SPAN:
-                raise ValueError(f"expected INSTR_REF at {i}, got {tr}")
-            instr = tr - INSTR_REF_BASE
-            i += 1
-            tc = ids[i]
-            if not CMD_BASE <= tc < CMD_BASE + CMD_SPAN:
-                raise ValueError(f"expected CMD at {i}, got {tc}")
-            command = tc - CMD_BASE
-            i += 1
-            data, i = _read_byte(ids, i)
-            rows.append(Row(note, instr, command, data))
-        i = _expect(ids, i, PATTERN_END, "PATTERN_END")
-        patterns.append(Pattern(rows=rows))
-    return patterns, i
+    _by_slot, order = instr_state
+    i += 1  # ROW
+    note, i = _read_note(ids, i)
+    if ids[i] == INSTR_BEGIN:
+        # First use of a nonzero ref: read its def, then intern the ordinal.
+        slot, i = _read_instr_def(ids, i, instr_state)
+        order.append(slot)  # ordinal == position; maps back to the ref value
+    tr = ids[i]
+    if not INSTR_REF_BASE <= tr < INSTR_REF_BASE + INSTR_REF_SPAN:
+        raise ValueError(f"expected INSTR_REF at {i}, got {tr}")
+    ordinal = tr - INSTR_REF_BASE
+    if ordinal == len(order):
+        # First use of ref 0 ("no instrument change"): no def precedes it.
+        order.append(0)
+    if ordinal >= len(order):
+        raise ValueError(f"INSTR_REF ordinal {ordinal} not yet defined")
+    instr = order[ordinal]  # back to the row's instrument REFERENCE value
+    i += 1
+    tc = ids[i]
+    if not CMD_BASE <= tc < CMD_BASE + CMD_SPAN:
+        raise ValueError(f"expected CMD at {i}, got {tc}")
+    command = tc - CMD_BASE
+    i += 1
+    data, i = _read_byte(ids, i)
+    return Row(note, instr, command, data), i
+
+
+def _read_pattern_def(ids, i, pat_state, instr_state):
+    """Read an inline PATTERN_BEGIN <orig_pat#> rows... PATTERN_END and intern it.
+
+    ``pat_state`` is ({orig_pat#: Pattern}, [orig_pat# by ordinal]); the ordinal
+    is the def's position in the second list, matching the encoder's interning."""
+    from pygoattracker.model import Pattern
+
+    by_pat, order = pat_state
+    i += 1  # PATTERN_BEGIN
+    orig_pat, i = _read_byte(ids, i)
+    rows = []
+    while ids[i] == ROW:
+        row, i = _read_row(ids, i, instr_state)
+        rows.append(row)
+    i = _expect(ids, i, PATTERN_END, "PATTERN_END")
+    by_pat[orig_pat] = Pattern(rows=rows)
+    order.append(orig_pat)  # ordinal == position in this list
+    return i
 
 
 def _read_orderlists(ids, i):
+    """Inverse of :func:`_emit_orderlists`: walk the inline play-order stream,
+    reading pattern/instrument defs at first use and REFs on later reaches, and
+    return (subtunes, patterns, instruments) all in ORIGINAL index order."""
     from pygoattracker.model import (
         Orderlist,
         PlayPattern,
@@ -377,7 +497,13 @@ def _read_orderlists(ids, i):
     )
 
     i = _expect(ids, i, SEC_ORDERLISTS, "SEC_ORDERLISTS")
+    pat_state = ({}, [])  # ({orig#: Pattern}, [orig# by ordinal])
+    instr_state = ({}, [])  # ({orig#: Instrument}, [orig# by ordinal])
+    by_pat, pat_order = pat_state
     subtunes = []
+    # The SUBTUNE / CHANNEL / entry loops also stop at EOS, so a PREFIX that was
+    # truncated right after a PATTERN_END / REF (mid-channel) decodes to a partial,
+    # continuable Song instead of crashing: any prefix is a decodable song.
     while ids[i] == SUBTUNE_BEGIN:
         i += 1
         channels = []
@@ -385,20 +511,58 @@ def _read_orderlists(ids, i):
             i += 1
             restart, i = _read_byte(ids, i)
             entries = []
-            while ids[i] in (ORDER_PLAY, ORDER_REPEAT, ORDER_TRANSPOSE):
-                op = ids[i]
-                i += 1
-                val, i = _read_byte(ids, i)
-                if op == ORDER_PLAY:
-                    entries.append(PlayPattern(val))
-                elif op == ORDER_REPEAT:
+            while ids[i] in (
+                PATTERN_BEGIN,
+                REF,
+                ORDER_REPEAT,
+                ORDER_TRANSPOSE,
+            ):
+                t = ids[i]
+                if t == PATTERN_BEGIN:
+                    i = _read_pattern_def(ids, i, pat_state, instr_state)
+                    entries.append(PlayPattern(pat_order[-1]))
+                elif t == REF:
+                    ordinal, i = _read_byte(ids, i + 1)
+                    if ordinal >= len(pat_order):
+                        raise ValueError(f"REF ordinal {ordinal} not yet defined")
+                    entries.append(PlayPattern(pat_order[ordinal]))
+                elif t == ORDER_REPEAT:
+                    val, i = _read_byte(ids, i + 1)
                     entries.append(Repeat(val))
-                else:
+                else:  # ORDER_TRANSPOSE
+                    val, i = _read_byte(ids, i + 1)
                     entries.append(Transpose(val - 256 if val > 127 else val))
             channels.append(Orderlist(entries=entries, restart=restart))
+            if ids[i] == EOS:  # prefix end mid-subtune
+                break
+        if ids[i] == EOS:  # prefix end mid-song
+            subtunes.append(Subtune(channels=channels))
+            break
         i = _expect(ids, i, SUBTUNE_END, "SUBTUNE_END")
         subtunes.append(Subtune(channels=channels))
-    return subtunes, i
+    # Trailing never-played pattern defs (after the last SUBTUNE_END), then any
+    # never-referenced instrument defs (bare INSTR_BEGIN with no INSTR_REF).
+    while ids[i] == PATTERN_BEGIN:
+        i = _read_pattern_def(ids, i, pat_state, instr_state)
+    while ids[i] == INSTR_BEGIN:
+        _slot, i = _read_instr_def(ids, i, instr_state)
+    # Rebuild song.patterns / song.instruments in ORIGINAL index order. On a full
+    # stream every pattern 0..N-1 is defined (played + appended never-played) and
+    # every instrument slot 1..max is defined; a PREFIX may carry only a sparse
+    # subset, so fill any gaps with empties to keep the partial Song renderable
+    # (no IndexError -- the prefix-validity invariant).
+    from pygoattracker.model import Instrument, Pattern
+
+    by_instr = instr_state[0]
+    npat = (max(by_pat) + 1) if by_pat else 0
+    patterns = [by_pat.get(p, Pattern(rows=[])) for p in range(npat)]
+    ninstr = max(by_instr) if by_instr else 0
+    blank = [0] * len(_INSTR_FIELDS)
+    instruments = [
+        by_instr.get(k, Instrument(*blank, name=f"i{k:02d}"))
+        for k in range(1, ninstr + 1)
+    ]
+    return subtunes, patterns, instruments, i
 
 
 def flat_gt_ids_to_program(ids):
@@ -407,9 +571,7 @@ def flat_gt_ids_to_program(ids):
     i = _expect(ids, 0, BOS, "BOS")
     nframes, seed, boot, boot1, i = _read_header(ids, i)
     tables, i = _read_tables(ids, i)
-    instruments, i = _read_instruments(ids, i)
-    patterns, i = _read_patterns(ids, i)
-    subtunes, i = _read_orderlists(ids, i)
+    subtunes, patterns, instruments, i = _read_orderlists(ids, i)
     i = _expect(ids, i, EOS, "EOS")
     # _read_tables always returns exactly 4 tables (wave/pulse/filter/speed).
     # pylint: disable-next=unbalanced-tuple-unpacking
@@ -431,6 +593,15 @@ def flat_gt_ids_to_program(ids):
 
 
 def flat_gt_measure(program):
+    """Token-budget breakdown of the inline (define-at-first-use) layout.
+
+    With patterns and instruments interleaved into the play-order walk there is no
+    separate front-loaded score/instr section; the breakdown counts by token KIND
+    over the single inline stream: ``header`` + ``tables`` (the front block),
+    ``instr_def`` (inline INSTR_BEGIN..INSTR_END definitions + the leading slot
+    byte), ``score`` (ROW atoms: note/INSTR_REF/CMD/data + ROW/PATTERN frames),
+    and ``orders`` (REF reaches + ORDER_REPEAT/ORDER_TRANSPOSE + the
+    SUBTUNE/CHANNEL framing)."""
     song = _song_of(program)
     blocks = {}
     out = [BOS]
@@ -440,15 +611,39 @@ def flat_gt_measure(program):
     _emit_tables(out, song)
     blocks["tables"] = len(out) - base
     base = len(out)
-    _emit_instruments(out, song)
-    blocks["instr_def"] = len(out) - base
-    base = len(out)
-    _emit_patterns(out, song)
-    blocks["score"] = len(out) - base
-    base = len(out)
     _emit_orderlists(out, song)
-    blocks["orders"] = len(out) - base
+    body = out[base:]
     out.append(EOS)
     blocks["total"] = len(out)
     blocks["fmt"] = "flat_v2"
+    # Classify the inline body tokens by kind for the breakdown.
+    instr_def = score = orders = 0
+    in_instr = 0
+    for t in body:
+        if t == INSTR_BEGIN:
+            in_instr += 1
+            instr_def += 1
+        elif t == INSTR_END:
+            in_instr -= 1
+            instr_def += 1
+        elif in_instr:
+            instr_def += 1
+        elif t in (PATTERN_BEGIN, PATTERN_END, ROW) or NOTE_BASE <= t < CMD_BASE:
+            score += 1  # row/pattern framing + note + INSTR_REF
+        elif CMD_BASE <= t < CMD_BASE + CMD_SPAN:
+            score += 1  # command atom
+        elif t in (SEC_ORDERLISTS, SUBTUNE_BEGIN, SUBTUNE_END, CHANNEL):
+            orders += 1
+        elif t in (REF, ORDER_REPEAT, ORDER_TRANSPOSE):
+            orders += 1
+        elif BYTE_BASE <= t < BYTE_BASE + BYTE_SPAN:
+            # A BYTE belongs to whatever event introduced it; data bytes inside
+            # rows are score, orderlist operand/restart bytes are orders, the
+            # pattern-def leading orig# byte is score.
+            score += 1
+        else:
+            orders += 1
+    blocks["instr_def"] = instr_def
+    blocks["score"] = score
+    blocks["orders"] = orders
     return blocks, program.nframes
