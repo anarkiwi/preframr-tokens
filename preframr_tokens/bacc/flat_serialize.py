@@ -27,8 +27,7 @@ Losslessness is unchanged: this is a pure re-serialization of the same recovered
 token round-trip (ids -> program -> render byte-exact).
 """
 
-from preframr_tokens.bacc.backends.goattracker import make_program_from_song
-from preframr_tokens.bacc.gt_serialize import (
+from preframr_tokens.bacc.gt_common import (
     _INSTR_FIELDS,
     _KIND_KEYOFF,
     _KIND_KEYON,
@@ -38,12 +37,16 @@ from preframr_tokens.bacc.gt_serialize import (
     _grid_to_note_byte,
     _note_token,
     _orderlist_entries,
+    make_program_from_song,
 )
 
 NREG = 25
 
 # --- token alphabet (typed, contiguous ranges) ----------------------------
-# structural / control (0..31, with headroom reserved)
+# Structural / control block widened to 0..63 (was 0..31) so the GEN_* generator
+# enum, ORDER_CALL (one-level pattern call), the inline REF markers and TEMPO fit
+# with headroom; the typed value ranges shift up once (one VOCAB-shape bump). See
+# FLAT_VOCAB_MIGRATION.md Phase 1 / RETRACKERS_COMPAT_REVIEW.md Axis 2-6.
 BOS = 0
 EOS = 1
 SEC_HEADER = 2
@@ -68,25 +71,53 @@ NOTE_RAW = 20  # followed by one BYTE: a note byte with no clean 12-TET pitch
 ORDER_PLAY = 21  # followed by one BYTE: pattern number
 ORDER_REPEAT = 22  # followed by one BYTE: repeat count
 ORDER_TRANSPOSE = 23  # followed by one BYTE: semitones (two's-complement int8)
-# 24..31 reserved for future structural tokens
+ORDER_CALL = 24  # followed by one BYTE: one-level pattern call (Axis 3, JCH)
+SEC_NOTE_TABLE = 25  # generic value->grid note table section (Phase 2/3a)
+SEC_PROGRAMS = 26  # generic shared-program / accumulator section (Phase 3c)
+REF = 27  # followed by one BYTE: content-addressed pattern ref (inline, Sec 2e)
+# The generator-kind enum (Axis 5 + PW/filter). Each GEN_* is one structural token
+# followed by its fixed param slot (BYTE/NOTE-offset atoms), defined once per
+# instrument and expanded by the renderer -- never stored per-frame. See the table
+# in FLAT_VOCAB_MIGRATION.md Sec 2a.
+GEN_HOLD = 28  # constant pitch (zero-accumulator)
+GEN_RAMP = 29  # porta/slide, PW-sweep, filter-sweep
+GEN_QUAD = 30  # accelerating porta
+GEN_VIBRATO = 31  # vibrato triangle
+GEN_ARP = 32  # arp (note-index offset walk)
+GEN_TABLEWALK = 33  # $FF/$7F-loop wave/arp sub-table
+ACC_BEGIN = 34
+ACC_END = 35
+LANE_BEGIN = 36
+LANE_END = 37
+SEG = 38  # generic accumulator/lane segment separator
+# 39..63 reserved for future structural tokens
 
-# typed value ranges
-NOTE_BASE = 32
+GEN_KINDS = (
+    GEN_HOLD,
+    GEN_RAMP,
+    GEN_QUAD,
+    GEN_VIBRATO,
+    GEN_ARP,
+    GEN_TABLEWALK,
+)
+
+# typed value ranges (shifted up once for the widened structural block)
+NOTE_BASE = 64
 NOTE_SPAN = 160
-NOTE_ZERO = NOTE_BASE + 80  # grid index g (A440, n=0=A4) -> NOTE_ZERO + g
+NOTE_ZERO = NOTE_BASE + 80  # grid index g (A440, n=0=A4) -> NOTE_ZERO + g == 144
 NOTE_MIN = -80
 NOTE_MAX = 79
 
-INSTR_REF_BASE = NOTE_BASE + NOTE_SPAN  # 192
+INSTR_REF_BASE = NOTE_BASE + NOTE_SPAN  # 224
 INSTR_REF_SPAN = 64
 
-CMD_BASE = INSTR_REF_BASE + INSTR_REF_SPAN  # 256
+CMD_BASE = INSTR_REF_BASE + INSTR_REF_SPAN  # 288
 CMD_SPAN = 32
 
-BYTE_BASE = CMD_BASE + CMD_SPAN  # 288
+BYTE_BASE = CMD_BASE + CMD_SPAN  # 320
 BYTE_SPAN = 256
 
-VOCAB = BYTE_BASE + BYTE_SPAN  # 544
+VOCAB = BYTE_BASE + BYTE_SPAN  # 576
 PAD_ID = VOCAB  # reserved padding id, above the codec alphabet
 
 
@@ -381,9 +412,8 @@ def flat_gt_ids_to_program(ids):
     subtunes, i = _read_orderlists(ids, i)
     i = _expect(ids, i, EOS, "EOS")
     # _read_tables always returns exactly 4 tables (wave/pulse/filter/speed).
-    wavetable, pulsetable, filtertable, speedtable = (
-        tables  # pylint: disable=unbalanced-tuple-unpacking
-    )
+    # pylint: disable-next=unbalanced-tuple-unpacking
+    wavetable, pulsetable, filtertable, speedtable = tables
     song = Song(
         name="",
         subtunes=subtunes,
