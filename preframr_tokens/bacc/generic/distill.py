@@ -135,6 +135,10 @@ _RELO_ENTRY = struct.Struct(
 )  # storePc,srcReadPc,srcBase,dstBase,srcStride,dstStride,idxMin,idxMax,_pad,count
 _SDAC_HEAD = struct.Struct("<HBBH")  # pc,reg,_pad,nAddends
 _SDAC_ADDEND = struct.Struct("<BH")  # op,cell
+# IWLK per-(pc,voice) instrument-table walk-index: the per-frame u8 index into the
+# RAM instrument freq-table the freq-feeding IDXR pc walked (recovery-offload: the
+# per-frame freq-modulation generator -- freq = note_base + instr_freq_table[index]).
+_IWLK_HEAD = struct.Struct("<HBxI")  # pc, voice, _pad, nFrames
 _DIGI_REC = struct.Struct(
     "<IIBBBBII"
 )  # mean*1000,maxD418,noteTbl,_pad[3],nframes,nSidWrites
@@ -344,6 +348,24 @@ class StsqCell:
 
 
 @dataclass
+class IwlkWalk:
+    """One IWLK instrument-table walk-index sequence (recovery-offload: the
+    per-frame freq-modulation index).
+
+    For one freq-feeding IDXR ``pc`` driving one ``voice`` (the freq-lo register
+    index 0/7/14, i.e. the SID voice the write fed), ``index`` is the per-frame u8
+    index the playroutine walked into the RAM instrument freq-table -- retriggered
+    (reset) at note onset. The freq-mod fitter (PR-C) recovers
+    ``freq_v = note_base_v + instr_freq_table[index_{v,frame}]`` from this, rather
+    than leaning on the ``_state`` anchor (a stored per-frame freq sequence is
+    unrecovered structure -- HARD RULE #0). Spans the full playback."""
+
+    pc: int
+    voice: int  # freq-lo reg / voice the IDXR write feeds (0,7,14)
+    index: np.ndarray  # uint8 per-frame walk index
+
+
+@dataclass
 class SddfSlice:
     """One SID-write backward data-flow slice (design 3.1): the RAM_READ leaf
     addresses a ``$D4xx`` write's value flowed from (the table cells it indexed).
@@ -385,6 +407,11 @@ class Distill:
     # artifact reader the generic recovery consumes; design §3 consolidation).
     stsq_cells: list = field(default_factory=list)  # list[StsqCell] (design 3.2)
     sddf_slices: list = field(default_factory=list)  # list[SddfSlice] (design 3.1)
+    # Instrument-table freq-modulation walk-index (the per-frame index into the RAM
+    # instrument freq-table). Additive: absent -> empty, so old artifacts parse
+    # unchanged. Consumed by the freq-mod fitter (render freq from a recovered
+    # generator + schedule, dropping the _state anchor).
+    iwlk_walks: list = field(default_factory=list)  # list[IwlkWalk]
 
     def idx_supp_by_pc(self):
         """``{pc: IdxSupp}`` for cross-referencing IDXR entries with their
@@ -394,6 +421,11 @@ class Distill:
     def stsq_by_addr(self):
         """``{addr: StsqCell}`` for cross-referencing accumulator cells by address."""
         return {c.addr: c for c in self.stsq_cells}
+
+    def iwlk_by_pc_voice(self):
+        """``{(pc, voice): IwlkWalk}`` for pairing a freq-feeding IDXR with its
+        per-frame instrument-table walk-index (the freq-mod generator input)."""
+        return {(w.pc, w.voice): w for w in self.iwlk_walks}
 
     def idxr_by_pc(self):
         """``{pc: IdxRead}`` for pairing an IDXR entry with its :class:`IdxSupp`."""
@@ -597,6 +629,7 @@ def parse_distill(buf):
     tempo_cands = []
     stsq_cells = []
     sddf_slices = []
+    iwlk_walks = []
 
     while off < len(buf):
         tag = buf[off : off + 4]
@@ -769,6 +802,19 @@ def parse_distill(buf):
                 cell, reload, _pad = _TMPO_ENTRY.unpack_from(buf, off)
                 off += _TMPO_ENTRY.size
                 tempo_cands.append(TempoCand(cell=cell, reload=reload))
+        elif tag == b"IWLK":
+            # Instrument-table freq-modulation walk-index: per-(pc,voice) per-frame
+            # u8 index into the RAM instrument freq-table (the freq-mod generator
+            # input the freq-mod fitter consumes). Additive -- absent on older
+            # artifacts, so this branch is a no-op when the section is missing.
+            (nent,) = struct.unpack_from("<I", buf, off)
+            off += 4
+            for _ in range(nent):
+                pc, voice, nfr = _IWLK_HEAD.unpack_from(buf, off)
+                off += _IWLK_HEAD.size
+                index = np.frombuffer(buf[off : off + nfr], dtype=np.uint8).copy()
+                off += nfr
+                iwlk_walks.append(IwlkWalk(pc=pc, voice=voice, index=index))
         else:
             raise ValueError(f"unknown SDST section {tag!r} at offset {off - 4}")
 
@@ -794,6 +840,7 @@ def parse_distill(buf):
         tempo_cands=tempo_cands,
         stsq_cells=stsq_cells,
         sddf_slices=sddf_slices,
+        iwlk_walks=iwlk_walks,
     )
 
 
@@ -961,6 +1008,14 @@ def build_distill(dist):
     for t in dist.tempo_cands:
         tmpo += _TMPO_ENTRY.pack(t.cell, t.reload, 0)
     out += b"TMPO" + struct.pack("<H", len(dist.tempo_cands)) + tmpo
+
+    if dist.iwlk_walks:
+        iwlk = bytearray()
+        for w in dist.iwlk_walks:
+            idx = np.asarray(w.index, dtype=np.uint8)
+            iwlk += _IWLK_HEAD.pack(w.pc, w.voice, len(idx))
+            iwlk += idx.tobytes()
+        out += b"IWLK" + struct.pack("<I", len(dist.iwlk_walks)) + iwlk
 
     out += b"END\x00"
     return bytes(out)
