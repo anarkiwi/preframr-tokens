@@ -227,8 +227,50 @@ def test_recovery_offload_absent_parses_empty():
     d2 = D.parse_distill(D.build_distill(d))
     assert d2.idx_supp == [] and d2.ptr_walks == [] and d2.relo_copies == []
     assert d2.sid_accum == [] and d2.tempo_cands == []
+    assert d2.iwlk_walks == []
     # build_distill emits an (empty-ish) DIGI; a hand-built absent one is None.
     assert d2.digi is None or isinstance(d2.digi, D.DigiSig)
+
+
+def test_iwlk_walk_round_trip():
+    """An IWLK instrument-table walk-index section survives parse(build(d)): the
+    per-(pc,voice) per-frame u8 index round-trips, and the (pc,voice) lookup pairs
+    a freq-feeding IDXR with its freq-mod generator input."""
+    d = _empty_distill()
+    d.iwlk_walks = [
+        D.IwlkWalk(
+            pc=0x1240,
+            voice=0,
+            index=np.array([0, 1, 2, 3, 2, 1, 0], dtype=np.uint8),
+        ),
+        D.IwlkWalk(
+            pc=0x1250,
+            voice=7,
+            index=np.array([5, 5, 4, 4], dtype=np.uint8),
+        ),
+    ]
+    d2 = D.parse_distill(D.build_distill(d))
+    assert len(d2.iwlk_walks) == 2
+    for w_in, w_out in zip(d.iwlk_walks, d2.iwlk_walks):
+        assert w_out.pc == w_in.pc
+        assert w_out.voice == w_in.voice
+        assert np.array_equal(w_out.index, w_in.index)
+        assert w_out.index.dtype == np.uint8
+    lut = d2.iwlk_by_pc_voice()
+    assert np.array_equal(lut[(0x1240, 0)].index, d.iwlk_walks[0].index)
+    assert lut[(0x1250, 7)].voice == 7
+
+
+def test_iwlk_section_absent_is_noop():
+    """A stream with no IWLK section parses with iwlk_walks empty -- the new reader
+    branch is purely additive and does not break the current reader. This guards the
+    invariant that PR-A lands BEFORE any emitter, so main stays compatible with both
+    pre- and post-IWLK artifacts."""
+    d = _empty_distill()
+    blob = D.build_distill(d)
+    assert b"IWLK" not in blob  # empty walks -> no section emitted
+    d2 = D.parse_distill(blob)
+    assert d2.iwlk_walks == []
 
 
 def test_digi_signature_classifies():
