@@ -1177,6 +1177,170 @@ def accumulator_generators(distill_path, freq_state, voices=((0, 1), (7, 8), (14
     return out
 
 
+# --- IWLK freq-modulation fitter (PR-C): the per-(pc,voice) instrument-table walk ---
+# The freq-feeding IDXR walks a RAM table at ``addr = base_fit + scale*index``; the
+# 16-bit value (lo|hi<<8) read there is the player's per-frame freq contribution for that
+# write path.  PR-B emits, per freq-feeding IDXR (pc, voice), the FULL-LENGTH per-frame
+# u8 ``index``.  This fitter RESOLVES that index into the table-VALUE series -- an O(1)
+# generator (the table bytes + the per-frame index walk, which is itself onset-retriggered
+# -- a table-walk, NOT a stored freq sequence) -- and REPORTS, per voice, the byte-exact
+# coverage (the fraction of frames where the resolved value EQUALS the captured freq).  It
+# is the falsifiable surface for the freq lane: where the resolved generator equals freq it
+# is the recovered structure; where it does not (a stale forward-filled index on a frame the
+# IDXR did not fire, a hi-feeder whose affine base did not fit -- ``scale_set`` False) the
+# residual is reported honestly (HARD RULE #0: a stored per-frame freq sequence is the
+# literal-floor trap, never shipped).
+
+# The freq-lo register index for each SID voice (the IWLK ``voice`` field) and its (lo, hi)
+# freq-register pair -- the §state-machine freq lane the resolved table value must match.
+_IWLK_VOICE_PAIR = {0: (0, 1), 7: (7, 8), 14: (14, 15)}
+
+
+def _resolve_iwlk_value(ram, supp, walk, nframes):
+    """The 16-bit table-VALUE series one IWLK walk resolves to: ``ram[base + scale*index]``
+    (lo byte) for the walk's per-frame ``index``, clipped to ``nframes``.  Returns the lo-
+    byte int64 array (the hi byte is the paired walk's resolution -- a freq lane is a lo/hi
+    pair).  ``None`` when the IDXR has no affine fit (no ``IdxSupp``)."""
+    if supp is None:
+        return None
+    idx = np.asarray(walk.index, dtype=np.int64)[:nframes]
+    addr = (int(supp.base_fit) + int(supp.scale) * idx) & 0xFFFF
+    return np.asarray(ram, dtype=np.int64)[addr]
+
+
+def iwlk_freq_fit(distill_path, freq_state, voices=((0, 1), (7, 8), (14, 15))):
+    """Resolve the IWLK instrument-table walks into the per-voice freq-modulation
+    generator and REPORT its byte-exact coverage (the PR-C falsification surface).
+
+    For each freq voice (the IWLK ``voice`` = freq-lo register), pairs the lo-feeding and
+    hi-feeding IWLK walks by their fed register (lo feeds the freq-lo reg, hi the freq-hi
+    reg), resolves each to its table value (:func:`_resolve_iwlk_value`), forms the 16-bit
+    ``lo | hi<<8`` and counts the frames where it EQUALS the captured freq.  Returns
+    ``{voice_index: {"covered": int, "nframes": int, "pairs": [(lo_pc, hi_pc), ...],
+    "match": bool_array}}`` or ``None`` when the artifact carries no IWLK section.
+
+    This is the recovery the freq render needs to drop the ``_state`` anchor: where the
+    resolved generator covers freq, ``note_base`` is the resolved table value (an O(1)
+    table-walk, not a stored sequence); where it does not, the residual is the honest,
+    falsifiable gap (a stale forward-filled index / an unfit hi-feeder / a second
+    modulation source the IWLK capture does not span -- reported, never papered over with a
+    raw-sequence escape)."""
+    d = _load_distill_or_none(distill_path)
+    if d is None or not getattr(d, "iwlk_walks", None):
+        return None
+    state = np.asarray(freq_state, dtype=np.int64)
+    n = state.shape[0]
+    ram = d.ram
+    supp = d.idx_supp_by_pc()
+    iwlk = d.iwlk_by_pc_voice()
+    out = {}
+    for vi, (rlo, rhi) in enumerate(voices):
+        voice = rlo  # the IWLK voice field is the freq-lo register index
+        freq = state[:, rlo] | (state[:, rhi] << 8)
+        # group this voice's walks by which freq byte register they feed (lo vs hi).
+        lo_pcs, hi_pcs = [], []
+        for (pc, vc), _w in iwlk.items():
+            if vc != voice:
+                continue
+            s = supp.get(pc)
+            if s is None:
+                continue
+            if s.feeds_reg(rlo):
+                lo_pcs.append(pc)
+            if s.feeds_reg(rhi):
+                hi_pcs.append(pc)
+        match = np.zeros(n, dtype=bool)
+        pairs = []
+        for lo_pc in lo_pcs:
+            lo_val = _resolve_iwlk_value(ram, supp.get(lo_pc), iwlk[(lo_pc, voice)], n)
+            if lo_val is None:
+                continue
+            for hi_pc in hi_pcs:
+                hi_val = _resolve_iwlk_value(
+                    ram, supp.get(hi_pc), iwlk[(hi_pc, voice)], n
+                )
+                if hi_val is None:
+                    continue
+                t16 = (lo_val | (hi_val << 8)) & 0xFFFF
+                m = t16 == freq
+                if int(m.sum()):
+                    match |= m
+                    pairs.append((int(lo_pc), int(hi_pc)))
+        # The note->freq table form (GoatTracker et al.): ONE walk's index addresses a
+        # tempered note->freq table whose lo bytes are ``ram[base+idx]`` and hi bytes
+        # ``ram[base+L+idx]`` for a table length L -- a single index feeding BOTH freq
+        # bytes (the lo-feed and hi-feed are the SAME pc).  Detect L by the byte-exact
+        # match and fold it into the coverage (a self-pair ``(pc, pc)``).
+        for pc in lo_pcs:
+            s = supp.get(pc)
+            if s is None:
+                continue
+            idx = np.asarray(iwlk[(pc, voice)].index, dtype=np.int64)[:n]
+            base, scale = int(s.base_fit), int(s.scale)
+            ramv = np.asarray(ram, dtype=np.int64)
+            lo_b = ramv[(base + scale * idx) & 0xFFFF]
+            best_l, best_m = 0, None
+            for tbl_len in (96, 88, 64, 128):
+                hi_b = ramv[(base + tbl_len + scale * idx) & 0xFFFF]
+                m = ((lo_b | (hi_b << 8)) & 0xFFFF) == freq
+                if best_m is None or int(m.sum()) > int(best_m.sum()):
+                    best_l, best_m = tbl_len, m
+            if best_m is not None and int(best_m.sum()) > int(match.sum()):
+                match |= best_m
+                pairs.append((int(pc), int(pc) + best_l))
+        out[vi] = {
+            "covered": int(match.sum()),
+            "nframes": int(n),
+            "pairs": pairs,
+            "match": match,
+        }
+    return out
+
+
+def render_freq_lane_from_iwlk(distill_path, voice_idx, nframes):
+    """Render one freq lane's per-frame value FROM THE IWLK GENERATOR ALONE (no ``_state``).
+
+    The proof the freq lane renders from tokens where the IWLK generator covers it: for the
+    given freq voice (``voice_idx`` 0/1/2 -> freq pair (0,1)/(7,8)/(14,15)), resolve its
+    walk's index into the table value (``ram[base + scale*idx]`` lo, the paired hi byte) and
+    return the 16-bit value series -- the ``note_base`` the player wrote that frame -- as an
+    ``int64[nframes]`` (0 where the lane has no resolving IWLK pair).  This is the O(1)
+    generator (table + onset-retriggered walk), NOT a stored per-frame freq sequence; where
+    it equals the captured freq (the :func:`iwlk_freq_fit` ``match`` mask) it is the recovered
+    freq lane with the ``_state`` anchor dropped.  ``None`` when the artifact has no IWLK.
+    """
+    d = _load_distill_or_none(distill_path)
+    if d is None or not getattr(d, "iwlk_walks", None):
+        return None
+    voices = ((0, 1), (7, 8), (14, 15))
+    rlo, rhi = voices[voice_idx]
+    voice = rlo
+    ram = np.asarray(d.ram, dtype=np.int64)
+    supp = d.idx_supp_by_pc()
+    iwlk = d.iwlk_by_pc_voice()
+    out = np.zeros(int(nframes), dtype=np.int64)
+    for (pc, vc), w in iwlk.items():
+        if vc != voice:
+            continue
+        s = supp.get(pc)
+        if s is None or not (s.feeds_reg(rlo) or s.feeds_reg(rhi)):
+            continue
+        idx = np.asarray(w.index, dtype=np.int64)[: int(nframes)]
+        base, scale = int(s.base_fit), int(s.scale)
+        lo_b = ram[(base + scale * idx) & 0xFFFF]
+        # the note->freq table form: hi at base + L (the same index addresses both bytes).
+        best = None
+        for tbl_len in (96, 88, 64, 128):
+            hi_b = ram[(base + tbl_len + scale * idx) & 0xFFFF]
+            t16 = (lo_b | (hi_b << 8)) & 0xFFFF
+            if best is None:
+                best = t16
+        m = len(idx)
+        if best is not None and m:
+            out[:m] = best
+    return out
+
+
 def _grammar_eops(grammar):
     """The set of end-of-pattern byte values for a grammar (``boundaries == K_EOP``),
     or the NewPlayer default ``{0x7F}`` for the legacy path (``grammar is None``)."""
