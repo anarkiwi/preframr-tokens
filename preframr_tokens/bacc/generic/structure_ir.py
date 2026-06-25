@@ -58,6 +58,7 @@ from preframr_tokens.bacc.generic.structure_recover import (
     _MARK_INSTR,
     _grammar_eops,
     accumulator_generators,
+    recover_schedule,
     recover_structure,
 )
 from preframr_tokens.bacc.serialize import _u_len
@@ -160,6 +161,14 @@ class StructureIR:
     )  # typed lane records (see build_nonfreq_program)
     nframes: int = 0
     boot: list = field(default_factory=list)
+    # The recovered note->frame SCHEDULE + tempo (PWLK orderlist advances over the FULL
+    # run, PR0): ``{"onsets","durations","tempo","n_onsets","span","nframes"}`` from
+    # :func:`structure_recover.recover_schedule`, or ``None`` when the artifact has no
+    # orderlist walk.  A DERIVED analysis field (the tempo-event partition of playback,
+    # ``sum(durations) == nframes``); it does NOT yet drive the freq token stream (that is
+    # the IWLK walk-index PR), so -- like ``_state`` -- it is NOT serialized and the token
+    # stream / alphabet are byte-identical with or without it.
+    schedule: object = None
     _state: object = (
         None  # byte-exact (nframes, 25); the anchor for the un-replayed lanes, not serialized
     )
@@ -385,6 +394,9 @@ def build_structure_ir(struct, state, distill_path):
                 for (fs, kind, seed, p1, p2, p3, n, raw) in gens.get(vi, [])
             ]
 
+    nframes = int(struct.nframes) if state is None else int(np.asarray(state).shape[0])
+    schedule = recover_schedule(distill_path, nframes=nframes)
+
     return StructureIR(
         note_table=note_table,
         instr_pool=instr_pool,
@@ -393,13 +405,12 @@ def build_structure_ir(struct, state, distill_path):
         pattern_bytes=pattern_bytes,
         orderlists=orderlists,
         accfits=accfits,
+        schedule=schedule,
         nonfreq=build_nonfreq_program(state),
         # The TRUE playback length is the ``.sidwr`` row count (``state`` rows), not the
         # artifact's REQUESTED ``nframes`` (the capture may stop early); the M1 lane replay
         # renders to exactly this length, and it is the metric denominator the tests use.
-        nframes=(
-            int(struct.nframes) if state is None else int(np.asarray(state).shape[0])
-        ),
+        nframes=nframes,
         boot=([0] * NREG if state is None else [int(state[0, r]) for r in range(NREG)]),
         _state=state,
     )

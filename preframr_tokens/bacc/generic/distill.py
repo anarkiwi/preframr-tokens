@@ -329,7 +329,8 @@ class StsqCell:
 
     ``samples`` is the captured value-per-frame sequence starting at ``first_seen``;
     the recovery feeds these to the accumulator-FIT (a stored ramp is unrecovered
-    structure -- HARD RULE #0).  Capped at the tracer's window (~512 frames)."""
+    structure -- HARD RULE #0).  Spans the FULL playback (PR0 lifted the tracer's
+    legacy ~512-frame window; the accumulator-fit now sees the whole run)."""
 
     addr: int
     flags: int

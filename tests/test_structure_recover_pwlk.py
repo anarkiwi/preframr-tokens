@@ -564,3 +564,101 @@ def test_discover_patterns_idxr_none_without_pointer_table():
         )
     ]
     assert SR.discover_patterns_idxr(d) is None
+
+
+# --- PR0: full-length schedule + STSQ accumulators (caps lifted) --------------
+def test_recover_schedule_spans_whole_tune(monkeypatch):
+    """The note->frame schedule is recovered from the PWLK orderlist advances over the
+    WHOLE run (PR0 lifted the ~256-advance distill cap): onsets reach well past frame
+    256, durations partition the full playback (``sum == nframes``), and the tempo is the
+    modal onset gap.  The legacy truncation would have stopped the schedule near frame
+    256; this asserts the full span."""
+    nframes = 2000
+    d = _blank_distill(nframes=nframes)
+    bases = [0x1500, 0x1540, 0x1580]
+    pats = [_nibble_pattern(i) for i in range(3)]
+    for base, pat in zip(bases, pats):
+        _place(d, base, pat)
+    # the orderlist advances every 2 frames for 700 rows -> onsets 0,2,4,...,1398 (a row
+    # every 2 frames, far past the old 256-advance cap).  Pointer values cycle the bank.
+    n_onsets = 700
+    seq = [bases[i % 3] for i in range(n_onsets)]
+    onset_frames = [2 * i for i in range(n_onsets)]
+    d.ptr_walks = [
+        PtrWalk(
+            zp=0x20,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=11,
+            count=n_onsets,
+            ptr_vals=seq,
+            adv_frames=onset_frames,
+        )
+    ]
+    monkeypatch.setattr(SR, "load_distill", lambda _p: d)
+    sch = SR.recover_schedule("x")
+    assert sch is not None
+    # the schedule spans the whole tune, NOT the legacy ~256 frames.
+    assert sch["span"][1] > 256 and sch["span"][1] == 1398
+    assert sch["n_onsets"] == n_onsets
+    # durations partition the full playback exactly.
+    assert sum(sch["durations"]) == nframes
+    # the modal onset gap is the recovered tempo (here every 2 frames).
+    assert sch["tempo"] == 2
+    # onset 0 is folded to frame 0 (the row-0 onset) and onsets are strictly increasing.
+    assert sch["onsets"][0] == 0
+    assert all(b > a for a, b in zip(sch["onsets"], sch["onsets"][1:]))
+
+
+def test_recover_schedule_none_without_walk(monkeypatch):
+    """No orderlist walk (a streaming-cursor-only or pure-code tune) -> no schedule."""
+    d = _blank_distill()
+    monkeypatch.setattr(SR, "load_distill", lambda _p: d)
+    assert SR.recover_schedule("x") is None
+
+
+def test_clean_pitches_residual_fits_accumulator_past_frame_514(monkeypatch):
+    """The STSQ porta accumulator is selected over the FULL tune (PR0 lifted the legacy
+    ``min(n, 514)`` window).  This tune's freq is a single grid pitch through frame ~514
+    and only diverges AFTER it (a ramp accumulator that ramps from frame 520 on); the old
+    [3, 514) window saw a FLAT freq and would select NO accumulator, leaving the post-514
+    frames unaccounted.  The full-window fit selects the ramp pair and flattens freq to a
+    handful of pitches with residual 0 over the WHOLE run."""
+    nframes = 800
+    ramp16 = np.zeros(nframes, dtype=np.int64)
+    for i in range(520, nframes):
+        ramp16[i] = (3 * (i - 520)) & 0xFFFF
+    freq = (0x4000 + ramp16) % 65536
+    state = np.zeros((nframes, 25), dtype=np.int64)
+    state[:, 0] = freq & 0xFF
+    state[:, 1] = (freq >> 8) & 0xFF
+
+    d = _blank_distill(nframes=nframes)
+    d.stsq_cells = [
+        StsqCell(
+            addr=0x0040, flags=0, first_seen=0, samples=(ramp16 & 0xFF).astype(np.uint8)
+        ),
+        StsqCell(
+            addr=0x0041,
+            flags=0,
+            first_seen=0,
+            samples=((ramp16 >> 8) & 0xFF).astype(np.uint8),
+        ),
+    ]
+    monkeypatch.setattr(SR, "load_distill", lambda _p: d)
+
+    r = SR.clean_pitches_residual("x", state, voices=((0, 1),))[0]
+    # the ramp pair (lo=0x40, hi=0x41) is selected over the full run...
+    assert r["accs"] == [(0x40, 0x41)]
+    # ...flattening hundreds of displaced freq values to a handful of grid pitches...
+    assert r["displaced"] > 250 and r["pitches"] <= 2
+    # ...and the render is byte-exact over the WHOLE tune (residual measured past 514).
+    assert r["residual"] == 0
+
+    # the accumulator-fit reduces the chosen ramp to its GENERATOR over the full window
+    # (n_window > 514, the post-514 frames the legacy cap excluded).
+    gens = SR.accumulator_generators("x", state, voices=((0, 1),))
+    assert gens is not None
+    fits = gens[0]
+    assert fits and any(n > 514 for (_fs, _k, _s, _p1, _p2, _p3, n, _raw) in fits)

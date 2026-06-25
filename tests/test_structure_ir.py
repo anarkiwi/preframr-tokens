@@ -245,7 +245,32 @@ def test_build_structure_ir_from_synthetic_struct(tmp_path):
     assert len(ir.instr_pool) == 1  # the duplicate instrument struct deduped
     assert ir.pattern_bytes == pbs
     assert ir.accfits == [[], [], []]  # no STSQ in this artifact -> no accumulator fits
+    # no PWLK walk in this artifact -> no schedule recovered (the additive-coverage field
+    # is None, exactly like _state, and never enters the serialized stream).
+    assert ir.schedule is None
     SI.assert_ids_roundtrip(ir)  # the assembled IR still round-trips exactly
+
+
+def test_schedule_field_not_serialized():
+    """The recovered note->frame schedule is a DERIVED analysis field (the IWLK PR will
+    drive freq from it; here it only proves coverage), so -- like ``_state`` -- it is NOT
+    serialized: an IR with a schedule serialises byte-identically to the same IR without
+    one, and deserialization leaves ``schedule`` None."""
+    base = SI.StructureIR(nframes=64, boot=[0] * SI.NREG)
+    with_sched = SI.StructureIR(
+        nframes=64,
+        boot=[0] * SI.NREG,
+        schedule={
+            "onsets": [0, 2, 4],
+            "durations": [2, 2, 60],
+            "tempo": 2,
+            "n_onsets": 3,
+            "span": (0, 4),
+            "nframes": 64,
+        },
+    )
+    assert SI.structure_ir_to_ids(with_sched) == SI.structure_ir_to_ids(base)
+    assert SI.structure_ir_from_ids(SI.structure_ir_to_ids(with_sched)).schedule is None
 
 
 def test_recover_structure_ir_returns_none_when_not_ok(monkeypatch, tmp_path):
