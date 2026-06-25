@@ -71,6 +71,58 @@ def _demo_sng():
     return build_sng(song)
 
 
+def test_vocab_matches_flat_alphabet():
+    """The exported VOCAB/PAD_ID must equal the flat v2 alphabet's size (the
+    model-facing alphabet)."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    assert VOCAB == F.VOCAB
+    from preframr_tokens import PAD_ID
+
+    assert PAD_ID == F.PAD_ID == F.VOCAB
+
+
+def test_flat_tokens_are_typed_and_self_delimiting():
+    """A flat-encoded program begins with BOS, ends with EOS, every token id falls
+    inside the declared typed ranges (no v1 LEB digits / LZ markers), and uses the
+    INLINE (define-at-first-use) framing: a small front block (header + the four
+    generator-parameter tables), then patterns/instruments defined IN PLAY ORDER
+    inside the orderlist walk -- NO upfront SEC_INSTRUMENTS / SEC_PATTERNS section
+    block."""
+    from preframr_tokens.bacc import flat_serialize as F
+
+    program = make_program(_demo_sng(), _DEMO_SEED, 128)
+    ids = program_to_ids(program)
+    assert ids[0] == F.BOS and ids[-1] == F.EOS
+    assert all(0 <= t < F.VOCAB for t in ids)
+    # The retired front-loaded section markers are GONE (no preamble).
+    assert F.SEC_INSTRUMENTS not in ids
+    assert F.SEC_PATTERNS not in ids
+    # The kept front block (header + tables) precedes the inline orderlist walk.
+    assert (
+        ids.index(F.SEC_HEADER) < ids.index(F.SEC_TABLES) < ids.index(F.SEC_ORDERLISTS)
+    )
+    # Patterns/instruments are defined INLINE, after SEC_ORDERLISTS (in play order),
+    # not in a front section: the first PATTERN_BEGIN / INSTR_BEGIN follows it.
+    sec_ol = ids.index(F.SEC_ORDERLISTS)
+    assert ids.index(F.PATTERN_BEGIN) > sec_ol
+    assert ids.index(F.INSTR_BEGIN) > sec_ol
+    # A pattern def carries its original number then self-delimits with PATTERN_END;
+    # an instrument def self-delimits with INSTR_END (BEGIN/END bracketing, no
+    # length prefix).
+    assert F.PATTERN_END in ids and F.INSTR_END in ids
+    # Prefix-validity: truncating right after any PATTERN_END / REF (+ EOS) still
+    # decodes to a partial, continuable Song (any prefix is a decodable song).
+    cuts = []
+    for j, t in enumerate(ids):
+        if t == F.PATTERN_END:
+            cuts.append(j + 1)
+        elif t == F.REF:
+            cuts.append(j + 2)  # REF + its ordinal byte
+    for c in cuts:
+        F.flat_gt_ids_to_program(ids[:c] + [F.EOS])  # no IndexError / desync
+
+
 def test_render_song_shape_and_masking():
     state = render_song(_demo_sng(), _DEMO_SEED, 128)
     assert state.shape == (128, 25)
@@ -88,87 +140,6 @@ def test_token_roundtrip_renders_byte_exact():
     assert "sng" not in program2.tables and "song" in program2.tables
     assert program2.seed["adparam"] == program.seed["adparam"]
     assert np.array_equal(render_program(program2), render_program(program))
-
-
-def test_global_pattern_lz_reslices_patterns():
-    """The global cross-pattern row-LZ runs ONE backward window over all patterns
-    concatenated, so a phrase repeated in a later pattern copies from an earlier
-    one; decode must re-slice the flat row stream back into the SAME patterns
-    (right count, right per-pattern row counts, right rows). Two patterns that
-    share an identical phrase exercise the cross-pattern copy + the re-slice."""
-    from pygoattracker import Instrument, Pattern, Row, Song, build_sng
-    from pygoattracker.constants import note_value
-
-    from preframr_tokens.bacc.gt_serialize import (
-        gt_ids_to_program,
-        gt_program_to_ids,
-    )
-
-    song = Song(name="GLZ", author="T", copyright="2026")
-    wave_ptr = song.wavetable.add(0x41, 0x00)
-    song.wavetable.add(0xFF, 0x00)
-    song.instruments.append(
-        Instrument(
-            attack_decay=0x09,
-            sustain_release=0x00,
-            wave_ptr=wave_ptr,
-            gateoff_timer=2,
-            first_wave=0x09,
-            name="LEAD",
-        )
-    )
-    phrase = [
-        Row(note=note_value("C-4"), instrument=1),
-        Row(note=note_value("E-4"), instrument=1),
-        Row(note=note_value("G-4"), instrument=1),
-    ]
-    pat_a = Pattern.empty(16)
-    pat_b = Pattern.empty(8)  # different length -> exercises per-pattern counts
-    for k, r in enumerate(phrase):
-        pat_a.rows[k] = r
-        pat_b.rows[k] = r  # same phrase, later pattern: cross-pattern copy
-    song.patterns = [pat_a, pat_b]
-
-    program = make_program(build_sng(song), _DEMO_SEED, 128)
-    ids = gt_program_to_ids(program)
-    program2 = gt_ids_to_program(ids)
-    song2 = program2.tables["song"]
-    # re-slice fidelity: same pattern count + same per-pattern row counts + rows
-    assert len(song2.patterns) == 2
-    assert [len(p.rows) for p in song2.patterns] == [16, 8]
-    src = program.tables["song"]
-    for p_in, p_out in zip(src.patterns, song2.patterns):
-        assert [(r.note, r.instrument, r.command, r.data) for r in p_in.rows] == [
-            (r.note, r.instrument, r.command, r.data) for r in p_out.rows
-        ]
-    assert np.array_equal(render_program(program2), render_program(program))
-
-
-def test_pattern_rows_transpose_factor_roundtrip():
-    """A phrase repeated at a transposed pitch (same instr/command/data) factors as
-    one TRANSPOSE+Delta over the shared post-BACC row LZ, not a fresh literal run --
-    byte-exact round-trip and fewer tokens than REPEAT-only would emit."""
-    from pygoattracker.constants import note_value
-
-    from preframr_tokens.bacc.gt_serialize import (
-        _lz_emit,
-        _lz_read,
-        _row_delta,
-        _row_lit,
-        _row_read,
-        _row_shift,
-    )
-    from preframr_tokens.bacc.serialize import TRANSPOSE
-
-    phrase = [(note_value("C-4"), 1, 0, 0), (note_value("E-4"), 1, 0, 0)]
-    up = [(note_value("G-4"), 1, 0, 0), (note_value("B-4"), 1, 0, 0)]  # +7 semis
-    rows = phrase + up  # phrase then the same shape a fifth higher
-    out = []
-    _lz_emit(out, rows, _row_lit, _row_delta)
-    assert TRANSPOSE in out  # the transposed phrase factored
-    back, consumed = _lz_read(out, 0, len(rows), _row_read, _row_shift)
-    assert consumed == len(out)
-    assert back == rows  # byte-exact inverse re-coordinates the pitch
 
 
 def test_measure_breaks_down_program():
@@ -254,21 +225,20 @@ def test_grid_runner_context_budget(grid_runner_paths):
     program = recover_program(sid, dump, CPF, subtune=0)
     assert program.driver == "goattracker"
     brk, frames = measure(program)
-    # The global cross-pattern row-LZ (one backward window over ALL patterns
-    # concatenated instead of a fresh window per pattern) brings Grid_Runner to
-    # ~2,817 tokens (was 4,132 with per-pattern windows). It still must fit
-    # < 1 token/frame AND the 8192-token context window, and now also under 4096.
+    # FLAT v2 alphabet (learnability-first): typed atoms + self-delimiting
+    # structure, NO inline LZ and NO base-16 LEB place-value. Streams are longer
+    # than the v1 LEB+LZ scheme (Grid_Runner ~9,480 vs ~2,817) -- the deliberate
+    # compression-for-predictability trade -- but still well under 1 token/frame
+    # and inside a 16k context window. The hard gate (residual-0) is unchanged
+    # and covered by test_grid_runner_byte_exact.
+    assert brk["fmt"] == "flat_v2"
     assert brk["total"] / frames < 1.0, (
         f"Grid_Runner: {brk['total']} tokens / {frames} frames = "
         f"{brk['total'] / frames:.3f} tok/frame (must be < 1)"
     )
-    assert brk["total"] < 8192, (
-        f"Grid_Runner: {brk['total']} tokens for the whole song >= 8192 "
-        f"(must fit the 8192-token context window)"
-    )
-    assert brk["total"] < 4096, (
-        f"Grid_Runner: {brk['total']} tokens >= 4096 -- the global "
-        f"cross-pattern row-LZ should keep it well under 4096 (~2,817)"
+    assert brk["total"] < 16384, (
+        f"Grid_Runner: {brk['total']} flat tokens for the whole song >= 16384 "
+        f"(must fit a 16k context window)"
     )
 
 

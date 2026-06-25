@@ -19,10 +19,17 @@ the generic path.
 # constant grid-interval Delta -- factors a phrase repeated at a different pitch,
 # exactly what a tracker orderlist's Transpose(semitones) does, while the note
 # token stays the ABSOLUTE canonical A440 grid index).
+# Legacy inline-LZ markers. These belong to the v1 base-16 LEB alphabet still used
+# by the generic/tracker serializer (pending its port to the flat v2 alphabet --
+# task #4). The MODEL-FACING alphabet is now the flat, typed, no-LZ scheme defined
+# in :mod:`preframr_tokens.bacc.flat_serialize`; ``VOCAB``/``PAD_ID`` below are ITS
+# size (must equal ``flat_serialize.VOCAB`` -- asserted in tests).
+# v1 inline-LZ markers (the base-16 LEB digit alphabet 0..31 + these two), used
+# ONLY by the legacy generic/tracker serializer pending its flat port; NOT part of
+# the model-facing flat alphabet. VOCAB/PAD_ID are re-exported from flat_serialize
+# at the BOTTOM of this module (the single source of truth for the alphabet size).
 REPEAT = 32
 TRANSPOSE = 33
-VOCAB = 34
-PAD_ID = VOCAB  # reserved padding id above the codec alphabet
 
 _MIN_COPY = 2
 
@@ -400,11 +407,14 @@ def _wi_len(n):
 
 
 def program_to_ids(program):
-    """Serialize a BaccProgram to a flat list of token ids (round-trippable)."""
-    if program.driver == "goattracker":
-        from preframr_tokens.bacc.gt_serialize import gt_program_to_ids
+    """Serialize a BaccProgram to a flat list of token ids (round-trippable).
 
-        return gt_program_to_ids(program)
+    GoatTracker uses the flat v2 alphabet (:mod:`flat_serialize`); the generic
+    path still emits the v1 LEB+LZ alphabet pending its port (task #4)."""
+    if program.driver == "goattracker":
+        from preframr_tokens.bacc.flat_serialize import flat_gt_program_to_ids
+
+        return flat_gt_program_to_ids(program)
     from preframr_tokens.bacc.generic_serialize import generic_program_to_ids
 
     return generic_program_to_ids(program)
@@ -413,9 +423,9 @@ def program_to_ids(program):
 def ids_to_program(ids, driver="generic"):
     """Inverse of program_to_ids -> BaccProgram (instruments tables reconstructed)."""
     if driver == "goattracker":
-        from preframr_tokens.bacc.gt_serialize import gt_ids_to_program
+        from preframr_tokens.bacc.flat_serialize import flat_gt_ids_to_program
 
-        return gt_ids_to_program(ids)
+        return flat_gt_ids_to_program(ids)
     from preframr_tokens.bacc.generic_serialize import generic_ids_to_program
 
     return generic_ids_to_program(ids)
@@ -424,9 +434,21 @@ def ids_to_program(ids, driver="generic"):
 def measure(program):
     """Return ({block: tokens}, nframes) for the serialized program."""
     if program.driver == "goattracker":
-        from preframr_tokens.bacc.gt_serialize import gt_measure
+        from preframr_tokens.bacc.flat_serialize import flat_gt_measure
 
-        return gt_measure(program)
+        return flat_gt_measure(program)
     from preframr_tokens.bacc.generic_serialize import generic_measure
 
     return generic_measure(program)
+
+
+# The model-facing alphabet size IS the flat v2 alphabet's. Re-exported here (the
+# single source of truth lives in flat_serialize) so ``bacc.VOCAB``/``PAD_ID`` and
+# the v1-internal LEB markers above can never drift apart. flat_serialize does not
+# import serialize, so this bottom import is acyclic.
+from preframr_tokens.bacc.flat_serialize import (  # noqa: E402  pylint: disable=wrong-import-position
+    PAD_ID,
+    VOCAB,
+)
+
+__all__ = ["program_to_ids", "ids_to_program", "measure", "VOCAB", "PAD_ID"]

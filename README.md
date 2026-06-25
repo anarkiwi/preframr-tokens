@@ -64,16 +64,40 @@ The codec is a set of per-driver **backends**, selected by player fingerprint
 **byte-exact** (modulo each backend's small declared don't-care mask, e.g. unused
 PW-high bits). The shipped hand backend is **GoatTracker** (gt2reloc), kept as the
 worked reference; every other tune is handled by the driver-agnostic **generic**
-path (below). Both serialize into one shared token alphabet (the base-16 LEB digit
-stream + `REPEAT` / `TRANSPOSE` markers), so a single learnable vocabulary spans
-every driver.
+path (below).
 
-Repeated phrases dedup via an **inline backward orderlist** — backward-reference
-only, no forward declaration, no frozen table. Any prefix cut at an event
-boundary is itself a valid, decodable, continuable song. A transposed phrase
-repeat is a single `TRANSPOSE` op (a backward `REPEAT` whose copied notes are
-re-coordinated by one constant grid-interval Δ), exactly what a tracker
-orderlist's transpose does.
+### The flat v2 token alphabet (learnability-first)
+
+The model-facing alphabet is **flat and typed** (`bacc/flat_serialize.py`,
+`VOCAB = 576`): a token id's RANGE encodes its kind, so a decoder-only LM never
+decodes place value or infers type from grammar position.
+
+- `NOTE_*` — one token per canonical A440 12-TET grid index (pitch proximity →
+  embedding proximity), plus `NOTE_REST` / `NOTE_KEYOFF` / `NOTE_KEYON` /
+  `NOTE_RAW`. The **same concert pitch is the same `NOTE` id across every driver**.
+- `INSTR_REF` / `CMD` / `BYTE` — one token per instrument ordinal / effect / byte
+  value; a 16-bit field is a fixed `(lo, hi)` BYTE pair (positional, never a
+  varint).
+- A widened structural block (`0..63`) carries `BEGIN/END` brackets, the
+  `ORDER_*` orderlist ops (incl. `ORDER_CALL`), the `GEN_*` generator enum
+  (`GEN_HOLD/RAMP/QUAD/VIBRATO/ARP/TABLEWALK`), and the inline `REF`.
+
+The alphabet has **no LZ / back-offset token and no wide-value escape** (the gate's
+C3 / C8 invariants): repetition is content-addressed, not a back-reference.
+
+Note: the *streams* differ between backends (they recover structurally different
+decompositions); only the *alphabet* and the *note-pitch tokens* are shared.
+
+### Inline, define-at-first-use layout (prefix-valid)
+
+The GoatTracker flat codec is laid out **inline**: a small front block (header +
+the four generator-parameter tables), then the orderlist walked in **play order**
+with patterns and instruments **defined at first use** and referenced (`REF` /
+`INSTR_REF`) thereafter — backward-reference only, no forward declaration, no
+front-loaded section preamble. A def is always to the LEFT of any ref, so **any
+prefix cut at an event boundary is itself a valid, decodable, continuable song**.
+The pre-v2 base-16 LEB + inline-`REPEAT`/`TRANSPOSE`-LZ alphabet is retired (the
+generic path still uses it internally pending its flat port; see the source).
 
 ## Two-file input — and the shipped `.sid`-only path
 
