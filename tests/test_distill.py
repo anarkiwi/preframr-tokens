@@ -273,6 +273,59 @@ def test_iwlk_section_absent_is_noop():
     assert d2.iwlk_walks == []
 
 
+def test_pwlk_adv_y_pc_round_trip():
+    """The post-#11 per-advance advY (authored orderlist position) + advPc (consuming
+    read PC) round-trip through build/parse, length-consistent with the advance count.
+    """
+    d = _empty_distill()
+    d.ptr_walks = [
+        D.PtrWalk(
+            zp=0xFA,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=72,
+            count=10759,
+            ptr_vals=[0x157E, 0x14EB, 0x183F],
+            adv_frames=[2, 2, 3],
+            adv_y=[0, 0, 3],
+            adv_pc=[0x10AE, 0x13F3, 0x14C0],
+        )
+    ]
+    d2 = D.parse_distill(D.build_distill(d))
+    w = d2.ptr_walks[0]
+    assert w.adv_y == [0, 0, 3]
+    assert w.adv_pc == [0x10AE, 0x13F3, 0x14C0]
+    assert len(w.adv_y) == len(w.ptr_vals) == len(w.adv_pc) == len(w.adv_frames)
+    assert all(0 <= y <= w.y_max for y in w.adv_y)
+
+
+def test_pwlk_pre11_artifact_parses_old_layout():
+    """A pre-#11 PtrWalk (no advY/advPc) emits + parses in the OLD layout -- the reader
+    DISAMBIGUATES the two on-disk layouts structurally (back-compat tolerance, the
+    sidtrace IWLK reader #152 idiom): empty adv_y/adv_pc means the appended arrays are
+    absent, and the next section tag lands exactly after the legacy arrays."""
+    d = _empty_distill()
+    d.ptr_walks = [
+        D.PtrWalk(
+            zp=0xFB,
+            is_load=True,
+            is_store=False,
+            y_min=0,
+            y_max=76,
+            count=5240,
+            ptr_vals=[0x1A1B, 0x1AFC, 0x19F4],
+            adv_frames=[1, 1, 2],
+        )
+    ]
+    blob = D.build_distill(d)
+    d2 = D.parse_distill(blob)
+    w = d2.ptr_walks[0]
+    assert w.adv_y == [] and w.adv_pc == []
+    assert w.ptr_vals == [0x1A1B, 0x1AFC, 0x19F4]
+    assert w.adv_frames == [1, 1, 2]
+
+
 def test_digi_signature_classifies():
     """The DIGI signature: a PCM streamer (hundreds of $D418 writes/frame, no note
     table) is_digi; a tracker (tens of writes/frame, note table) is not."""
