@@ -233,7 +233,15 @@ class PtrWalk:
     note onset -- the item #6 tempo events); ``y_min``/``y_max`` is the per-call
     index range (the row span). Consecutive-equal pointer values are deduped into
     advance events. ``is_load``/``is_store`` record the access direction (0xB1 /
-    0x91)."""
+    0x91).
+
+    ``adv_y[i]`` is the Y index (the AUTHORED orderlist POSITION) and ``adv_pc[i]``
+    the PC of the ``(zp),Y`` read (the consuming VOICE proxy -- each voice reads the
+    shared orderlist at its own play PC) at advance ``i`` (sidtrace #11). Together
+    they let the recovery collapse the over-expanded per-voice/per-row pointer-read
+    stream back to the single AUTHORED orderlist (the Y-walk ``0..y_max``) + its loop
+    point (where Y wraps). EMPTY when read from a pre-#11 artifact (back-compat); the
+    reader disambiguates the two on-disk layouts structurally."""
 
     zp: int
     is_load: bool
@@ -243,6 +251,8 @@ class PtrWalk:
     count: int
     ptr_vals: list  # list[int]
     adv_frames: list  # list[int]
+    adv_y: list = field(default_factory=list)  # list[int] (Y index per advance; #11)
+    adv_pc: list = field(default_factory=list)  # list[int] (read PC per advance; #11)
 
 
 @dataclass
@@ -566,6 +576,29 @@ def _skip_siddf_section(buf, off, nent, with_val_seq):
     return off
 
 
+def _skip_pwlk_section(buf, off, nent, with_adv_yp):
+    """Walk past ``nent`` PWLK entries from ``off`` without retaining them, to choose
+    the on-disk layout structurally (same idiom as :func:`_skip_siddf_section`).
+
+    The post-#11 layout appends, per entry, ``nAdv*(advY u8) + nAdv*(advPc u16)``
+    after the legacy ``nAdv*(ptrVal u16) + nAdv*(advFrame u32)`` arrays. Returns the
+    offset just past the section, or ``None`` if the chosen layout does not fit the
+    buffer (so the caller retries with the other ``with_adv_yp`` choice)."""
+    try:
+        for _ in range(nent):
+            _zp, _fl, _ymin, _ymax, _pad, _count, nadv = _PWLK_HEAD.unpack_from(
+                buf, off
+            )
+            off += _PWLK_HEAD.size + 2 * nadv + 4 * nadv  # ptrVals + advFrames
+            if with_adv_yp:
+                off += nadv + 2 * nadv  # advY (u8) + advPc (u16)
+    except struct.error:
+        return None
+    if off > len(buf):
+        return None
+    return off
+
+
 def _decode_siddf_slices(buf, off, nent, with_val_seq, out):
     """Decode ``nent`` SDDF entries' RAM_READ leaves into ``out`` (list[SddfSlice]).
 
@@ -723,8 +756,21 @@ def parse_distill(buf):
                 )
         elif tag == b"PWLK":
             # (zp),Y pointer-walk sequences (item #2 + the item #6 advance frames).
+            # Two on-disk layouts coexist: the post-#11 tracer appends, per entry, the
+            # per-advance advY (u8) + advPc (u16) arrays (the authored orderlist index +
+            # consuming read PC); older artifacts predate them.  DISAMBIGUATE structurally
+            # exactly as the SDDF reader does: assume the new arrays are present, and only
+            # if that fails to land on a valid next section tag (or EOF) re-skip without
+            # them (back-compat tolerance, sidtrace IWLK reader #152 idiom).
             (nent,) = struct.unpack_from("<I", buf, off)
             off += 4
+            with_adv_yp = True
+            end_off = _skip_pwlk_section(buf, off, nent, with_adv_yp=True)
+            if end_off is None or not _at_section_boundary(buf, end_off):
+                with_adv_yp = False
+                end_off = _skip_pwlk_section(buf, off, nent, with_adv_yp=False)
+            if end_off is None:
+                raise ValueError("could not parse PWLK section")
             for _ in range(nent):
                 zp, flags, ymin, ymax, _pad, count, nadv = _PWLK_HEAD.unpack_from(
                     buf, off
@@ -734,6 +780,12 @@ def parse_distill(buf):
                 off += 2 * nadv
                 frames = list(struct.unpack_from(f"<{nadv}I", buf, off))
                 off += 4 * nadv
+                adv_y, adv_pc = [], []
+                if with_adv_yp:
+                    adv_y = list(struct.unpack_from(f"<{nadv}B", buf, off))
+                    off += nadv
+                    adv_pc = list(struct.unpack_from(f"<{nadv}H", buf, off))
+                    off += 2 * nadv
                 ptr_walks.append(
                     PtrWalk(
                         zp=zp,
@@ -744,6 +796,8 @@ def parse_distill(buf):
                         count=count,
                         ptr_vals=ptrs,
                         adv_frames=frames,
+                        adv_y=adv_y,
+                        adv_pc=adv_pc,
                     )
                 )
         elif tag == b"RELO":
@@ -966,6 +1020,12 @@ def build_distill(dist):
         pwlk += _PWLK_HEAD.pack(p.zp, flags, p.y_min, p.y_max, 0, p.count, nadv)
         pwlk += struct.pack(f"<{nadv}H", *p.ptr_vals)
         pwlk += struct.pack(f"<{nadv}I", *p.adv_frames)
+        # Emit the post-#11 advY/advPc arrays only when present and length-consistent;
+        # a PtrWalk read from a pre-#11 artifact has them empty and round-trips in the
+        # OLD layout (the structural disambiguation in the reader picks the right one).
+        if len(p.adv_y) == nadv and len(p.adv_pc) == nadv:
+            pwlk += struct.pack(f"<{nadv}B", *p.adv_y)
+            pwlk += struct.pack(f"<{nadv}H", *p.adv_pc)
     out += b"PWLK" + struct.pack("<I", len(dist.ptr_walks)) + pwlk
 
     relo = bytearray()
